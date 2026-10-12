@@ -4,26 +4,26 @@
 //! historically left no User-layer SigKey mapping, so `User::open_database`
 //! failed with "No key found" unless the caller manually invoked
 //! `track_database`. `User::request_database_access` now establishes the mapping
-//! itself, and opening a not-yet-approved database surfaces a clear
-//! `UserError::DatabaseAccessPending` instead of a cryptic backend error.
+//! itself. Pending creates no new mapping or preferences.
 
 use eidetica::{
     Error,
     auth::Permission,
     store::DocStore,
     sync::{DatabaseTicket, SyncError, transports::http::HttpTransport},
-    user::{UserError, types::SyncSettings},
+    user::types::SyncSettings,
 };
 
 use super::helpers::*;
 
 #[tokio::test]
-async fn record_access_preserves_explicit_settings_for_pending_and_retry() {
+async fn record_access_pending_retries_leave_user_state_unchanged() {
     let (_server_instance, _server_user, _server_key_id, _database, database_id, _server_sync) =
         setup_sync_enabled_server_with_auto_approve("server_user", "server_key", "test_db").await;
     let (_client_instance, mut client_user, client_key_id, _client_sync) =
         setup_sync_enabled_client("client_user", "client_key").await;
     let pending_settings = SyncSettings::on_commit().with_interval(31);
+    let before = client_user.user_database().snapshot().await.unwrap();
 
     let result = client_user
         .record_database_access(
@@ -40,15 +40,12 @@ async fn record_access_preserves_explicit_settings_for_pending_and_retry() {
     assert!(
         matches!(result, Err(Error::Sync(error)) if matches!(*error, SyncError::BootstrapPending { .. }))
     );
+    assert!(client_user.database(&database_id).await.is_err());
     assert_eq!(
         client_user
-            .database(&database_id)
-            .await
-            .unwrap()
-            .sync_settings
-            .interval_seconds,
-        Some(31),
-        "the split pending path must store the supplied settings"
+            .key_mapping(&client_key_id, &database_id)
+            .unwrap(),
+        None
     );
 
     let retry_settings = SyncSettings::enabled().with_interval(37);
@@ -65,9 +62,11 @@ async fn record_access_preserves_explicit_settings_for_pending_and_retry() {
         )
         .await;
     assert!(result.is_err());
-    let tracked = client_user.database(&database_id).await.unwrap();
-    assert!(tracked.sync_settings.sync_enabled);
-    assert_eq!(tracked.sync_settings.interval_seconds, Some(37));
+    assert!(client_user.database(&database_id).await.is_err());
+    assert_eq!(
+        before,
+        client_user.user_database().snapshot().await.unwrap()
+    );
 }
 
 /// Auto-approve server -> client `request_database_access` -> the database is
@@ -140,9 +139,7 @@ async fn request_access_makes_database_openable_without_manual_track() {
     server_sync.stop_server().await.unwrap();
 }
 
-/// Manual-approval server -> a pending request records a provisional mapping ->
-/// opening reports a clear `DatabaseAccessPending` -> after approval + sync the
-/// database opens and the by-pubkey mapping is authorized for writes.
+/// Manual approval leaves User state unchanged until a successful retry.
 #[tokio::test]
 async fn pending_access_reports_clear_error_then_opens_after_approval() {
     let (server_instance, server_user, server_key_id, _server_database, server_sync, tree_id) =
@@ -158,9 +155,9 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
 
     let ticket = DatabaseTicket::with_addresses(tree_id.clone(), vec![server_addr.clone()]);
     let sync_settings = SyncSettings::on_commit().with_interval(23);
+    let before = client_user.user_database().snapshot().await.unwrap();
 
-    // The request is stored pending and returns an error, but the provisional
-    // key mapping is still recorded.
+    // Only the peer's request is stored; the caller supplies settings on retry.
     let result = client_user
         .request_database_access(
             &client_sync,
@@ -175,28 +172,15 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
         result.is_err(),
         "request against a manual-approval server should be pending"
     );
+    assert!(client_user.database(&tree_id).await.is_err());
     assert_eq!(
-        client_user
-            .database(&tree_id)
-            .await
-            .unwrap()
-            .sync_settings
-            .interval_seconds,
-        Some(23),
-        "pending bootstrap must retain the explicit sync preferences for a retry"
+        before,
+        client_user.user_database().snapshot().await.unwrap()
     );
-
-    // find_key now resolves the provisional mapping, so opening reaches the data
-    // layer — and surfaces a clear "pending" error instead of a cryptic backend
-    // not-found.
-    let open_err = client_user
+    client_user
         .open_database(&tree_id)
         .await
         .expect_err("opening a not-yet-approved database should fail");
-    assert!(
-        matches!(&open_err, Error::User(e) if matches!(**e, UserError::DatabaseAccessPending { .. })),
-        "expected DatabaseAccessPending, got: {open_err:?}"
-    );
 
     // Approve and let the client sync.
     let pending = server_sync.pending_bootstrap_requests().await.unwrap();

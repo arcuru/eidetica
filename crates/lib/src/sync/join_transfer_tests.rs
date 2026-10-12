@@ -505,6 +505,150 @@ async fn join_transfer_reuses_partial_entries_after_sqlite_reopen() -> Result<()
     Ok(())
 }
 
+#[tokio::test]
+async fn join_user_pending_and_rejected_leave_user_history_unchanged() -> Result<()> {
+    use crate::user::SyncSettings;
+    let (instance, mut user) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))
+            .await?;
+    let key = user.get_default_key()?;
+    let tree = ID::from_bytes("not-yet-replicated");
+    let before = user.user_database().snapshot().await?;
+    for rejected in [false, false, true, true] {
+        let error = if rejected {
+            super::SyncError::BootstrapRejected {
+                request_id: "same".into(),
+                message: "rejected".into(),
+            }
+        } else {
+            super::SyncError::BootstrapPending {
+                request_id: "same".into(),
+                message: "pending".into(),
+            }
+        };
+        assert!(
+            user.record_database_access(&tree, &key, SyncSettings::on_commit(), Err(error.into()))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            before,
+            user.user_database().snapshot().await?,
+            "non-success appended User history"
+        );
+        assert_eq!(user.key_mapping(&key, &tree)?, None);
+        assert!(user.database(&tree).await.is_err());
+    }
+    drop(instance);
+    Ok(())
+}
+
+async fn wildcard_database(instance: &Instance) -> Result<Database> {
+    let (owner, _) = generate_keypair();
+    let db = Database::create(instance, owner, Doc::new()).await?;
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?
+            .set_global_auth_key(crate::auth::AuthKey::active(None, Permission::Write(0)))
+            .await
+    })
+    .await?;
+    Ok(db)
+}
+
+#[tokio::test]
+async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result<()> {
+    use crate::user::SyncSettings;
+    for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+        let (instance, _sync, fault) = destination(Arc::new(InMemory::new())).await?;
+        let mut user = instance.login_user("client", None).await?;
+        let key = user.get_default_key()?;
+        let db = wildcard_database(&instance).await?;
+        *fault.lock().unwrap() = Some((op, user.user_database().root_id().clone()));
+        assert!(
+            user.track_database(db.root_id(), &key, SyncSettings::disabled())
+                .await
+                .is_err()
+        );
+        if matches!(op, Fault::AckTree) {
+            assert_eq!(
+                user.key_mapping(&key, db.root_id())?,
+                Some(crate::auth::SigKey::global(&key)),
+                "cache did not reconcile verified lost-ack outcome"
+            );
+        } else {
+            assert_eq!(
+                user.key_mapping(&key, db.root_id())?,
+                None,
+                "uncommitted mapping escaped into cache"
+            );
+        }
+        *fault.lock().unwrap() = None;
+        user.track_database(db.root_id(), &key, SyncSettings::disabled())
+            .await?;
+        assert_eq!(
+            user.key_mapping(&key, db.root_id())?,
+            Some(crate::auth::SigKey::global(&key))
+        );
+        let before = user.user_database().snapshot().await?;
+        user.track_database(db.root_id(), &key, SyncSettings::disabled())
+            .await?;
+        assert_eq!(
+            before,
+            user.user_database().snapshot().await?,
+            "identical retry appended User history"
+        );
+        let fresh = instance.login_user("client", None).await?;
+        assert_eq!(
+            fresh.key_mapping(&key, db.root_id())?,
+            user.key_mapping(&key, db.root_id())?
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_user_rediscovers_legacy_mapping_and_preserves_unrelated_intent() -> Result<()> {
+    use crate::user::SyncSettings;
+    let (instance, mut user) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))
+            .await?;
+    let key = user.get_default_key()?;
+    let db = wildcard_database(&instance).await?;
+    user.track_database(db.root_id(), &key, SyncSettings::disabled())
+        .await?;
+    // Simulate a legacy provisional direct mapping on an unchanged tracked key.
+    user.map_key(&key, db.root_id(), crate::auth::SigKey::from_pubkey(&key))
+        .await?;
+    let other = wildcard_database(&instance).await?;
+    let mut another_session = instance.login_user("client", None).await?;
+    another_session
+        .track_database(
+            other.root_id(),
+            &key,
+            SyncSettings::on_commit().with_interval(43),
+        )
+        .await?;
+    user.record_database_access(db.root_id(), &key, SyncSettings::disabled(), Ok(()))
+        .await?;
+    assert_eq!(
+        user.key_mapping(&key, db.root_id())?,
+        Some(crate::auth::SigKey::global(&key)),
+        "successful retry kept provisional identity"
+    );
+    assert!(
+        user.key_mapping(&key, other.root_id())?.is_some(),
+        "cache dropped other session's persisted mapping"
+    );
+    assert_eq!(
+        user.database(other.root_id())
+            .await?
+            .sync_settings
+            .interval_seconds,
+        Some(43)
+    );
+    Ok(())
+}
+
 async fn pending_request(
     sync: &Sync,
     tree: &ID,
@@ -772,6 +916,99 @@ async fn join_transfer_checks_grant_and_rejects_incremental_send_back() -> Resul
         )
         .await?;
         assert!(Database::can_access(&local, &tree, &requester, &Permission::Write(5)).await?);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Result<()> {
+    use crate::{backend::database::Sqlite, user::SyncSettings};
+    for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("join.sqlite");
+        let (instance, sync, fault) = destination(Arc::new(Sqlite::open(&file).await?)).await?;
+        let mut user = instance.login_user("client", None).await?;
+        let key = user.get_default_key()?;
+        let target = wildcard_database(&instance).await?;
+        let target_id = target.root_id().clone();
+        *fault.lock().unwrap() = Some((op, user.user_database().root_id().clone()));
+        assert!(
+            user.track_database(&target_id, &key, SyncSettings::disabled())
+                .await
+                .is_err()
+        );
+        drop(user);
+        drop(target);
+        drop(sync);
+        drop(instance);
+        drop(fault);
+        let instance = Instance::open_backend(Box::new(Sqlite::open(&file).await?)).await?;
+        let mut user = instance.login_user("client", None).await?;
+        user.track_database(&target_id, &key, SyncSettings::disabled())
+            .await?;
+        let tips = user.user_database().snapshot().await?;
+        user.track_database(&target_id, &key, SyncSettings::disabled())
+            .await?;
+        assert_eq!(tips, user.user_database().snapshot().await?);
+        assert_eq!(
+            user.key_mapping(&key, &target_id)?,
+            Some(crate::auth::SigKey::global(&key))
+        );
+        assert!(user.open_database(&target_id).await.is_ok());
+    }
+    for target_fault in [false, true] {
+        for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+            let dir = tempfile::tempdir()?;
+            let file = dir.path().join("peer.sqlite");
+            let (instance, sync, fault) = destination(Arc::new(Sqlite::open(&file).await?)).await?;
+            let mut owner = instance.login_user("client", None).await?;
+            let key = owner.get_default_key()?;
+            let target = owner.create_database(Doc::new(), &key).await?;
+            let tree = target.root_id().clone();
+            let (_, requester) = generate_keypair();
+            let request = pending_request(&sync, &tree, &requester, Permission::Write(5)).await?;
+            let sync_id = sync.sync_tree.root_id().clone();
+            *fault.lock().unwrap() = Some((
+                op,
+                if target_fault {
+                    tree.clone()
+                } else {
+                    sync_id.clone()
+                },
+            ));
+            assert!(
+                owner
+                    .approve_bootstrap_request(&sync, &request, &key)
+                    .await
+                    .is_err()
+            );
+            drop(owner);
+            drop(target);
+            drop(sync);
+            drop(instance);
+            drop(fault);
+            let instance = Instance::open_backend(Box::new(Sqlite::open(&file).await?)).await?;
+            let sync = Sync::load(instance.clone(), &sync_id).await?;
+            assert_eq!(sync.sync_tree.root_id(), &sync_id);
+            let owner = instance.login_user("client", None).await?;
+            owner
+                .approve_bootstrap_request(&sync, &request, &key)
+                .await?;
+            assert!(
+                Database::can_access(&instance, &tree, &requester, &Permission::Write(5)).await?
+            );
+            let target_tips = Database::open(&instance, &tree).await?.snapshot().await?;
+            let decision_tips = sync.sync_tree.snapshot().await?;
+            owner
+                .approve_bootstrap_request(&sync, &request, &key)
+                .await?;
+            assert_eq!(
+                target_tips,
+                Database::open(&instance, &tree).await?.snapshot().await?
+            );
+            assert_eq!(decision_tips, sync.sync_tree.snapshot().await?);
+        }
     }
     Ok(())
 }

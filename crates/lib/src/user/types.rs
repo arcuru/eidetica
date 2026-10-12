@@ -147,7 +147,7 @@ pub struct UserKey {
 /// Stored in the user's private database "databases" Table.
 /// Records which databases the user has added to their list, along with
 /// which key to use and sync preferences.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TrackedDatabase {
     /// Database ID
     pub database_id: ID,
@@ -176,7 +176,7 @@ pub struct TrackedDatabase {
 /// # use eidetica::user::types::SyncSettings;
 /// let settings = SyncSettings::enabled().with_interval(60);
 /// ```
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SyncSettings {
     /// Whether user wants to sync this database
     pub sync_enabled: bool,
