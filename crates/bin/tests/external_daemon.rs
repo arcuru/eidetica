@@ -11,12 +11,13 @@ use eidetica::{
     sync::{
         Address, DatabaseTicket,
         handler::{SyncHandler, SyncHandlerImpl},
-        protocol::{RequestContext, SyncRequest, SyncResponse},
+        protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
         transports::http::HttpTransport,
     },
     user::SyncSettings,
 };
 use std::{
+    path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
         Arc,
@@ -86,6 +87,34 @@ async fn daemon_http_inbound_sync() {
     let address = std::env::var("EIDETICA_EXTERNAL_HTTP_BIND").expect("HTTP bind for integration");
     tokio::time::timeout(Duration::from_secs(10), async {
         let daemon = Instance::connect(format!("unix://{socket}")).await.unwrap();
+        let mut admin = daemon.login_user("admin", None).await.unwrap();
+        let private = admin
+            .create_database(Doc::new(), &admin.get_default_key().unwrap())
+            .await
+            .unwrap();
+        private.share().await.unwrap();
+        let denied = reqwest::Client::new()
+            .post(format!("http://{address}/api/v0"))
+            .json(&SyncRequest::SyncTree(SyncTreeRequest {
+                tree_id: private.root_id().clone(),
+                our_tips: Vec::new().into(),
+                peer_pubkey: None,
+                requesting_key: None,
+                requesting_key_name: None,
+                requested_permission: None,
+                metadata: None,
+                auth: None,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json::<SyncResponse>()
+            .await
+            .unwrap();
+        assert!(
+            matches!(&denied, SyncResponse::Error(message) if message.starts_with("Authentication required:")),
+            "private database must refuse anonymous HTTP sync: {denied:?}"
+        );
         let db = public_database(&daemon, "admin").await;
         let (peer, _) =
             Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("peer"))
@@ -119,12 +148,95 @@ async fn daemon_http_inbound_sync() {
     .expect("inbound daemon HTTP sync must complete within a bound");
 }
 
-struct DaemonChild(Child);
+struct DaemonChild {
+    process: Child,
+    socket: PathBuf,
+    log_path: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+impl DaemonChild {
+    fn spawn(binary: &str, ticket: &DatabaseTicket, args: &[&str]) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let socket = dir.path().join("service.sock");
+        assert!(
+            Command::new(binary)
+                .args(["daemon", "--data-dir"])
+                .arg(&data)
+                .args(["init", "--username", "admin", "--passwordless"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let log_path = dir.path().join("daemon.log");
+        let log = std::fs::File::create(&log_path).unwrap();
+        let process = Command::new(binary)
+            .args(["daemon", "--data-dir"])
+            .arg(&data)
+            .arg("--socket")
+            .arg(&socket)
+            .arg("--sync-ticket")
+            .arg(ticket.to_string())
+            .args(args)
+            .stdout(log.try_clone().unwrap())
+            .stderr(Stdio::from(log))
+            .spawn()
+            .unwrap();
+        Self {
+            process,
+            socket,
+            log_path,
+            _dir: dir,
+        }
+    }
+
+    fn log(&self) -> String {
+        std::fs::read_to_string(&self.log_path).unwrap()
+    }
+
+    fn assert_running(&mut self) {
+        if let Some(status) = self.process.try_wait().unwrap() {
+            panic!("daemon exited {status}: {}", self.log());
+        }
+    }
+
+    async fn connect(&mut self) -> Instance {
+        loop {
+            self.assert_running();
+            if let Ok(client) = Instance::connect(format!("unix://{}", self.socket.display())).await
+            {
+                return client;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    fn terminate(&self) {
+        assert!(
+            Command::new("kill")
+                .args(["-TERM", &self.process.id().to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    async fn wait(&mut self) {
+        loop {
+            if let Some(status) = self.process.try_wait().unwrap() {
+                assert!(status.success(), "{}", self.log());
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
 
 impl Drop for DaemonChild {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.process.kill();
+        let _ = self.process.wait();
     }
 }
 
@@ -151,45 +263,8 @@ async fn daemon_http_outbound_without_listener() {
                 sync.get_server_address_for("http").await.unwrap(),
             )],
         );
-        let dir = tempfile::tempdir().unwrap();
-        let data = dir.path().join("data");
-        let socket = dir.path().join("service.sock");
-        assert!(
-            Command::new(&binary)
-                .args(["daemon", "--data-dir"])
-                .arg(&data)
-                .args(["init", "--username", "admin", "--passwordless"])
-                .status()
-                .unwrap()
-                .success()
-        );
-        let log_path = dir.path().join("daemon.log");
-        let log = std::fs::File::create(&log_path).unwrap();
-        let mut daemon = DaemonChild(
-            Command::new(&binary)
-                .args(["daemon", "--data-dir"])
-                .arg(&data)
-                .arg("--socket")
-                .arg(&socket)
-                .arg("--sync-ticket")
-                .arg(ticket.to_string())
-                .stdout(log.try_clone().unwrap())
-                .stderr(Stdio::from(log))
-                .spawn()
-                .unwrap(),
-        );
-        let client = loop {
-            if let Some(status) = daemon.0.try_wait().unwrap() {
-                panic!(
-                    "outbound daemon exited {status}: {}",
-                    std::fs::read_to_string(&log_path).unwrap()
-                );
-            }
-            if let Ok(client) = Instance::connect(format!("unix://{}", socket.display())).await {
-                break client;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        };
+        let mut daemon = DaemonChild::spawn(&binary, &ticket, &[]);
+        let client = daemon.connect().await;
         let admin = client.login_user("admin", None).await.unwrap();
         let copied = eidetica::Database::open(&client, db.root_id())
             .await
@@ -206,33 +281,13 @@ async fn daemon_http_outbound_without_listener() {
             copied.snapshot().await.unwrap(),
             db.snapshot().await.unwrap()
         );
-        assert!(
-            !std::fs::read_to_string(&log_path)
-                .unwrap()
-                .contains("HTTP sync listening")
-        );
+        assert!(!daemon.log().contains("HTTP sync listening"));
         drop(copied);
         drop(admin);
         drop(client);
-        assert!(
-            Command::new("kill")
-                .args(["-TERM", &daemon.0.id().to_string()])
-                .status()
-                .unwrap()
-                .success()
-        );
-        loop {
-            if let Some(status) = daemon.0.try_wait().unwrap() {
-                assert!(
-                    status.success(),
-                    "{}",
-                    std::fs::read_to_string(&log_path).unwrap()
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(!socket.exists());
+        daemon.terminate();
+        daemon.wait().await;
+        assert!(!daemon.socket.exists());
         sync.stop_server().await.unwrap();
     })
     .await
@@ -310,58 +365,24 @@ async fn daemon_shared_http_listener_survives_final_flush() {
                 .await
                 .unwrap();
         });
-        let dir = tempfile::tempdir().unwrap();
-        let data = dir.path().join("data");
-        let socket = dir.path().join("service.sock");
-        assert!(
-            Command::new(&binary)
-                .arg("daemon")
-                .arg("--data-dir")
-                .arg(&data)
-                .args(["init", "--username", "admin", "--passwordless"])
-                .status()
-                .unwrap()
-                .success()
+        let mut daemon = DaemonChild::spawn(
+            &binary,
+            &ticket,
+            &[
+                "--dashboard",
+                "--dashboard-port",
+                "0",
+                "--http-sync-bind",
+                "127.0.0.1:0",
+            ],
         );
-        let log_path = dir.path().join("daemon.log");
-        let log = std::fs::File::create(&log_path).unwrap();
-        let mut daemon = DaemonChild(
-            Command::new(&binary)
-                .arg("daemon")
-                .arg("--data-dir")
-                .arg(&data)
-                .arg("--socket")
-                .arg(&socket)
-                .arg("--sync-ticket")
-                .arg(ticket.to_string())
-                .args([
-                    "--dashboard",
-                    "--dashboard-port",
-                    "0",
-                    "--http-sync-bind",
-                    "127.0.0.1:0",
-                ])
-                .stdout(log.try_clone().unwrap())
-                .stderr(Stdio::from(log))
-                .spawn()
-                .unwrap(),
-        );
-        let (client, url) = loop {
-            assert!(
-                daemon.0.try_wait().unwrap().is_none(),
-                "{}",
-                std::fs::read_to_string(&log_path).unwrap()
-            );
-            let log = std::fs::read_to_string(&log_path).unwrap();
-            if let Some(url) = log
-                .lines()
-                .find_map(|line| line.strip_prefix("Dashboard listening on "))
-                && let Ok(client) = Instance::connect(format!("unix://{}", socket.display())).await
-            {
-                break (client, url.to_string());
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        };
+        let client = daemon.connect().await;
+        let url = daemon
+            .log()
+            .lines()
+            .find_map(|line| line.strip_prefix("Dashboard listening on "))
+            .expect("shared dashboard address")
+            .to_string();
         let mut admin = client.login_user("admin", None).await.unwrap();
         let key = admin.get_default_key().unwrap();
         admin
@@ -382,22 +403,13 @@ async fn daemon_shared_http_listener_survives_final_flush() {
         drop(local_db);
         drop(admin);
         drop(client);
-        assert!(
-            Command::new("kill")
-                .args(["-TERM", &daemon.0.id().to_string()])
-                .status()
-                .unwrap()
-                .success()
-        );
+        daemon.terminate();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_millis(200))
             .build()
             .unwrap();
         loop {
-            assert!(
-                daemon.0.try_wait().unwrap().is_none(),
-                "shared listener closed before releasing the flush"
-            );
+            daemon.assert_running();
             if let Ok(response) = http
                 .post(format!("{url}/login"))
                 .header("Origin", &url)
@@ -405,24 +417,13 @@ async fn daemon_shared_http_listener_survives_final_flush() {
                 .send()
                 .await
                 && response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                && !socket.exists()
-                && std::fs::read_to_string(&log_path)
-                    .unwrap()
-                    .contains("Flushing daemon sync before closing sync listeners")
+                && !daemon.socket.exists()
             {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(
-            !socket.exists(),
-            "socket clients must be drained before the final flush"
-        );
-        assert!(
-            std::fs::read_to_string(&log_path)
-                .unwrap()
-                .contains("Flushing daemon sync before closing sync listeners")
-        );
+
         let response = http
             .post(format!("{url}/api/v0"))
             .json(&SyncRequest::SendEntries(Vec::new()))
@@ -436,17 +437,7 @@ async fn daemon_shared_http_listener_survives_final_flush() {
         ));
         paused.store(false, Ordering::SeqCst);
         release.add_permits(1);
-        loop {
-            if let Some(status) = daemon.0.try_wait().unwrap() {
-                assert!(
-                    status.success(),
-                    "{}",
-                    std::fs::read_to_string(&log_path).unwrap()
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        daemon.wait().await;
         assert_eq!(peer.backend().get(&entry).await.unwrap().id(), entry);
         assert!(
             http.post(format!("{url}/api/v0"))

@@ -108,6 +108,10 @@ does not require a form `Origin` header. Per-database sync authorization still
 applies. This transport is plaintext HTTP: use Iroh for encrypted peer transport
 when the network is untrusted.
 
+Generated tickets advertise transport-owned listeners, not the shared HTTP
+endpoint. To connect over the shared port, supply that HTTP address explicitly
+(for example with `DatabaseTicket::with_addresses` and `Address::http`).
+
 During shutdown, socket clients and admitted dashboard requests drain before
 the final sync flush. On a shared listener, new dashboard requests then receive
 503 while `/api/v0` remains available through that flush. The shared listener

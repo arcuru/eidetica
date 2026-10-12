@@ -222,7 +222,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     // new local writes can race the final flush. Keep the sync listener open
     // through that flush, then close its endpoint even if either operation
     // reports an error.
-    let flush_timeout = std::time::Duration::from_secs(10);
+    let flush_timeout = Duration::from_secs(10);
     tracing::info!("Flushing daemon sync before closing sync listeners");
     let sync_flush = if dashboard_result.is_err() {
         Err(eidetica::sync::SyncError::Network(
@@ -464,9 +464,29 @@ mod tests {
         .unwrap();
         instance.enable_sync().await.unwrap();
         let open = Arc::new(RwLock::new(true));
-        let app = super::super::serve::web_router(instance, true).route_layer(
-            middleware::from_fn_with_state(open.clone(), dashboard_admission),
-        );
+        let admitted = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let app = {
+            let admitted = admitted.clone();
+            let release = release.clone();
+            super::super::serve::web_router(instance, true)
+                .route(
+                    "/write",
+                    axum::routing::post(move || {
+                        let admitted = admitted.clone();
+                        let release = release.clone();
+                        async move {
+                            admitted.notify_one();
+                            release.acquire().await.unwrap().forget();
+                            StatusCode::OK
+                        }
+                    }),
+                )
+                .route_layer(middleware::from_fn_with_state(
+                    open.clone(),
+                    dashboard_admission,
+                ))
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
@@ -482,16 +502,25 @@ mod tests {
             .unwrap();
         });
         tokio::time::timeout(Duration::from_secs(2), async {
-            // Simulate an admitted browser write. Shutdown must wait for it,
-            // without parking /api/v0 behind the pending exclusive gate lock.
-            let admitted = open.read().await;
+            let http = reqwest::Client::new();
+            let browser = {
+                let http = http.clone();
+                let url = url.clone();
+                tokio::spawn(async move { http.post(format!("{url}/write")).send().await.unwrap() })
+            };
+            admitted.notified().await;
             let closing = open.clone();
-            let close = tokio::spawn(async move {
+            let mut close = tokio::spawn(async move {
                 *closing.write().await = false;
             });
-            tokio::task::yield_now().await;
-            assert!(!close.is_finished());
-            let http = reqwest::Client::new();
+            // Shutdown must wait for the real handler, without parking peer
+            // sync behind the pending exclusive admission lock.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut close)
+                    .await
+                    .is_err(),
+                "dashboard admission must cover the handler's lifetime"
+            );
             let response = http
                 .post(format!("{url}/api/v0"))
                 .json(&eidetica::sync::protocol::SyncRequest::SendEntries(
@@ -508,7 +537,8 @@ mod tests {
                     .unwrap(),
                 eidetica::sync::protocol::SyncResponse::Ack
             ));
-            drop(admitted);
+            release.add_permits(1);
+            assert_eq!(browser.await.unwrap().status(), StatusCode::OK);
             close.await.unwrap();
             assert_eq!(
                 http.post(format!("{url}/login"))
