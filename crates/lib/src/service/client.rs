@@ -14,6 +14,8 @@
 //! each one per-tree against the target database's auth settings.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::Shutdown;
+use std::os::fd::AsFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
@@ -264,6 +266,9 @@ fn reconcile_lease_status(tx: &watch::Sender<Option<LeaseStatus>>, status: Lease
 
 /// Internal state for a remote connection, wrapped in Arc for Clone.
 struct RemoteConnectionInner {
+    /// A duplicate descriptor for synchronous shutdown, even while a cancelled
+    /// request holds the writer lock and user handles still own the connection.
+    shutdown_socket: std::os::unix::net::UnixStream,
     /// Owns the write half of the socket. `tokio::sync::Mutex` because
     /// `write_frame` is async (held across awaits). Only ever held for the
     /// duration of one frame's write plus the FIFO push into [`Self::pending`];
@@ -484,17 +489,20 @@ impl RemoteConnectionInner {
     /// 1. Mark `closed` with `Release` ordering so future `request()`
     ///    calls short-circuit before pushing senders into an orphan
     ///    queue.
-    /// 2. Drain `pending` — every awaiting caller sees `RecvError`
+    /// 2. Shut down the socket so the daemon observes disconnect even when
+    ///    user handles survive. Signal lease loss and drop watch routing.
+    /// 3. Drain `pending` — every awaiting caller sees `RecvError`
     ///    and surfaces `ConnectionAborted`.
-    /// 3. Drop every per-tree worker sender so workers exit cleanly.
-    /// 4. Abort the reader task. On the reader's *own* exit path this is a
+    /// 4. Drop every per-tree worker sender so workers exit cleanly.
+    /// 5. Abort the reader task. On the reader's *own* exit path this is a
     ///    no-op (the task is already returning). When the sweep calls this on a
     ///    wedged daemon it forces the reader out of its blocking `read_frame`,
     ///    dropping the reader's `Arc<inner>` clone so `inner` can finally drop,
-    ///    and stopping it from re-spawning the workers step 3 just cleared.
+    ///    and stopping it from re-spawning the workers step 4 just cleared.
     ///    The handle is `take`n so a later `mark_dead` is a no-op.
     fn mark_dead(&self) {
         self.closed.store(true, Ordering::Release);
+        let _ = self.shutdown_socket.shutdown(Shutdown::Both);
         self.lease_loss.send_replace(true);
         self.lease_watches
             .lock()
@@ -570,6 +578,8 @@ impl RemoteConnection {
     /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
         let stream = UnixStream::connect(path.as_ref()).await?;
+        let shutdown_socket =
+            std::os::unix::net::UnixStream::from(stream.as_fd().try_clone_to_owned()?);
         let (mut reader, mut writer) = tokio::io::split(stream);
 
         // Send handshake
@@ -597,6 +607,7 @@ impl RemoteConnection {
         }
 
         let inner = Arc::new(RemoteConnectionInner {
+            shutdown_socket,
             writer: Mutex::new(writer),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),
@@ -802,6 +813,9 @@ impl RemoteConnection {
         identity: SigKey,
         grant_id: Uuid,
     ) -> crate::Result<()> {
+        // Cleanup proves the current session, not a database identity that a
+        // relogin may have removed from the keyset. The grant is connection-owned.
+        let identity = self.session_identity().unwrap_or(identity);
         Self::expect_ok(
             self.db_request(
                 key.root.clone(),
@@ -916,6 +930,7 @@ impl RemoteConnection {
             } else {
                 return;
             };
+            let identity = conn.session_identity().unwrap_or(identity);
             if tokio::time::timeout(
                 UNSUBSCRIBE_RTT_TIMEOUT,
                 conn.db_request(key.root, identity, op),
@@ -2070,8 +2085,11 @@ mod tests {
         tokio::net::UnixStream,
     ) {
         let (client_side, peer) = tokio::net::UnixStream::pair().unwrap();
+        let shutdown_socket =
+            std::os::unix::net::UnixStream::from(client_side.as_fd().try_clone_to_owned().unwrap());
         let (reader, writer) = tokio::io::split(client_side);
         let inner = Arc::new(RemoteConnectionInner {
+            shutdown_socket,
             writer: Mutex::new(writer),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),
@@ -2237,11 +2255,15 @@ mod tests {
         assert!(!rx.has_changed().unwrap());
         assert_eq!(*rx.borrow(), Some(newer));
         let cleanup = conn.lease_cleanup_on_drop(key, SigKey::default(), Some(id), None);
+        let (_, pubkey) = crate::auth::crypto::generate_keypair();
+        *conn.inner.session.write().unwrap() = Some(SessionState {
+            session_pubkey: pubkey.clone(),
+        });
         cleanup();
         assert!(conn.inner.lease_watches.lock().unwrap().is_empty());
         let request: ServiceRequest = read_frame(&mut peer).await.unwrap().unwrap();
         assert!(
-            matches!(request, ServiceRequest::AuthenticatedDb(req) if matches!(req.op, DatabaseOp::UnwatchLease { watch_id, .. } if watch_id == id))
+            matches!(request, ServiceRequest::AuthenticatedDb(req) if req.identity == SigKey::from_pubkey(&pubkey) && matches!(req.op, DatabaseOp::UnwatchLease { watch_id, .. } if watch_id == id))
         );
         conn.inner
             .pending_lock()
@@ -2298,6 +2320,25 @@ mod tests {
         .unwrap();
         conn.inner.mark_dead();
         let _ = reader_task.await;
+    }
+
+    #[tokio::test]
+    async fn test_lease_cancelled_frame_closes_socket_with_live_handles() {
+        use tokio::io::AsyncReadExt;
+
+        let (conn, mut peer) = test_conn();
+        let mut loss = conn.lease_loss_receiver();
+        // Cancellation runs while request() still holds the writer lock.
+        let _writer = conn.inner.writer.lock().await;
+        drop(LeaseFrameWrite(Some(&conn.inner)));
+        loss.changed().await.unwrap();
+        assert!(*loss.borrow());
+        let mut byte = [0];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(1), peer.read(&mut byte))
+            .await
+            .expect("the daemon must see EOF even while client handles remain alive")
+            .unwrap();
+        assert_eq!(read, 0);
     }
 
     #[tokio::test]

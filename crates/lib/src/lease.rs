@@ -395,16 +395,14 @@ struct Grant {
     loss: watch::Sender<bool>,
 }
 
-struct Watcher {
-    // Internal nonblocking sends only, never a user callback or an await.
-    send: Arc<dyn Fn(LeaseStatus) + Send + Sync>,
-}
+type WatchSender = Arc<dyn Fn(LeaseStatus) + Send + Sync>;
 
 #[derive(Default)]
 struct State {
     generation: u64,
     grant: Option<Grant>,
-    watchers: HashMap<(LeaseOwner, Uuid), Watcher>,
+    // Internal nonblocking sends only, never a user callback or an await.
+    watchers: HashMap<(LeaseOwner, Uuid), WatchSender>,
 }
 
 impl State {
@@ -418,8 +416,8 @@ impl State {
     fn changed(&mut self) {
         self.generation += 1;
         let status = self.status();
-        for watcher in self.watchers.values() {
-            (watcher.send)(status.clone());
+        for send in self.watchers.values() {
+            send(status.clone());
         }
     }
 
@@ -496,16 +494,13 @@ impl LeaseRegistry {
         key: &LeaseKey,
         owner: LeaseOwner,
         id: Uuid,
-        send: Arc<dyn Fn(LeaseStatus) + Send + Sync>,
+        send: WatchSender,
     ) -> LeaseStatus {
         let mut registry = self.lock();
         let state = registry.entry(key.clone()).or_default();
-        state
-            .watchers
-            .entry((owner, id))
-            .or_insert(Watcher { send });
+        let send = state.watchers.entry((owner, id)).or_insert(send).clone();
         let status = state.status();
-        (state.watchers[&(owner, id)].send)(status.clone());
+        send(status.clone());
         status
     }
 

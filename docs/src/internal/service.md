@@ -413,6 +413,8 @@ Status/watch require Read; acquisition requires Write.
 current database permission.
 `UnwatchLease` likewise checks a connection-owned watch, so revocation cannot
 strand cleanup.
+The client uses the connection's current session identity for cleanup; logging
+in again does not change the owner or strand a grant bound to the previous login.
 `ConnectionGuard` removes that connection's watches and releases its grants on every exit.
 Connection owners are random IDs, not usernames or counters shared by separate servers.
 
@@ -423,7 +425,8 @@ initial response and notifications by generation, keeping the newer observation.
 Lease notifications update coalescing watch channels directly in the reader;
 user callbacks do not block that reader.
 Dropped watches remove local routing synchronously and send bounded best-effort
-wire cleanup; a timed-out cleanup tears down the connection.
+wire cleanup; a timed-out cleanup shuts down the socket even if client handles
+remain alive, so the daemon can run its disconnect cleanup.
 Cancelled acquisitions retain a cleanup token until their response is consumed,
 so an abandoned grant is released even if its response had already been delivered.
 

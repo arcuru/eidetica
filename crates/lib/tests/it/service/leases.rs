@@ -1,21 +1,15 @@
 //! Real-socket acceptance tests for daemon-local advisory leases.
 
 use super::*;
+use crate::lease::granted;
 use eidetica::auth::types::AuthKey;
 use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp, Notification};
 use eidetica::{
     Database, ID,
-    lease::{LeaseAcquire, LeaseAcquireResponse, LeaseGuard, MAX_LEASE_NAME_BYTES},
+    lease::{LeaseAcquire, LeaseAcquireResponse, MAX_LEASE_NAME_BYTES},
 };
 use tokio::time::timeout;
 use uuid::Uuid;
-
-fn granted(result: LeaseAcquire) -> LeaseGuard {
-    match result {
-        LeaseAcquire::Granted(guard) => guard,
-        other => panic!("expected grant, got {other:?}"),
-    }
-}
 
 async fn admin_db(server: &Instance) -> Database {
     let mut admin = server.login_user("admin", None).await.unwrap();
@@ -322,7 +316,7 @@ async fn test_lease_watch_before_response_and_unwatch() {
 }
 
 #[tokio::test]
-async fn test_lease_disconnect_and_cancelled_waiters() {
+async fn test_lease_disconnect_and_guard_drop_release() {
     let (path, _shutdown, server, _dir) = start_test_server().await;
     let local = admin_db(&server).await;
     let first = login_client(&path, "admin").await;
@@ -353,10 +347,6 @@ async fn test_lease_disconnect_and_cancelled_waiters() {
         .await
         .unwrap()
         .unwrap();
-    let wait_lease = lease.clone();
-    let waiting = tokio::spawn(async move { wait_lease.wait_acquire().await });
-    waiting.abort();
-    assert!(waiting.await.unwrap_err().is_cancelled());
     next.release().await.unwrap();
     raw.acquire(local.root_id()).await;
     // Abrupt raw socket disappearance releases through ConnectionGuard too.
@@ -547,6 +537,20 @@ async fn test_lease_release_and_unwatch_after_permission_revocation() {
     drop(watcher);
     guard.release().await.unwrap();
     assert_eq!(db.lease("runtime").status().await.unwrap().holder, None);
+}
+
+#[tokio::test]
+async fn test_lease_owner_can_release_after_connection_relogin() {
+    let (path, _shutdown, server, _dir) = start_test_server().await;
+    let local = admin_db(&server).await;
+    create_user_via_admin(&server, "other").await;
+    let client = login_client(&path, "admin").await;
+    let db = Database::open(&client, local.root_id()).await.unwrap();
+    let guard = granted(db.lease("runtime").try_acquire().await.unwrap());
+    client.login_user("other", None).await.unwrap();
+    assert!(!guard.is_lost()); // ownership belongs to the connection, not the login
+    guard.release().await.unwrap();
+    assert_eq!(local.lease("runtime").status().await.unwrap().holder, None);
 }
 
 #[tokio::test]

@@ -3,23 +3,21 @@
 use std::time::Duration;
 
 use eidetica::{
-    Database, Instance, NewUser,
+    Database, Instance,
     crdt::Doc,
     lease::{LeaseAcquire, LeaseGuard, MAX_LEASE_NAME_BYTES},
 };
 use tokio::time::timeout;
 
 async fn setup() -> (Instance, Database) {
-    let (instance, user) = Instance::connect_or_create("memory://", NewUser::passwordless("admin"))
-        .await
-        .unwrap();
-    let mut user = user.unwrap();
+    let instance = crate::helpers::test_local_instance().await;
+    let mut user = instance.login_user("admin", None).await.unwrap();
     let key = user.get_default_key().unwrap();
     let db = user.create_database(Doc::new(), &key).await.unwrap();
     (instance, db)
 }
 
-fn granted(result: LeaseAcquire) -> LeaseGuard {
+pub(super) fn granted(result: LeaseAcquire) -> LeaseGuard {
     match result {
         LeaseAcquire::Granted(guard) => guard,
         other => panic!("expected grant, got {other:?}"),
