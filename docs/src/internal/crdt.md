@@ -144,9 +144,95 @@ without cloning. Map merge requires `K: Ord + Clone` and `V: CRDT + Clone` to
 return an owned result while preserving one-sided operations. No `V: Default`
 is required.
 
-These primitives do not integrate with Table, add a live-value convenience
-layer, or define lifecycle resets. Table behavior and persisted bytes are
-unchanged.
+Map and Lww do not interpret row lifecycle. Use the standalone `RowLifecycle`
+wrapper below when composing row operations. Table behavior and persisted bytes
+are unchanged.
+
+## Standalone Row Lifecycle
+
+`RowLifecycle<V>` adds ordered row operations over any associative application
+payload, including non-LWW CRDTs. Compose rows with `Map<K, RowLifecycle<V>>`;
+Map retains the wrapper, including tombstones and reset boundaries.
+
+- `NoOp` is the default and identity, not a row-creation policy.
+- `Update(V)` composes ordinary live payloads with `V::merge`. After `NoOp`,
+  it supplies the initial payload without creating a default `V`.
+- `Reset(V)` replaces all prior payload and lifecycle state, even a deleted row.
+- `Delete` retains a whole-row tombstone. Subsequent ordinary updates are
+  suppressed; only a reset can replace it.
+
+Order is the caller's deterministic left-to-right order, not wall-clock or
+causal observed-delete order. `Delete + Reset(v)` yields `Reset(v)`, whereas
+`Reset(v) + Delete` yields `Delete`. Reset followed by update remains a reset:
+`Reset(a) + Update(b) = Reset(a.merge(b))`. Keeping that boundary is necessary
+for associativity: composing this result after an older row must discard the
+older payload rather than merge it back in.
+
+```rust
+use eidetica::{crdt::{CRDT, RowLifecycle}, Result};
+
+#[derive(Clone, Debug, PartialEq)]
+struct Events(Vec<u8>); // No Default, Codec or Serde.
+impl CRDT for Events {
+    fn merge(&self, other: &Self) -> Result<Self> {
+        Ok(Self([self.0.as_slice(), other.0.as_slice()].concat()))
+    }
+}
+
+let old = RowLifecycle::Update(Events(vec![1]));
+let fresh = RowLifecycle::Reset(Events(vec![2]));
+let later = RowLifecycle::Update(Events(vec![3]));
+let grouped = fresh.merge(&later)?;
+assert_eq!(grouped, RowLifecycle::Reset(Events(vec![2, 3])));
+assert_eq!(old.merge(&grouped)?, old.merge(&fresh)?.merge(&later)?);
+let deleted = old.merge(&RowLifecycle::Delete)?;
+assert_eq!(deleted.merge(&later)?, RowLifecycle::Delete);
+assert_eq!(deleted.merge(&fresh)?, fresh);
+# Ok::<(), eidetica::Error>(())
+```
+
+This merge is replicated composition, not local-write validation. The future
+Table API must reject ordinary writes when the transaction observes deletion;
+that check is not implemented here. History replay suppresses updates following
+deletion instead of aborting with a deleted-row error. An inner `Lww::Delete`
+removes the payload's visible value but does not delete the row:
+`Update(Lww::Delete) + Update(Lww::Set(v))` is still a live update. In contrast,
+`RowLifecycle::Delete + Update(Lww::Set(v))` remains a whole-row tombstone.
+
+Construction and default require no payload traits; merge requires
+`V: CRDT + Clone`, never `V: Default`. There is no implicit `From<V>` conversion
+because the caller must choose update or reset. The wrapper provides no built-in
+Codec or Serde implementation and makes no persistence or Table API changes.
+
+Associativity holds on a closed payload domain where every `V::merge`, including
+intermediate results, succeeds and is associative. Actual payload merge errors
+propagate unchanged, but arbitrary fallible evaluation paths are not
+associative. For example, `(Update(a) + Update(b)) + Delete` fails if
+`a.merge(b)` fails; `Update(a) + (Update(b) + Delete)` returns `Delete` without
+calling that merge. Reset can mask earlier failures in the same way, and
+`Delete + (Update(a) + Update(b))` can evaluate a failing merge that the left
+fold would suppress. Callers cannot assume regrouping preserves errors outside
+the valid successful payload domain.
+
+### Non-exhaustive operation enums
+
+Both `RowLifecycle<V>` and `Lww<T>` are `#[non_exhaustive]`. This intentionally
+changes source compatibility for downstream exhaustive matches on Lww: add a
+wildcard arm. Construction, Lww's `From<T>`, and its merge behavior are unchanged.
+
+```rust
+use eidetica::crdt::{Lww, RowLifecycle};
+let row = RowLifecycle::<()>::Delete;
+assert!(match row {
+    RowLifecycle::Delete => true,
+    _ => false,
+});
+let value = Lww::<()>::Delete;
+assert!(match value {
+    Lww::Delete => true,
+    _ => false,
+});
+```
 
 ## Fork and Merge
 

@@ -12,6 +12,7 @@ use super::CRDT;
 /// The payload need not implement [`CRDT`], `Default`, or any encoding trait.
 /// Merging requires only `T: Clone`. This type has no built-in [`super::Codec`]
 /// or Serde implementation and does not select a persistence format.
+/// Downstream matches must include a wildcard because this enum is non-exhaustive.
 ///
 /// ```
 /// use eidetica::crdt::{CRDT, Lww};
@@ -25,6 +26,19 @@ use super::CRDT;
 /// assert_eq!(before.merge(&Lww::default())?, before);
 /// # Ok::<(), eidetica::Error>(())
 /// ```
+///
+/// Exhaustive downstream matching is intentionally rejected:
+///
+/// ```compile_fail
+/// use eidetica::crdt::Lww;
+/// fn inspect(op: Lww<()>) {
+///     match op {
+///         Lww::NoOp | Lww::Delete => (),
+///         Lww::Set(_) => (),
+///     }
+/// }
+/// ```
+#[non_exhaustive]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Lww<T> {
     /// Identity operation; leaves the preceding operation unchanged.
