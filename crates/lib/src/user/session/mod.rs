@@ -51,7 +51,7 @@ use crate::{
     entry::ID,
     instance::{InstanceError, backend::Backend},
     store::{StoreError, Table},
-    sync::{BootstrapRequest, DatabaseTicket, Sync, SyncError},
+    sync::{BootstrapRequest, DatabaseTicket, Sync},
     user::{SyncSettings, TrackedDatabase, UserError},
 };
 
@@ -1003,7 +1003,7 @@ impl User {
     /// the database, including when a pending request is retried after approval.
     ///
     /// When approval is still pending the request returns
-    /// [`SyncError::BootstrapPending`] without changing User mappings or
+    /// [`SyncError::BootstrapPending`](crate::sync::SyncError::BootstrapPending) without changing User mappings or
     /// preferences. Supply the arguments again when retrying after approval.
     /// Existing legacy mappings are preserved rather than deleted.
     ///
@@ -1101,7 +1101,7 @@ impl User {
     /// network wait.
     ///
     /// The `bootstrap_result` is consumed and its outcome re-raised unchanged so
-    /// callers can react to [`SyncError::BootstrapPending`] et al.
+    /// callers can react to [`SyncError::BootstrapPending`](crate::sync::SyncError::BootstrapPending) et al.
     pub async fn record_database_access(
         &mut self,
         database_id: &ID,
