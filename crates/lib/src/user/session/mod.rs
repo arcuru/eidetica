@@ -38,15 +38,19 @@ use std::collections::HashMap;
 
 use std::sync::Arc;
 
-use super::{UserKeyManager, admin::InstanceAdmin, types::UserInfo};
+use super::{
+    UserKeyManager,
+    admin::InstanceAdmin,
+    types::{UserInfo, UserKey},
+};
 use crate::{
-    Database, Error, Instance, Result, Transaction,
+    Database, Error, Instance, Result, Snapshot, Transaction,
     auth::{Permission, SigKey, crypto::PublicKey},
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
     instance::{InstanceError, backend::Backend},
-    store::Table,
+    store::{StoreError, Table},
     sync::{BootstrapRequest, DatabaseTicket, Sync, SyncError},
     user::{SyncSettings, TrackedDatabase, UserError},
 };
@@ -627,10 +631,18 @@ impl User {
         database_id: &ID,
         sigkey: SigKey,
     ) -> Result<()> {
-        let tx = self.user_database.new_transaction().await?;
-        self.map_key_in_txn(&tx, key_id, database_id, sigkey)
+        let (tx, guard) = self.key_mapping_transaction().await?;
+        let (metadata, changed) = self
+            .map_key_in_txn(&tx, key_id, database_id, sigkey)
             .await?;
-        tx.commit().await?;
+        if changed {
+            let result = tx.commit_under_tree_lock(guard).await;
+            self.refresh_key_metadata(key_id).await?;
+            result?;
+        } else {
+            drop(guard);
+            self.key_manager.add_key(metadata)?;
+        }
         Ok(())
     }
 
@@ -642,15 +654,12 @@ impl User {
     /// Normalizes the stored value: if the sigkey matches the default pubkey
     /// identity for this key, stores `None` instead of `Some(sigkey)`.
     async fn map_key_in_txn(
-        &mut self,
+        &self,
         tx: &Transaction,
         key_id: &PublicKey,
         database_id: &ID,
         sigkey: SigKey,
-    ) -> Result<()> {
-        use crate::store::Table;
-        use crate::user::types::UserKey;
-
+    ) -> Result<(UserKey, bool)> {
         let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
 
         // Find the key metadata in the database
@@ -671,7 +680,9 @@ impl User {
             Some(sigkey)
         };
 
-        // Add the database sigkey mapping
+        if metadata.database_sigkeys.get(database_id) == Some(&stored) {
+            return Ok((metadata, false));
+        }
         metadata
             .database_sigkeys
             .insert(database_id.clone(), stored);
@@ -679,49 +690,46 @@ impl User {
         // Update the key in user database using the UUID primary key
         keys_table.set(&uuid_primary_key, metadata.clone()).await?;
 
-        // Update the in-memory key manager with the updated metadata
-        self.key_manager.add_key(metadata)?;
-
-        Ok(())
+        // Staging is not persistence; the caller publishes cache only after
+        // commit acknowledgement or a read of the verified persisted state.
+        Ok((metadata, true))
     }
 
-    /// Internal helper: Validate key and set up SigKey mapping within an existing transaction
-    ///
-    /// This validates that a key exists and has access to a database, discovers the appropriate
-    /// SigKey, and creates the mapping. Used by track_database (which has upsert behavior).
-    async fn validate_and_map_key_in_txn(
-        &mut self,
-        tx: &Transaction,
-        database_id: &ID,
-        key_id: &PublicKey,
-    ) -> Result<()> {
-        // Verify the key exists
-        if self.key_manager.get_signing_key(key_id).is_none() {
-            return Err(UserError::KeyNotFound {
-                key_id: key_id.to_string(),
-            }
-            .into());
-        }
-
-        // Discover available SigKeys for this public key
-        let available_sigkeys = Database::find_sigkeys(&self.instance, database_id, key_id).await?;
-
-        if available_sigkeys.is_empty() {
-            return Err(UserError::NoSigKeyFound {
-                key_id: key_id.to_string(),
-                database_id: database_id.clone(),
-            }
-            .into());
-        }
-
-        // Select the first SigKey (highest permission, since find_sigkeys returns sorted list)
-        let (sigkey, _permission) = &available_sigkeys[0];
-
-        // Store the discovered SigKey directly (map_key_in_txn normalizes to None if default)
-        self.map_key_in_txn(tx, key_id, database_id, sigkey.clone())
+    async fn refresh_key_metadata(&mut self, key_id: &PublicKey) -> Result<()> {
+        let keys = self
+            .user_database
+            .get_store_viewer::<Table<UserKey>>("keys")
             .await?;
+        let (_, metadata) = keys
+            .search(|key| &key.key_id == key_id)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            })?;
+        self.key_manager.add_key(metadata)
+    }
 
-        Ok(())
+    async fn key_mapping_transaction(
+        &self,
+    ) -> Result<(Transaction, tokio::sync::OwnedMutexGuard<()>)> {
+        // Resolve reusable committed-but-unacknowledged entries before locking.
+        self.user_database.snapshot().await?;
+        let guard = self
+            .instance
+            .tree_lock(self.user_database.root_id())
+            .lock_owned()
+            .await;
+        let snapshot = if self.instance.backend().local_engine().is_some() {
+            Snapshot::from(self.user_database.verified_frontier().await?)
+        } else {
+            self.user_database.snapshot().await?
+        };
+        Ok((
+            self.user_database.new_transaction_at(&snapshot).await?,
+            guard,
+        ))
     }
 
     // === Key Management (User Context) ===
@@ -739,7 +747,6 @@ impl User {
     /// The key ID (public key string)
     pub async fn add_private_key(&mut self, display_name: Option<&str>) -> Result<PublicKey> {
         use crate::auth::crypto::generate_keypair;
-        use crate::store::Table;
         use crate::user::types::{KeyStorage, UserKey};
 
         // Generate new keypair
@@ -912,7 +919,8 @@ impl User {
     /// # Errors
     /// - Returns an error if the user doesn't own the specified approving key
     /// - Returns an error if the approving key doesn't have Admin permission on the target database
-    /// - Returns an error if the request doesn't exist or isn't pending
+    /// - Returns an error if the request doesn't exist or was rejected
+    /// - Reduced, removed or uncertain authority needs a fresh explicit grant
     /// - Returns an error if the key addition to the database fails
     pub async fn approve_bootstrap_request(
         &self,
@@ -953,7 +961,7 @@ impl User {
     ///
     /// # Errors
     /// - Returns an error if the user doesn't own the specified rejecting key
-    /// - Returns an error if the request doesn't exist or isn't pending
+    /// - Returns an error if the request doesn't exist or was approved
     /// - Returns an error if the rejecting key lacks Admin permission on the target database
     pub async fn reject_bootstrap_request(
         &self,
@@ -995,9 +1003,9 @@ impl User {
     /// the database, including when a pending request is retried after approval.
     ///
     /// When approval is still pending the request returns
-    /// [`SyncError::BootstrapPending`] but a provisional mapping is recorded;
-    /// opening the database before approval then fails with
-    /// [`UserError::DatabaseAccessPending`] rather than a cryptic backend error.
+    /// [`SyncError::BootstrapPending`] without changing User mappings or
+    /// preferences. Supply the arguments again when retrying after approval.
+    /// Existing legacy mappings are preserved rather than deleted.
     ///
     /// # Arguments
     /// * `sync` - Reference to the Instance's Sync object
@@ -1055,6 +1063,7 @@ impl User {
 
         let key_name = key_id.to_string();
         let database_id = ticket.database_id().clone();
+        let original = self.tracked_database_before_join(&database_id).await?;
 
         let result = sync
             .bootstrap_with_ticket(
@@ -1066,8 +1075,14 @@ impl User {
             )
             .await;
 
-        self.record_database_access(&database_id, key_id, sync_settings, result)
-            .await
+        self.record_database_access_with_expected(
+            &database_id,
+            key_id,
+            sync_settings,
+            result,
+            Some(original),
+        )
+        .await
     }
 
     /// Record the User-layer SigKey mapping for a bootstrap whose network phase
@@ -1080,7 +1095,10 @@ impl User {
     /// a daemon's per-session lock): they can run the network round-trip without
     /// the lock held and re-acquire it only for this cheap, local mapping write,
     /// so a slow or hung peer never blocks the rest of the session. The mapping
-    /// semantics are identical to `request_database_access`.
+    /// semantics are identical to `request_database_access`. The split form
+    /// treats supplied preferences as current explicit intent; use
+    /// `request_database_access` to preserve preferences changed during their
+    /// network wait.
     ///
     /// The `bootstrap_result` is consumed and its outcome re-raised unchanged so
     /// callers can react to [`SyncError::BootstrapPending`] et al.
@@ -1091,68 +1109,43 @@ impl User {
         sync_settings: SyncSettings,
         bootstrap_result: Result<()>,
     ) -> Result<()> {
-        // Bootstrap grants access at the sync layer (auth + entries) but does not
-        // establish the User-layer SigKey mapping that `open_database`/`find_key`
-        // rely on. Establish it here so a successful request leaves the database
-        // openable — previously the caller had to call `track_database` manually,
-        // and omitting it left the database unopenable ("No key found").
-        match bootstrap_result {
-            Ok(()) => {
-                // Access was already authorized and the database is now synced, so
-                // its auth settings are local: discover the real SigKey (which may
-                // be a direct, global-wildcard, or delegated key) and record it.
-                self.track_database(database_id.clone(), key_id, sync_settings)
-                    .await?;
-                Ok(())
-            }
-            Err(e) => {
-                // Awaiting manual approval: the database isn't synced yet, so the
-                // SigKey can't be discovered. On approval the key is added by
-                // pubkey (see `Sync::approve_bootstrap_request_with_key`), so its
-                // SigKey will be the default pubkey identity — record that mapping
-                // provisionally. Until the database syncs, opening it surfaces
-                // `UserError::DatabaseAccessPending`. The pending error is
-                // re-raised unchanged so callers can react to it.
-                if let Error::Sync(sync_err) = &e
-                    && matches!(sync_err.as_ref(), SyncError::BootstrapPending { .. })
-                {
-                    self.record_pending_database_access(database_id, key_id, sync_settings)
-                        .await?;
-                }
-                Err(e)
-            }
-        }
+        self.record_database_access_with_expected(
+            database_id,
+            key_id,
+            sync_settings,
+            bootstrap_result,
+            None,
+        )
+        .await
     }
 
-    /// Store a pending bootstrap's provisional key mapping and preferences in
-    /// one transaction. Unlike [`Self::track_database`], this does not try to
-    /// discover authorization that cannot exist until approval.
-    async fn record_pending_database_access(
+    async fn record_database_access_with_expected(
         &mut self,
         database_id: &ID,
         key_id: &PublicKey,
         sync_settings: SyncSettings,
+        bootstrap_result: Result<()>,
+        original: Option<Option<TrackedDatabase>>,
     ) -> Result<()> {
-        let tx = self.user_database.new_transaction().await?;
-        self.map_key_in_txn(&tx, key_id, database_id, SigKey::from_pubkey(key_id))
-            .await?;
-        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
-        let tracked = TrackedDatabase {
-            database_id: database_id.clone(),
-            key_id: key_id.clone(),
-            sync_settings,
-        };
-        databases_table
-            .set(&database_id.to_string(), tracked)
-            .await?;
-        tx.commit().await?;
+        // Pending, Rejected and failures do not create or delete User state.
+        bootstrap_result?;
+        self.track_database_with_expected(database_id.clone(), key_id, sync_settings, original)
+            .await
+    }
 
-        if let Some(sync) = self.instance.sync() {
-            sync.sync_user(&self.user_uuid, self.user_database.root_id())
-                .await?;
+    async fn tracked_database_before_join(
+        &self,
+        database_id: &ID,
+    ) -> Result<Option<TrackedDatabase>> {
+        let table = self
+            .user_database
+            .get_store_viewer::<Table<TrackedDatabase>>("databases")
+            .await?;
+        match table.get(&database_id.to_string()).await {
+            Ok(value) => Ok(Some(value)),
+            Err(Error::Store(e)) if matches!(*e, StoreError::KeyNotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
         }
-
-        Ok(())
     }
 
     // === Tracked Databases ===
@@ -1188,36 +1181,66 @@ impl User {
         key_id: &PublicKey,
         sync_settings: SyncSettings,
     ) -> Result<()> {
+        self.track_database_with_expected(database_id.into(), key_id, sync_settings, None)
+            .await
+    }
+
+    async fn track_database_with_expected(
+        &mut self,
+        database_id: ID,
+        key_id: &PublicKey,
+        sync_settings: SyncSettings,
+        original: Option<Option<TrackedDatabase>>,
+    ) -> Result<()> {
         let tracked = TrackedDatabase {
-            database_id: database_id.into(),
+            database_id,
             key_id: key_id.clone(),
             sync_settings,
         };
-        // Single transaction for all operations
-        let tx = self.user_database.new_transaction().await?;
+        if self.key_manager.get_signing_key(key_id).is_none() {
+            return Err(UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            }
+            .into());
+        }
+        // Discovery can read delegated databases, so do it before holding the
+        // User write lock. Even an unchanged tracked key needs a valid identity.
+        let available =
+            Database::find_sigkeys(&self.instance, &tracked.database_id, key_id).await?;
+        let (sigkey, _) = available.first().ok_or_else(|| UserError::NoSigKeyFound {
+            key_id: key_id.to_string(),
+            database_id: tracked.database_id.clone(),
+        })?;
+        let (tx, guard) = self.key_mapping_transaction().await?;
         let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
 
         // Use database ID as the key - check if it already exists (O(1))
         let db_id_key = tracked.database_id.to_string();
-        let existing = databases_table.get(&db_id_key).await.ok();
-
-        // Determine if we need to validate and setup key mapping
-        let needs_key_validation = match &existing {
-            Some(existing) => existing.key_id != tracked.key_id, // Key changed
-            None => true,                                        // New database
+        let existing = match databases_table.get(&db_id_key).await {
+            Ok(value) => Some(value),
+            Err(Error::Store(e)) if matches!(*e, StoreError::KeyNotFound { .. }) => None,
+            Err(e) => return Err(e),
         };
-
-        // Validate key and set up mapping if needed
-        if needs_key_validation {
-            self.validate_and_map_key_in_txn(&tx, &tracked.database_id, &tracked.key_id)
-                .await?;
+        // Even an unchanged tracked key may carry a legacy/provisional identity.
+        let (metadata, mapping_changed) = self
+            .map_key_in_txn(&tx, key_id, &tracked.database_id, sigkey.clone())
+            .await?;
+        // A network attempt must not overwrite intent changed while it waited.
+        let settings_changed = original.as_ref().is_none_or(|before| *before == existing)
+            && existing.as_ref() != Some(&tracked);
+        if settings_changed {
+            databases_table.set(&db_id_key, tracked).await?;
         }
-
-        // Store using database ID as explicit key (not using insert's auto-generated UUID)
-        databases_table.set(&db_id_key, tracked).await?;
-
-        // Single commit for all changes
-        tx.commit().await?;
+        if mapping_changed || settings_changed {
+            let result = tx.commit_under_tree_lock(guard).await;
+            // A failed/lost acknowledgement is not rollback. Read the verified
+            // state before publishing anything into the session cache.
+            self.refresh_key_metadata(key_id).await?;
+            result?;
+        } else {
+            drop(guard);
+            self.key_manager.add_key(metadata)?;
+        }
 
         // Update sync system to immediately recompute combined settings
         // This ensures automatic sync works right away, without waiting for background worker

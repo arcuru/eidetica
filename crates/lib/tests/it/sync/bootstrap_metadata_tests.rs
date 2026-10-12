@@ -43,15 +43,9 @@ async fn bootstrap_request_carries_metadata_to_approver() {
         )
         .await;
     assert!(result.is_err(), "manual-approval request should be pending");
-    assert_eq!(
-        client_user
-            .database(&tree_id)
-            .await
-            .unwrap()
-            .sync_settings
-            .interval_seconds,
-        Some(29),
-        "metadata and sync preferences must remain distinct on a pending request"
+    assert!(
+        client_user.database(&tree_id).await.is_err(),
+        "Pending must not record User preferences"
     );
 
     // The approver sees the metadata verbatim on the stored pending request.
