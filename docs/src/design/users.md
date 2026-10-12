@@ -267,8 +267,8 @@ An error during the later bookkeeping step can still follow persistence.
 See the [bootstrap lifecycle](../internal/bootstrap.md#request-status) for the
 separate sync-side approval state.
 
-`request_database_access()` observes the tracked row before its network wait and
-preserves a preference change observed when bookkeeping resumes. Mapping repair
+`request_database_access()` and `join()` observe the tracked row before their
+network wait and preserve a preference change observed when bookkeeping resumes. Mapping repair
 can still proceed without overwriting that changed row. Explicit `track_database()`
 and the split `record_database_access()` form instead treat supplied preferences
 as current intent. This is an observed-state check, not a guarantee against every
