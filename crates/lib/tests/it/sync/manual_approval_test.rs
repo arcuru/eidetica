@@ -289,15 +289,14 @@ async fn test_list_bootstrap_requests_by_status() {
         .await
         .expect("Failed to approve request");
 
-    // Try to approve again - should fail
-    let result = approve_request(&user, &sync, &request_id, &key_id).await;
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid request state")
-    );
+    // An identical completed decision acknowledges without another grant/write.
+    let target_before = database.snapshot().await.unwrap();
+    let decision_before = sync.sync_tree().snapshot().await.unwrap();
+    approve_request(&user, &sync, &request_id, &key_id)
+        .await
+        .unwrap();
+    assert_eq!(target_before, database.snapshot().await.unwrap());
+    assert_eq!(decision_before, sync.sync_tree().snapshot().await.unwrap());
 
     // Try to reject already approved request - should fail
     let result = user
@@ -311,7 +310,7 @@ async fn test_list_bootstrap_requests_by_status() {
             .contains("Invalid request state")
     );
 
-    println!("✅ Double approval/rejection properly prevented");
+    println!("✅ Approval retry is idempotent; rejection cannot reverse approval");
 }
 
 fn assert_authentication_failure(response: SyncResponse) {
@@ -1828,3 +1827,130 @@ async fn test_bootstrap_api_equivalence() {
 
 // Test-only: store-and-promote helper (production `put` is Unverified-only).
 use crate::helpers::TestVerify;
+
+#[tokio::test]
+async fn named_rejection_cannot_be_bypassed_with_nonempty_tips() {
+    let (instance, owner, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let handler = create_test_sync_handler(&sync);
+    let key = PrivateKey::generate();
+    let request = create_signed_bootstrap_request(
+        &tree_id,
+        &key,
+        "requester",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
+    let context = RequestContext::default();
+    let SyncResponse::BootstrapPending { request_id, .. } =
+        handler.handle_request(&request, &context).await
+    else {
+        panic!("expected Pending");
+    };
+    owner
+        .reject_bootstrap_request(&sync, &request_id, &key_id)
+        .await
+        .unwrap();
+    // Independent authorization does not erase terminal rejection for the
+    // same (tree, key, permission). Other permission identities remain distinct.
+    database
+        .with_transaction(|tx| {
+            let pubkey = key.public_key();
+            async move {
+                tx.get_settings()?
+                    .set_auth_key(
+                        &pubkey,
+                        eidetica::auth::AuthKey::active(None, AuthPermission::Write(5)),
+                    )
+                    .await
+            }
+        })
+        .await
+        .unwrap();
+    for permission in [AuthPermission::Write(5), AuthPermission::Read] {
+        let mut request = create_signed_bootstrap_request(
+            &tree_id,
+            &key,
+            "requester",
+            permission,
+            &instance.id(),
+        );
+        let SyncRequest::SyncTree(inner) = &mut request else {
+            unreachable!()
+        };
+        inner.our_tips = vec![tree_id.clone()].into();
+        inner.auth = Some(eidetica::sync::protocol::SyncRequestAuth::sign(
+            &key,
+            &instance.id(),
+            &tree_id,
+            &inner.our_tips,
+            eidetica::Clock::now_millis(&eidetica::FixedClock::default()),
+        ));
+        let response = handler.handle_request(&request, &context).await;
+        if permission == AuthPermission::Read {
+            assert!(
+                matches!(response, SyncResponse::Bootstrap(_)),
+                "rejection became tree-global: {response:?}"
+            );
+        } else {
+            assert!(
+                matches!(response, SyncResponse::BootstrapRejected { .. }),
+                "nonempty tips bypassed terminal rejection: {response:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn pending_request_with_sufficient_current_grant_can_retry_without_regrant() {
+    let (instance, owner, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let handler = create_test_sync_handler(&sync);
+    let key = PrivateKey::generate();
+    let context = RequestContext::default();
+    let request = create_signed_bootstrap_request(
+        &tree_id,
+        &key,
+        "requester",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
+    let SyncResponse::BootstrapPending { request_id, .. } =
+        handler.handle_request(&request, &context).await
+    else {
+        panic!("expected Pending");
+    };
+    database
+        .with_transaction(|tx| {
+            let pubkey = key.public_key();
+            async move {
+                tx.get_settings()?
+                    .set_auth_key(
+                        &pubkey,
+                        eidetica::auth::AuthKey::active(None, AuthPermission::Write(5)),
+                    )
+                    .await
+            }
+        })
+        .await
+        .unwrap();
+    let after_grant = database.snapshot().await.unwrap();
+    let retry = create_signed_bootstrap_request(
+        &tree_id,
+        &key,
+        "requester",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
+    assert!(matches!(
+        handler.handle_request(&retry, &context).await,
+        SyncResponse::Bootstrap(_)
+    ));
+    owner
+        .approve_bootstrap_request(&sync, &request_id, &key_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        after_grant,
+        database.snapshot().await.unwrap(),
+        "finalization reissued the sufficient grant"
+    );
+}

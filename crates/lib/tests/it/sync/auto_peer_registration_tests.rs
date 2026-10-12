@@ -193,9 +193,9 @@ async fn test_handshake_without_listen_addresses() {
     assert!(addresses.contains(&remote_address));
 }
 
-/// Test that tree/peer relationship is tracked during bootstrap sync
+/// A registered peer with no access proof must not publish a serving relationship.
 #[tokio::test]
-async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
+async fn test_unproven_bootstrap_does_not_track_tree_peer_relationship() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
     crate::helpers::create_user(&instance, "test_user", None)
@@ -249,27 +249,29 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
     };
 
     let request = SyncRequest::SyncTree(sync_request);
-    let _response = handler.handle_request(&request, &context).await;
+    let response = handler.handle_request(&request, &context).await;
+    assert!(matches!(response, SyncResponse::Error(_)));
 
     // Verify tree/peer relationship was tracked
     assert!(
-        sync.is_tree_synced_with_peer(&peer_verifying_key, &tree_id)
+        !sync
+            .is_tree_synced_with_peer(&peer_verifying_key, &tree_id)
             .await
             .unwrap()
     );
 
     // Verify peer can be found in tree's peer list
     let tree_peers = sync.get_tree_peers(&tree_id).await.unwrap();
-    assert!(tree_peers.contains(&PeerId::new(peer_verifying_key.clone())));
+    assert!(!tree_peers.contains(&PeerId::new(peer_verifying_key.clone())));
 
     // Verify tree can be found in peer's tree list
     let peer_trees = sync.get_peer_trees(&peer_verifying_key).await.unwrap();
-    assert!(peer_trees.contains(&tree_id));
+    assert!(!peer_trees.contains(&tree_id));
 }
 
-/// Test that tree/peer relationship is tracked during incremental sync
+/// Nonempty tips do not make an unproven key eligible for serving relationships.
 #[tokio::test]
-async fn test_incremental_sync_tracks_tree_peer_relationship() {
+async fn test_unproven_incremental_does_not_track_tree_peer_relationship() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
     crate::helpers::create_user(&instance, "test_user", None)
@@ -332,11 +334,13 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
     };
 
     let request = SyncRequest::SyncTree(sync_request);
-    let _response = handler.handle_request(&request, &context).await;
+    let response = handler.handle_request(&request, &context).await;
+    assert!(matches!(response, SyncResponse::Error(_)));
 
     // Verify tree/peer relationship was tracked
     assert!(
-        sync.is_tree_synced_with_peer(&peer_verifying_key, &tree_id)
+        !sync
+            .is_tree_synced_with_peer(&peer_verifying_key, &tree_id)
             .await
             .unwrap()
     );
@@ -462,6 +466,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
+    let server_pubkey = instance.id();
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     let (_, peer_verifying_key) = generate_keypair();
@@ -481,26 +486,44 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         tree_id: tree_id1.clone(),
         our_tips: Vec::new().into(),
         peer_pubkey: None,
-        requesting_key: Some(peer_verifying_key.clone()),
+        requesting_key: Some(key_id.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
         metadata: None,
-        auth: None,
+        auth: Some(SyncRequestAuth::sign(
+            &user.get_signing_key(&key_id).unwrap(),
+            &server_pubkey,
+            &tree_id1,
+            &eidetica::Snapshot::EMPTY,
+            FixedClock::default().now_millis(),
+        )),
     });
-    let _response1 = handler.handle_request(&request1, &context).await;
+    assert!(matches!(
+        handler.handle_request(&request1, &context).await,
+        SyncResponse::Bootstrap(_)
+    ));
 
     // Request second tree
     let request2 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id2.clone(),
         our_tips: Vec::new().into(),
         peer_pubkey: None,
-        requesting_key: Some(peer_verifying_key.clone()),
+        requesting_key: Some(key_id.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
         metadata: None,
-        auth: None,
+        auth: Some(SyncRequestAuth::sign(
+            &user.get_signing_key(&key_id).unwrap(),
+            &server_pubkey,
+            &tree_id2,
+            &eidetica::Snapshot::EMPTY,
+            FixedClock::default().now_millis(),
+        )),
     });
-    let _response2 = handler.handle_request(&request2, &context).await;
+    assert!(matches!(
+        handler.handle_request(&request2, &context).await,
+        SyncResponse::Bootstrap(_)
+    ));
 
     // Verify both trees are tracked
     let peer_trees = sync.get_peer_trees(&peer_verifying_key).await.unwrap();
