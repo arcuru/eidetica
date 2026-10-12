@@ -58,8 +58,13 @@ rebuild that follows it, plus the reclaim of the unlinked generation.
 Store-state service tests cover publication, reconnect durability,
 publication immutability, session scope binding with a refused foreign scope,
 shared-cache fallback, byte-verbatim ciphertext, and idle private-build
-expiry. The service Table test asserts that a first point read publishes
-individual row records rather than falling back to a whole-`Doc` response.
+expiry. Published-view expiry tests use a short view lifetime and keep staging
+at its normal five-minute idle lifetime, so a scheduling pause during upload
+cannot expire a private build before the view assertions. A separate test checks
+that an idle build still publishes while its published view expires. Production
+uses the same five-minute idle lifetime for both.
+The service Table test asserts that a first point read publishes individual row
+records rather than falling back to a whole-`Doc` response.
 
 ## Writing Tests
 

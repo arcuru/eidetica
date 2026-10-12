@@ -78,7 +78,7 @@ struct ConnectionContext {
     instance: Instance,
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
-    token_idle_ttl: Duration,
+    staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
 }
 
@@ -98,7 +98,7 @@ impl ConnectionContext {
             let ttl = if value.published {
                 self.published_view_idle_ttl
             } else {
-                self.token_idle_ttl
+                self.staging_idle_ttl
             };
             let keep = now.duration_since(value.last_used) <= ttl;
             if !keep && !value.published {
@@ -210,7 +210,7 @@ pub struct ServiceServer {
     socket_path: PathBuf,
     listener: UnixListener,
     socket_identity: SocketIdentity,
-    token_idle_ttl: Duration,
+    staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
     _lock_file: File,
 }
@@ -264,7 +264,7 @@ impl ServiceServer {
     async fn bind_inner(
         instance: Instance,
         socket_path: PathBuf,
-        token_idle_ttl: Duration,
+        staging_idle_ttl: Duration,
         published_view_idle_ttl: Duration,
     ) -> crate::Result<Self> {
         let socket_path = absolute_socket_path(socket_path)?;
@@ -286,7 +286,7 @@ impl ServiceServer {
             socket_path,
             listener,
             socket_identity,
-            token_idle_ttl,
+            staging_idle_ttl,
             published_view_idle_ttl,
             _lock_file: lock_file,
         })
@@ -323,11 +323,11 @@ impl ServiceServer {
                     match accept_result {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
-                            let token_idle_ttl = self.token_idle_ttl;
+                            let staging_idle_ttl = self.staging_idle_ttl;
                             let published_view_idle_ttl = self.published_view_idle_ttl;
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl, published_view_idle_ttl).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -598,7 +598,7 @@ async fn handle_connection(
     stream: tokio::net::UnixStream,
     instance: Instance,
     conn_id: ConnectionId,
-    token_idle_ttl: Duration,
+    staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
@@ -674,7 +674,7 @@ async fn handle_connection(
         instance: instance.clone(),
         subscribed: std::sync::Mutex::new(HashMap::new()),
         staging: std::sync::Mutex::new(HashMap::new()),
-        token_idle_ttl,
+        staging_idle_ttl,
         published_view_idle_ttl,
     });
     let guard = ConnectionGuard { ctx: ctx.clone() };

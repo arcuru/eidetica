@@ -50,14 +50,7 @@ async fn read_response<R: AsyncRead + Unpin>(reader: &mut R) -> ServiceResponse 
 /// goes out of scope; the server-side Instance is returned so tests can observe
 /// state both locally and over the wire.
 async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance, TempDir) {
-    start_test_server_with_token_ttl(Duration::from_secs(5 * 60)).await
-}
-
-/// Same as [`start_test_server`], with the session-token idle lifetime under
-/// the caller's control so expiry is observable without a long wait.
-async fn start_test_server_with_token_ttl(
-    ttl: Duration,
-) -> (PathBuf, watch::Sender<()>, Instance, TempDir) {
+    let ttl = Duration::from_secs(5 * 60);
     start_test_server_with_token_ttls(ttl, ttl).await
 }
 
@@ -1812,7 +1805,8 @@ async fn test_remote_store_state_stores_ciphertext_verbatim() {
 #[tokio::test]
 async fn test_remote_store_state_idle_staging_token_expires() {
     let (socket_path, _tx, server, _dir) =
-        start_test_server_with_token_ttl(Duration::from_millis(50)).await;
+        start_test_server_with_token_ttls(Duration::from_millis(50), Duration::from_millis(50))
+            .await;
     let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
     let conn = remote_conn(&instance);
     let request = derived_request(&root_id, "expiring");
@@ -1851,6 +1845,15 @@ async fn test_remote_store_state_staging_outlives_published_view_ttl() {
         .begin_store_state_staging(identity.clone(), request)
         .await
         .unwrap();
+    conn.stage_store_state_records(
+        root_id.clone(),
+        identity.clone(),
+        token.clone(),
+        0,
+        BTreeMap::from([(vec![0], Some(b"staged".to_vec()))]),
+    )
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(120)).await;
     let view = conn
         .publish_store_state(root_id.clone(), identity.clone(), token)
@@ -2102,8 +2105,8 @@ async fn test_connected_table_recovers_after_published_view_expiry() {
         .unwrap();
     assert_eq!(table.get("a").await.unwrap().title, "first");
 
-    // Let the daemon's idle janitor reclaim the published-view capability
-    // while the client's cached view still points at it.
+    // The next request reclaims the idle capability while the client's cached
+    // view still points at it.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     assert_eq!(
