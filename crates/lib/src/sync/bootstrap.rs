@@ -9,11 +9,7 @@ use super::{
 };
 use crate::{
     Database, Result, Snapshot,
-    auth::{
-        Permission,
-        crypto::PrivateKey,
-        types::AuthKey,
-    },
+    auth::{Permission, crypto::PrivateKey, types::AuthKey},
     constants::SETTINGS,
     crdt::Doc,
     database::DatabaseKey,
