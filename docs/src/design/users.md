@@ -250,6 +250,30 @@ pub struct SyncSettings {
 
 - **Sync Settings vs Sync Status**: User settings indicate what the user wants (sync_enabled, sync_on_commit), while the Sync module tracks actual sync status (last_synced, connection state). Multiple users can have different settings for the same database.
 
+#### Mapping persistence and retry safety
+
+Key mappings and tracked-database preferences are written together in the User
+database. Staging a mapping does not update the session's key-manager cache: cache
+publication follows commit acknowledgement or a read-back of Verified persisted
+metadata. A failed or lost acknowledgement is not rollback; read-back can recover
+an already committed mapping while the operation still reports its error.
+
+Tracking rediscovers the valid SigKey even for an unchanged key, so a legacy or
+provisional identity is not retained merely because a row exists. Equivalent
+mapping and preference rows do not append identical configuration history.
+A Pending, Rejected, or failed network result does not start User bookkeeping or
+delete existing legacy rows; successful access must precede bookkeeping.
+An error during the later bookkeeping step can still follow persistence.
+See the [bootstrap lifecycle](../internal/bootstrap.md#request-status) for the
+separate sync-side approval state.
+
+`request_database_access()` observes the tracked row before its network wait and
+preserves a preference change observed when bookkeeping resumes. Mapping repair
+can still proceed without overwriting that changed row. Explicit `track_database()`
+and the split `record_database_access()` form instead treat supplied preferences
+as current intent. This is an observed-state check, not a guarantee against every
+concurrent or distributed preference update.
+
 #### 5. DatabaseTracking (stored in `_databases` table)
 
 <!-- Code block ignored: Missing Serialize/Deserialize imports from serde -->
