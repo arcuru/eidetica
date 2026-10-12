@@ -114,6 +114,8 @@ mod instance;
 mod service;
 #[cfg(all(unix, feature = "service"))]
 mod service_daemon_sync;
+#[cfg(all(unix, feature = "service"))]
+mod service_ticket_join;
 mod store;
 mod sync;
 mod transaction;

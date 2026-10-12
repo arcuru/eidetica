@@ -71,7 +71,9 @@
 //!   rather than building a client-side sync module that would race the
 //!   daemon's own sync. The daemon runs its persisted sync lifecycle, but
 //!   clients cannot administer transports or peers over the current wire
-//!   surface.
+//!   surface. [`User::join`](crate::user::User::join) is the one sync entry
+//!   point: the daemon bootstraps a ticket with a request proof the client
+//!   signs locally.
 
 pub mod client;
 pub mod error;
