@@ -227,7 +227,7 @@ Requests on a connection are handled in order, so the join occupies its connecti
 A dropped future or disconnected caller may leave peer-side effects, replicated data or a committed User Entry without its acknowledgement.
 Already-dispatched daemon work may continue after client EOF, but daemon/process death can interrupt it.
 Reconnect and retry explicitly; there is no cancellation API or automatic restart-safe completion.
-Cancelling a partial service frame retires that connection; cancelling only its response wait retains FIFO response association.
+The shared [frame cancellation rules](#cancellation-and-frame-integrity) apply: an interrupted frame retires the connection, while cancelling only its response wait retains FIFO response association.
 Held/unreadable acquisition and native conflicting-authority/delegated-history recovery remain incomplete; see [current recovery limits](../user_guide/bootstrap.md#current-recovery-limits).
 
 Continuing replication is the daemon's, and its sync requests are signed with the daemon's device key.
