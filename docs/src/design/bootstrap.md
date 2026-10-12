@@ -164,8 +164,16 @@ Any logged-in user who has a key with Admin permission for the database can appr
 6. System retrieves the signing key from the user's key manager
 7. System **explicitly validates** the key has Admin permission on the target database
 8. Creates transaction using the user's signing key
-9. Adds requesting key to database's auth settings
-10. Updates request status to Approved in the sync database
+9. Establishes sufficient target authority, reusing a live grant when possible
+10. Updates request status to Approved in a separate sync-database commit
+
+The target grant and approval record are deliberately reconciled on retry rather
+than assumed atomic. A grant may be committed while the request still reads
+Pending; sufficient live authority permits access and lets an admin finalize the
+record without duplicating the grant. Historical or uncertain authority is not
+silently restored by replaying approval, and a named rejection remains terminal.
+See [approval reconciliation](../internal/bootstrap.md#split-approval-and-retry-reconciliation)
+for the conservative history checks and their limits.
 
 ### Permission Validation Strategy
 
@@ -184,7 +192,8 @@ Bootstrap approval and rejection use **explicit permission validation**:
 
 ### Client Retry After Approval
 
-Once approved, the client retries with normal sync after waiting or polling periodically. If access was granted, the sync succeeds and the client can use the database.
+After approval, the client explicitly retries the bootstrap request.
+A retry can also succeed when the grant committed but the separate approval record is still Pending. If access was granted, the sync succeeds and the client can use the database.
 
 ### Key Requirements
 
@@ -208,25 +217,24 @@ Once approved, the client retries with normal sync after waiting or polling peri
 
 ### Verification of Transferred Entries
 
-A successful bootstrap transfers the full database state to the client. Those
-entries are **not** trusted because the server sent them: like any synced
-data they are stored `Unverified` (the wire protocol carries no way for a
-peer to assert a verification status — see the
-[service architecture](../internal/service.md)).
+Bootstrap requests a full response, but success proves only the supplied closure,
+not that the peer disclosed every branch. The shared ingestion boundary confines
+all supplied entries to the requested database **before any write** and propagates
+storage failures without promising rollback.
 
-Promotion is a local decision on the client:
+Entries are **not** trusted because the server sent them: they enter storage
+`Unverified` and earn local, prefix-closed verification against their pinned
+`_settings`. The bootstrap root is genesis/TOFU; verification bottoms out at a
+self-authorising root. A successful exchange requires **every supplied Entry** to
+be `Verified` and, for a named permission request, current authority to cover the
+requested permission before publishing the tree/peer relationship. Stored counts
+and raw tips are not readiness checks. Failed ingestion may leave entries behind,
+while default reads still expose only the Verified frontier.
 
-- `Database::verify()` validates each received entry against the `_settings`
-  it pins and promotes it, **prefix-closed** (an entry becomes `Verified`
-  only once its whole ancestor history is);
-- a normal read also triggers an opportunistic verification pass when a tip
-  is still `Unverified` (the access-time hook).
-
-Until then, default reads expose only the **Verified frontier**, so a
-freshly bootstrapped database may read as empty for the instant before
-verification completes; `.allow_unverified()` opts into the pre-verification
-view. Because the bootstrap root is genesis/TOFU, verification bottoms out at
-a self-authorising root and the rest cascades from there.
+Ticket acquisition advertises empty tips and refuses incremental send-back to
+avoid disclosing held state. This does not relax the existing local `Read` gate
+for a held database. See [transfer acceptance](../internal/bootstrap.md#transfer-acceptance)
+for the shared sync boundary and its limits.
 
 ## Design Decisions
 
