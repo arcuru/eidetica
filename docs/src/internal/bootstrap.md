@@ -1,6 +1,7 @@
 # Bootstrap
 
-Secure key management and access control for new devices joining existing databases.
+Access requests, approval and verified ticket transfer for keys joining existing databases.
+Bootstrap access does not enroll a device or grant it separate replication authority.
 
 ## Architecture
 
@@ -36,7 +37,8 @@ If the requesting key already has sufficient permission on the target database, 
 - a **global `*`** grant, and
 - authority reaching the database **only through a delegated database** — the requesting key is a member of a database this one delegates to.
 
-Revoked keys are never treated as sufficient. When no existing authority satisfies the request, it falls through to the manual approval workflow below.
+When no existing authority satisfies the request under the locally resolved settings, it falls through to the manual approval workflow below.
+This uses the native [authority resolution model](../design/verification.md); bootstrap does not add a separate conflict resolver or guarantee that a competing grant cannot restore access.
 
 Permission hierarchy uses **lower numbers = higher priority**:
 
@@ -78,15 +80,22 @@ Entry in the configuration history.
 
 ## Manual Approval API
 
+<!-- Code block ignored: Caller supplies a Sync handle, User, request ID and Admin key ID -->
+
 ```rust,ignore
 // Query requests
-sync.pending_bootstrap_requests()?;
-sync.approved_bootstrap_requests()?;
+let pending = sync.pending_bootstrap_requests().await?;
+let approved = sync.approved_bootstrap_requests().await?;
 
-// Approve/reject
-sync.approve_bootstrap_request(id, signing_key)?;
-sync.reject_bootstrap_request(id, signing_key)?;
+// Approve or reject using an Admin key held by this User.
+user.approve_bootstrap_request(&sync, request_id, &admin_key_id).await?;
+// Alternatively:
+user.reject_bootstrap_request(&sync, request_id, &admin_key_id).await?;
 ```
+
+The lower-level `Sync::approve_bootstrap_request_with_key` and
+`Sync::reject_bootstrap_request_with_key` methods take `&DatabaseKey` and also
+require current Admin permission.
 
 ## Request Status
 
@@ -100,8 +109,9 @@ proof is rejected without creating a request. Anonymous sync remains available f
 public databases when no named-key access request is made.
 
 Retries use the request identity `(tree, requesting key, requested permission)`.
-A pending retry returns the existing request ID; a rejected retry returns a typed
-terminal rejection with that same ID. A different permission is a distinct request.
+A pending retry without sufficient current authority returns the existing request
+ID; with sufficient authority it can complete despite a still-Pending decision record.
+A rejected retry returns a typed terminal rejection with that same ID. A different permission is a distinct request.
 Approved history does not block a new request after its grant is no longer live.
 Proof validation for a pending retry does not consume its nonce; a response that
 serves database entries does.

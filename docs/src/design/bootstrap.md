@@ -1,6 +1,6 @@
-> ✅ **Status: Implemented**
->
-> This design is fully implemented and functional.
+> The basic access-request and approval workflow is implemented.
+> Ticket-transfer checks do not provide complete interrupted-replica recovery or
+> resolve native competing authority; see the acceptance boundaries below.
 
 # Bootstrap and Access Control
 
@@ -93,7 +93,7 @@ Client                    Server                     User (with Admin key)
   |                         |←- Add Key to DB Auth -------|
   |                         |   (using user's Admin key)  |
   |                         |                             |
-  |-- Retry Normal Sync --→ |                             |
+  |-- Retry Bootstrap ---→ |                             |
   |                         |-- Check Auth (now has key)  |
   |←- Sync Success ---------| (access granted)            |
 ```
@@ -159,7 +159,7 @@ Any logged-in user who has a key with Admin permission for the database can appr
 1. User logs in with `instance.login_user()`
 2. Lists pending requests with `user.pending_bootstrap_requests(&sync)`
 3. User selects a key they own that has Admin permission on the target database
-4. Calls `user.approve_bootstrap_request(&mut sync, request_id, approving_key_id)`
+4. Awaits `user.approve_bootstrap_request(&sync, request_id, &approving_key_id)`
 5. System validates the user owns the specified key
 6. System retrieves the signing key from the user's key manager
 7. System **explicitly validates** the key has Admin permission on the target database
@@ -193,7 +193,9 @@ Bootstrap approval and rejection use **explicit permission validation**:
 ### Client Retry After Approval
 
 After approval, the client explicitly retries the bootstrap request.
-A retry can also succeed when the grant committed but the separate approval record is still Pending. If access was granted, the sync succeeds and the client can use the database.
+A retry can also succeed when the grant committed but the separate approval record
+is still Pending. It must still pass local admission, transfer verification and
+current requested-permission checks.
 
 ### Key Requirements
 
@@ -273,25 +275,23 @@ auth_settings.set_global_permission(AuthKey::active(None, Permission::Write(10))
 ```rust,ignore
 impl Sync {
     /// List pending bootstrap requests
-    pub fn pending_bootstrap_requests(&self) -> Result<Vec<(String, BootstrapRequest)>>;
+    pub async fn pending_bootstrap_requests(&self) -> Result<Vec<(String, BootstrapRequest)>>;
 
     /// Get specific bootstrap request
-    pub fn get_bootstrap_request(&self, request_id: &str) -> Result<Option<(String, BootstrapRequest)>>;
+    pub async fn get_bootstrap_request(&self, request_id: &str) -> Result<Option<(String, BootstrapRequest)>>;
 
     /// Approve a bootstrap request (low-level, requires signing key)
-    pub fn approve_bootstrap_request_with_key(
+    pub async fn approve_bootstrap_request_with_key(
         &self,
         request_id: &str,
-        signing_key: SigningKey,
-        approving_key_id: &str,
+        key: &DatabaseKey,
     ) -> Result<()>;
 
     /// Reject a bootstrap request (low-level, requires signing key)
-    pub fn reject_bootstrap_request_with_key(
+    pub async fn reject_bootstrap_request_with_key(
         &self,
         request_id: &str,
-        signing_key: SigningKey,
-        rejecting_key_id: &str,
+        key: &DatabaseKey,
     ) -> Result<()>;
 
     /// Request bootstrap access (low-level, requires key details).
@@ -316,7 +316,7 @@ impl User {
 
     /// Approve a bootstrap request (requires Admin permission)
     /// The approving_key_id must be owned by this user and have Admin permission on the target database
-    pub fn approve_bootstrap_request(
+    pub async fn approve_bootstrap_request(
         &self,
         sync: &Sync,
         request_id: &str,
@@ -325,7 +325,7 @@ impl User {
 
     /// Reject a bootstrap request (requires Admin permission)
     /// The rejecting_key_id must be owned by this user and have Admin permission on the target database
-    pub fn reject_bootstrap_request(
+    pub async fn reject_bootstrap_request(
         &self,
         sync: &Sync,
         request_id: &str,
