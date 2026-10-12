@@ -84,8 +84,24 @@ sequenceDiagram
 1. **Handshake**: client sends `Handshake { protocol_version }`; server validates and acks. On mismatch the server acks with its own version and closes the connection.
 2. **Trusted login** (see Security Model below): a challenge-response over the user's root key. `GetInstanceMetadata` is the only other request permitted before login.
 3. **Optional session-key registration**: once authenticated, the client may prove possession of additional pubkeys via `SessionKeyChallenge`/`SessionKeyRegister`. Each successfully proven pubkey joins the connection's `session_keyset` and can then act as the identity on subsequent ops. See [Session Keyset](#session-keyset) below.
-4. **Authenticated request loop**: every storage operation travels inside `ServiceRequest::AuthenticatedDb`. One response per request, strictly sequential per connection (`RemoteConnection` serializes all I/O through a mutex).
+4. **Authenticated request loop**: every storage operation travels inside `ServiceRequest::AuthenticatedDb`. The server handles requests in connection order. `RemoteConnection` serializes frame writes, not response waits; its background reader associates responses with pending callers in FIFO order and dispatches notifications separately.
 5. **Termination**: client closes its write half (EOF); the server detects EOF and cleans up.
+
+### Cancellation and frame integrity
+
+The pending response slot is enqueued under the writer lock before sending the
+frame, preserving request/response order even if a response arrives immediately.
+Cancellation or failure during the frame write retires the **whole connection**:
+the client drops its write half, marks the connection dead, and clears pending
+waiters. A subsequent request cannot append bytes to an incomplete JSON frame.
+Callers must reconnect rather than reuse that stream.
+
+Once the frame is completely written, dropping only the response wait leaves its
+FIFO slot in place. The reader consumes that response even when its caller is gone,
+so the next response cannot be delivered to the wrong request. Other requests can
+continue using the connection. Neither case rolls back already-dispatched server
+work or proves that a remote operation did not commit; retry must reconcile
+persisted state rather than assume cancellation undid it.
 
 ## Security Model
 
