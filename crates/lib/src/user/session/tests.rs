@@ -174,6 +174,89 @@ async fn join_bookkeeping_preserves_settings_changed_during_network_wait() -> Re
 }
 
 #[tokio::test]
+async fn join_final_open_checks_requested_permission_and_retains_committed_state() -> Result<()> {
+    let (instance, mut user) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))
+            .await?;
+    let key = user.get_default_key()?;
+    let db = Database::create(
+        &instance,
+        crate::auth::crypto::generate_keypair().0,
+        Doc::new(),
+    )
+    .await?;
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?
+            .set_global_auth_key(crate::auth::AuthKey::active(None, Permission::Write(5)))
+            .await
+    })
+    .await?;
+    user.track_database(db.root_id(), &key, SyncSettings::disabled())
+        .await?;
+    let before = user.user_database.snapshot().await?;
+    for rejected in [false, true] {
+        let error = if rejected {
+            SyncError::BootstrapRejected {
+                request_id: "legacy".into(),
+                message: "rejected".into(),
+            }
+        } else {
+            SyncError::BootstrapPending {
+                request_id: "legacy".into(),
+                message: "pending".into(),
+            }
+        };
+        assert!(
+            user.record_database_access(
+                db.root_id(),
+                &key,
+                SyncSettings::on_commit(),
+                Err(error.into())
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(before, user.user_database.snapshot().await?);
+        assert_eq!(
+            user.key_mapping(&key, db.root_id())?,
+            Some(SigKey::global(&key))
+        );
+    }
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?
+            .set_global_auth_key(crate::auth::AuthKey::active(None, Permission::Read))
+            .await
+    })
+    .await?;
+    assert!(
+        user.open_joined_database(db.root_id(), &key, Permission::Write(5))
+            .await
+            .is_err(),
+        "final open accepted less than requested permission"
+    );
+    assert_eq!(
+        before,
+        user.user_database.snapshot().await?,
+        "open failure rewrote User state"
+    );
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?
+            .set_global_auth_key(crate::auth::AuthKey::active(None, Permission::Write(5)))
+            .await
+    })
+    .await?;
+    user.track_database(db.root_id(), &key, SyncSettings::disabled())
+        .await?;
+    assert!(
+        user.open_joined_database(db.root_id(), &key, Permission::Write(5))
+            .await
+            .is_ok()
+    );
+    assert_eq!(before, user.user_database.snapshot().await?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn join_concurrent_local_bookkeeping_writes_one_equivalent_entry() -> Result<()> {
     let (instance, mut first) =
         Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))

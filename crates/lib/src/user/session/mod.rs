@@ -11,6 +11,7 @@
 //! - **`create_database()`** - Create a new database
 //! - **`open_database()`** - Open an existing database
 //! - **`open_database_with_key()`** - Open with an explicitly chosen user key
+//! - **`join()`** - Join a database from a ticket and open it
 //! - **`find_database()`** - Search for databases by name
 //!
 //! ## Tracked Databases
@@ -51,7 +52,7 @@ use crate::{
     entry::ID,
     instance::{InstanceError, backend::Backend},
     store::{StoreError, Table},
-    sync::{BootstrapRequest, DatabaseTicket, Sync},
+    sync::{BootstrapRequest, DatabaseTicket, Sync, SyncError},
     user::{SyncSettings, TrackedDatabase, UserError},
 };
 
@@ -1003,7 +1004,7 @@ impl User {
     /// the database, including when a pending request is retried after approval.
     ///
     /// When approval is still pending the request returns
-    /// [`SyncError::BootstrapPending`](crate::sync::SyncError::BootstrapPending) without changing User mappings or
+    /// [`SyncError::BootstrapPending`] without changing User mappings or
     /// preferences. Supply the arguments again when retrying after approval.
     /// Existing legacy mappings are preserved rather than deleted.
     ///
@@ -1085,6 +1086,137 @@ impl User {
         .await
     }
 
+    /// Join a database from a ticket and open it.
+    ///
+    /// Works the same on an embedded and a connected instance. An embedded
+    /// instance bootstraps through its own [`Sync`], which must be enabled.
+    /// A connected instance asks the daemon to do it: the daemon chooses the
+    /// route and owns the network exchange, while `key_id`'s private key
+    /// stays in this process and signs only the peer-bound request proof. The
+    /// call waits until the peer answers.
+    ///
+    /// A ticket locates a database; it does not grant access. The peer decides
+    /// whether `key_id` may have `requested_permission`, exactly as for
+    /// [`request_database_access`](Self::request_database_access), whose
+    /// mapping and preference semantics this shares:
+    ///
+    /// - When access is granted, the database is synced, `key_id`'s SigKey
+    ///   mapping and `sync_settings` are recorded, and the opened database is
+    ///   returned.
+    /// - When approval is pending, this returns [`SyncError::BootstrapPending`]
+    ///   without changing User mappings or preferences. Call `join` again with
+    ///   the same arguments once the request is approved.
+    /// - A rejected request returns [`SyncError::BootstrapRejected`] and
+    ///   records nothing.
+    ///
+    /// Success is point-in-time usability of the verified supplied closure,
+    /// not global catch-up. Identical completed settings are not written again;
+    /// preferences changed during the network wait are preserved.
+    /// Dropping the future, disconnecting, or an error may leave peer requests,
+    /// replicated entries, routing or a committed User Entry without its ack.
+    /// Retry explicitly; nothing automatically resumes a join after restart.
+    /// Held/unreadable acquisition remains refused. Missing delegated history
+    /// stays Unverified until supplied and verified separately; this call does
+    /// not acquire it automatically. Native conflicting authority is unchanged,
+    /// so recovery from every interrupted transfer is not guaranteed.
+    /// Joining grants user-key access, not device enrollment. Later daemon
+    /// replication uses its device key and needs separate authorization (or a
+    /// global grant); this call does not promise ongoing private replication.
+    ///
+    /// # Arguments
+    /// * `ticket` - Database ID and address hints
+    /// * `key_id` - This user's key to request access for
+    /// * `requested_permission` - The permission level being requested
+    /// * `sync_settings` - This user's replication preference for the database
+    /// * `metadata` - Optional context for the approver
+    ///
+    /// # Errors
+    /// - [`UserError::KeyNotFound`] if this user does not hold `key_id`
+    /// - [`SyncError::SyncNotEnabled`] on an embedded instance without sync
+    /// - [`SyncError::BootstrapPending`] or [`SyncError::BootstrapRejected`]
+    ///   as described above
+    /// - Any network or sync error if no ticket address answered
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let key_id = user.get_default_key()?;
+    /// let database = user
+    ///     .join(&ticket, &key_id, Permission::Write(10), SyncSettings::on_commit(), None)
+    ///     .await?;
+    /// ```
+    pub async fn join(
+        &mut self,
+        ticket: &DatabaseTicket,
+        key_id: &PublicKey,
+        requested_permission: Permission,
+        sync_settings: SyncSettings,
+        metadata: Option<Doc>,
+    ) -> Result<Database> {
+        let database_id = ticket.database_id().clone();
+
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(connection) = self.instance.remote_connection() {
+            let original = self.tracked_database_before_join(&database_id).await?;
+            let signing_key = self
+                .key_manager
+                .get_signing_key(key_id)
+                .ok_or_else(|| super::errors::UserError::KeyNotFound {
+                    key_id: key_id.to_string(),
+                })?
+                .clone();
+            let result = connection
+                .bootstrap_ticket(
+                    ticket,
+                    &signing_key,
+                    &key_id.to_string(),
+                    requested_permission,
+                    metadata,
+                    self.instance.clock().now_millis(),
+                )
+                .await;
+            self.record_database_access_with_expected(
+                &database_id,
+                key_id,
+                sync_settings,
+                result,
+                Some(original),
+            )
+            .await?;
+            return self
+                .open_joined_database(&database_id, key_id, requested_permission)
+                .await;
+        }
+
+        let sync = self.instance.sync().ok_or(SyncError::SyncNotEnabled)?;
+        self.request_database_access(
+            &sync,
+            ticket,
+            key_id,
+            requested_permission,
+            sync_settings,
+            metadata,
+        )
+        .await?;
+        self.open_joined_database(&database_id, key_id, requested_permission)
+            .await
+    }
+
+    async fn open_joined_database(
+        &self,
+        database_id: &ID,
+        key_id: &PublicKey,
+        requested_permission: Permission,
+    ) -> Result<Database> {
+        let database = self.open_database_with_key(database_id, key_id).await?;
+        if database.current_permission().await? < requested_permission {
+            return Err(SyncError::PermissionDenied(
+                "requested permission is no longer available at join completion".to_string(),
+            )
+            .into());
+        }
+        Ok(database)
+    }
+
     /// Record the User-layer SigKey mapping for a bootstrap whose network phase
     /// has already completed, given the [`Result`] returned by
     /// [`Sync::bootstrap_with_ticket`](crate::sync::Sync::bootstrap_with_ticket).
@@ -1096,12 +1228,12 @@ impl User {
     /// the lock held and re-acquire it only for this cheap, local mapping write,
     /// so a slow or hung peer never blocks the rest of the session. The mapping
     /// semantics are identical to `request_database_access`. The split form
-    /// treats supplied preferences as current explicit intent; use
+    /// treats supplied preferences as current explicit intent; use `join` or
     /// `request_database_access` to preserve preferences changed during their
     /// network wait.
     ///
     /// The `bootstrap_result` is consumed and its outcome re-raised unchanged so
-    /// callers can react to [`SyncError::BootstrapPending`](crate::sync::SyncError::BootstrapPending) et al.
+    /// callers can react to [`SyncError::BootstrapPending`] et al.
     pub async fn record_database_access(
         &mut self,
         database_id: &ID,

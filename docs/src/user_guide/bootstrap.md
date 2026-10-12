@@ -85,6 +85,43 @@ user.request_database_access(
 ).await
 ```
 
+`User::join` takes the same arguments without the `Sync` handle and returns the opened database.
+It uses the instance's own sync engine when embedded and the daemon's when connected to a [service daemon](service.md), where the user's private key stays in the client process:
+
+<!-- Code block ignored: Example client workflow code demonstrating bootstrap API usage -->
+
+```rust,ignore
+let database = user
+    .join(&ticket, &key_id, Permission::Write(5), SyncSettings::on_commit(), None)
+    .await?;
+```
+
+`join` has the same interface in embedded and connected modes and waits for the peer's answer.
+A ticket is a locator, not an access grant.
+Success returns a `Database` after recording the selected user key's SigKey mapping and the caller's `SyncSettings`, so `user.open_database()` can open it again.
+`SyncError::BootstrapPending` changes no User mappings or preferences: explicitly retry `join` with the same arguments after approval.
+`SyncError::BootstrapRejected` is terminal for that request and records no new mapping or preferences.
+
+Success means the finite supplied response and its ancestry have verified locally and the selected key currently satisfies the requested permission; it is not global catch-up.
+Identical completed User settings and established routing are not written again.
+Newer preferences observed after the network wait are preserved, and legacy provisional mappings are not deleted on Pending or rejection.
+An error, dropped future or disconnected caller can leave a peer request, replicated entries, routing or a committed User Entry without its acknowledgement.
+Reconnect and retry explicitly; a failed call does not imply rollback.
+There is no cancellation API, automatic restart-safe completion, or device enrollment.
+The client holds and signs with the user's private keys; the daemon owns networking, without a second client sync engine.
+Later daemon replication uses its device key, which needs its own authorization or a global grant.
+User-key access alone does not promise ongoing private background replication.
+
+### Current recovery limits
+
+Acquisition of an already-held database that the requesting key cannot read, including an orphan replica, remains refused.
+Join advertises empty tips and never sends local entries back, but this does not resolve native competing grant/revocation semantics.
+Missing delegated signing history leaves the affected entries Unverified and the transfer incomplete, not successful or terminally Failed.
+Native verification supports supplying and verifying the missing history before manually retrying on the same replica; `join` does not acquire that history automatically or bypass the held-tree Read gate.
+Complete held/unreadable, orphan and second-user recovery remains unsupported.
+The basic API uses existing native authority semantics; it does not fix competing grant/revocation resolution or guarantee that stale grants cannot restore access after ingestion.
+See the [verification model](../design/verification.md) for those native limitations.
+
 ### 2. Response Handling
 
 The client must handle different response scenarios:
