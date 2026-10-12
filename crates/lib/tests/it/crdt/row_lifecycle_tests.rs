@@ -241,6 +241,26 @@ fn test_row_lifecycle_payload_errors_propagate_without_changing_map() {
 
 #[test]
 fn test_row_lifecycle_fallible_evaluation_is_not_associative() {
+    // The payload itself agrees under regrouping, including success vs error.
+    let payloads = [events(&[]), events(&[1]), events(&[2]), Events::Rejected];
+    for a in &payloads {
+        for b in &payloads {
+            for c in &payloads {
+                let left = a.merge(b).and_then(|ab| ab.merge(c));
+                let right = b.merge(c).and_then(|bc| a.merge(&bc));
+                match (left, right) {
+                    (Ok(left), Ok(right)) => assert_eq!(left, right),
+                    (Err(left), Err(right)) => {
+                        assert_merge_error(left);
+                        assert_merge_error(right);
+                    }
+                    results => {
+                        panic!("payload grouping disagrees: {a:?}, {b:?}, {c:?}: {results:?}")
+                    }
+                }
+            }
+        }
+    }
     let a = Update(Events::Rejected);
     let b = Update(events(&[1]));
     // Even an associative partial payload cannot guarantee the same error

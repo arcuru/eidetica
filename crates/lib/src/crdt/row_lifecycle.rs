@@ -33,7 +33,9 @@ use super::CRDT;
 /// regrouping: `(Update(a) + Update(b)) + Delete` can fail on `a.merge(b)`,
 /// while `Update(a) + (Update(b) + Delete)` returns `Delete` without that call.
 /// Reset and deletion suppression can likewise skip failing payload merges.
-/// This type does not make arbitrary failing payloads associative.
+/// This type does not make arbitrary failing payloads associative. The
+/// `V: CRDT` bound alone cannot establish a closed successful domain; callers
+/// must guarantee that domain before relying on regrouped replay or caching.
 ///
 /// ```
 /// use eidetica::crdt::{Lww, Map, RowLifecycle};

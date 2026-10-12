@@ -150,9 +150,10 @@ are unchanged.
 
 ## Standalone Row Lifecycle
 
-`RowLifecycle<V>` adds ordered row operations over any associative application
-payload, including non-LWW CRDTs. Compose rows with `Map<K, RowLifecycle<V>>`;
-Map retains the wrapper, including tombstones and reset boundaries.
+`RowLifecycle<V>` adds ordered row operations over application payloads,
+including non-LWW CRDTs. Its associative algebra requires a closed domain of
+successful associative payload merges, as described below. Compose rows with
+`Map<K, RowLifecycle<V>>`; Map retains tombstones and reset boundaries.
 
 - `NoOp` is the default and identity, not a row-creation policy.
 - `Update(V)` composes ordinary live payloads with `V::merge`. After `NoOp`,
@@ -211,8 +212,10 @@ associative. For example, `(Update(a) + Update(b)) + Delete` fails if
 `a.merge(b)` fails; `Update(a) + (Update(b) + Delete)` returns `Delete` without
 calling that merge. Reset can mask earlier failures in the same way, and
 `Delete + (Update(a) + Update(b))` can evaluate a failing merge that the left
-fold would suppress. Callers cannot assume regrouping preserves errors outside
-the valid successful payload domain.
+fold would suppress. The `V: CRDT` bound alone does not establish a closed
+successful domain. Callers must guarantee that domain before relying on
+regrouped replay or caching; even an associative partial payload merge does not
+make lifecycle success-versus-error independent of grouping.
 
 ### Non-exhaustive operation enums
 
