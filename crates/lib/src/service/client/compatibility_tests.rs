@@ -1,50 +1,15 @@
+use super::tests::{connect_peer, read_request};
 use super::*;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Exercise the real connect/handshake/background-reader path, not a mock FIFO.
-async fn connect_peer() -> (RemoteConnection, UnixStream) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("compat.sock");
-    let listener = tokio::net::UnixListener::bind(&path).unwrap();
-    let peer = async {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let handshake: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
-        assert_eq!(handshake.protocol_version, 0);
-        write_frame(
-            &mut stream,
-            &HandshakeAck {
-                protocol_version: 0,
-            },
-        )
-        .await
-        .unwrap();
-        stream
-    };
-    let (conn, peer) = tokio::time::timeout(TIMEOUT, async {
-        tokio::join!(RemoteConnection::connect(&path), peer)
-    })
-    .await
-    .unwrap();
-    (conn.unwrap(), peer)
-}
-
 async fn send_raw(peer: &mut UnixStream, json: &str) {
     peer.write_all(&(json.len() as u32).to_be_bytes())
         .await
         .unwrap();
     peer.write_all(json.as_bytes()).await.unwrap();
-}
-
-async fn read_request(peer: &mut UnixStream, label: &str) {
-    let request: ServiceRequest = tokio::time::timeout(TIMEOUT, read_frame(peer))
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert!(matches!(request, ServiceRequest::TrustedLoginUser { username } if username == label));
 }
 
 fn start_call(
@@ -60,9 +25,12 @@ fn start_call(
 }
 
 fn assert_unsupported(result: crate::Result<ServiceResponse>) {
-    assert!(
-        matches!(result, Err(crate::Error::Io(error)) if error.kind() == std::io::ErrorKind::Unsupported)
-    );
+    match result {
+        Err(crate::Error::Io(error)) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
+        other => panic!("expected Unsupported I/O error, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -237,9 +205,12 @@ async fn assert_connection_failed(
     call: tokio::task::JoinHandle<crate::Result<ServiceResponse>>,
 ) {
     let result = tokio::time::timeout(TIMEOUT, call).await.unwrap().unwrap();
-    assert!(
-        matches!(result, Err(crate::Error::Io(error)) if error.kind() == std::io::ErrorKind::ConnectionAborted)
-    );
+    match result {
+        Err(crate::Error::Io(error)) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionAborted);
+        }
+        other => panic!("expected connection-aborted I/O error, got {other:?}"),
+    }
     assert!(conn.inner.closed.load(Ordering::Acquire));
     assert!(conn.inner.pending_lock().is_empty());
     assert!(
