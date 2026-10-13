@@ -206,6 +206,8 @@ async fn v0_server_rejects_malformed_and_required_unknown_messages() {
         r#"{"TrustedLoginProve":{"signature":"bad"}}"#,
         r#"{"SessionKeyChallenge":{"pubkey":"unknown-key-format"}}"#,
         r#"{"AuthenticatedDb":{"op":"FutureOp"}}"#,
+        r#"{"AuthenticatedDb":{"root_id":"","root_id":"","identity":{"Direct":{"hint":{}}},"op":"FutureOp"}}"#,
+        r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":"FutureOp","op":"GetVerifiedTips"}}"#,
         r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":[]}}"#,
         r#"{"AuthenticatedDb":{"root_id":"","identity":{"FutureIdentity":{}},"op":"FutureOp"}}"#,
         r#"{"AuthenticatedDb":{"root_id":"bad-cid","identity":{"Direct":{"hint":{}}},"op":"FutureOp"}}"#,

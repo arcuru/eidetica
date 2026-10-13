@@ -1779,6 +1779,46 @@ mod compatibility_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    /// Exercise the real connect/handshake/background-reader path, not a mock FIFO.
+    pub(super) async fn connect_peer() -> (RemoteConnection, UnixStream) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("peer.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let peer = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let handshake: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
+            assert_eq!(handshake.protocol_version, 0);
+            write_frame(
+                &mut stream,
+                &HandshakeAck {
+                    protocol_version: 0,
+                },
+            )
+            .await
+            .unwrap();
+            stream
+        };
+        let (conn, peer) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(RemoteConnection::connect(&path), peer)
+        })
+        .await
+        .unwrap();
+        (conn.unwrap(), peer)
+    }
+
+    pub(super) async fn read_request(peer: &mut UnixStream, label: &str) {
+        let request: ServiceRequest =
+            tokio::time::timeout(Duration::from_secs(2), read_frame(peer))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        assert!(
+            matches!(request, ServiceRequest::TrustedLoginUser { username } if username == label)
+        );
+    }
 
     /// Build a `RemoteConnection` over a socketpair — enough to exercise the
     /// subscription state machine without a daemon. No reader task is
@@ -1871,8 +1911,6 @@ mod tests {
     #[cfg(feature = "testing")]
     #[tokio::test]
     async fn wait_closed_for_test_observes_mark_dead() {
-        use std::time::Duration;
-
         let (conn, _peer) = test_conn();
 
         // Live connection: the wait must not complete.
@@ -1949,34 +1987,27 @@ mod frame_cancellation_tests {
 
     #[tokio::test]
     async fn cancelled_response_wait_keeps_fifo_association() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("fifo.sock");
-        let listener = tokio::net::UnixListener::bind(&path).unwrap();
-        let reached = Arc::new(tokio::sync::Notify::new());
-        let remote_reached = reached.clone();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let _: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
-            write_frame(
-                &mut stream,
-                &HandshakeAck {
-                    protocol_version: PROTOCOL_VERSION,
-                },
-            )
-            .await
-            .unwrap();
-            let first: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
-            assert!(
-                matches!(first, ServiceRequest::TrustedLoginUser { username } if username == "first")
-            );
-            remote_reached.notify_one();
-            let second: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
-            assert!(
-                matches!(second, ServiceRequest::TrustedLoginUser { username } if username == "second")
-            );
+        let (conn, mut peer) = super::tests::connect_peer().await;
+        let mut first = Box::pin(conn.request(ServiceRequest::TrustedLoginUser {
+            username: "first".into(),
+        }));
+        tokio::select! {
+            _ = super::tests::read_request(&mut peer, "first") => {},
+            result = &mut first => panic!("first response unexpectedly completed: {result:?}"),
+        }
+        drop(first);
+        assert!(
+            !conn.inner.closed.load(Ordering::Acquire),
+            "dropping a response waiter retired a complete frame"
+        );
+        let second = conn.request(ServiceRequest::TrustedLoginUser {
+            username: "second".into(),
+        });
+        let respond = async {
+            super::tests::read_request(&mut peer, "second").await;
             for challenge in [vec![1], vec![2]] {
                 write_frame(
-                    &mut stream,
+                    &mut peer,
                     &ServerFrame::Response(Box::new(ServiceResponse::SessionKeyChallenge {
                         challenge,
                     })),
@@ -1984,35 +2015,17 @@ mod frame_cancellation_tests {
                 .await
                 .unwrap();
             }
-        });
-        let conn = RemoteConnection::connect(&path).await.unwrap();
-        let mut first = Box::pin(conn.request(ServiceRequest::TrustedLoginUser {
-            username: "first".into(),
-        }));
-        tokio::select! {
-            _ = reached.notified() => {},
-            result = &mut first => panic!("first response unexpectedly completed: {result:?}"),
-            _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("first frame did not reach the socket"),
-        }
-        drop(first);
-        assert!(
-            !conn.inner.closed.load(Ordering::Acquire),
-            "dropping a response waiter retired a complete frame"
-        );
-        let response = tokio::time::timeout(
-            Duration::from_secs(2),
-            conn.request(ServiceRequest::TrustedLoginUser {
-                username: "second".into(),
-            }),
-        )
+        };
+        let (response, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(second, respond)
+        })
         .await
-        .unwrap()
         .unwrap();
+        let response = response.unwrap();
         assert!(
             matches!(response, ServiceResponse::SessionKeyChallenge { challenge } if challenge == vec![2]),
             "cancelled response was misassociated"
         );
-        server.await.unwrap();
     }
 
     #[tokio::test]
