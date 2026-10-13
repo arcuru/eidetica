@@ -28,8 +28,8 @@ use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MergeState, Notification, PROTOCOL_VERSION,
-    ServerFrame, ServiceRequest, ServiceResponse, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, IncomingRequest, MergeState, Notification,
+    PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, read_frame, write_frame,
 };
 use crate::user::system_databases::lookup_user_record;
 
@@ -684,12 +684,17 @@ async fn handle_connection(
     let mut state = ConnectionState::PreAuth;
     let loop_result: crate::Result<()> = async {
         loop {
-            let request: ServiceRequest = match read_frame(&mut reader).await? {
+            let request: IncomingRequest = match read_frame(&mut reader).await? {
                 Some(req) => req,
                 None => break, // Clean EOF
             };
 
-            let response = dispatch(&instance, &mut state, &ctx, request).await;
+            let response = match request {
+                IncomingRequest::Known(request) => {
+                    dispatch(&instance, &mut state, &ctx, *request).await
+                }
+                IncomingRequest::Unsupported => ServiceResponse::Unsupported,
+            };
             if frame_tx
                 .send(ServerFrame::Response(Box::new(response)))
                 .is_err()

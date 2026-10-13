@@ -41,9 +41,17 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 
 Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF.
 
-`PROTOCOL_VERSION` is currently `0`, indicating an unstable protocol that may change without notice. Version mismatches fail the handshake.
+`PROTOCOL_VERSION` remains `0`, an unstable protocol. Version mismatches fail the handshake; the handshake and acknowledgment still advertise only the version, with no feature-capability negotiation.
 
-`#[non_exhaustive]` does not protect wire compatibility — it only covers Rust source compatibility (exhaustive `match` arms in downstream code). Serialized enums like `WriteSource` (carried by `Notification::DatabaseWrite`) are versioned by `PROTOCOL_VERSION`: a peer on an older version fails to deserialize an unknown variant, so adding a variant is a version bump, not a backward-compatible addition.
+Updated service peers tolerate additions at four named extension points:
+
+- An unknown top-level request operation or nested `DatabaseOp` receives `{"Response":"Unsupported"}`. The server performs no operation and does not change login or session-key state. A database envelope must still have a valid `root_id` and `identity`.
+- An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. There is no retry or execution fallback.
+- An unknown optional variant inside `Notification` is ignored without consuming a response slot or invoking callbacks. Known notifications retain their behavior.
+
+These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix and 64 MiB cap are unchanged.
+
+This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no silent downgrade, capability advertisement, or legacy execution fallback. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
 
 ### Connection Lifecycle
 
@@ -179,6 +187,7 @@ Published views and private builds use opaque random tokens stored only in the c
 | `Entry(Entry)` / `Entries(Vec<Entry>)`                      | One or many entries                                                |
 | `Ids(Vec<ID>)`                                              | One or many IDs                                                    |
 | `Ok`                                                        | Success with no data                                               |
+| `Unsupported`                                               | Unknown operation; no action performed                             |
 | `Token(String)`                                             | Opaque server-issued staging capability                            |
 | `Record` / `RecordPage` / `RecordView`                      | Lazy point, bounded page, and published-record-set responses       |
 | `TransactionContext(TransactionContext)`                    | Parent tips + settings, response to `DatabaseOp::BeginTransaction` |

@@ -54,13 +54,12 @@ pub use new_user::NewUser;
 /// does not break their builds. It does **not** cover wire compatibility —
 /// `WriteSource` is serialized into service-protocol frames
 /// ([`Notification::DatabaseWrite`](crate::service::protocol::Notification::DatabaseWrite)
-/// carries a `source`), and a peer on an older protocol version fails to
-/// deserialize a variant it does not know. Adding a variant is therefore a
-/// protocol change, not a backward-compatible addition: bump
-/// [`crate::service::protocol::PROTOCOL_VERSION`] (and
-/// [`crate::sync::protocol::PROTOCOL_VERSION`], which guards the sync wire)
-/// and treat old peers as incompatible. Always include a wildcard arm when
-/// matching.
+/// carries a `source`). This is a required field in a known notification:
+/// even an updated v0 service peer fails closed on an unknown `WriteSource`,
+/// rather than treating it as an optional notification variant. Adding a source
+/// requires an explicit wire-compatibility decision; service optional-operation
+/// tolerance does not extend to nested content or the peer-to-peer sync protocol.
+/// Always include a wildcard arm when matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum WriteSource {
