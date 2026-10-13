@@ -31,7 +31,8 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
+use serde_json::value::RawValue;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::auth::crypto::PublicKey;
@@ -46,12 +47,12 @@ use crate::user::UserInfo;
 /// Protocol version. Version 0 indicates an unstable protocol that may change
 /// without notice between releases.
 ///
-/// This constant is the compatibility gate for serialized types in this
-/// protocol. `#[non_exhaustive]` does **not** protect wire compatibility: a
-/// peer on an older version fails to deserialize an unknown variant. Adding a
-/// variant to a serialized enum (e.g. [`WriteSource`](crate::instance::WriteSource)
-/// inside [`Notification::DatabaseWrite`]) is therefore a protocol version
-/// bump, not a backward-compatible addition.
+/// Updated peers reject unknown operations with [`ServiceResponse::Unsupported`],
+/// fail one call for unknown responses, and ignore unknown optional notification
+/// variants. Known payloads and required nested types remain strict. There is no
+/// capability negotiation or downgrade. Pre-change v0 peers still disconnect on
+/// unknown variants; keeping v0 does not retroactively make them extensible.
+/// `#[non_exhaustive]` protects Rust source compatibility, not the wire.
 pub const PROTOCOL_VERSION: u32 = 0;
 
 /// Maximum frame size: 64 MiB.
@@ -461,6 +462,8 @@ pub enum ServiceResponse {
     Ids(Snapshot),
     /// Success with no data
     Ok,
+    /// The requested operation is not supported; no operation was performed.
+    Unsupported,
     /// One optional opaque record.
     Record(Option<Vec<u8>>),
     /// One bounded, ordered record page.
@@ -507,6 +510,176 @@ pub enum ServiceResponse {
     /// client signs these with the named pubkey's private key and returns the
     /// signature in `SessionKeyRegister`.
     SessionKeyChallenge { challenge: Vec<u8> },
+}
+
+// These names classify only the four optional extension points. Keep them in
+// step with the wire enums above. Recognized payloads go through their original
+// serde decoders; a malformed known message must never become Unsupported.
+const REQUEST_VARIANTS: &[&str] = &[
+    "TrustedLoginUser",
+    "TrustedLoginProve",
+    "GetInstanceMetadata",
+    "SessionKeyChallenge",
+    "SessionKeyRegister",
+    "AuthenticatedDb",
+];
+const DATABASE_OP_VARIANTS: &[&str] = &[
+    "ResolveStoreState",
+    "BeginStoreStateStaging",
+    "StageStoreStateRecords",
+    "PublishStoreState",
+    "AbortStoreState",
+    "StoreStateRecordGet",
+    "StoreStateRecordScan",
+    "BeginTransaction",
+    "SubmitSignedEntry",
+    "GetVerifiedTips",
+    "GetStoreState",
+    "GetStoreEntries",
+    "GetStoreTipsUpToEntries",
+    "ComputeMergeState",
+    "GetEntry",
+    "SetInstanceMetadata",
+    "SubscribeWrites",
+    "UnsubscribeWrites",
+    "CreateTicket",
+];
+const RESPONSE_VARIANTS: &[&str] = &[
+    "Entry",
+    "Entries",
+    "Ids",
+    "Ok",
+    "Unsupported",
+    "Record",
+    "RecordPage",
+    "RecordView",
+    "Token",
+    "TransactionContext",
+    "CrdtValue",
+    "MergeState",
+    "InstanceMetadata",
+    "Error",
+    "DatabaseTicket",
+    "TrustedLoginChallenge",
+    "TrustedLoginOk",
+    "SessionKeyChallenge",
+];
+
+/// Read an externally tagged JSON enum's name without erasing duplicate keys
+/// or changing its payload. RawValue preserves the original known-wire decoder.
+/// Only a string or a single-key object can represent an optional variant.
+fn variant_name(raw: &RawValue) -> serde_json::Result<String> {
+    struct VariantName;
+    impl<'de> de::Visitor<'de> for VariantName {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an enum name or single-key enum object")
+        }
+
+        fn visit_str<E: de::Error>(self, name: &str) -> Result<String, E> {
+            Ok(name.to_owned())
+        }
+
+        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<String, A::Error> {
+            let name = map
+                .next_key::<String>()?
+                .ok_or_else(|| de::Error::custom("empty enum object"))?;
+            map.next_value::<de::IgnoredAny>()?;
+            if map.next_key::<de::IgnoredAny>()?.is_some() {
+                return Err(de::Error::custom("enum object must have exactly one key"));
+            }
+            Ok(name)
+        }
+    }
+    let mut decoder = serde_json::Deserializer::from_str(raw.get());
+    let name = de::Deserializer::deserialize_any(&mut decoder, VariantName)?;
+    decoder.end()?;
+    Ok(name)
+}
+
+/// Inbound-only classification: unsupported operations never reach dispatch,
+/// including its auth transitions and private-build expiry cleanup.
+pub(crate) enum IncomingRequest {
+    Known(Box<ServiceRequest>),
+    Unsupported,
+}
+
+impl<'de> Deserialize<'de> for IncomingRequest {
+    fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        let raw = Box::<RawValue>::deserialize(decoder)?;
+        let decode = || -> serde_json::Result<Self> {
+            let name = variant_name(&raw)?;
+            if !REQUEST_VARIANTS.contains(&name.as_str()) {
+                return Ok(Self::Unsupported);
+            }
+            if name == "AuthenticatedDb" {
+                #[derive(Deserialize)]
+                enum Envelope {
+                    AuthenticatedDb(Scope),
+                }
+                #[derive(Deserialize)]
+                struct Scope {
+                    root_id: ID,
+                    identity: SigKey,
+                    op: Box<RawValue>,
+                }
+                let Envelope::AuthenticatedDb(scope) = serde_json::from_str(raw.get())?;
+                let name = variant_name(&scope.op)?;
+                if !DATABASE_OP_VARIANTS.contains(&name.as_str()) {
+                    return Ok(Self::Unsupported);
+                }
+                let request = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+                    root_id: scope.root_id,
+                    identity: scope.identity,
+                    op: serde_json::from_str(scope.op.get())?,
+                }));
+                return Ok(Self::Known(Box::new(request)));
+            }
+            serde_json::from_str(raw.get()).map(Self::Known)
+        };
+        decode().map_err(de::Error::custom)
+    }
+}
+
+/// Outer envelopes and known nested types remain required. Only an unknown
+/// Response variant maps to Unsupported; only an unknown Notification is ignored.
+pub(crate) enum IncomingServerFrame {
+    Response(Box<ServiceResponse>),
+    Notification(Option<Notification>),
+}
+
+impl<'de> Deserialize<'de> for IncomingServerFrame {
+    fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        enum Envelope {
+            Response(Box<RawValue>),
+            Notification(Box<RawValue>),
+        }
+        let envelope = Envelope::deserialize(decoder)?;
+        let decode = || -> serde_json::Result<Self> {
+            match envelope {
+                Envelope::Response(raw) => {
+                    let name = variant_name(&raw)?;
+                    let response = if RESPONSE_VARIANTS.contains(&name.as_str()) {
+                        serde_json::from_str(raw.get())?
+                    } else {
+                        ServiceResponse::Unsupported
+                    };
+                    Ok(Self::Response(Box::new(response)))
+                }
+                Envelope::Notification(raw) => {
+                    let notification = if variant_name(&raw)? == "DatabaseWrite" {
+                        Some(serde_json::from_str(raw.get())?)
+                    } else {
+                        None
+                    };
+                    Ok(Self::Notification(notification))
+                }
+            }
+        };
+        decode().map_err(de::Error::custom)
+    }
 }
 
 /// Write a length-prefixed JSON frame to an async writer.
@@ -568,6 +741,60 @@ mod tests {
             identity: SigKey::default(),
             op,
         }))
+    }
+
+    #[test]
+    fn v0_known_wire_fixtures_are_unchanged() {
+        assert_eq!(
+            serde_json::to_string(&Handshake {
+                protocol_version: 0
+            })
+            .unwrap(),
+            r#"{"protocol_version":0}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&HandshakeAck {
+                protocol_version: 0
+            })
+            .unwrap(),
+            r#"{"protocol_version":0}"#
+        );
+        for fixture in [
+            r#""GetInstanceMetadata""#,
+            r#"{"TrustedLoginUser":{"username":"alice"}}"#,
+            r#"{"TrustedLoginProve":{"signature":[1,2,3]}}"#,
+            r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"BeginTransaction":{"stores":["data"],"scope":"Verified"}}}}"#,
+            r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":"GetVerifiedTips"}}"#,
+        ] {
+            let IncomingRequest::Known(request) = serde_json::from_str(fixture).unwrap() else {
+                panic!("known fixture was classified Unsupported: {fixture}");
+            };
+            assert_eq!(serde_json::to_string(&request).unwrap(), fixture);
+        }
+        for fixture in [
+            r#"{"Response":"Ok"}"#,
+            r#"{"Response":{"Ids":[]}}"#,
+            r#"{"Response":{"InstanceMetadata":null}}"#,
+            r#"{"Response":{"SessionKeyChallenge":{"challenge":[1,2,3]}}}"#,
+            r#"{"Response":{"Error":{"module":"instance","kind":"AuthenticationRequired","message":"authentication required"}}}"#,
+            r#"{"Notification":{"DatabaseWrite":{"root_id":"","previous_tips":[],"post_tips":[],"source":"Remote"}}}"#,
+        ] {
+            let frame = match serde_json::from_str::<IncomingServerFrame>(fixture).unwrap() {
+                IncomingServerFrame::Response(response) => ServerFrame::Response(response),
+                IncomingServerFrame::Notification(Some(notification)) => {
+                    ServerFrame::Notification(notification)
+                }
+                IncomingServerFrame::Notification(None) => panic!("known notification was ignored"),
+            };
+            assert_eq!(serde_json::to_string(&frame).unwrap(), fixture);
+        }
+        assert_eq!(
+            serde_json::to_string(&ServerFrame::Response(Box::new(
+                ServiceResponse::Unsupported
+            )))
+            .unwrap(),
+            r#"{"Response":"Unsupported"}"#
+        );
     }
 
     /// Extract the inner `DatabaseOp` from a deserialised request, panicking if

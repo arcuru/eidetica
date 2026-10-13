@@ -33,9 +33,11 @@ use crate::backend::{
 use crate::entry::{Entry, ID};
 use crate::instance::WeakInstance;
 use crate::service::error::service_error_to_eidetica_error;
+#[cfg(test)]
+use crate::service::protocol::ServerFrame;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, Notification,
-    PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse, TransactionContext,
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingServerFrame, MergeState,
+    Notification, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse, TransactionContext,
     WireCrdtValue, read_frame, write_frame,
 };
 use crate::snapshot::Snapshot;
@@ -510,8 +512,9 @@ impl RemoteConnection {
     /// Connect to a service server at the given socket path.
     ///
     /// Performs the protocol handshake, then spawns a background reader
-    /// task that demuxes [`ServerFrame`]s: `Response` frames pop the next
-    /// pending oneshot in FIFO order, `Notification` frames dispatch into
+    /// task that demuxes [`ServerFrame`](crate::service::protocol::ServerFrame)s:
+    /// `Response` frames pop the next pending oneshot in FIFO order,
+    /// `Notification` frames dispatch into
     /// the attached `Instance`'s callback registry (after
     /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
@@ -646,6 +649,10 @@ impl RemoteConnection {
         let resp = self.request(req).await?;
         match resp {
             ServiceResponse::Error(e) => Err(service_error_to_eidetica_error(e)),
+            ServiceResponse::Unsupported => Err(crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "service operation is not supported by the peer",
+            ))),
             other => Ok(other),
         }
     }
@@ -1422,12 +1429,14 @@ fn connection_aborted() -> crate::Error {
 
 /// Background task driving the read half of the socket.
 ///
-/// Loops on [`read_frame`] and demuxes by [`ServerFrame`] variant:
+/// Loops on [`read_frame`] and demuxes by [`IncomingServerFrame`] variant:
 ///
 /// - `Response(r)`: pop the front of the pending FIFO and resolve its
 ///   oneshot. If the queue is empty something has gone badly wrong
 ///   (server sent more responses than the client issued requests) — log
 ///   and continue.
+///   Unknown responses still consume exactly one slot as Unsupported; unknown
+///   optional notifications consume no slots and invoke no callbacks.
 /// - `Notification(Notification::DatabaseWrite { … })`: upgrade the
 ///   attached `WeakInstance` and route the event into its callback
 ///   registry via [`crate::Instance::fire_write_callbacks`]. If no
@@ -1442,7 +1451,8 @@ fn connection_aborted() -> crate::Error {
 /// connection-closed `io::Error` there).
 async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionInner>) {
     loop {
-        let frame_result: crate::Result<Option<ServerFrame>> = read_frame(&mut reader).await;
+        let frame_result: crate::Result<Option<IncomingServerFrame>> =
+            read_frame(&mut reader).await;
         let frame = match frame_result {
             Ok(Some(f)) => f,
             Ok(None) => break, // Clean EOF
@@ -1453,7 +1463,7 @@ async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionI
         };
 
         match frame {
-            ServerFrame::Response(resp) => {
+            IncomingServerFrame::Response(resp) => {
                 let next = inner.pending_lock().pop_front();
                 match next {
                     Some(tx) => {
@@ -1468,9 +1478,10 @@ async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionI
                     }
                 }
             }
-            ServerFrame::Notification(notif) => {
+            IncomingServerFrame::Notification(Some(notif)) => {
                 route_notification(&inner, notif);
             }
+            IncomingServerFrame::Notification(None) => {}
         }
     }
 
@@ -1761,6 +1772,9 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
         }
     }
 }
+
+#[cfg(test)]
+mod compatibility_tests;
 
 #[cfg(test)]
 mod tests {
