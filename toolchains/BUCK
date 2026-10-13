@@ -1,0 +1,4 @@
+load(":demo.bzl", "system_demo_toolchains")
+
+# Demo toolchains with configurable absolute C tools for native build scripts.
+system_demo_toolchains()
