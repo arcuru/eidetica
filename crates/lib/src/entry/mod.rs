@@ -20,7 +20,15 @@ pub use builder::EntryBuilder;
 pub use errors::EntryError;
 pub use id::ID;
 
-use crate::{Result, auth::types::AuthInfo, constants::ROOT, store::StoreError};
+use crate::{
+    Result,
+    auth::{
+        crypto::{PrivateKey, sign_entry},
+        types::AuthInfo,
+    },
+    constants::ROOT,
+    store::StoreError,
+};
 
 use id::IdError;
 
@@ -288,11 +296,15 @@ impl Entry {
     /// keeps that honest: an `Entry` is never mutated in place, so a memoized ID can never
     /// outlive the content it was computed from.
     ///
+    /// To sign an entry, use [`Entry::sign`] rather than attaching a signature here.
+    ///
     /// ```
-    /// # use eidetica::entry::Entry;
+    /// # use eidetica::{PrivateKey, auth::types::SigKey, entry::Entry};
     /// # fn main() -> eidetica::Result<()> {
+    /// let key = PrivateKey::generate();
     /// let entry = Entry::root_builder().build()?;
-    /// let signed = entry.with_auth(|auth| auth.signature = Some("c2lnbmF0dXJl".to_string()));
+    /// let hinted = entry.with_auth(|auth| auth.key = SigKey::from_pubkey(&key.public_key()));
+    /// let signed = hinted.sign(&key)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -300,6 +312,19 @@ impl Entry {
         update(&mut self.auth);
         self.id_cache = IdCache::default();
         self
+    }
+
+    /// Sign this entry with `key` and return the signed entry.
+    ///
+    /// This is the single entrance for producing a signed entry. The signature covers the
+    /// entry's canonical signing form, which includes the key hint already present in
+    /// [`Entry::auth`], so set the hint before signing. Any existing signature is replaced.
+    ///
+    /// Like [`Entry::with_auth`], this consumes `self`: the signature is part of the entry's
+    /// content, so the returned entry has a different ID from the receiver.
+    pub fn sign(self, key: &PrivateKey) -> Result<Self> {
+        let signature = sign_entry(&self, key)?;
+        Ok(self.with_auth(|auth| auth.signature = Some(signature)))
     }
 
     /// Get the ID of the root `Entry` of the tree this entry belongs to.
@@ -422,22 +447,24 @@ impl Entry {
     /// This creates a copy of the entry with the signature field removed from auth,
     /// which is necessary for signature generation and verification.
     /// The returned entry has deterministic field ordering for consistent signatures.
-    pub fn canonical_for_signing(&self) -> Self {
+    pub(crate) fn canonical_for_signing(&self) -> Self {
         self.clone().with_auth(|auth| auth.signature = None)
     }
 
     /// Create canonical bytes for signing or ID generation.
     ///
     /// This method serializes the entry to DAG-CBOR with deterministic field ordering.
-    /// For signing purposes, call `canonical_for_signing()` first.
+    /// Signing uses the signature-stripped form instead; see [`Entry::sign`].
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         self.to_dagcbor()
     }
 
-    /// Create canonical bytes for signing (convenience method).
+    /// Create the canonical bytes covered by an entry signature.
     ///
-    /// This combines `canonical_for_signing()` and `canonical_bytes()` for convenience.
-    pub fn signing_bytes(&self) -> Result<Vec<u8>> {
+    /// This combines `canonical_for_signing()` and `canonical_bytes()`. It is crate-private:
+    /// sign through [`Entry::sign`] and verify through
+    /// [`verify_entry_signature`](crate::auth::crypto::verify_entry_signature).
+    pub(crate) fn signing_bytes(&self) -> Result<Vec<u8>> {
         self.canonical_for_signing().canonical_bytes()
     }
 

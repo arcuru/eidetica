@@ -35,7 +35,7 @@ use crate::{
     Database, Error, Result, Snapshot, Store,
     auth::{
         AuthSettings,
-        crypto::{PrivateKey, sign_entry},
+        crypto::PrivateKey,
         types::{AuthInfo, SigKey},
         validation::AuthValidator,
     },
@@ -1759,8 +1759,7 @@ impl Transaction {
 
         // Sign the entry if we have a signing key
         if let Some(signing_key) = signing_key {
-            let signature = sign_entry(&entry, &signing_key)?;
-            entry = entry.with_auth(|auth| auth.signature = Some(signature));
+            entry = entry.sign(&signing_key)?;
         }
 
         // Validate authentication (all entries must be authenticated)
