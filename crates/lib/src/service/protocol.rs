@@ -584,6 +584,8 @@ const REQUEST_VARIANTS: &[&str] = &[
     "GetInstanceMetadata",
     "SessionKeyChallenge",
     "SessionKeyRegister",
+    "TicketBootstrapPrepare",
+    "TicketBootstrap",
     "AuthenticatedDb",
 ];
 const DATABASE_OP_VARIANTS: &[&str] = &[
@@ -626,6 +628,8 @@ const RESPONSE_VARIANTS: &[&str] = &[
     "TrustedLoginChallenge",
     "TrustedLoginOk",
     "SessionKeyChallenge",
+    "TicketBootstrapRoute",
+    "TicketBootstrapOutcome",
 ];
 
 /// Read an externally tagged JSON enum's name without erasing duplicate keys
