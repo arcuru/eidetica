@@ -95,7 +95,7 @@ Options:
 
 ## Example Workflow
 
-### Two-AccountSession Chat Session
+### Two-Account Chat Session
 
 **Terminal 1 (Alice - Room Creator):**
 
@@ -144,7 +144,7 @@ cargo run -- --username alice --transport iroh
 The example demonstrates Eidetica's key components:
 
 - **Instance**: Main database system managing storage and sync
-- **AccountSession**: Passwordless user account with automatic key management
+- **Account**: Passwordless account with automatic key management
 - **Database**: Each room is a separate database with its own authentication
 - **Table Store**: Messages stored in a `Table<ChatMessage>` store within each room
 - **Sync System**: Automatic peer synchronization with configurable transports

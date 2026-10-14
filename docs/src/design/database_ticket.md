@@ -120,9 +120,9 @@ Collects server addresses from all running transports and bundles them with
 the database ID into a `DatabaseTicket`. Lower-level helper that does not
 touch user-level sync preferences.
 
-### AccountSession-scoped ticket lookup
+### Session-scoped ticket lookup
 
-A `Database` opened or created by a `AccountSession` is the high-level API for making a
+A `Database` opened or created by an `AccountSession` is the high-level API for making a
 tracked database shareable. It deliberately does not combine the process into
 one atomic call:
 

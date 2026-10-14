@@ -537,7 +537,7 @@ async fn join_user_pending_and_rejected_leave_user_history_unchanged() -> Result
         assert_eq!(
             before,
             user.account().snapshot().await?,
-            "non-success appended AccountSession history"
+            "non-success appended Account history"
         );
         assert_eq!(user.key_mapping(&key, &tree)?, None);
         assert!(user.database(&tree).await.is_err());
@@ -598,7 +598,7 @@ async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result
         assert_eq!(
             before,
             user.account().snapshot().await?,
-            "identical retry appended AccountSession history"
+            "identical retry appended Account history"
         );
         let fresh = instance.login_account("client", None).await?;
         assert_eq!(

@@ -120,7 +120,7 @@ pub async fn create_accounts_database(
     let mut settings = Doc::new();
     settings.set("name", USERS);
     settings.set("type", "system");
-    settings.set("description", "AccountSession directory database");
+    settings.set("description", "Account login directory database");
 
     Database::create(instance, device_signing_key.clone(), settings).await
 }
@@ -149,12 +149,12 @@ pub async fn create_databases_tracking(
     Database::create(instance, device_signing_key.clone(), settings).await
 }
 
-/// Create a new account account
+/// Create a new account
 ///
 /// This function:
 /// 1. Optionally hashes the account's password (if provided)
 /// 2. Generates a device keypair for the account
-/// 3. Creates a account database for storing keys (encrypted or unencrypted)
+/// 3. Creates an account database for storing keys (encrypted or unencrypted)
 /// 4. Creates AccountInfo and stores it in _users database with auto-generated UUID
 /// 5. **First-admin bootstrap**: if no instance admin exists yet in `_users.auth_settings`,
 ///    promotes this account by adding their pubkey as `Admin(0)` to the
@@ -290,7 +290,7 @@ pub async fn create_account(
     Ok((login_id, account_info, returned_private_key))
 }
 
-/// Login a account
+/// Login an account
 ///
 /// This function:
 /// 1. Searches for account by username in _users database
@@ -307,7 +307,7 @@ pub async fn create_account(
 /// * `password` - Optional password. None for passwordless accounts.
 ///
 /// # Returns
-/// A AccountSession object with keys loaded
+/// An AccountSession object with keys loaded
 pub async fn login_account(
     users_db: &Database,
     instance: &Instance,
@@ -428,7 +428,7 @@ pub async fn login_account(
     Ok(user)
 }
 
-/// Build a `AccountSession` session from data already in hand: the decrypted root
+/// Build an `AccountSession` session from data already in hand: the decrypted root
 /// signing key, the account's record, and an optional password (the
 /// `AccountKeyManager` re-derives the KEK from it for any per-key decryption).
 ///
@@ -597,7 +597,7 @@ async fn bootstrap_account_tree_if_needed(
     Ok(())
 }
 
-/// Look up a account's record by username, without requiring the password.
+/// Look up an account's record by username, without requiring the password.
 ///
 /// Used by the service daemon's challenge-response login flow: the daemon
 /// fetches the account's full `AccountInfo` (including encrypted credentials and the
@@ -802,7 +802,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a account with password
+        // Create an account with password
         let (login_id, account_info, _) =
             create_account(&users_db, &instance, "alice", Some("password123"))
                 .await
@@ -884,7 +884,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a account with password
+        // Create an account with password
         create_account(&users_db, &instance, "bob", Some("bobpassword"))
             .await
             .unwrap();
@@ -943,7 +943,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a account
+        // Create an account
         create_account(&users_db, &instance, "dave", Some("correct_password"))
             .await
             .unwrap();

@@ -258,7 +258,7 @@ No `ConnectionState` variant holds a `PrivateKey` (enforced by a structural test
 
 ### Why a keyset, not a single pubkey?
 
-A `AccountSession` has many pubkeys — a root key, a device key, per-DB keys created via `AccountSession::add_private_key`, etc. Writes signed by a per-DB key produce entries whose tree auth grants that key, not the login key. With a single-pubkey session, reads of those trees would be denied (the login key isn't a member of the tree the per-DB key authored). The keyset model lets the same connection drive ops on every tree the user actually has a key for, without forcing one connection per key.
+An `AccountSession` has many pubkeys — a root key, a device key, per-DB keys created via `AccountSession::add_private_key`, etc. Writes signed by a per-DB key produce entries whose tree auth grants that key, not the login key. With a single-pubkey session, reads of those trees would be denied (the login key isn't a member of the tree the per-DB key authored). The keyset model lets the same connection drive ops on every tree the user actually has a key for, without forcing one connection per key.
 
 ### Registration handshake
 

@@ -143,7 +143,7 @@ async fn test_concurrent_tree_creation() {
     for (i, tree) in concurrent_trees.iter().enumerate() {
         let expected_user_data = &[
             ("user_id", &format!("user{i}")),
-            ("name", &format!("AccountSession {i}")),
+            ("name", &format!("User {i}")),
             ("email", &format!("user{i}@test.com")),
         ];
 

@@ -70,7 +70,7 @@ When a client attempts to sync a database:
 Bootstrap provides a request/approval workflow for controlled access grants:
 
 ```text
-Client                    Server                     AccountSession (with Admin key)
+Client                    Server                     Account (with Admin key)
   |                         |                             |
   |-- Sync Request -------→ |                             |
   |                         |-- Check Auth Settings       |
@@ -152,13 +152,13 @@ pub enum RequestStatus {
 }
 ```
 
-### Approval by AccountSession with Admin Permission
+### Approval by an Account with Admin Permission
 
 Any logged-in user who has a key with Admin permission for the database can approve the request:
 
-1. AccountSession logs in with `instance.login_account()`
+1. The account logs in with `instance.login_account()`
 2. Lists pending requests with `user.pending_bootstrap_requests(&sync)`
-3. AccountSession selects a key they own that has Admin permission on the target database
+3. The session selects a key the account holds that has Admin permission on the target database
 4. Awaits `user.approve_bootstrap_request(&sync, request_id, &approving_key_id)`
 5. System validates the user owns the specified key
 6. System retrieves the signing key from the user's key manager
@@ -206,14 +206,14 @@ current requested-permission checks.
 
 **For Approval:**
 
-- AccountSession must be logged in
-- AccountSession must have a key with Admin permission for the target database
+- The account must be logged in
+- The session must have a key with Admin permission for the target database
 - That key must be in the database's auth settings
 
 **For Rejection:**
 
-- AccountSession must be logged in
-- AccountSession must have a key with Admin permission for the target database
+- The account must be logged in
+- The session must have a key with Admin permission for the target database
 - That key must be in the database's auth settings
 - System explicitly validates Admin permission before allowing rejection
 
@@ -384,7 +384,7 @@ The bootstrap and access control system provides:
 **Bootstrap Protocol:**
 
 - Secure request/approval workflow
-- AccountSession-controlled access grants
+- Account-controlled access grants
 - Integration with Account system for authentication
 
 Together, these mechanisms support both open and controlled access patterns for Eidetica databases.

@@ -22,7 +22,7 @@
 use super::{session::AccountSession, system_databases};
 use crate::{Database, NewAccount, Result, auth::crypto::PublicKey, entry::ID};
 
-/// Instance-admin capability view over a [`AccountSession`] session.
+/// Instance-admin capability view over an [`AccountSession`] session.
 ///
 /// Obtain via [`AccountSession::admin`](crate::account::AccountSession::admin). See the
 /// [module docs](self) for the rationale behind the separate type.
@@ -32,7 +32,7 @@ pub struct InstanceAdmin<'a> {
 }
 
 impl<'a> InstanceAdmin<'a> {
-    /// Wrap a account session as an admin view.
+    /// Wrap an account session as an admin view.
     ///
     /// Only [`AccountSession::admin`](crate::account::AccountSession::admin) calls this, and only
     /// after confirming the account holds instance-admin — do not construct
@@ -41,7 +41,7 @@ impl<'a> InstanceAdmin<'a> {
         Self { user }
     }
 
-    /// Create a new account account.
+    /// Create a new account.
     ///
     /// Signs the `_users` write with this admin's session key and authors the
     /// new account's database via the regular `Database::create` wire path. The
@@ -51,8 +51,9 @@ impl<'a> InstanceAdmin<'a> {
     /// is the same one code path on local and remote instances — no
     /// daemon-side RPC and no plaintext password on the wire.
     ///
-    /// Returns the new account's UUID (stable internal identifier). Use
-    /// [`Instance::login_account`] to obtain a [`AccountSession`] session for the new
+    /// Returns the new instance-local login ID (see
+    /// [`AccountSession::login_id`]), not the Account root ID. Use
+    /// [`Instance::login_account`] to obtain an [`AccountSession`] session for the new
     /// account; materialising it directly here would require the admin's
     /// connection to read the new account's own tree over the wire, where the
     /// session gate (correctly) rejects the admin as a non-member.
@@ -76,7 +77,7 @@ impl<'a> InstanceAdmin<'a> {
         Ok(login_id)
     }
 
-    /// List all account IDs.
+    /// List the login names of all accounts registered on this instance.
     ///
     /// Reads `_users` via the admin's session key, so it works on both local
     /// and remote instances.

@@ -374,7 +374,7 @@ pub async fn test_concurrent_tree_operations(user: &mut AccountSession) -> Vec<D
         create_user_profile(
             &tree,
             &format!("user{i}"),
-            &format!("AccountSession {i}"),
+            &format!("User {i}"),
             &format!("user{i}@test.com"),
         )
         .await;

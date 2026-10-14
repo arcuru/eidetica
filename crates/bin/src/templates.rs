@@ -284,7 +284,7 @@ pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> St
             <span class="value">{}</span>
         </div>
         <div class="info-row">
-            <span class="label">AccountSession UUID:</span>
+            <span class="label">Login ID:</span>
             <span class="value code">{}</span>
         </div>
 

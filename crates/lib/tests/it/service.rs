@@ -3063,7 +3063,7 @@ async fn test_client_drop_releases_daemon_subscription() {
 /// A user's non-default, per-database key must be usable to open that database
 /// over a service connection.
 ///
-/// A `AccountSession` holds many keys, and `AccountSession::add_private_key` + `create_database`
+/// An `AccountSession` holds many keys, and `AccountSession::add_private_key` + `create_database`
 /// is the ordinary way to give one database its own signing identity. The
 /// resulting tree's `auth_settings` grant that per-database key and **not**
 /// the user's default key, which is also the pubkey the connection logged in

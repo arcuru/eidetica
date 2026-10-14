@@ -30,7 +30,7 @@ Data is automatically saved to the SQLite file. Authentication is managed throug
 
 ### 2. Users (`AccountSession`)
 
-Users provide authenticated access to databases. A `AccountSession` manages signing keys and database access. The Todo example creates a passwordless user for simplicity, bootstrapping it as the initial admin on a fresh data file via `Instance::connect_or_create`:
+Users provide authenticated access to databases. An `AccountSession` manages signing keys and database access. The Todo example creates a passwordless user for simplicity, bootstrapping it as the initial admin on a fresh data file via `Instance::connect_or_create`:
 
 ```rust,ignore
 async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, AccountSession)> {

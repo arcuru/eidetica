@@ -598,7 +598,7 @@ async fn test_table_multiple_operations() {
         .get(&key1)
         .await
         .expect("Failed to get final record1");
-    assert_eq!(final_record1.name, "Updated AccountSession 1");
+    assert_eq!(final_record1.name, "Updated User 1");
     assert_eq!(final_record1.age, 21);
     assert_eq!(final_record1.email, "user1@updated.com");
 
@@ -607,7 +607,7 @@ async fn test_table_multiple_operations() {
         .get(&key2)
         .await
         .expect("Failed to get final record2");
-    assert_eq!(final_record2.name, "Initial AccountSession 2");
+    assert_eq!(final_record2.name, "Initial User 2");
     assert_eq!(final_record2.age, 25);
     assert_eq!(final_record2.email, "user2@initial.com");
 
@@ -616,7 +616,7 @@ async fn test_table_multiple_operations() {
         .get(&key3)
         .await
         .expect("Failed to get final record3");
-    assert_eq!(final_record3.name, "New AccountSession 3");
+    assert_eq!(final_record3.name, "New User 3");
     assert_eq!(final_record3.age, 30);
     assert_eq!(final_record3.email, "user3@new.com");
 
@@ -692,17 +692,17 @@ async fn test_table_delete_basic() {
     // Create initial records using helper
     let initial_records = vec![
         TestRecord {
-            name: "AccountSession 1".to_string(),
+            name: "User 1".to_string(),
             age: 25,
             email: "user1@test.com".to_string(),
         },
         TestRecord {
-            name: "AccountSession 2".to_string(),
+            name: "User 2".to_string(),
             age: 30,
             email: "user2@test.com".to_string(),
         },
         TestRecord {
-            name: "AccountSession 3".to_string(),
+            name: "User 3".to_string(),
             age: 35,
             email: "user3@test.com".to_string(),
         },
@@ -739,13 +739,13 @@ async fn test_table_delete_basic() {
             .get(&keys[0])
             .await
             .expect("Record 1 should still exist");
-        assert_eq!(record1.name, "AccountSession 1");
+        assert_eq!(record1.name, "User 1");
 
         let record3 = table
             .get(&keys[2])
             .await
             .expect("Record 3 should still exist");
-        assert_eq!(record3.name, "AccountSession 3");
+        assert_eq!(record3.name, "User 3");
     }
     txn.commit().await.expect("Failed to commit transaction");
 
@@ -763,7 +763,7 @@ async fn test_table_delete_nonexistent() {
 
     // Create one record
     let record = TestRecord {
-        name: "Existing AccountSession".to_string(),
+        name: "Existing User".to_string(),
         age: 30,
         email: "existing@test.com".to_string(),
     };
@@ -800,7 +800,7 @@ async fn test_table_delete_nonexistent() {
             .get(&keys[0])
             .await
             .expect("Existing record should remain");
-        assert_eq!(existing.name, "Existing AccountSession");
+        assert_eq!(existing.name, "Existing User");
     }
     txn.commit().await.expect("Failed to commit transaction");
 
@@ -814,7 +814,7 @@ async fn test_table_delete_and_reinsert() {
 
     // Create initial record
     let initial_record = TestRecord {
-        name: "Original AccountSession".to_string(),
+        name: "Original User".to_string(),
         age: 25,
         email: "original@test.com".to_string(),
     };
@@ -861,7 +861,7 @@ async fn test_table_delete_and_reinsert() {
             .expect("Failed to get Table");
 
         let new_record = TestRecord {
-            name: "New AccountSession".to_string(),
+            name: "New User".to_string(),
             age: 30,
             email: "new@test.com".to_string(),
         };
@@ -882,7 +882,7 @@ async fn test_table_delete_and_reinsert() {
 
     // Verify new record persisted with same key
     let new_record = TestRecord {
-        name: "New AccountSession".to_string(),
+        name: "New User".to_string(),
         age: 30,
         email: "new@test.com".to_string(),
     };
@@ -1038,7 +1038,7 @@ async fn test_table_delete_concurrent_modifications() {
             .await
             .expect("Failed to get Table");
         let record = TestRecord {
-            name: "Base AccountSession".to_string(),
+            name: "Base User".to_string(),
             age: 25,
             email: "base@test.com".to_string(),
         };
@@ -1084,7 +1084,7 @@ async fn test_table_delete_concurrent_modifications() {
             .expect("Failed to get Table");
 
         let updated_record = TestRecord {
-            name: "Updated AccountSession".to_string(),
+            name: "Updated User".to_string(),
             age: 30,
             email: "updated@test.com".to_string(),
         };
@@ -1115,7 +1115,7 @@ async fn test_table_delete_concurrent_modifications() {
     match result {
         Ok(record) => {
             // Update won - verify it's the updated record
-            assert_eq!(record.name, "Updated AccountSession");
+            assert_eq!(record.name, "Updated User");
         }
         Err(_) => {
             // Delete won - record doesn't exist
