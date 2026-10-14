@@ -1040,3 +1040,101 @@ async fn test_password_store_open_uninitialized_fails() {
     let result = encrypted.open("password");
     assert!(result.is_err());
 }
+
+// Build the old envelope independently: v0 fed the unpadded base64 *text* to
+// Argon2, and its output directly encrypted Store metadata and Entry history.
+fn legacy_password_config(m: Option<u32>, t: Option<u32>, p: Option<u32>) -> Doc {
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+    use argon2::{Algorithm, Argon2, Params, Version};
+    use eidetica::store::EncryptedFragment;
+
+    let salt = "MDEyMzQ1Njc4OUFCQ0RFRg";
+    let mut key = [0; 32];
+    Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(m.unwrap_or(19456), t.unwrap_or(2), p.unwrap_or(1), Some(32)).unwrap(),
+    )
+    .hash_password_into(b"legacy password", salt.as_bytes(), &mut key)
+    .unwrap();
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "type": DocStore::type_id(), "config": Doc::new()
+    }))
+    .unwrap();
+    let nonce = [7; 12];
+    let ciphertext = Aes256Gcm::new_from_slice(&key)
+        .unwrap()
+        .encrypt(Nonce::from_slice(&nonce), metadata.as_slice())
+        .unwrap();
+    let mut encryption = Doc::new();
+    encryption.set("algorithm", "aes-256-gcm");
+    encryption.set("kdf", "argon2id");
+    encryption.set("version", "v0");
+    encryption.set("salt", salt);
+    for (name, value) in [
+        ("argon2_m_cost", m),
+        ("argon2_t_cost", t),
+        ("argon2_p_cost", p),
+    ] {
+        if let Some(value) = value {
+            encryption.set(name, value);
+        }
+    }
+    let mut config = Doc::atomic();
+    config.set("encryption", encryption);
+    config.set(
+        "wrapped_config",
+        Doc::from(EncryptedFragment {
+            ciphertext,
+            nonce: nonce.to_vec(),
+        }),
+    );
+    config
+}
+
+#[tokio::test]
+async fn test_password_store_legacy_text_salt_and_missing_costs() {
+    let (_instance, database) = setup_tree().await;
+    for (name, costs) in [
+        ("legacy_defaults", (None, None, None)),
+        ("legacy_explicit", (Some(8), Some(1), Some(1))),
+    ] {
+        let config = legacy_password_config(costs.0, costs.1, costs.2);
+        set_invalid_password_store_config(&database, name, config).await;
+        let tx = database.new_transaction().await.unwrap();
+        let mut encrypted = tx.get_store::<PasswordStore<DocStore>>(name).await.unwrap();
+        assert!(encrypted.open("wrong password").is_err());
+        encrypted.open("legacy password").unwrap();
+        encrypted
+            .inner()
+            .await
+            .unwrap()
+            .set("key", "legacy value")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_password_docstore_data(
+            &database,
+            name,
+            "legacy password",
+            &[("key", "legacy value")],
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn test_password_store_rejects_excessive_kdf_iterations() {
+    let (_instance, database) = setup_tree().await;
+    // Tiny memory makes the unbounded old path cheap to exercise, but its valid
+    // ciphertext proves rejection is the work ceiling, not a wrong password.
+    let config = legacy_password_config(Some(8), Some(11), Some(1));
+    set_invalid_password_store_config(&database, "expensive", config).await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("expensive")
+        .await
+        .unwrap();
+    assert!(encrypted.open("legacy password").is_err());
+    assert!(!encrypted.is_open());
+}
