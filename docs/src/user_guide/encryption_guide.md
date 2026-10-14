@@ -83,12 +83,41 @@ A wrong password cannot decrypt the wrapped Store metadata, so `open` fails befo
 is available. There is no recovery key or password-reset operation. Losing the password loses
 access to the Store; back up the password separately from the database.
 
-The password and derived key remain in the client process until the last clone of the opened
-transaction drops. Their owning buffers, and PasswordStore's temporary keys and plaintext JSON
+The opened wrapper retains the password for explicit upgrades. The transaction encryptor retains
+the data key until the last transaction clone drops. Their owning buffers, and PasswordStore's temporary keys and plaintext JSON
 buffers, are cleared when dropped, including after errors. Applications should not assume that
 their own copies of the password, plaintext values returned to them, or parser, cryptographic or
 allocator copies are erased from memory. Errors about malformed decrypted data do not include the
 decrypted content. Keep transactions short and avoid logging passwords or decrypted values.
+
+## KDF upgrades
+
+New Stores use a v1 KDF envelope with raw salt bytes. Existing v0 Stores remain readable with
+their original text-salt derivation. `open` uses the stored parameters without migrating anything.
+After a successful open, the application can check `needs_rehash()` and explicitly opt into an
+upgrade:
+
+```rust
+# extern crate eidetica;
+# use eidetica::store::{PasswordStore, DocStore};
+# async fn upgrade(encrypted: &mut PasswordStore<DocStore>) -> eidetica::Result<()> {
+if encrypted.needs_rehash()? {
+    encrypted.upgrade_kdf().await?;
+}
+# Ok(())
+# }
+```
+
+Commit the owning transaction to persist the upgrade. The method uses the password already
+authenticated by `open`; it refuses locked or uninitialized Stores and returns `false` when
+already current. It keeps costs above current defaults rather than lowering them. Initialization
+defaults remain 19 MiB, two iterations and one lane. Opens reject costs above 256 MiB, ten iterations
+or sixteen lanes before running Argon2, including configurations received through the service.
+
+The upgrade rewraps the same data key, so existing encrypted history and caches remain readable.
+It is not password rotation: immutable old metadata and backups still allow an offline attacker
+to try the old derivation against that same data key. It neither erases old copies nor increases
+the cost of attacking them.
 
 ## Choosing a wrapped Store
 

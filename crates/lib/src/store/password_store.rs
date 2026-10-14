@@ -1,7 +1,7 @@
 //! Password-encrypted store wrapper for transparent encryption of any Store type.
 //!
 //! This module provides [`PasswordStore<S>`], a generic decorator that wraps any
-//! [`Store`] type `S` with AES-256-GCM encryption using Argon2id-derived keys.
+//! [`Store`] type `S` with AES-256-GCM encryption protected by Argon2id-derived keys.
 //! The wrapped store's type and configuration are stored encrypted in the `_index`
 //! subtree.
 //!
@@ -27,7 +27,7 @@
 //! It is unnecessary to decrypt the data before forwarding it to other nodes.
 
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
@@ -35,6 +35,7 @@ use aes_gcm::{
 };
 use argon2::{Argon2, Params, password_hash::SaltString};
 use async_trait::async_trait;
+use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -70,17 +71,27 @@ pub const DEFAULT_ARGON2_T_COST: u32 = 2;
 /// Default Argon2 parallelism
 pub const DEFAULT_ARGON2_P_COST: u32 = 1;
 
+/// Maximum accepted Argon2 memory cost in KiB (256 MiB), checked before derivation.
+pub const MAX_ARGON2_M_COST: u32 = 256 * 1024;
+/// Maximum accepted Argon2 iteration count, checked before derivation.
+pub const MAX_ARGON2_T_COST: u32 = 10;
+/// Maximum accepted Argon2 parallelism, checked before derivation.
+pub const MAX_ARGON2_P_COST: u32 = 16;
+
 /// Encryption metadata stored in _index config (plaintext)
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct EncryptionInfo {
-    /// Encryption algorithm (always "aes-256-gcm" for v1)
+    /// Encryption algorithm ("aes-256-gcm").
     pub algorithm: String,
-    /// Key derivation function (always "argon2id" for v1)
+    /// Key derivation function ("argon2id", Argon2 version 0x13).
     pub kdf: String,
     /// Base64-encoded salt for Argon2 (16 bytes)
     pub salt: String,
-    /// Version for future compatibility
+    /// Envelope version: "v0" derives the data key directly; "v1" wraps it.
     pub version: String,
+    /// Argon2 salt input: absent or "base64-text" for v0; "raw" for v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salt_encoding: Option<String>,
     /// Argon2 memory cost in KiB (defaults to 19 MiB if not specified)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub argon2_m_cost: Option<u32>,
@@ -100,6 +111,158 @@ pub struct PasswordStoreConfig {
     /// Encrypted wrapped store metadata.
     /// Contains the wrapped store's configuration, e.g: {"type": "docstore:v0", "config": "{}"}
     pub wrapped_config: EncryptedFragment,
+    /// v1 data key encrypted under the password-derived key; absent in v0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapped_key: Option<EncryptedFragment>,
+}
+
+impl EncryptionInfo {
+    fn current(m: u32, t: u32, p: u32) -> Self {
+        Self {
+            algorithm: "aes-256-gcm".to_string(),
+            kdf: "argon2id".to_string(),
+            salt: SaltString::generate(&mut OsRng).as_str().to_string(),
+            version: "v1".to_string(),
+            salt_encoding: Some("raw".to_string()),
+            argon2_m_cost: Some(m),
+            argon2_t_cost: Some(t),
+            argon2_p_cost: Some(p),
+        }
+    }
+
+    fn costs(&self) -> (u32, u32, u32) {
+        // These are wire-format defaults, not upgrade policy: keep them fixed
+        // when raising DEFAULT_ARGON2_* so old omitted costs stay readable.
+        (
+            self.argon2_m_cost.unwrap_or(19 * 1024),
+            self.argon2_t_cost.unwrap_or(2),
+            self.argon2_p_cost.unwrap_or(1),
+        )
+    }
+
+    fn derive_key(&self, password: &str, store: &str) -> Result<SecretBytes> {
+        let invalid = |reason: String| StoreError::InvalidConfiguration {
+            store: store.to_string(),
+            reason,
+        };
+        if self.algorithm != "aes-256-gcm" || self.kdf != "argon2id" {
+            return Err(invalid("Unsupported encryption algorithm or KDF".to_string()).into());
+        }
+        let raw_salt = match (self.version.as_str(), self.salt_encoding.as_deref()) {
+            ("v0", None | Some("base64-text")) => false,
+            ("v1", Some("raw"))
+                if self.argon2_m_cost.is_some()
+                    && self.argon2_t_cost.is_some()
+                    && self.argon2_p_cost.is_some() =>
+            {
+                true
+            }
+            _ => {
+                return Err(invalid(
+                    "Unsupported KDF envelope version or salt encoding".to_string(),
+                )
+                .into());
+            }
+        };
+        let (m, t, p) = self.costs();
+        if m > MAX_ARGON2_M_COST || t > MAX_ARGON2_T_COST || p > MAX_ARGON2_P_COST {
+            return Err(invalid(
+                "Argon2 parameters exceed the decrypt-side work ceiling".to_string(),
+            )
+            .into());
+        }
+        let params = Params::new(m, t, p, Some(32))
+            .map_err(|error| invalid(format!("Invalid Argon2 parameters: {error}")))?;
+        let salt = SaltString::from_b64(&self.salt)
+            .map_err(|error| invalid(format!("Invalid salt: {error}")))?;
+        let mut decoded = [0u8; 64];
+        let salt_bytes = if raw_salt {
+            salt.decode_b64(&mut decoded)
+                .map_err(|error| invalid(format!("Invalid salt: {error}")))?
+        } else {
+            salt.as_str().as_bytes()
+        };
+        let mut key = SecretBytes::zeroed(32);
+        Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+            .hash_password_into(password.as_bytes(), salt_bytes, key.as_mut_bytes())
+            .map_err(|error| invalid(format!("Key derivation failed: {error}")))?;
+        Ok(key)
+    }
+}
+
+impl EncryptedFragment {
+    fn encrypt(key: &[u8], plaintext: &[u8], store: &str) -> Result<Self> {
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|_| StoreError::InvalidConfiguration {
+                store: store.to_string(),
+                reason: "Invalid encryption key length".to_string(),
+            })?;
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let ciphertext =
+            cipher
+                .encrypt(&nonce, plaintext)
+                .map_err(|_| StoreError::ImplementationError {
+                    store: store.to_string(),
+                    reason: "Failed to encrypt configuration".to_string(),
+                })?;
+        Ok(Self {
+            ciphertext,
+            nonce: nonce.to_vec(),
+        })
+    }
+
+    fn decrypt(&self, key: &[u8], store: &str) -> Result<SecretBytes> {
+        if self.nonce.len() != AES_GCM_NONCE_SIZE {
+            return Err(StoreError::InvalidConfiguration {
+                store: store.to_string(),
+                reason: "Invalid configuration nonce length".to_string(),
+            }
+            .into());
+        }
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|_| StoreError::InvalidConfiguration {
+                store: store.to_string(),
+                reason: "Invalid encryption key length".to_string(),
+            })?;
+        cipher
+            .decrypt(Nonce::from_slice(&self.nonce), self.ciphertext.as_slice())
+            .map(SecretBytes::from_vec)
+            .map_err(|_| {
+                StoreError::ImplementationError {
+                    store: store.to_string(),
+                    reason: "Failed to decrypt configuration - incorrect password?".to_string(),
+                }
+                .into()
+            })
+    }
+}
+
+impl PasswordStoreConfig {
+    fn data_key(&self, password: &str, store: &str) -> Result<SecretBytes> {
+        if !matches!(
+            (self.encryption.version.as_str(), &self.wrapped_key),
+            ("v0", None) | ("v1", Some(_))
+        ) {
+            return Err(StoreError::InvalidConfiguration {
+                store: store.to_string(),
+                reason: "Invalid key wrapping for KDF envelope version".to_string(),
+            }
+            .into());
+        }
+        let key = self.encryption.derive_key(password, store)?;
+        let Some(wrapped_key) = &self.wrapped_key else {
+            return Ok(key);
+        };
+        let data_key = wrapped_key.decrypt(key.as_bytes(), store)?;
+        if data_key.as_bytes().len() != 32 {
+            return Err(StoreError::InvalidConfiguration {
+                store: store.to_string(),
+                reason: "Invalid unwrapped data key length".to_string(),
+            }
+            .into());
+        }
+        Ok(data_key)
+    }
 }
 
 impl From<EncryptedFragment> for Doc {
@@ -145,6 +308,9 @@ impl From<EncryptionInfo> for Doc {
         doc.set("kdf", info.kdf);
         doc.set("salt", info.salt);
         doc.set("version", info.version);
+        if let Some(encoding) = info.salt_encoding {
+            doc.set("salt_encoding", encoding);
+        }
         if let Some(m) = info.argon2_m_cost {
             doc.set("argon2_m_cost", m);
         }
@@ -172,15 +338,19 @@ impl TryFrom<&Doc> for EncryptionInfo {
         };
 
         let cost = |key: &str| -> crate::Result<Option<u32>> {
-            doc.get_as::<i64>(key)
-                .map(|v| {
-                    u32::try_from(v).map_err(|_| {
-                        crate::Error::from(CRDTError::DeserializationFailed {
-                            reason: format!("{key}: value {v} out of u32 range"),
-                        })
-                    })
-                })
-                .transpose()
+            match doc.get(key) {
+                None => Ok(None),
+                Some(Value::Int(v)) => u32::try_from(*v).map(Some).map_err(|_| {
+                    CRDTError::DeserializationFailed {
+                        reason: format!("{key}: value out of u32 range"),
+                    }
+                    .into()
+                }),
+                _ => Err(CRDTError::DeserializationFailed {
+                    reason: format!("{key}: expected an integer"),
+                }
+                .into()),
+            }
         };
 
         Ok(EncryptionInfo {
@@ -188,6 +358,10 @@ impl TryFrom<&Doc> for EncryptionInfo {
             kdf: text("kdf")?,
             salt: text("salt")?,
             version: text("version")?,
+            salt_encoding: doc
+                .get("salt_encoding")
+                .map(|_| text("salt_encoding"))
+                .transpose()?,
             argon2_m_cost: cost("argon2_m_cost")?,
             argon2_t_cost: cost("argon2_t_cost")?,
             argon2_p_cost: cost("argon2_p_cost")?,
@@ -201,6 +375,9 @@ impl From<PasswordStoreConfig> for Doc {
         let mut doc = Doc::atomic();
         doc.set("encryption", Value::Doc(config.encryption.into()));
         doc.set("wrapped_config", Value::Doc(config.wrapped_config.into()));
+        if let Some(key) = config.wrapped_key {
+            doc.set("wrapped_key", Value::Doc(key.into()));
+        }
         doc
     }
 }
@@ -222,6 +399,10 @@ impl TryFrom<&Doc> for PasswordStoreConfig {
         Ok(PasswordStoreConfig {
             encryption: sub("encryption")?.try_into()?,
             wrapped_config: sub("wrapped_config")?.try_into()?,
+            wrapped_key: doc
+                .get("wrapped_key")
+                .map(|_| sub("wrapped_key")?.try_into())
+                .transpose()?,
         })
     }
 }
@@ -350,49 +531,18 @@ enum PasswordStoreState {
     Unlocked,
 }
 
-/// Securely stored password with automatic zeroization
+/// Securely stored password with automatic zeroization.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 struct Password {
-    salt: String,
     password: String,
-    /// Argon2 memory cost in KiB
-    argon2_m_cost: u32,
-    /// Argon2 time cost
-    argon2_t_cost: u32,
-    /// Argon2 parallelism
-    argon2_p_cost: u32,
 }
 
-/// Cached derived master key, zeroized when its last owner drops.
-struct DerivedKey {
-    key: Option<SecretBytes>,
-}
-
-impl DerivedKey {
-    fn new() -> Self {
-        Self { key: None }
-    }
-
-    /// Take ownership of a guarded key buffer without copying it.
-    fn set(&mut self, key: SecretBytes) {
-        self.key = Some(key);
-    }
-
-    fn get(&self) -> Option<&[u8]> {
-        self.key.as_ref().map(SecretBytes::as_bytes)
-    }
-}
-
-/// Password-based encryptor implementing the Encryptor trait
-///
-/// Provides AES-256-GCM encryption with Argon2id key derivation.
-/// Caches the derived key to avoid expensive re-derivation on every operation.
+/// Password-based encryptor implementing the Encryptor trait.
+/// Shares the authenticated data key with the opened wrapper, not the KDF key.
 struct PasswordEncryptor {
-    password: Password,
+    key: Arc<SecretBytes>,
     subtree_name: String,
     store_identity: Vec<u8>,
-    /// Cached derived key (zeroized on drop, thread-safe)
-    derived_key: Arc<Mutex<DerivedKey>>,
 }
 
 #[derive(Serialize)]
@@ -412,92 +562,29 @@ struct DecryptedRecordEnvelope {
 
 impl PasswordEncryptor {
     /// Create a new PasswordEncryptor
-    fn new(password: Password, subtree_name: String, database_id: &[u8]) -> Self {
+    fn new(key: Arc<SecretBytes>, subtree_name: String, database_id: &[u8]) -> Self {
         let mut store_identity = database_id.to_vec();
         store_identity.push(0);
         store_identity.extend_from_slice(subtree_name.as_bytes());
         Self {
-            password,
+            key,
             subtree_name,
             store_identity,
-            derived_key: Arc::new(Mutex::new(DerivedKey::new())),
         }
     }
 
-    /// Execute a function with access to the encryption key (with caching)
-    ///
-    /// Provides a reference to the key without cloning it. This avoids
-    /// leaving unzeroized copies of the key in memory. The lock is held
-    /// during key derivation to prevent concurrent derivation races.
-    fn with_key<F, R>(&self, f: F) -> Result<R>
-    where
-        F: FnOnce(&[u8]) -> Result<R>,
-    {
-        let mut guard = self.derived_key.lock().unwrap();
-
-        // Check if key is already cached
-        if let Some(key) = guard.get() {
-            return f(key);
-        }
-
-        // Derive the key (expensive Argon2 operation, but only done once). The output buffer is
-        // guarded before any fallible step and then moved into the cache without copying.
-        let mut key = SecretBytes::zeroed(32);
-        let salt = SaltString::from_b64(&self.password.salt).map_err(|e| {
-            StoreError::ImplementationError {
-                store: self.subtree_name.clone(),
-                reason: format!("Invalid salt: {e}"),
-            }
-        })?;
-
-        // Build Argon2 with configured parameters
-        let params = Params::new(
-            self.password.argon2_m_cost,
-            self.password.argon2_t_cost,
-            self.password.argon2_p_cost,
-            Some(32), // output length
-        )
-        .map_err(|e| StoreError::ImplementationError {
-            store: self.subtree_name.clone(),
-            reason: format!("Invalid Argon2 parameters: {e}"),
-        })?;
-
-        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-
-        argon2
-            .hash_password_into(
-                self.password.password.as_bytes(),
-                salt.as_str().as_bytes(),
-                key.as_mut_bytes(),
-            )
-            .map_err(|e| StoreError::ImplementationError {
-                store: self.subtree_name.clone(),
-                reason: format!("Key derivation failed: {e}"),
-            })?;
-
-        // Cache the key for future use
-        guard.set(key);
-
-        // Execute function with the derived key (guard still held)
-        f(guard.get().unwrap())
+    fn record_key_material(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(blake3::derive_key(
+            "eidetica/password-store/record-key/v1",
+            self.key.as_bytes(),
+        ))
     }
 
-    fn record_key_material(&self) -> Result<Zeroizing<[u8; 32]>> {
-        self.with_key(|master| {
-            Ok(Zeroizing::new(blake3::derive_key(
-                "eidetica/password-store/record-key/v1",
-                master,
-            )))
-        })
-    }
-
-    fn record_value_material(&self) -> Result<Zeroizing<[u8; 32]>> {
-        self.with_key(|master| {
-            Ok(Zeroizing::new(blake3::derive_key(
-                "eidetica/password-store/record-value/v1",
-                master,
-            )))
-        })
+    fn record_value_material(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(blake3::derive_key(
+            "eidetica/password-store/record-value/v1",
+            self.key.as_bytes(),
+        ))
     }
 
     /// Encrypt one row envelope with a caller-supplied 12-byte nonce.
@@ -507,7 +594,7 @@ impl PasswordEncryptor {
         plaintext: &[u8],
         nonce: &[u8],
     ) -> Result<Vec<u8>> {
-        let key = self.record_value_material()?;
+        let key = self.record_value_material();
         let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|error| {
             StoreError::ImplementationError {
                 store: self.subtree_name.clone(),
@@ -556,60 +643,56 @@ impl Encryptor for PasswordEncryptor {
 
         let (nonce_bytes, encrypted_data) = ciphertext.split_at(AES_GCM_NONCE_SIZE);
 
-        // Use the encryption key without cloning
-        self.with_key(|encryption_key| {
-            // Create cipher
-            let cipher = Aes256Gcm::new_from_slice(encryption_key).map_err(|e| {
-                StoreError::ImplementationError {
-                    store: self.subtree_name.clone(),
-                    reason: format!("Failed to create cipher: {e}"),
-                }
-            })?;
+        let encryption_key = self.key.as_bytes();
+        // Create cipher
+        let cipher = Aes256Gcm::new_from_slice(encryption_key).map_err(|e| {
+            StoreError::ImplementationError {
+                store: self.subtree_name.clone(),
+                reason: format!("Failed to create cipher: {e}"),
+            }
+        })?;
 
-            // Decrypt
-            let nonce = Nonce::from_slice(nonce_bytes);
-            cipher.decrypt(nonce, encrypted_data).map_err(|_| {
-                StoreError::ImplementationError {
-                    store: self.subtree_name.clone(),
-                    reason: "Decryption failed".to_string(),
-                }
-                .into()
-            })
+        // Decrypt
+        let nonce = Nonce::from_slice(nonce_bytes);
+        cipher.decrypt(nonce, encrypted_data).map_err(|_| {
+            StoreError::ImplementationError {
+                store: self.subtree_name.clone(),
+                reason: "Decryption failed".to_string(),
+            }
+            .into()
         })
     }
 
     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        // Use the encryption key without cloning
-        self.with_key(|encryption_key| {
-            // Create cipher
-            let cipher = Aes256Gcm::new_from_slice(encryption_key).map_err(|e| {
-                StoreError::ImplementationError {
+        let encryption_key = self.key.as_bytes();
+        // Create cipher
+        let cipher = Aes256Gcm::new_from_slice(encryption_key).map_err(|e| {
+            StoreError::ImplementationError {
+                store: self.subtree_name.clone(),
+                reason: format!("Failed to create cipher: {e}"),
+            }
+        })?;
+
+        // Generate random nonce
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+
+        // Encrypt
+        let ciphertext =
+            cipher
+                .encrypt(&nonce, plaintext)
+                .map_err(|e| StoreError::ImplementationError {
                     store: self.subtree_name.clone(),
-                    reason: format!("Failed to create cipher: {e}"),
-                }
-            })?;
+                    reason: format!("Encryption failed: {e}"),
+                })?;
 
-            // Generate random nonce
-            let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-
-            // Encrypt
-            let ciphertext =
-                cipher
-                    .encrypt(&nonce, plaintext)
-                    .map_err(|e| StoreError::ImplementationError {
-                        store: self.subtree_name.clone(),
-                        reason: format!("Encryption failed: {e}"),
-                    })?;
-
-            // Wire format: nonce (12 bytes) || ciphertext
-            let mut result = nonce.to_vec();
-            result.extend(ciphertext);
-            Ok(result)
-        })
+        // Wire format: nonce (12 bytes) || ciphertext
+        let mut result = nonce.to_vec();
+        result.extend(ciphertext);
+        Ok(result)
     }
 
     fn physical_record_key(&self, logical_key: &[u8]) -> Result<Vec<u8>> {
-        let key = self.record_key_material()?;
+        let key = self.record_key_material();
         Ok(blake3::keyed_hash(&key, logical_key).as_bytes().to_vec())
     }
 
@@ -627,7 +710,7 @@ impl Encryptor for PasswordEncryptor {
             .into());
         }
         let (nonce, ciphertext) = ciphertext.split_at(AES_GCM_NONCE_SIZE);
-        let key = self.record_value_material()?;
+        let key = self.record_value_material();
         let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|error| {
             StoreError::ImplementationError {
                 store: self.subtree_name.clone(),
@@ -725,8 +808,8 @@ fn physical_record_aad(store_identity: &[u8], physical_key: &[u8]) -> Vec<u8> {
 /// - **Metadata**: Backends can observe record counts, ciphertext sizes, and access patterns
 /// - **Memory**: Cleanup is best-effort for the owners above. Caller copies, plaintext
 ///   returned to the application, parsed `Doc`/CRDT values, parser, KDF, cipher and
-///   allocator copies are not erased, and the registered encryptor (with its password and
-///   key) lives until the last clone of the transaction drops
+///   allocator copies are not erased. The wrapper retains its password for explicit upgrades;
+///   the registered encryptor retains the data key until the last transaction clone drops
 ///
 /// # Examples
 ///
@@ -781,6 +864,8 @@ pub struct PasswordStore<S: Store> {
     config: Option<PasswordStoreConfig>,
     /// Cached password (zeroized on drop)
     cached_password: Option<Password>,
+    /// Stable data key shared with the transaction encryptor.
+    data_key: Option<Arc<SecretBytes>>,
     /// Phantom type for the wrapped store
     _phantom: PhantomData<S>,
 }
@@ -798,8 +883,11 @@ impl<S: Store> PasswordStore<S> {
 
 impl<S: Store> Registered for PasswordStore<S> {
     fn type_id() -> &'static str {
-        // Explicitly use v0 to indicate instability
-        "encrypted:password:v0"
+        "encrypted:password:v1"
+    }
+
+    fn supports_type_id(type_id: &str) -> bool {
+        matches!(type_id, "encrypted:password:v0" | "encrypted:password:v1")
     }
 }
 
@@ -839,6 +927,7 @@ impl<S: Store> Store for PasswordStore<S> {
                 transaction: txn.clone(),
                 config: None,
                 cached_password: None,
+                data_key: None,
                 _phantom: PhantomData,
             })
         } else {
@@ -876,6 +965,7 @@ impl<S: Store> Store for PasswordStore<S> {
                 transaction: txn.clone(),
                 config: Some(config),
                 cached_password: None,
+                data_key: None,
                 _phantom: PhantomData,
             })
         }
@@ -893,6 +983,7 @@ impl<S: Store> Store for PasswordStore<S> {
             transaction: txn.clone(),
             config: None,
             cached_password: None,
+            data_key: None,
             _phantom: PhantomData,
         })
     }
@@ -965,114 +1056,58 @@ impl<S: Store> PasswordStore<S> {
             .into());
         }
 
-        // Generate encryption parameters
-        let salt = SaltString::generate(&mut OsRng);
-
-        // Move the converted password into its zeroizing owner before any fallible work or
-        // await, using default Argon2 parameters.
-        let password = Password {
-            salt: salt.as_str().to_string(),
-            password: password.into(),
-            argon2_m_cost: DEFAULT_ARGON2_M_COST,
-            argon2_t_cost: DEFAULT_ARGON2_T_COST,
-            argon2_p_cost: DEFAULT_ARGON2_P_COST,
-        };
-
-        // Build Argon2 with configured parameters
-        let params = Params::new(
-            password.argon2_m_cost,
-            password.argon2_t_cost,
-            password.argon2_p_cost,
-            Some(32),
-        )
-        .map_err(|e| StoreError::ImplementationError {
-            store: self.name.clone(),
-            reason: format!("Invalid Argon2 parameters: {e}"),
+        let password = Password { password: password.into() };
+        let encryption = EncryptionInfo::current(
+            DEFAULT_ARGON2_M_COST,
+            DEFAULT_ARGON2_T_COST,
+            DEFAULT_ARGON2_P_COST,
+        );
+        let wrapping_key = encryption.derive_key(&password.password, &self.name)?;
+        let mut data_key = SecretBytes::zeroed(32);
+        OsRng.fill_bytes(data_key.as_mut_bytes());
+        let wrapped_json = SecretBytes::json(&WrappedStoreInfoRef {
+            type_id: S::type_id(),
+            config: &wrapped_config,
         })?;
-        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-
-        // Derive encryption key from password
-        let mut encryption_key = SecretBytes::zeroed(32);
-        argon2
-            .hash_password_into(
-                password.password.as_bytes(),
-                salt.as_str().as_bytes(),
-                encryption_key.as_mut_bytes(),
-            )
-            .map_err(|e| StoreError::ImplementationError {
-                store: self.name.clone(),
-                reason: format!("Failed to derive encryption key: {e}"),
-            })?;
-
-        // Create cipher
-        let cipher = Aes256Gcm::new_from_slice(encryption_key.as_bytes()).map_err(|e| {
-            StoreError::ImplementationError {
-                store: self.name.clone(),
-                reason: format!("Failed to create cipher: {e}"),
-            }
-        })?;
-
-        // Encrypt wrapped store metadata. The JSON plaintext is guarded and dropped before
-        // the persistence await below.
-        let config_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let wrapped_config_ciphertext = {
-            let wrapped_json = SecretBytes::json(&WrappedStoreInfoRef {
-                type_id: S::type_id(),
-                config: &wrapped_config,
-            })?;
-            cipher
-                .encrypt(&config_nonce, wrapped_json.as_bytes())
-                .map_err(|e| StoreError::ImplementationError {
-                    store: self.name.clone(),
-                    reason: format!("Failed to encrypt wrapped config: {e}"),
-                })?
-        };
-        drop(wrapped_config);
-
-        // Wipe the temporary encryption key as soon as it is no longer needed
-        drop(cipher);
-        drop(encryption_key);
-
-        // Create configuration
         let config = PasswordStoreConfig {
-            encryption: EncryptionInfo {
-                algorithm: "aes-256-gcm".to_string(),
-                kdf: "argon2id".to_string(),
-                salt: password.salt.clone(),
-                version: "v0".to_string(),
-                argon2_m_cost: Some(password.argon2_m_cost),
-                argon2_t_cost: Some(password.argon2_t_cost),
-                argon2_p_cost: Some(password.argon2_p_cost),
-            },
-            wrapped_config: EncryptedFragment {
-                ciphertext: wrapped_config_ciphertext,
-                nonce: config_nonce.to_vec(),
-            },
+            encryption,
+            wrapped_config: EncryptedFragment::encrypt(
+                data_key.as_bytes(),
+                wrapped_json.as_bytes(),
+                &self.name,
+            )?,
+            wrapped_key: Some(EncryptedFragment::encrypt(
+                wrapping_key.as_bytes(),
+                data_key.as_bytes(),
+                &self.name,
+            )?),
         };
-
-        // Update _index with the encryption config. If this fails or the future is dropped
-        // here, the password owner is wiped.
+        drop(wrapped_json);
+        drop(wrapped_config);
+        drop(wrapping_key);
         self.set_config(config.clone().into()).await?;
-
-        // Register encryptor with transaction (store is now unlocked)
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password.clone(),
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
-        self.transaction.register_encryptor(&self.name, encryptor)?;
-
-        // Update internal state
+        let data_key = Arc::new(data_key);
+        self.transaction.register_encryptor(
+            &self.name,
+            Box::new(PasswordEncryptor::new(
+                Arc::clone(&data_key),
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )),
+        )?;
         self.config = Some(config);
         self.cached_password = Some(password);
+        self.data_key = Some(data_key);
 
         Ok(())
     }
 
     /// Open (unlock) the encrypted store with a password
     ///
-    /// This decrypts the wrapped store configuration and caches the password
-    /// for subsequent encrypt/decrypt operations.
+    /// This derives from the stored KDF parameters, unlocks the data key and
+    /// authenticates the wrapped Store configuration. It never changes the
+    /// envelope; use `needs_rehash()` and explicitly call `upgrade_kdf()`.
+    /// The password is retained only for an explicit KDF upgrade.
     ///
     /// # Arguments
     /// * `password` - Password to decrypt the store
@@ -1114,104 +1149,20 @@ impl<S: Store> PasswordStore<S> {
         }
 
         let config = self.config.as_ref().expect("Locked state requires config");
+        let password = Password { password: password.into() };
+        let data_key = config.data_key(&password.password, &self.name)?;
+        let decrypted_config = config.wrapped_config.decrypt(data_key.as_bytes(), &self.name)?;
 
-        // Move the converted password into its zeroizing owner before any fallible work,
-        // with Argon2 parameters from config (with defaults).
-        let password = Password {
-            salt: config.encryption.salt.clone(),
-            password: password.into(),
-            argon2_m_cost: config
-                .encryption
-                .argon2_m_cost
-                .unwrap_or(DEFAULT_ARGON2_M_COST),
-            argon2_t_cost: config
-                .encryption
-                .argon2_t_cost
-                .unwrap_or(DEFAULT_ARGON2_T_COST),
-            argon2_p_cost: config
-                .encryption
-                .argon2_p_cost
-                .unwrap_or(DEFAULT_ARGON2_P_COST),
-        };
-
-        // Derive encryption key
-        let mut encryption_key = SecretBytes::zeroed(32);
-        let salt = SaltString::from_b64(&config.encryption.salt).map_err(|e| {
-            StoreError::ImplementationError {
-                store: self.name.clone(),
-                reason: format!("Invalid salt in config: {e}"),
-            }
-        })?;
-
-        // Build Argon2 with configured parameters
-        let params = Params::new(
-            password.argon2_m_cost,
-            password.argon2_t_cost,
-            password.argon2_p_cost,
-            Some(32),
-        )
-        .map_err(|e| StoreError::ImplementationError {
-            store: self.name.clone(),
-            reason: format!("Invalid Argon2 parameters: {e}"),
-        })?;
-        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-
-        argon2
-            .hash_password_into(
-                password.password.as_bytes(),
-                salt.as_str().as_bytes(),
-                encryption_key.as_mut_bytes(),
-            )
-            .map_err(|e| StoreError::ImplementationError {
-                store: self.name.clone(),
-                reason: format!("Failed to derive encryption key: {e}"),
-            })?;
-
-        // Decrypt wrapped config
-        let cipher = Aes256Gcm::new_from_slice(encryption_key.as_bytes()).map_err(|e| {
-            StoreError::ImplementationError {
-                store: self.name.clone(),
-                reason: format!("Failed to create cipher: {e}"),
-            }
-        })?;
-
-        // Validate nonce length (must be 12 bytes for AES-GCM)
-        if config.wrapped_config.nonce.len() != 12 {
-            return Err(StoreError::InvalidConfiguration {
-                store: self.name.clone(),
-                reason: format!(
-                    "Invalid nonce length: expected 12 bytes, got {}",
-                    config.wrapped_config.nonce.len()
-                ),
-            }
-            .into());
-        }
-        let config_nonce = Nonce::from_slice(&config.wrapped_config.nonce);
-
-        let decrypted_config = SecretBytes::from_vec(
-            cipher
-                .decrypt(config_nonce, config.wrapped_config.ciphertext.as_slice())
-                .map_err(|_| StoreError::ImplementationError {
+        // Parser errors can quote decrypted content; retain only fixed diagnostic text.
+        let wrapped_info: WrappedStoreInfo =
+            serde_json::from_slice(decrypted_config.as_bytes()).map_err(|_| {
+                StoreError::DeserializationFailed {
                     store: self.name.clone(),
-                    reason: "Failed to decrypt wrapped config - incorrect password?".to_string(),
-                })?,
-        );
-
-        // Wipe the temporary encryption key as soon as it is no longer needed
-        drop(cipher);
-        drop(encryption_key);
-
-        // Parse wrapped store info, then wipe the decrypted JSON. The parser error is not
-        // carried: its message can quote decrypted content.
-        let wrapped_info: WrappedStoreInfo = serde_json::from_slice(decrypted_config.as_bytes())
-            .map_err(|_| StoreError::DeserializationFailed {
-                store: self.name.clone(),
-                reason: "Failed to parse wrapped store info".to_string(),
+                    reason: "Failed to parse wrapped store info".to_string(),
+                }
             })?;
         drop(decrypted_config);
 
-        // Verify the stored wrapped type matches the static type parameter S. The parsed
-        // metadata is not retained, and the decrypted type is not echoed in the error.
         let supported = S::supports_type_id(&wrapped_info.type_id);
         drop(wrapped_info);
         if !supported {
@@ -1223,18 +1174,87 @@ impl<S: Store> PasswordStore<S> {
             .into());
         }
 
-        // Cache password (state is derived from this field)
-        self.cached_password = Some(password.clone());
-
-        // Register encryptor with the transaction for transparent encryption
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password,
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
-        self.transaction.register_encryptor(&self.name, encryptor)?;
+        let data_key = Arc::new(data_key);
+        self.transaction.register_encryptor(
+            &self.name,
+            Box::new(PasswordEncryptor::new(
+                Arc::clone(&data_key),
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )),
+        )?;
+        self.cached_password = Some(password);
+        self.data_key = Some(data_key);
 
         Ok(())
+    }
+
+    /// Whether an authenticated Store needs the current KDF envelope or higher costs.
+    ///
+    /// This never changes metadata. Call after `open()` and explicitly opt into
+    /// [`Self::upgrade_kdf`] to stage an upgrade. Costs above current defaults
+    /// are preserved, not downgraded.
+    pub fn needs_rehash(&self) -> Result<bool> {
+        if !self.is_open() {
+            return Err(StoreError::InvalidOperation {
+                store: self.name.clone(),
+                operation: "needs_rehash".to_string(),
+                reason: "Store not opened - call open() first".to_string(),
+            }
+            .into());
+        }
+        let encryption = &self
+            .config
+            .as_ref()
+            .expect("Unlocked state requires config")
+            .encryption;
+        let (m, t, p) = encryption.costs();
+        Ok(encryption.version != "v1"
+            || m < DEFAULT_ARGON2_M_COST
+            || t < DEFAULT_ARGON2_T_COST
+            || p < DEFAULT_ARGON2_P_COST)
+    }
+
+    /// Explicitly stage a KDF upgrade using the password authenticated by `open()`.
+    ///
+    /// Returns `true` if an upgrade was staged, `false` if already current.
+    /// The transaction must be committed to persist it. The data key, encrypted
+    /// history and cached rows are unchanged; only its password wrapping changes.
+    /// This is not password rotation: old history retains old KDF metadata.
+    pub async fn upgrade_kdf(&mut self) -> Result<bool> {
+        if !self.needs_rehash()? {
+            return Ok(false);
+        }
+        let mut config = self
+            .config
+            .as_ref()
+            .expect("Unlocked state requires config")
+            .clone();
+        let (m, t, p) = config.encryption.costs();
+        config.encryption = EncryptionInfo::current(
+            m.max(DEFAULT_ARGON2_M_COST),
+            t.max(DEFAULT_ARGON2_T_COST),
+            p.max(DEFAULT_ARGON2_P_COST),
+        );
+        let wrapping_key = config.encryption.derive_key(
+            &self.cached_password
+                .as_ref()
+                .expect("Unlocked state requires password")
+                .password,
+            &self.name,
+        )?;
+        config.wrapped_key = Some(EncryptedFragment::encrypt(
+            wrapping_key.as_bytes(),
+            self.data_key
+                .as_ref()
+                .expect("Unlocked state requires data key")
+                .as_bytes(),
+            &self.name,
+        )?);
+        drop(wrapping_key);
+        self.set_config(config.clone().into()).await?;
+        self.config = Some(config);
+        Ok(true)
     }
 
     /// Check if the store is currently unlocked (password cached)
@@ -1308,13 +1328,20 @@ mod tests {
 
     fn encryptor(store: &str) -> PasswordEncryptor {
         PasswordEncryptor::new(
-            Password {
-                salt: "MDEyMzQ1Njc4OUFCQ0RFRg".to_string(),
-                password: "record-authentication".to_string(),
-                argon2_m_cost: 8,
-                argon2_t_cost: 1,
-                argon2_p_cost: 1,
-            },
+            Arc::new(
+                EncryptionInfo {
+                    algorithm: "aes-256-gcm".to_string(),
+                    kdf: "argon2id".to_string(),
+                    salt: "MDEyMzQ1Njc4OUFCQ0RFRg".to_string(),
+                    version: "v0".to_string(),
+                    salt_encoding: None,
+                    argon2_m_cost: Some(8),
+                    argon2_t_cost: Some(1),
+                    argon2_p_cost: Some(1),
+                }
+                .derive_key("record-authentication", store)
+                .unwrap(),
+            ),
             store.to_string(),
             b"database",
         )
@@ -1324,22 +1351,14 @@ mod tests {
     fn record_keys_and_values_use_separate_domain_material() {
         let first = encryptor("first");
         let second = encryptor("second");
-        let master = first
-            .with_key(|key| Ok(<[u8; 32]>::try_from(key).unwrap()))
-            .unwrap();
-        assert_ne!(*first.record_key_material().unwrap(), master);
-        assert_ne!(*first.record_value_material().unwrap(), master);
-        assert_ne!(
-            first.record_key_material().unwrap(),
-            first.record_value_material().unwrap()
-        );
+        let master = <[u8; 32]>::try_from(first.key.as_bytes()).unwrap();
+        assert_ne!(*first.record_key_material(), master);
+        assert_ne!(*first.record_value_material(), master);
+        assert_ne!(first.record_key_material(), first.record_value_material());
+        assert_eq!(*first.record_key_material(), *second.record_key_material());
         assert_eq!(
-            *first.record_key_material().unwrap(),
-            *second.record_key_material().unwrap()
-        );
-        assert_eq!(
-            *first.record_value_material().unwrap(),
-            *second.record_value_material().unwrap()
+            *first.record_value_material(),
+            *second.record_value_material()
         );
     }
 
@@ -1392,5 +1411,112 @@ mod tests {
                 .decrypt_record(&physical_key, &ciphertext)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn kdf_work_ceilings_precede_salt_parsing_and_derivation() {
+        for (m, t, p) in [
+            (MAX_ARGON2_M_COST + 1, 1, 1),
+            (8, MAX_ARGON2_T_COST + 1, 1),
+            (128, 1, MAX_ARGON2_P_COST + 1),
+        ] {
+            let mut info = EncryptionInfo::current(m, t, p);
+            info.salt = "invalid!".into();
+            assert!(
+                info.derive_key("password", "test")
+                    .err().unwrap()
+                    .to_string()
+                    .contains("work ceiling")
+            );
+        }
+        // At the inclusive ceiling validation reaches salt parsing, without
+        // actually allocating a maximum-size Argon2 workspace in this test.
+        let mut info =
+            EncryptionInfo::current(MAX_ARGON2_M_COST, MAX_ARGON2_T_COST, MAX_ARGON2_P_COST);
+        info.salt = "invalid!".into();
+        assert!(
+            info.derive_key("password", "test")
+                .err().unwrap()
+                .to_string()
+                .contains("Invalid salt")
+        );
+        for (m, t, p) in [(0, 1, 1), (8, 0, 1), (8, 1, 0), (8, 1, 2)] {
+            let info = EncryptionInfo::current(m, t, p);
+            assert!(
+                info.derive_key("password", "test")
+                    .err().unwrap()
+                    .to_string()
+                    .contains("Invalid Argon2 parameters")
+            );
+        }
+    }
+
+    #[test]
+    fn kdf_envelope_rejects_unknown_versions_encodings_and_missing_costs() {
+        let good = EncryptionInfo::current(8, 1, 1);
+        for (version, encoding) in [
+            ("v2", Some("raw")),
+            ("v1", None),
+            ("v1", Some("base64-text")),
+            ("v0", Some("raw")),
+            ("v1", Some("unknown")),
+        ] {
+            let mut info = good.clone();
+            info.version = version.into();
+            info.salt_encoding = encoding.map(String::from);
+            assert!(info.derive_key("password", "test").is_err());
+        }
+        for name in ["argon2_m_cost", "argon2_t_cost", "argon2_p_cost"] {
+            let mut json = serde_json::to_value(&good).unwrap();
+            json.as_object_mut().unwrap().remove(name);
+            let missing: EncryptionInfo = serde_json::from_value(json).unwrap();
+            assert!(missing.derive_key("password", "test").is_err());
+        }
+    }
+
+    #[test]
+    fn kdf_cost_doc_fields_reject_wrong_types_and_ranges() {
+        let good = EncryptionInfo::current(8, 1, 1);
+        for name in ["argon2_m_cost", "argon2_t_cost", "argon2_p_cost"] {
+            for value in [
+                Value::Text("8".into()),
+                Value::Int(-1),
+                Value::Int(u32::MAX as i64 + 1),
+            ] {
+                let mut doc: Doc = good.clone().into();
+                doc.set(name, value);
+                assert!(EncryptionInfo::try_from(&doc).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn kdf_key_wrap_rejects_missing_corrupt_and_wrong_size_keys() {
+        let encryption = EncryptionInfo::current(8, 1, 1);
+        let wrapping_key = encryption.derive_key("password", "test").unwrap();
+        let key = [42; 32];
+        let good = PasswordStoreConfig {
+            encryption,
+            wrapped_key: Some(EncryptedFragment::encrypt(wrapping_key.as_bytes(), &key, "test").unwrap()),
+            wrapped_config: EncryptedFragment::encrypt(&key, b"metadata", "test").unwrap(),
+        };
+        assert_eq!(good.data_key("password", "test").unwrap().as_bytes(), key);
+        assert!(good.data_key("wrong password", "test").is_err());
+        let mut bad = good.clone();
+        bad.wrapped_key = None;
+        assert!(bad.data_key("password", "test").is_err());
+        let mut bad = good.clone();
+        bad.encryption.version = "v0".into();
+        assert!(bad.data_key("password", "test").is_err());
+        let mut bad = good.clone();
+        bad.wrapped_key.as_mut().unwrap().nonce.pop();
+        assert!(bad.data_key("password", "test").is_err());
+        let mut bad = good.clone();
+        bad.wrapped_key.as_mut().unwrap().ciphertext[0] ^= 1;
+        assert!(bad.data_key("password", "test").is_err());
+        let mut bad = good;
+        bad.wrapped_key =
+            Some(EncryptedFragment::encrypt(wrapping_key.as_bytes(), &[42; 31], "test").unwrap());
+        assert!(bad.data_key("password", "test").is_err());
     }
 }
