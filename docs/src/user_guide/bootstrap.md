@@ -143,7 +143,7 @@ While the request is pending, the client has several options:
 
 - **Polling Strategy**: Periodically retry sync operations
 - **Event-Based**: Wait for notification from server (future enhancement)
-- **AccountSession-Triggered**: Let user manually retry when they expect approval
+- **User-Triggered**: Let user manually retry when they expect approval
 
 ### 4. After Admin Decision
 
@@ -263,7 +263,7 @@ match bootstrap_result {
         // Options:
         // a) Poll periodically
         // b) Wait for out-of-band notification
-        // c) AccountSession-triggered retry
+        // c) User-triggered retry
 
         // Step 4: After admin approval, retry with the same sync preferences.
         tokio::time::sleep(Duration::from_secs(30)).await;

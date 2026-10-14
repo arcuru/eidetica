@@ -191,7 +191,7 @@ pub struct Database {
     /// Signing key bound to its auth identity for this database
     key: Option<DatabaseKey>,
     /// Private user context carried only by handles opened or created through
-    /// a [`AccountSession`](crate::account::AccountSession) session. This owns caller-local sharing
+    /// an [`AccountSession`](crate::account::AccountSession) session. This owns caller-local sharing
     /// preferences; ordinary database handles remain context-free.
     account_database: Option<Box<Database>>,
     /// When `false` (default), reads expose only the maximal all-`Verified`

@@ -145,7 +145,7 @@ pub struct AccountKey {
     pub database_sigkeys: HashMap<ID, Option<SigKey>>,
 }
 
-/// A database tracked by a account.
+/// A database tracked by an account.
 ///
 /// Stored in the account's private database "databases" Table.
 /// Records which databases the account has added to their list, along with

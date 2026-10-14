@@ -1,6 +1,6 @@
 //! AccountSession key manager for session-based key management
 //!
-//! Manages decrypted private keys during a account session.
+//! Manages decrypted private keys during an account session.
 //! Keys are decrypted on login and kept in memory for the session duration.
 
 use std::collections::HashMap;

@@ -592,7 +592,7 @@ let user = instance.login_account(username, None).await?;
 
 // AccountSession API automatically manages cryptographic keys for databases
 let default_key = user.get_default_key()?;
-println!("AccountSession {} has key: {}", username, default_key);
+println!("Account {} has key: {}", username, default_key);
 ```
 
 **2. Room Creation with Global Access**
@@ -774,7 +774,7 @@ When you provide a room address as the first argument, the app connects and star
 The chat example demonstrates production-ready patterns:
 
 - **Multi-database architecture**: Each room is isolated with independent sync state
-- **AccountSession management**: Automatic key discovery and database registration
+- **Account management**: Automatic key discovery and database registration
 - **Bootstrap protocol**: Seamless joining of rooms with access requests
 - **Dual transport support**: Flexible networking for different environments
 - **CRDT-based messages**: Eventual consistency with deterministic ordering

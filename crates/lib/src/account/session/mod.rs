@@ -618,7 +618,7 @@ impl AccountSession {
     /// Map a key to a SigKey identity for a specific database.
     ///
     /// Registers that this account's key should be used with a specific SigKey identity
-    /// when interacting with a database. This is typically used when a account has been
+    /// when interacting with a database. This is typically used when an account has been
     /// granted access to a database and needs to configure their local key to work with it.
     ///
     /// If the provided SigKey matches the default pubkey identity for this key,
@@ -1004,7 +1004,7 @@ impl AccountSession {
     /// that this account doesn't have locally yet. The account's key will be sent to the peer
     /// to request the specified permission level.
     ///
-    /// This is useful for multi-device scenarios where a account wants to access their
+    /// This is useful for multi-device scenarios where an account wants to access their
     /// existing database from a new device, or when requesting access to a database
     /// shared by another account.
     ///

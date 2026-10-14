@@ -44,7 +44,7 @@ txn.commit().await?;  // Automatically signed
 
 **Mandatory Authentication**: Every entry must be signed - no exceptions.
 
-**First AccountSession Becomes Admin**: Whoever is named in the [`NewAccount`] passed to `Instance::connect_or_create` (URL-based) or [`Instance::create_backend`] (pre-built backend) is the instance's first user **and** is automatically granted `Admin(0)` on the system databases (`_users`, `_databases`). There is no hidden default account: production deployments run `eidetica daemon init --username <NAME> [--password PASS | --passwordless]` with explicit credentials. Subsequent users are created by an existing admin via `admin.admin().await?.create_account(NewAccount::…)` and land as non-admins until promoted.
+**First Account Becomes Admin**: Whoever is named in the [`NewAccount`] passed to `Instance::connect_or_create` (URL-based) or [`Instance::create_backend`] (pre-built backend) is the instance's first user **and** is automatically granted `Admin(0)` on the system databases (`_users`, `_databases`). There is no hidden default account: production deployments run `eidetica daemon init --username <NAME> [--password PASS | --passwordless]` with explicit credentials. Subsequent users are created by an existing admin via `admin.admin().await?.create_account(NewAccount::…)` and land as non-admins until promoted.
 
 [`Instance::create_backend`]: https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.create_backend
 [`NewAccount`]: https://docs.rs/eidetica/latest/eidetica/instance/struct.NewAccount.html
@@ -251,7 +251,7 @@ transaction.commit().await?;
 
 Note: Historical entries created by revoked keys remain valid.
 
-## Multi-AccountSession Setup Example
+## Multi-Account Setup Example
 
 ```rust
 # extern crate eidetica;
@@ -526,9 +526,9 @@ let delegation_path = SigKey::Delegation {
 Permissions from delegated databases are automatically clamped:
 
 ```text
-AccountSession DB key: Admin(5)     →  Project DB clamps to: Write(15)  (max bound)
-AccountSession DB key: Write(10)    →  Project DB keeps:      Write(10) (within bounds)
-AccountSession DB key: Read         →  Project DB keeps:      Read      (above min bound)
+Account DB key: Admin(5)  →  Project DB clamps to: Write(15)  (max bound)
+Account DB key: Write(10) →  Project DB keeps:      Write(10) (within bounds)
+Account DB key: Read      →  Project DB keeps:      Read      (above min bound)
 ```
 
 **Rules**:
@@ -538,7 +538,7 @@ AccountSession DB key: Read         →  Project DB keeps:      Read      (above
 - Permissions within bounds are preserved
 - Admin permissions only apply within the delegated database
 
-This makes it convenient to reuse the same validation rules across both databases. Only an Admin can grant permissions to a database by modifying the Auth Settings, but we can grant lower access to an AccountSession, and allow them to use any key they want, by granting access to a Account-controlled database and giving **that** the desired permissions. The Account can then manage their own keys using their own Admin keys, under exactly the same rules.
+This makes it convenient to reuse the same validation rules across both databases. Only an Admin can grant permissions to a database by modifying the Auth Settings, but we can grant lower access to an Account, and allow it to use any key they want, by granting access to an Account-controlled database and giving **that** the desired permissions. The Account can then manage its own keys using its own Admin keys, under exactly the same rules.
 
 ### Multi-Level Delegation
 
@@ -578,7 +578,7 @@ Each level applies its own permission clamping, with the final effective permiss
 
 ### Common Delegation Patterns
 
-**AccountSession-Managed Access**:
+**Account-Managed Access**:
 
 ```text
 Project DB → delegates to → Alice's Personal DB
@@ -589,7 +589,7 @@ Project DB → delegates to → Alice's Personal DB
 **Team Hierarchy**:
 
 ```text
-Main DB → delegates to → Team DB → delegates to → AccountSession DB
+Main DB → delegates to → Team DB → delegates to → Account DB
           (max: Admin)            (max: Write)
 ```
 

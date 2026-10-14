@@ -1,6 +1,6 @@
 # Database Sharing
 
-A `Database` opened or created through a `AccountSession` carries that caller's private
+A `Database` opened or created through an `AccountSession` carries that caller's private
 sharing capability. Its sharing methods work in embedded and service mode while
 keeping two kinds of state separate:
 

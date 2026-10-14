@@ -114,7 +114,7 @@ async fn main() -> eidetica::Result<()> {
 }
 ```
 
-## AccountSession-Centric Architecture
+## Session-Centric Architecture
 
 Eidetica uses a user-centric architecture:
 

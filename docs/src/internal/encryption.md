@@ -1,7 +1,7 @@
 # Encryption
 
 This chapter describes `PasswordStore` as implemented. It covers content encryption and encrypted
-derived Store-state caches. AccountSession signing-key encryption is a separate use of Argon2id and
+derived Store-state caches. Account signing-key encryption is a separate use of Argon2id and
 AES-256-GCM in `user/crypto.rs`; its salt handling, envelope, and lifetime are not the
 `PasswordStore` format described here.
 
