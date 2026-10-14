@@ -744,6 +744,54 @@ mod tests {
     }
 
     #[test]
+    fn v0_classifier_names_match_derived_wire_variants() {
+        #[derive(Debug)]
+        struct VariantNames(Option<&'static [&'static str]>);
+
+        impl std::fmt::Display for VariantNames {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("expected an unknown enum variant")
+            }
+        }
+
+        impl std::error::Error for VariantNames {}
+
+        impl de::Error for VariantNames {
+            fn custom<T: std::fmt::Display>(_message: T) -> Self {
+                Self(None)
+            }
+
+            fn unknown_variant(_variant: &str, expected: &'static [&'static str]) -> Self {
+                Self(Some(expected))
+            }
+        }
+
+        fn derived_names<T: for<'de> Deserialize<'de>>() -> &'static [&'static str] {
+            // Serde's derive supplies the complete wire-name table to this hook.
+            // Do not duplicate it here or parse a formatted error message.
+            match T::deserialize(de::value::StrDeserializer::<VariantNames>::new(
+                "__unknown_classifier_test_variant",
+            )) {
+                Err(VariantNames(Some(names))) => names,
+                _ => panic!("derived decoder did not report its variant names"),
+            }
+        }
+
+        for (classifier, derived) in [
+            (REQUEST_VARIANTS, derived_names::<ServiceRequest>()),
+            (DATABASE_OP_VARIANTS, derived_names::<DatabaseOp>()),
+            (RESPONSE_VARIANTS, derived_names::<ServiceResponse>()),
+        ] {
+            let mut classifier = classifier.to_vec();
+            let mut derived = derived.to_vec();
+            classifier.sort_unstable();
+            derived.sort_unstable();
+            // Comparing lists (not sets) also rejects stale extras and duplicates.
+            assert_eq!(classifier, derived);
+        }
+    }
+
+    #[test]
     fn v0_known_wire_fixtures_are_unchanged() {
         assert_eq!(
             serde_json::to_string(&Handshake {
