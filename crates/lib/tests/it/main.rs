@@ -101,6 +101,7 @@ fn init_test_tracing() {
         .try_init();
 }
 
+mod account;
 mod auth;
 mod backend;
 mod context;
@@ -119,4 +120,3 @@ mod service_ticket_join;
 mod store;
 mod sync;
 mod transaction;
-mod user;

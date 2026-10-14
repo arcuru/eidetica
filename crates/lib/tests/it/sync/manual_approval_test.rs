@@ -1568,7 +1568,7 @@ async fn test_client_retry_after_approval() {
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
-    // Setup client with User API
+    // Setup client with AccountSession API
     let (client_instance, client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("test_client", "client_key").await;
     client_sync
@@ -1676,7 +1676,7 @@ async fn test_client_denied_after_rejection() {
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
-    // Setup client with User API
+    // Setup client with AccountSession API
     let (client_instance, client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("test_client", "client_key").await;
     client_sync

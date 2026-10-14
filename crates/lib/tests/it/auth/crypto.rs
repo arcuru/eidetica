@@ -13,7 +13,7 @@ use crate::helpers::*;
 async fn test_key_management() {
     let (_instance, mut user) = test_local_instance_with_user("test_user").await;
 
-    // Initially should have default_key only (created during User creation)
+    // Initially should have default_key only (created during AccountSession creation)
     let keys = user.list_keys().expect("Failed to list keys");
     assert_eq!(keys.len(), 1);
 
@@ -81,7 +81,7 @@ async fn test_key_management() {
 
 #[tokio::test]
 async fn test_generated_key_can_sign() {
-    // Validates that keys generated via User API can be used for signing
+    // Validates that keys generated via AccountSession API can be used for signing
 
     let (_instance, mut user) = test_local_instance_with_user("test_user").await;
 
@@ -133,7 +133,7 @@ async fn test_generated_key_can_sign() {
 async fn test_multi_key_authentication() {
     let (instance, mut user) = test_local_instance_with_user("test_user").await;
 
-    // Add two keys using User API
+    // Add two keys using AccountSession API
     let key_id1 = user
         .add_private_key(Some("TEST_KEY"))
         .await
@@ -236,7 +236,7 @@ async fn test_multi_key_authentication() {
 
 #[tokio::test]
 async fn test_keys_have_unique_identity() {
-    // Validates that each key added via User API has a unique identity
+    // Validates that each key added via AccountSession API has a unique identity
 
     let (_instance, mut user) = test_local_instance_with_user("test_user").await;
 

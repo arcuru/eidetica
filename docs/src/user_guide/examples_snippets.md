@@ -11,20 +11,20 @@ _Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and 
 <!-- Code block ignored: Requires file system access during testing -->
 
 ```rust,ignore
-use eidetica::{Instance, NewUser};
+use eidetica::{Instance, NewAccount};
 
 #[tokio::main]
 async fn main() -> eidetica::Result<()> {
     // Option A: ephemeral in-memory backend (for tests / short-lived processes)
     let (_instance, _) =
-        Instance::connect_or_create("memory://", NewUser::passwordless("alice")).await?;
+        Instance::connect_or_create("memory://", NewAccount::passwordless("alice")).await?;
 
     // Option B: persistent SQLite database — created on first run, loaded on
     // subsequent runs. The URL is passed through to sqlx, so any sqlx form
     // works.
     let (instance, _) = Instance::connect_or_create(
         "sqlite://./my_data.db",
-        NewUser::passwordless("alice"),
+        NewAccount::passwordless("alice"),
     ).await?;
 
     println!("Database opened at sqlite://./my_data.db");
@@ -43,7 +43,7 @@ async fn main() -> eidetica::Result<()> {
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 let tree_name = "my_app_data";
 
@@ -78,7 +78,7 @@ println!("Using Database with root ID: {}", database.root_id());
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -129,7 +129,7 @@ struct Task {
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -184,7 +184,7 @@ println!("Table changes committed in entry: {}", entry_id);
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -234,7 +234,7 @@ match config_viewer.get("retry_count").await {
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -281,7 +281,7 @@ match tasks_viewer.search(|_| true).await {
 # // Setup database for testing
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -352,7 +352,7 @@ The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative dat
 # let backend = Sqlite::in_memory().await?;
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(backend),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "y_crdt_example");
@@ -478,14 +478,14 @@ async fn main() -> eidetica::Result<()> {
     // passed through to sqlx, so any sqlx-accepted form works.
     let (instance, _maybe_user) = Instance::connect_or_create(
         "sqlite://./my_database.db",
-        eidetica::NewUser::passwordless("admin"),
+        eidetica::NewAccount::passwordless("admin"),
     ).await?;
 
     // Subsequent runs land on the load arm (`_maybe_user` is `None`); the
     // operator creates and logs in additional users through the admin path.
-    let admin = instance.login_user("admin", None).await?;
-    admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-    let mut user = instance.login_user("alice", None).await?;
+    let admin = instance.login_account("admin", None).await?;
+    admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
+    let mut user = instance.login_account("alice", None).await?;
     let mut settings = Doc::new();
     settings.set("name", "persistent_example");
     let default_key = user.get_default_key()?;
@@ -522,7 +522,7 @@ from the default (Verified-frontier) view until this node validates them.
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(Doc::new(), &default_key).await?;
@@ -560,7 +560,7 @@ For a full working example that demonstrates Eidetica in a real application, see
 
 The chat application showcases:
 
-- **User Management**: Automatic passwordless user creation with key management
+- **Account Management**: Automatic passwordless user creation with key management
 - **Multiple Databases**: Each chat room is a separate database
 - **Table Store**: Messages stored with auto-generated IDs
 - **Multi-Transport Sync**: HTTP for local testing, Iroh for P2P with NAT traversal
@@ -572,32 +572,32 @@ The chat application showcases:
 
 The chat example demonstrates several advanced patterns:
 
-**1. User API with Automatic Key Management**
+**1. AccountSession API with Automatic Key Management**
 
 <!-- Code block ignored: Requires tokio runtime for async operations -->
 
 ```rust,ignore
 // Initialize instance with sync enabled
 let (instance, _) =
-    Instance::connect_or_create("memory://", NewUser::passwordless("admin")).await?;
+    Instance::connect_or_create("memory://", NewAccount::passwordless("admin")).await?;
 instance.enable_sync().await?;
 
 // Create passwordless user (or use existing) via the bootstrapped admin
 let username = "alice";
-let admin = instance.login_user("admin", None).await?;
-let _ = admin.admin().await?.create_user(username, None).await;
+let admin = instance.login_account("admin", None).await?;
+let _ = admin.admin().await?.create_account(username, None).await;
 
-// Login to get User session (handles key management automatically)
-let user = instance.login_user(username, None).await?;
+// Login to get AccountSession (handles key management automatically)
+let user = instance.login_account(username, None).await?;
 
-// User API automatically manages cryptographic keys for databases
+// AccountSession API automatically manages cryptographic keys for databases
 let default_key = user.get_default_key()?;
-println!("User {} has key: {}", username, default_key);
+println!("AccountSession {} has key: {}", username, default_key);
 ```
 
 **2. Room Creation with Global Access**
 
-<!-- Code block ignored: Requires tokio runtime and User API mutability -->
+<!-- Code block ignored: Requires tokio runtime and AccountSession API mutability -->
 
 ```rust,ignore
 // Create a chat room (database) with settings
@@ -667,7 +667,7 @@ for (_, msg) in all_messages {
 <!-- Code block ignored: Requires network connectivity and running server -->
 
 ```rust,ignore
-use eidetica::{sync::{DatabaseTicket, transports::http::HttpTransport}, user::types::SyncSettings};
+use eidetica::{sync::{DatabaseTicket, transports::http::HttpTransport}, account::types::SyncSettings};
 
 // Join an existing room using a ticket URL
 let ticket: DatabaseTicket = "eidetica:?db=bafyr4i...&pr=http:127.0.0.1:8080".parse()?;
@@ -774,7 +774,7 @@ When you provide a room address as the first argument, the app connects and star
 The chat example demonstrates production-ready patterns:
 
 - **Multi-database architecture**: Each room is isolated with independent sync state
-- **User session management**: Automatic key discovery and database registration
+- **AccountSession management**: Automatic key discovery and database registration
 - **Bootstrap protocol**: Seamless joining of rooms with access requests
 - **Dual transport support**: Flexible networking for different environments
 - **CRDT-based messages**: Eventual consistency with deterministic ordering

@@ -17,6 +17,7 @@
 //!     * **YDoc (`store::YDoc`)**: A Y-CRDT based store for collaborative data structures (requires the "y-crdt" feature).
 //! * **Merkle-CRDT**: The underlying principle combining Merkle DAGs (formed by entries and parent links) with CRDTs for efficient, decentralized data synchronization.
 
+pub mod account;
 pub mod auth;
 pub mod backend;
 pub mod clock;
@@ -34,8 +35,8 @@ pub mod sync;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod transaction;
-pub mod user;
 
+pub use account::AccountSession;
 pub use auth::crypto::{PrivateKey, PublicKey};
 pub use clock::{Clock, SystemClock};
 #[cfg(any(test, feature = "testing"))]
@@ -43,7 +44,7 @@ pub use clock::{ClockHold, FixedClock};
 pub use database::{Database, DatabaseKey};
 pub use entry::{Entry, ID};
 pub use height::HeightStrategy;
-pub use instance::{Instance, NewUser, WeakInstance, WriteCallback, WriteEvent, WriteSource};
+pub use instance::{Instance, NewAccount, WeakInstance, WriteCallback, WriteEvent, WriteSource};
 pub use snapshot::Snapshot;
 pub use store::{Registered, Store};
 #[cfg(any(test, feature = "testing"))]
@@ -114,9 +115,9 @@ pub enum Error {
     #[error(transparent)]
     Id(Box<entry::id::IdError>),
 
-    /// Structured user errors from the user module
+    /// Structured account errors from the account module
     #[error(transparent)]
-    User(Box<user::UserError>),
+    Account(Box<account::AccountError>),
 }
 
 impl From<sync::SyncError> for Error {
@@ -137,9 +138,9 @@ impl From<entry::id::IdError> for Error {
     }
 }
 
-impl From<user::UserError> for Error {
-    fn from(err: user::UserError) -> Self {
-        Error::User(Box::new(err))
+impl From<account::AccountError> for Error {
+    fn from(err: account::AccountError) -> Self {
+        Error::Account(Box::new(err))
     }
 }
 
@@ -156,7 +157,7 @@ impl Error {
             Error::Sync(_) => "sync",
             Error::Entry(_) => "entry",
             Error::Id(_) => "id",
-            Error::User(_) => "user",
+            Error::Account(_) => "account",
             Error::Io(_) => "io",
             Error::Serialize(_) => "serialize",
         }
@@ -171,7 +172,7 @@ impl Error {
             Error::CRDT(crdt_err) => crdt_err.is_not_found(),
             Error::Store(store_err) => store_err.is_not_found(),
             Error::Sync(sync_err) => sync_err.is_not_found(),
-            Error::User(user_err) => user_err.is_not_found(),
+            Error::Account(user_err) => user_err.is_not_found(),
             _ => false,
         }
     }

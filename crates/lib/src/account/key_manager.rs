@@ -1,6 +1,6 @@
-//! User key manager for session-based key management
+//! AccountSession key manager for session-based key management
 //!
-//! Manages decrypted private keys during a user session.
+//! Manages decrypted private keys during a account session.
 //! Keys are decrypted on login and kept in memory for the session duration.
 
 use std::collections::HashMap;
@@ -9,48 +9,48 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::{
     crypto::{decrypt_private_key, derive_encryption_key, encrypt_private_key},
-    errors::UserError,
-    types::{KeyStorage, UserKey},
+    errors::AccountError,
+    types::{AccountKey, KeyStorage},
 };
 use crate::{
     Result,
     auth::crypto::{PrivateKey, PublicKey},
 };
 
-/// Internal key manager that holds decrypted keys during user session
+/// Internal key manager that holds decrypted keys during account session
 ///
 /// # Security
 ///
 /// This struct holds sensitive cryptographic material in memory:
 /// - `decrypted_keys`: Contains plaintext PrivateKeys (zeroized on drop)
-/// - `encryption_key`: Password-derived key (zeroized via manual Zeroize impl), None for passwordless users
+/// - `encryption_key`: Password-derived key (zeroized via manual Zeroize impl), None for passwordless accounts
 ///
 /// All sensitive data is zeroized when the struct is dropped.
-pub struct UserKeyManager {
+pub struct AccountKeyManager {
     /// Decrypted keys (PublicKey → PrivateKey)
     decrypted_keys: HashMap<PublicKey, PrivateKey>,
 
-    /// Key metadata (loaded from user database)
-    key_metadata: HashMap<PublicKey, UserKey>,
+    /// Key metadata (loaded from account database)
+    key_metadata: HashMap<PublicKey, AccountKey>,
 
-    /// User's password-derived encryption key (for saving new keys)
-    /// None for passwordless users
+    /// AccountSession's password-derived encryption key (for saving new keys)
+    /// None for passwordless accounts
     encryption_key: Option<Vec<u8>>,
 }
 
-impl UserKeyManager {
-    /// Create from user password and encrypted keys
+impl AccountKeyManager {
+    /// Create from account password and encrypted keys
     ///
     /// Decrypts all provided keys using the password-derived encryption key.
     ///
     /// # Arguments
-    /// * `password` - The user's password
+    /// * `password` - The account's password
     /// * `salt` - The password salt (base64 encoded string)
-    /// * `encrypted_keys` - Vec of encrypted UserKey entries from database
+    /// * `encrypted_keys` - Vec of encrypted AccountKey entries from database
     ///
     /// # Returns
-    /// A UserKeyManager with all keys decrypted and ready for use
-    pub fn new(password: &str, salt: &str, encrypted_keys: Vec<UserKey>) -> Result<Self> {
+    /// A AccountKeyManager with all keys decrypted and ready for use
+    pub fn new(password: &str, salt: &str, encrypted_keys: Vec<AccountKey>) -> Result<Self> {
         // Derive encryption key from password
         let encryption_key = derive_encryption_key(password, salt)?;
 
@@ -70,16 +70,16 @@ impl UserKeyManager {
         Ok(manager)
     }
 
-    /// Create from unencrypted keys (for passwordless users)
+    /// Create from unencrypted keys (for passwordless accounts)
     ///
     /// Keys are stored and loaded unencrypted for performance.
     ///
     /// # Arguments
-    /// * `keys` - Vec of UserKey entries with unencrypted keys
+    /// * `keys` - Vec of AccountKey entries with unencrypted keys
     ///
     /// # Returns
-    /// A UserKeyManager with all keys ready for use
-    pub fn new_passwordless(keys: Vec<UserKey>) -> Result<Self> {
+    /// A AccountKeyManager with all keys ready for use
+    pub fn new_passwordless(keys: Vec<AccountKey>) -> Result<Self> {
         let capacity = keys.len();
         let mut manager = Self {
             decrypted_keys: HashMap::with_capacity(capacity),
@@ -112,11 +112,11 @@ impl UserKeyManager {
     /// Use `serialize_keys()` to get updated keys for storage.
     ///
     /// # Arguments
-    /// * `metadata` - The UserKey metadata with storage info
+    /// * `metadata` - The AccountKey metadata with storage info
     ///
     /// # Returns
     /// Ok(()) if the key was successfully added
-    pub fn add_key(&mut self, metadata: UserKey) -> Result<()> {
+    pub fn add_key(&mut self, metadata: AccountKey) -> Result<()> {
         // Decrypt or extract the key based on storage type
         let signing_key = match &metadata.storage {
             KeyStorage::Encrypted {
@@ -126,7 +126,7 @@ impl UserKeyManager {
             } => {
                 // Validate encryption algorithm
                 if algorithm != "aes-256-gcm" {
-                    return Err(UserError::DecryptionFailed {
+                    return Err(AccountError::DecryptionFailed {
                         reason: format!("Unsupported encryption algorithm: {algorithm}"),
                     }
                     .into());
@@ -135,7 +135,7 @@ impl UserKeyManager {
                 let encryption_key =
                     self.encryption_key
                         .as_ref()
-                        .ok_or_else(|| UserError::PasswordRequired {
+                        .ok_or_else(|| AccountError::PasswordRequired {
                             operation: "decrypt encrypted key".to_string(),
                         })?;
                 decrypt_private_key(ciphertext, nonce, encryption_key)?
@@ -155,32 +155,32 @@ impl UserKeyManager {
 
     /// Serialize all keys for storage
     ///
-    /// Returns UserKey metadata suitable for storing in the database.
+    /// Returns AccountKey metadata suitable for storing in the database.
     /// Encrypted keys are re-encrypted with the current encryption key.
     /// Unencrypted keys are serialized directly.
     ///
     /// Keys are returned in sorted order by key_id for deterministic output.
     ///
     /// # Returns
-    /// Vec of UserKey with updated storage, sorted by key_id
-    pub fn serialize_keys(&self) -> Result<Vec<UserKey>> {
+    /// Vec of AccountKey with updated storage, sorted by key_id
+    pub fn serialize_keys(&self) -> Result<Vec<AccountKey>> {
         let mut serialized = Vec::new();
 
         for (key_id, signing_key) in &self.decrypted_keys {
             // Get metadata
-            let metadata = self
-                .key_metadata
-                .get(key_id)
-                .ok_or_else(|| UserError::KeyNotFound {
-                    key_id: key_id.to_string(),
-                })?;
+            let metadata =
+                self.key_metadata
+                    .get(key_id)
+                    .ok_or_else(|| AccountError::KeyNotFound {
+                        key_id: key_id.to_string(),
+                    })?;
 
             // Build storage based on current storage type
             let storage = match &metadata.storage {
                 KeyStorage::Encrypted { algorithm, .. } => {
                     // Re-encrypt the key
                     let encryption_key = self.encryption_key.as_ref().ok_or_else(|| {
-                        UserError::PasswordRequired {
+                        AccountError::PasswordRequired {
                             operation: "encrypt key".to_string(),
                         }
                     })?;
@@ -199,8 +199,8 @@ impl UserKeyManager {
                 }
             };
 
-            // Create updated UserKey
-            let updated_key = UserKey {
+            // Create updated AccountKey
+            let updated_key = AccountKey {
                 key_id: key_id.clone(),
                 storage,
                 display_name: metadata.display_name.clone(),
@@ -249,7 +249,7 @@ impl UserKeyManager {
     }
 
     /// Get metadata for a key
-    pub fn get_key_metadata(&self, key_id: &PublicKey) -> Option<&UserKey> {
+    pub fn get_key_metadata(&self, key_id: &PublicKey) -> Option<&AccountKey> {
         self.key_metadata.get(key_id)
     }
 
@@ -274,31 +274,31 @@ impl UserKeyManager {
 
     /// Get the encryption key for encrypting new keys
     ///
-    /// Returns None for passwordless users.
+    /// Returns None for passwordless accounts.
     ///
     /// # Security Considerations
     ///
     /// This method exposes the raw password-derived encryption key. It should only be used
-    /// internally within the user module for operations that require encrypting new key material.
+    /// internally within the account module for operations that require encrypting new key material.
     ///
-    /// **WARNING**: Exposing this key outside the user module could compromise the security of
-    /// all encrypted keys. The key is derived from the user's password and is capable of
+    /// **WARNING**: Exposing this key outside the account module could compromise the security of
+    /// all encrypted keys. The key is derived from the account's password and is capable of
     /// decrypting all stored private keys.
     ///
     /// # Usage
     ///
     /// This is currently used internally for:
-    /// - Creating properly encrypted UserKey entries when adding new keys
+    /// - Creating properly encrypted AccountKey entries when adding new keys
     /// - Re-encrypting keys when changing passwords
     ///
-    /// The `pub(super)` visibility ensures this remains internal to the user module only.
+    /// The `pub(super)` visibility ensures this remains internal to the account module only.
     #[allow(dead_code)]
     pub(super) fn encryption_key(&self) -> Option<&[u8]> {
         self.encryption_key.as_deref()
     }
 }
 
-impl Zeroize for UserKeyManager {
+impl Zeroize for AccountKeyManager {
     fn zeroize(&mut self) {
         // Zeroize the encryption key if present
         if let Some(key) = &mut self.encryption_key {
@@ -313,20 +313,20 @@ impl Zeroize for UserKeyManager {
     }
 }
 
-impl ZeroizeOnDrop for UserKeyManager {}
+impl ZeroizeOnDrop for AccountKeyManager {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account::crypto::{encrypt_private_key, generate_salt};
     use crate::auth::crypto::generate_keypair;
-    use crate::user::crypto::{encrypt_private_key, generate_salt};
     use crate::{Clock, Error, SystemClock};
 
-    fn create_test_user_key(signing_key: &PrivateKey, encryption_key: &[u8]) -> UserKey {
+    fn create_test_user_key(signing_key: &PrivateKey, encryption_key: &[u8]) -> AccountKey {
         let (ciphertext, nonce) = encrypt_private_key(signing_key, encryption_key).unwrap();
         let key_id = signing_key.public_key();
 
-        UserKey {
+        AccountKey {
             key_id,
             storage: KeyStorage::Encrypted {
                 algorithm: "aes-256-gcm".to_string(),
@@ -356,7 +356,7 @@ mod tests {
         let user_key2 = create_test_user_key(&key2, &encryption_key);
 
         // Create key manager
-        let manager = UserKeyManager::new(password, &salt, vec![user_key1, user_key2]).unwrap();
+        let manager = AccountKeyManager::new(password, &salt, vec![user_key1, user_key2]).unwrap();
 
         // Verify keys were decrypted
         assert!(manager.get_signing_key(&pub1).is_some());
@@ -377,7 +377,7 @@ mod tests {
         let (key1, pub1) = generate_keypair();
         let user_key1 = create_test_user_key(&key1, &encryption_key);
 
-        let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
+        let manager = AccountKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
         // Get key and verify it's the same
         let retrieved_key = manager.get_signing_key(&pub1).unwrap();
@@ -394,7 +394,7 @@ mod tests {
         let (key1, pub_key1) = generate_keypair();
         let user_key1 = create_test_user_key(&key1, &encryption_key);
 
-        let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
+        let manager = AccountKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
         // Verify that the signing key's public key matches
         let signing_key = manager.get_signing_key(&pub_key1).unwrap();
@@ -418,7 +418,7 @@ mod tests {
         let user_key3 = create_test_user_key(&key3, &encryption_key);
 
         let manager =
-            UserKeyManager::new(password, &salt, vec![user_key1, user_key2, user_key3]).unwrap();
+            AccountKeyManager::new(password, &salt, vec![user_key1, user_key2, user_key3]).unwrap();
 
         // Verify all keys are retrievable
         assert!(manager.get_signing_key(&pub_key1).is_some());
@@ -438,7 +438,7 @@ mod tests {
         let (key1, pub_key1) = generate_keypair();
         let (key2, pub_key2) = generate_keypair();
 
-        let user_key1 = UserKey {
+        let user_key1 = AccountKey {
             key_id: pub_key1.clone(),
             storage: KeyStorage::Unencrypted { key: key1.clone() },
             display_name: Some("Key 1".to_string()),
@@ -448,7 +448,7 @@ mod tests {
             database_sigkeys: HashMap::new(),
         };
 
-        let user_key2 = UserKey {
+        let user_key2 = AccountKey {
             key_id: pub_key2.clone(),
             storage: KeyStorage::Unencrypted { key: key2.clone() },
             display_name: Some("Key 2".to_string()),
@@ -458,7 +458,7 @@ mod tests {
             database_sigkeys: HashMap::new(),
         };
 
-        let manager = UserKeyManager::new_passwordless(vec![user_key1, user_key2]).unwrap();
+        let manager = AccountKeyManager::new_passwordless(vec![user_key1, user_key2]).unwrap();
 
         // Verify keys are retrievable
         assert!(manager.get_signing_key(&pub_key1).is_some());
@@ -475,7 +475,7 @@ mod tests {
         let (key1, _) = generate_keypair();
         let user_key1 = create_test_user_key(&key1, &encryption_key);
 
-        let mut manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
+        let mut manager = AccountKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
         // Add a new key - only pass metadata, key is decrypted internally
         let (key2, pub2) = generate_keypair();
@@ -498,7 +498,7 @@ mod tests {
         let (key1, pub1) = generate_keypair();
         let user_key1 = create_test_user_key(&key1, &encryption_key);
 
-        let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
+        let manager = AccountKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
         // Serialize keys
         let serialized = manager.serialize_keys().unwrap();
@@ -536,7 +536,7 @@ mod tests {
         let user_key3 = create_test_user_key(&key3, &encryption_key);
 
         let manager =
-            UserKeyManager::new(password, &salt, vec![user_key1, user_key2, user_key3]).unwrap();
+            AccountKeyManager::new(password, &salt, vec![user_key1, user_key2, user_key3]).unwrap();
 
         // Serialize should return sorted keys (by string representation)
         let serialized = manager.serialize_keys().unwrap();
@@ -559,7 +559,7 @@ mod tests {
         let (key1, pub1) = generate_keypair();
         let user_key1 = create_test_user_key(&key1, &encryption_key);
 
-        let mut manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
+        let mut manager = AccountKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
         // Verify key exists
         assert!(manager.get_signing_key(&pub1).is_some());
@@ -584,7 +584,7 @@ mod tests {
         let user_key1 = create_test_user_key(&key1, &encryption_key);
         let user_key2 = create_test_user_key(&key2, &encryption_key);
 
-        let manager = UserKeyManager::new(password, &salt, vec![user_key1, user_key2]).unwrap();
+        let manager = AccountKeyManager::new(password, &salt, vec![user_key1, user_key2]).unwrap();
 
         let key_ids = manager.list_key_ids();
         assert_eq!(key_ids.len(), 2);
@@ -609,7 +609,7 @@ mod tests {
         let (ct_mid, nonce_mid) = encrypt_private_key(&key_mid, &encryption_key).unwrap();
 
         // Create keys with explicit timestamps (old, middle, new)
-        let user_key_old = UserKey {
+        let user_key_old = AccountKey {
             key_id: pub_old.clone(),
             storage: KeyStorage::Encrypted {
                 algorithm: "aes-256-gcm".to_string(),
@@ -623,7 +623,7 @@ mod tests {
             database_sigkeys: HashMap::new(),
         };
 
-        let user_key_mid = UserKey {
+        let user_key_mid = AccountKey {
             key_id: pub_mid.clone(),
             storage: KeyStorage::Encrypted {
                 algorithm: "aes-256-gcm".to_string(),
@@ -637,7 +637,7 @@ mod tests {
             database_sigkeys: HashMap::new(),
         };
 
-        let user_key_new = UserKey {
+        let user_key_new = AccountKey {
             key_id: pub_new.clone(),
             storage: KeyStorage::Encrypted {
                 algorithm: "aes-256-gcm".to_string(),
@@ -652,7 +652,7 @@ mod tests {
         };
 
         // Add keys in non-chronological order
-        let manager = UserKeyManager::new(
+        let manager = AccountKeyManager::new(
             password,
             &salt,
             vec![user_key_new, user_key_old, user_key_mid],
@@ -677,7 +677,7 @@ mod tests {
         let (key1, pub1) = generate_keypair();
         let user_key1 = create_test_user_key(&key1, &encryption_key);
 
-        let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
+        let manager = AccountKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
         let metadata = manager.get_key_metadata(&pub1).unwrap();
         assert_eq!(metadata.key_id, pub1);
@@ -697,14 +697,14 @@ mod tests {
         let user_key1 = create_test_user_key(&key1, &encryption_key);
 
         // Attempt to create manager with wrong password - should fail
-        let result = UserKeyManager::new(wrong_password, &salt, vec![user_key1]);
+        let result = AccountKeyManager::new(wrong_password, &salt, vec![user_key1]);
         assert!(result.is_err());
 
         // The error should be a decryption failure
         if let Err(err) = result {
             assert!(matches!(
                 err,
-                Error::User(ref e) if matches!(**e, UserError::DecryptionFailed { .. })
+                Error::Account(ref e) if matches!(**e, AccountError::DecryptionFailed { .. })
             ));
         }
     }
@@ -727,12 +727,12 @@ mod tests {
             *algorithm = "aes-128-gcm".to_string();
         }
 
-        let Err(err) = UserKeyManager::new(password, &salt, vec![user_key]) else {
+        let Err(err) = AccountKeyManager::new(password, &salt, vec![user_key]) else {
             panic!("Expected error for unsupported algorithm");
         };
         assert!(matches!(
             err,
-            Error::User(ref e) if matches!(**e, UserError::DecryptionFailed { .. })
+            Error::Account(ref e) if matches!(**e, AccountError::DecryptionFailed { .. })
         ));
         assert!(
             err.to_string().contains("Unsupported encryption algorithm"),

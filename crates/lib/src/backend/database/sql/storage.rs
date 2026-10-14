@@ -16,7 +16,7 @@ use crate::backend::database::sorting;
 fn store_state_scope(scope: &CacheScope) -> &str {
     match scope {
         CacheScope::Shared => "",
-        CacheScope::User(user) => user,
+        CacheScope::Login(user) => user,
     }
 }
 

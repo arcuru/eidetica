@@ -280,11 +280,11 @@ impl BackgroundSync {
             Err(_) => return None,
         };
 
-        let user_mgr = super::user_sync_manager::UserSyncManager::new(&txn);
+        let user_mgr = super::account_sync_manager::AccountSyncManager::new(&txn);
 
         // Get all tracked database IDs from the DATABASE_USERS_SUBTREE
         let database_users = match txn
-            .get_store::<DocStore>(super::user_sync_manager::DATABASE_USERS_SUBTREE)
+            .get_store::<DocStore>(super::account_sync_manager::DATABASE_USERS_SUBTREE)
             .await
         {
             Ok(store) => store,

@@ -164,7 +164,7 @@ Access via `Transaction::get_index()`.
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -203,7 +203,7 @@ assert!(info.config.is_empty());
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -249,7 +249,7 @@ assert!(info.config.contains_key("compression"));
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");

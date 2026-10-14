@@ -16,6 +16,7 @@ use crate::instance::backend::RemoteBackend;
 use crate::service::client::RemoteConnection;
 use crate::{
     Error, Instance, Result, Snapshot, Transaction, WeakInstance,
+    account::{AccountError, SyncSettings, TrackedDatabase},
     auth::{
         crypto::{PrivateKey, PublicKey},
         errors::AuthError,
@@ -30,7 +31,6 @@ use crate::{
     instance::{WriteCallback, WriteEvent, WriteSource, backend::Backend, errors::InstanceError},
     store::{SettingsStore, Store, Table},
     sync::DatabaseTicket,
-    user::{SyncSettings, TrackedDatabase, UserError},
 };
 
 #[cfg(test)]
@@ -191,9 +191,9 @@ pub struct Database {
     /// Signing key bound to its auth identity for this database
     key: Option<DatabaseKey>,
     /// Private user context carried only by handles opened or created through
-    /// a [`User`](crate::user::User) session. This owns caller-local sharing
+    /// a [`AccountSession`](crate::account::AccountSession) session. This owns caller-local sharing
     /// preferences; ordinary database handles remain context-free.
-    user_database: Option<Box<Database>>,
+    account_database: Option<Box<Database>>,
     /// When `false` (default), reads expose only the maximal all-`Verified`
     /// prefix of the DAG (the "Verified frontier"). When `true`, reads also
     /// include `Unverified` entries. `Failed` entries are dropped regardless.
@@ -208,7 +208,7 @@ impl Database {
             instance,
             ops,
             key: None,
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         }
     }
@@ -216,8 +216,8 @@ impl Database {
     /// Creates a new `Database` instance with a user-provided signing key.
     ///
     /// This constructor creates a new database using a signing key that's already in memory
-    /// (e.g., from UserKeyManager), without requiring the key to be stored in the backend.
-    /// This is the preferred method for creating databases in a User context where keys
+    /// (e.g., from AccountKeyManager), without requiring the key to be stored in the backend.
+    /// This is the preferred method for creating databases in an AccountSession context where keys
     /// are managed separately from the backend.
     ///
     /// The created database will use a `DatabaseKey` for all subsequent operations,
@@ -275,7 +275,7 @@ impl Database {
     /// the genesis transaction.
     ///
     /// This is the underlying constructor used by [`Self::create`] and by
-    /// `User::new_database()` (the builder API). The callback receives the
+    /// `AccountSession::new_database()` (the builder API). The callback receives the
     /// genesis transaction after `_settings` and `_root` have been staged but
     /// before commit, allowing additional subtrees — stores, initial doc data,
     /// records — to be written into the same entry that establishes the
@@ -335,7 +335,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key.clone())),
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         };
 
@@ -397,7 +397,7 @@ impl Database {
                     Some(SigKey::from_pubkey(&pubkey_for_identity)),
                 )),
                 key: Some(DatabaseKey::new(signing_key)),
-                user_database: None,
+                account_database: None,
                 allow_unverified: false,
             });
         }
@@ -407,7 +407,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key)),
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         })
     }
@@ -454,7 +454,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: None,
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         })
     }
@@ -479,7 +479,7 @@ impl Database {
         // The instance-level backend carries no per-handle identity, so it acts
         // as the connection's login pubkey — and a user's login key is not a
         // member of every tree they hold a key for. A database created under a
-        // per-database key (`User::add_private_key` + `create_database`) grants
+        // per-database key (`AccountSession::add_private_key` + `create_database`) grants
         // only that key, so probing as the login identity denies the existence
         // check on a database the caller is authorised to open. `identity` has
         // already been proof-of-possession registered into the connection's
@@ -492,7 +492,7 @@ impl Database {
             instance: instance.downgrade(),
             ops,
             key: None,
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         })
     }
@@ -515,9 +515,9 @@ impl Database {
         }
     }
 
-    pub(crate) fn with_user_database(self, user_database: Database) -> Self {
+    pub(crate) fn with_account_database(self, account_database: Database) -> Self {
         Self {
-            user_database: Some(Box::new(user_database)),
+            account_database: Some(Box::new(account_database)),
             ..self
         }
     }
@@ -1070,8 +1070,8 @@ impl Database {
     ///
     /// Database settings belong to the replicated database. Synchronization
     /// preferences instead live in the owning user's private database, so only
-    /// handles returned by [`User::create_database`](crate::user::User::create_database)
-    /// or [`User::open_database`](crate::user::User::open_database) carry this
+    /// handles returned by [`AccountSession::create_database`](crate::account::AccountSession::create_database)
+    /// or [`AccountSession::open_database`](crate::account::AccountSession::open_database) carry this
     /// capability.
     pub async fn sync_settings(&self) -> Result<SyncSettings> {
         self.authorize_sharing().await?;
@@ -1090,14 +1090,14 @@ impl Database {
     /// [`Self::sync_settings`] again.
     pub async fn set_shared(&self, shared: bool) -> Result<()> {
         self.authorize_sharing().await?;
-        let user_database = self.user_database()?;
-        let tx = user_database.new_transaction().await?;
+        let account_database = self.account()?;
+        let tx = account_database.new_transaction().await?;
         let table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
         let key = self.root_id().to_string();
         let mut tracked = table
             .get(&key)
             .await
-            .map_err(|_| UserError::DatabaseNotTracked {
+            .map_err(|_| AccountError::DatabaseNotTracked {
                 database_id: self.root_id().clone(),
             })?;
 
@@ -1124,7 +1124,7 @@ impl Database {
     /// Return a point-in-time locator when this handle owner is sharing.
     pub async fn ticket(&self) -> Result<DatabaseTicket> {
         if !self.is_shared().await? {
-            return Err(UserError::DatabaseNotShared {
+            return Err(AccountError::DatabaseNotShared {
                 database_id: self.root_id().clone(),
             }
             .into());
@@ -1140,12 +1140,12 @@ impl Database {
                 .await;
         }
 
-        crate::user::ticket_locator(&self.instance()?, self.root_id()).await
+        crate::account::ticket_locator(&self.instance()?, self.root_id()).await
     }
 
-    fn user_database(&self) -> Result<&Database> {
-        self.user_database.as_deref().ok_or_else(|| {
-            UserError::MissingDatabaseCapability {
+    fn account(&self) -> Result<&Database> {
+        self.account_database.as_deref().ok_or_else(|| {
+            AccountError::MissingDatabaseCapability {
                 database_id: self.root_id().clone(),
             }
             .into()
@@ -1153,14 +1153,14 @@ impl Database {
     }
 
     async fn tracked_database(&self) -> Result<TrackedDatabase> {
-        let user_database = self.user_database()?;
-        user_database
+        let account_database = self.account()?;
+        account_database
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?
             .get(&self.root_id().to_string())
             .await
             .map_err(|_| {
-                UserError::DatabaseNotTracked {
+                AccountError::DatabaseNotTracked {
                     database_id: self.root_id().clone(),
                 }
                 .into()
@@ -1168,11 +1168,11 @@ impl Database {
     }
 
     async fn authorize_sharing(&self) -> Result<()> {
-        self.user_database()?;
+        self.account()?;
         if self.current_permission().await? >= Permission::Read {
             Ok(())
         } else {
-            Err(UserError::InsufficientPermissions.into())
+            Err(AccountError::InsufficientPermissions.into())
         }
     }
 
@@ -1626,7 +1626,7 @@ impl Database {
     /// # async fn main() -> Result<()> {
     /// # let (_instance, mut user) = Instance::create_backend(
     /// #     Box::new(InMemory::new()),
-    /// #     NewUser::passwordless("test"),
+    /// #     NewAccount::passwordless("test"),
     /// # ).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
@@ -1645,7 +1645,7 @@ impl Database {
         // their `RemoteBackend`. Going through `instance.get(id)` would
         // use the connection's login pubkey, which on a remote instance is
         // denied by the per-tree gate when the login key isn't a member of
-        // this tree (e.g. user-tree key created via `User::add_private_key`
+        // this tree (e.g. user-tree key created via `AccountSession::add_private_key`
         // and used to author a database that doesn't grant the root key).
         let entry = self.ops().get(&id).await?;
 
@@ -1685,7 +1685,7 @@ impl Database {
     /// # async fn main() -> Result<()> {
     /// # let (_instance, mut user) = Instance::create_backend(
     /// #     Box::new(InMemory::new()),
-    /// #     NewUser::passwordless("test"),
+    /// #     NewAccount::passwordless("test"),
     /// # ).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;

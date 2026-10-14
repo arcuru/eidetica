@@ -261,7 +261,7 @@ mod tests {
         let (instance, mut user) = Instance::create_backend_with_clock(
             Box::new(InMemory::new()),
             clock.clone(),
-            crate::NewUser::passwordless("test"),
+            crate::NewAccount::passwordless("test"),
         )
         .await
         .expect("Failed to create test instance");

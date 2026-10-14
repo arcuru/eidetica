@@ -1,4 +1,4 @@
-//! Core data types for the user system
+//! Core data types for the account system
 
 use std::collections::HashMap;
 
@@ -12,14 +12,14 @@ use crate::{
     entry::ID,
 };
 
-/// Credentials for unlocking a user's root signing key.
+/// Credentials for unlocking an account's root signing key.
 ///
-/// For password-protected users, contains the salt (for Argon2id key derivation)
+/// For password-protected accounts, contains the salt (for Argon2id key derivation)
 /// and the encrypted root key (AES-256-GCM). Decryption failure IS password
 /// verification — no separate password hash is needed.
-/// For passwordless users, contains the unencrypted root key directly.
+/// For passwordless accounts, contains the unencrypted root key directly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UserCredentials {
+pub struct AccountCredentials {
     /// Public key (available without decryption)
     pub root_key_id: PublicKey,
 
@@ -30,39 +30,42 @@ pub struct UserCredentials {
     pub password_salt: Option<String>,
 }
 
-/// User information stored in _users database
+/// Instance-local login registration stored in the `_users` database.
 ///
-/// Users are stored in a Table with auto-generated UUID primary keys.
-/// The username field is used for login and must be unique.
+/// The Table UUID and `username` identify a login on this instance, not the
+/// Account itself. `account_id` identifies the ordinary private root database.
+/// Credentials retain their existing storage layout; this is not a portable
+/// export format or a claim of instance-local private-key isolation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UserInfo {
+pub struct AccountInfo {
     /// Unique username (login identifier)
     pub username: String,
 
-    /// ID of the user's private database
-    pub user_database_id: ID,
+    /// ID of the account's private database
+    #[serde(rename = "user_database_id")]
+    pub account_id: ID,
 
-    /// Credentials containing the user's root signing key
-    pub credentials: UserCredentials,
+    /// Credentials containing the account's root signing key
+    pub credentials: AccountCredentials,
 
-    /// User account creation timestamp (Unix timestamp)
+    /// Account creation timestamp (Unix timestamp)
     pub created_at: i64,
 
     /// Account status
-    pub status: UserStatus,
+    pub status: AccountStatus,
 }
 
-/// User account status
+/// Account status
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum UserStatus {
+pub enum AccountStatus {
     Active,
     Disabled,
     Locked,
 }
 
-/// User profile stored in user's private database
+/// Account profile stored in account's private database
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UserProfile {
+pub struct AccountProfile {
     /// Username
     pub username: String,
 
@@ -72,24 +75,24 @@ pub struct UserProfile {
     /// Email or other contact info
     pub contact_info: Option<String>,
 
-    /// User preferences
-    pub preferences: UserPreferences,
+    /// Account preferences
+    pub preferences: AccountPreferences,
 }
 
-/// User-specific preferences
+/// Account-specific preferences
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct UserPreferences {
+pub struct AccountPreferences {
     /// Default sync tracked databases
     pub default_sync_enabled: bool,
 
-    /// Other user-specific settings
+    /// Other account-specific settings
     pub properties: HashMap<String, String>,
 }
 
-/// How a user's private key is stored
+/// How an account's private key is stored
 ///
 /// Encrypted keys store AES-256-GCM ciphertext of a prefixed-string-encoded `PrivateKey`.
-/// Unencrypted keys store the `PrivateKey` directly (passwordless users only).
+/// Unencrypted keys store the `PrivateKey` directly (passwordless accounts only).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum KeyStorage {
@@ -102,19 +105,19 @@ pub enum KeyStorage {
         /// Encryption nonce/IV (12 bytes for AES-GCM)
         nonce: Vec<u8>,
     },
-    /// Key is stored unencrypted (passwordless users only)
+    /// Key is stored unencrypted (passwordless accounts only)
     Unencrypted {
         /// PrivateKey stored directly — serde carries the signing algorithm tag
         key: PrivateKey,
     },
 }
 
-/// User's private key with database mappings
+/// Account's private key with database mappings
 ///
-/// Keys can be either encrypted (for password-protected users) or
-/// unencrypted (for passwordless single-user mode).
+/// Keys can be either encrypted (for password-protected accounts) or
+/// unencrypted (for passwordless single-account mode).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UserKey {
+pub struct AccountKey {
     /// Key identifier (the public key)
     pub key_id: PublicKey,
 
@@ -130,7 +133,7 @@ pub struct UserKey {
     /// Last time this key was used (Unix timestamp)
     pub last_used: Option<i64>,
 
-    /// Whether this is the user's default key, which has admin access on the user's DB
+    /// Whether this is the account's default key, which has admin access on the account's DB
     /// Only one key should be marked as default at a time
     pub is_default: bool,
 
@@ -142,17 +145,17 @@ pub struct UserKey {
     pub database_sigkeys: HashMap<ID, Option<SigKey>>,
 }
 
-/// A database tracked by a user.
+/// A database tracked by a account.
 ///
-/// Stored in the user's private database "databases" Table.
-/// Records which databases the user has added to their list, along with
+/// Stored in the account's private database "databases" Table.
+/// Records which databases the account has added to their list, along with
 /// which key to use and sync preferences.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TrackedDatabase {
     /// Database ID
     pub database_id: ID,
 
-    /// Which user key to use for this database
+    /// Which account key to use for this database
     pub key_id: PublicKey,
 
     /// Sync preferences for this database
@@ -161,8 +164,8 @@ pub struct TrackedDatabase {
 
 /// Synchronization settings for a database
 ///
-/// Per-user-per-database sync configuration.
-/// Different users may have different sync preferences for the same database.
+/// Per-account-per-database sync configuration.
+/// Different accounts may have different sync preferences for the same database.
 ///
 /// # Construction
 ///
@@ -173,12 +176,12 @@ pub struct TrackedDatabase {
 ///
 /// Chain `.with_interval()` to override the periodic sync interval:
 /// ```
-/// # use eidetica::user::types::SyncSettings;
+/// # use eidetica::account::types::SyncSettings;
 /// let settings = SyncSettings::enabled().with_interval(60);
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SyncSettings {
-    /// Whether user wants to sync this database
+    /// Whether account wants to sync this database
     pub sync_enabled: bool,
 
     /// Sync on commit
@@ -243,7 +246,7 @@ pub struct DatabaseTracking {
     /// Cached database name (for quick lookup)
     pub name: Option<String>,
 
-    /// User UUIDs who have this database in their preferences
+    /// AccountSession UUIDs who have this database in their preferences
     /// (stores internal UUIDs, not usernames)
     pub users: Vec<String>,
 

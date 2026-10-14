@@ -5,11 +5,11 @@
 
 use eidetica::{
     Database, Error, Instance,
+    account::{AccountError, AccountSession},
     constants::SETTINGS,
     crdt::Doc,
     entry::ID,
     store::DocStore,
-    user::{User, UserError},
 };
 
 // Instance-helper tests reach into raw backend ops (`all_roots`, etc.)
@@ -28,18 +28,18 @@ pub async fn setup_simple_db() -> Instance {
 /// Create a database using the user's default key
 ///
 /// This is the most common database creation pattern in tests.
-pub async fn create_database_with_default_key(user: &mut User) -> Database {
+pub async fn create_database_with_default_key(user: &mut AccountSession) -> Database {
     let key_id = user
         .get_default_key()
-        .expect("User should have default key");
+        .expect("AccountSession should have default key");
     user.create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create database")
 }
 
-/// Create tree with initial settings using User API
+/// Create tree with initial settings using AccountSession API
 pub async fn create_database_with_settings(
-    user: &mut User,
+    user: &mut AccountSession,
     tree_name: &str,
     version: &str,
 ) -> Database {
@@ -69,8 +69,11 @@ pub async fn create_database_with_settings(
     tree
 }
 
-/// Create multiple trees with different names for testing using User API
-pub async fn create_multiple_named_trees(user: &mut User, names: &[&str]) -> Vec<Database> {
+/// Create multiple trees with different names for testing using AccountSession API
+pub async fn create_multiple_named_trees(
+    user: &mut AccountSession,
+    names: &[&str],
+) -> Vec<Database> {
     let mut trees = Vec::new();
 
     for name in names {
@@ -81,9 +84,9 @@ pub async fn create_multiple_named_trees(user: &mut User, names: &[&str]) -> Vec
     trees
 }
 
-/// Create tree with basic data in a custom subtree using User API
+/// Create tree with basic data in a custom subtree using AccountSession API
 pub async fn create_tree_with_data(
-    user: &mut User,
+    user: &mut AccountSession,
     subtree_name: &str,
     data: &[(&str, &str)],
 ) -> Database {
@@ -113,8 +116,8 @@ pub async fn create_tree_with_data(
 
 // ===== TREE MANAGEMENT HELPERS =====
 
-/// Test tree loading workflow using User API
-pub async fn test_tree_load_workflow(user: &mut User) -> (ID, Database) {
+/// Test tree loading workflow using AccountSession API
+pub async fn test_tree_load_workflow(user: &mut AccountSession) -> (ID, Database) {
     // Create initial tree
     let tree = create_database_with_default_key(user).await;
     let root_id = tree.root_id().clone();
@@ -131,8 +134,8 @@ pub async fn test_tree_load_workflow(user: &mut User) -> (ID, Database) {
     (root_id, loaded_tree)
 }
 
-/// Create trees for find testing (with various naming scenarios) using User API
-pub async fn setup_trees_for_find_testing(user: &mut User) -> Vec<Database> {
+/// Create trees for find testing (with various naming scenarios) using AccountSession API
+pub async fn setup_trees_for_find_testing(user: &mut AccountSession) -> Vec<Database> {
     let mut trees = Vec::new();
 
     // Tree 1: No name
@@ -305,13 +308,13 @@ pub async fn assert_tree_names_in_collection(trees: &[Database], expected_names:
 
 // ===== ERROR TESTING HELPERS =====
 
-/// Test tree not found scenarios using User API
-pub async fn test_tree_not_found_error(user: &User, non_existent_name: &str) {
+/// Test tree not found scenarios using AccountSession API
+pub async fn test_tree_not_found_error(user: &AccountSession, non_existent_name: &str) {
     let result = user.find_database(non_existent_name).await;
     assert!(result.is_err(), "Expected error for non-existent tree");
 
-    if let Err(Error::User(ref e)) = result {
-        if let UserError::DatabaseNotFoundByName { ref name } = **e {
+    if let Err(Error::Account(ref e)) = result {
+        if let AccountError::DatabaseNotFoundByName { ref name } = **e {
             assert_eq!(
                 name, non_existent_name,
                 "Expected name '{non_existent_name}', got '{name}'"
@@ -324,8 +327,8 @@ pub async fn test_tree_not_found_error(user: &User, non_existent_name: &str) {
     }
 }
 
-/// Test database operations with various error conditions using User API
-pub async fn test_database_error_conditions(user: &User) {
+/// Test database operations with various error conditions using AccountSession API
+pub async fn test_database_error_conditions(user: &AccountSession) {
     // Test that find_database returns proper errors for non-existent databases
     let result = user.find_database("NonExistent").await;
     assert!(
@@ -337,7 +340,9 @@ pub async fn test_database_error_conditions(user: &User) {
 // ===== INTEGRATION HELPERS =====
 
 /// Complete workflow: create DB with user, add trees, perform operations, verify results
-pub async fn test_complete_instance_workflow(username: &str) -> (Instance, User, Vec<Database>) {
+pub async fn test_complete_instance_workflow(
+    username: &str,
+) -> (Instance, AccountSession, Vec<Database>) {
     let (instance, mut user) = test_instance_with_user(username).await;
 
     // Create trees with different configurations
@@ -357,7 +362,7 @@ pub async fn test_complete_instance_workflow(username: &str) -> (Instance, User,
 }
 
 /// Test concurrent tree operations
-pub async fn test_concurrent_tree_operations(user: &mut User) -> Vec<Database> {
+pub async fn test_concurrent_tree_operations(user: &mut AccountSession) -> Vec<Database> {
     let mut trees = Vec::new();
 
     // Create multiple trees rapidly
@@ -369,7 +374,7 @@ pub async fn test_concurrent_tree_operations(user: &mut User) -> Vec<Database> {
         create_user_profile(
             &tree,
             &format!("user{i}"),
-            &format!("User {i}"),
+            &format!("AccountSession {i}"),
             &format!("user{i}@test.com"),
         )
         .await;

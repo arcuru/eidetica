@@ -1,4 +1,4 @@
-//! User lifecycle tests: create, login, logout, and re-login scenarios
+//! AccountSession lifecycle tests: create, login, logout, and re-login scenarios
 //!
 //! Tests the fundamental user workflows including:
 //! - Creating passwordless and password-protected users
@@ -16,12 +16,12 @@ async fn test_create_passwordless_user() {
 
     // Create a passwordless user
     let username = "alice";
-    crate::helpers::create_user(&instance, username, None)
+    crate::helpers::create_account(&instance, username, None)
         .await
         .expect("Failed to create user");
 
     // Verify we can login
-    let user = login_user(&instance, username, None).await;
+    let user = login_account(&instance, username, None).await;
 
     // Verify user has at least one key
     assert_user_key_count(&user, 1);
@@ -34,12 +34,12 @@ async fn test_create_password_protected_user() {
     // Create a password-protected user
     let username = "bob";
     let password = "secure_password_123";
-    crate::helpers::create_user(&instance, username, Some(password))
+    crate::helpers::create_account(&instance, username, Some(password))
         .await
         .expect("Failed to create user");
 
     // Verify we can login with correct password
-    let user = login_user(&instance, username, Some(password)).await;
+    let user = login_account(&instance, username, Some(password)).await;
 
     // Verify user has at least one key
     assert_user_key_count(&user, 1);
@@ -59,10 +59,10 @@ async fn test_create_multiple_users_same_instance() {
     assert_eq!(usernames.len(), 4, "Should have created 4 users");
 
     // Verify each user can login
-    let _alice = login_user(&instance, "alice", None).await;
-    let _bob = login_user(&instance, "bob", Some("password123")).await;
-    let _charlie = login_user(&instance, "charlie", None).await;
-    let _diana = login_user(&instance, "diana", Some("another_password")).await;
+    let _alice = login_account(&instance, "alice", None).await;
+    let _bob = login_account(&instance, "bob", Some("password123")).await;
+    let _charlie = login_account(&instance, "charlie", None).await;
+    let _diana = login_account(&instance, "diana", Some("another_password")).await;
 }
 
 #[tokio::test]
@@ -71,12 +71,12 @@ async fn test_create_duplicate_username_fails() {
     let username = "alice";
 
     // Create first user
-    crate::helpers::create_user(&instance, username, None)
+    crate::helpers::create_account(&instance, username, None)
         .await
         .expect("First user should succeed");
 
     // Try to create duplicate user
-    let result = crate::helpers::create_user(&instance, username, None).await;
+    let result = crate::helpers::create_account(&instance, username, None).await;
     assert!(result.is_err(), "Creating duplicate username should fail");
 }
 
@@ -87,7 +87,7 @@ async fn test_login_passwordless_user() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
 
     // Login should succeed
-    let user = login_user(&instance, &username, None).await;
+    let user = login_account(&instance, &username, None).await;
 
     // Verify user has keys
     assert_user_key_count(&user, 1);
@@ -100,7 +100,7 @@ async fn test_login_with_correct_password() {
     let (instance, _) = setup_instance_with_user(username, Some(password)).await;
 
     // Login with correct password should succeed
-    let user = login_user(&instance, username, Some(password)).await;
+    let user = login_account(&instance, username, Some(password)).await;
 
     // Verify user has keys
     assert_user_key_count(&user, 1);
@@ -117,7 +117,7 @@ async fn test_login_with_wrong_password() {
     // Login with wrong password should fail
     assert!(
         instance
-            .login_user(username, Some(wrong_password))
+            .login_account(username, Some(wrong_password))
             .await
             .is_err(),
         "Login should fail with wrong password"
@@ -130,7 +130,7 @@ async fn test_login_passwordless_user_with_password_fails() {
     let (instance, _) = setup_instance_with_user(username, None).await;
 
     // Try to login with a password when user is passwordless
-    let result = instance.login_user(username, Some("any_password")).await;
+    let result = instance.login_account(username, Some("any_password")).await;
     assert!(
         result.is_err(),
         "Login passwordless user with password should fail"
@@ -144,7 +144,7 @@ async fn test_login_password_user_without_password_fails() {
     let (instance, _) = setup_instance_with_user(username, Some(password)).await;
 
     // Try to login without password when user requires one
-    let result = instance.login_user(username, None).await;
+    let result = instance.login_account(username, None).await;
     assert!(
         result.is_err(),
         "Login password-protected user without password should fail"
@@ -157,7 +157,10 @@ async fn test_login_nonexistent_user() {
 
     // Try to login user that doesn't exist
     assert!(
-        instance.login_user("nonexistent_user", None).await.is_err(),
+        instance
+            .login_account("nonexistent_user", None)
+            .await
+            .is_err(),
         "Login should fail for non-existent user"
     );
 }
@@ -168,9 +171,9 @@ async fn test_multiple_sequential_logins_same_user() {
     let (instance, _) = setup_local_instance_with_user(username, None).await;
 
     // Login multiple times sequentially
-    let _user1 = login_user(&instance, username, None).await;
-    let _user2 = login_user(&instance, username, None).await;
-    let _user3 = login_user(&instance, username, None).await;
+    let _user1 = login_account(&instance, username, None).await;
+    let _user2 = login_account(&instance, username, None).await;
+    let _user3 = login_account(&instance, username, None).await;
 
     // All logins should succeed (different sessions)
 }
@@ -182,13 +185,13 @@ async fn test_logout_clears_session() {
     let username = "grace";
     let (instance, _) = setup_local_instance_with_user(username, None).await;
 
-    let user = login_user(&instance, username, None).await;
+    let user = login_account(&instance, username, None).await;
 
     // Logout should succeed
     user.logout().expect("Logout should succeed");
 
     // Can still login again
-    let _new_user = login_user(&instance, username, None).await;
+    let _new_account = login_account(&instance, username, None).await;
 }
 
 #[tokio::test]
@@ -198,15 +201,15 @@ async fn test_logout_and_relogin() {
     let (instance, _) = setup_local_instance_with_user(username, Some(password)).await;
 
     // First session
-    let user1 = login_user(&instance, username, Some(password)).await;
+    let user1 = login_account(&instance, username, Some(password)).await;
     user1.logout().expect("First logout should succeed");
 
     // Second session
-    let user2 = login_user(&instance, username, Some(password)).await;
+    let user2 = login_account(&instance, username, Some(password)).await;
     user2.logout().expect("Second logout should succeed");
 
     // Third session
-    let _user3 = login_user(&instance, username, Some(password)).await;
+    let _user3 = login_account(&instance, username, Some(password)).await;
 }
 
 #[tokio::test]
@@ -215,15 +218,15 @@ async fn test_logout_multiple_sessions() {
     let (instance, _) = setup_local_instance_with_user(username, None).await;
 
     // Create multiple sessions and logout each one
-    let user1 = login_user(&instance, username, None).await;
+    let user1 = login_account(&instance, username, None).await;
     user1.logout().expect("First session logout should succeed");
 
-    let user2 = login_user(&instance, username, None).await;
+    let user2 = login_account(&instance, username, None).await;
     user2
         .logout()
         .expect("Second session logout should succeed");
 
-    let user3 = login_user(&instance, username, None).await;
+    let user3 = login_account(&instance, username, None).await;
     user3.logout().expect("Third session logout should succeed");
 }
 
@@ -265,16 +268,16 @@ async fn test_user_persistence_across_sessions() {
     let instance = setup_instance().await;
 
     // Create user and add keys in first session
-    crate::helpers::create_user(&instance, username, None)
+    crate::helpers::create_account(&instance, username, None)
         .await
         .expect("Failed to create user");
-    let mut user1 = login_user(&instance, username, None).await;
+    let mut user1 = login_account(&instance, username, None).await;
     let key1 = add_user_key(&mut user1, Some("key1")).await;
     let key2 = add_user_key(&mut user1, Some("key2")).await;
     user1.logout().expect("Logout should succeed");
 
     // Login again and verify keys persisted
-    let user2 = login_user(&instance, username, None).await;
+    let user2 = login_account(&instance, username, None).await;
     assert_user_key_count(&user2, 3); // Initial key + 2 added keys
     assert_user_has_key(&user2, &key1);
     assert_user_has_key(&user2, &key2);
@@ -286,15 +289,15 @@ async fn test_database_persistence_across_sessions() {
     let instance = setup_instance().await;
 
     // Create user and database in first session
-    crate::helpers::create_user(&instance, username, None)
+    crate::helpers::create_account(&instance, username, None)
         .await
         .expect("Failed to create user");
-    let mut user1 = login_user(&instance, username, None).await;
+    let mut user1 = login_account(&instance, username, None).await;
     let (db1, db_id) = create_database_with_id(&mut user1, "persistent_db").await;
     user1.logout().expect("Logout should succeed");
 
     // Login again and verify database can be loaded
-    let user2 = login_user(&instance, username, None).await;
+    let user2 = login_account(&instance, username, None).await;
     let db2 = user2
         .open_database(&db_id)
         .await

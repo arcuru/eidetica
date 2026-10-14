@@ -4,12 +4,12 @@
 
 use super::*;
 use crate::{
-    NewUser,
+    NewAccount,
+    account::types::SyncSettings,
     auth::{AuthKey, Permission},
     backend::database::InMemory,
     crdt::Doc,
     sync::{Sync, transports::http::HttpTransport},
-    user::types::SyncSettings,
 };
 
 struct LocalPeer {
@@ -22,7 +22,7 @@ impl LocalPeer {
     async fn new() -> Result<Self> {
         // Always local, including when the wider suite selects the service backend.
         let (instance, _) =
-            Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("owner"))
+            Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("owner"))
                 .await?;
         let sync = Sync::new(instance.clone()).await?;
         let (_, command_rx) = mpsc::channel(1);
@@ -47,7 +47,7 @@ impl LocalPeer {
     }
 
     async fn shared_tree(&self) -> Result<Database> {
-        let mut owner = self.instance.login_user("owner", None).await?;
+        let mut owner = self.instance.login_account("owner", None).await?;
         let key = owner.get_default_key()?;
         let database = owner.create_database(Doc::new(), &key).await?;
         let tx = database.new_transaction().await?;
@@ -59,7 +59,7 @@ impl LocalPeer {
             .track_database(database.root_id().clone(), &key, SyncSettings::enabled())
             .await?;
         self.sync
-            .sync_user(owner.user_uuid(), owner.user_database().root_id())
+            .sync_account(owner.login_id(), owner.account().root_id())
             .await?;
         Ok(database)
     }

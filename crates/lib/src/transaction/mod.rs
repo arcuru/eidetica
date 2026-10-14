@@ -308,7 +308,7 @@ impl Transaction {
     /// decrypted and ready to use, eliminating the need for backend key lookup.
     ///
     /// # Arguments
-    /// * `signing_key` - The decrypted signing key from UserKeyManager
+    /// * `signing_key` - The decrypted signing key from AccountKeyManager
     /// * `identity` - The SigKey identity used in database auth settings
     pub(crate) fn set_provided_key(&mut self, signing_key: PrivateKey, identity: SigKey) {
         self.provided_signing_key = Some((signing_key, identity));
@@ -1679,7 +1679,7 @@ impl Transaction {
         // Use provided signing key
         let signing_key = if let Some((ref provided_key, ref identity)) = self.provided_signing_key
         {
-            // Use provided signing key directly (already decrypted from UserKeyManager or device key)
+            // Use provided signing key directly (already decrypted from AccountKeyManager or device key)
             let key_clone = provided_key.clone();
 
             // Build AuthInfo from the already-typed SigKey identity

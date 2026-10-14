@@ -4,10 +4,10 @@
 //! the stored `BootstrapRequest` for the approver to inspect.
 
 use eidetica::{
+    account::types::SyncSettings,
     auth::Permission,
     crdt::Doc,
     sync::{DatabaseTicket, transports::http::HttpTransport},
-    user::types::SyncSettings,
 };
 
 use super::helpers::*;
@@ -45,7 +45,7 @@ async fn bootstrap_request_carries_metadata_to_approver() {
     assert!(result.is_err(), "manual-approval request should be pending");
     assert!(
         client_user.database(&tree_id).await.is_err(),
-        "Pending must not record User preferences"
+        "Pending must not record Account preferences"
     );
 
     // The approver sees the metadata verbatim on the stored pending request.

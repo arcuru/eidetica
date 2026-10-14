@@ -40,7 +40,7 @@ pub async fn run(args: &InfoArgs, format: OutputFormat) -> Result<(), Box<dyn st
 
     let backend_str = backend_label(&args.backend_config);
 
-    // User count is no longer reported here: listing users is an admin
+    // AccountSession count is no longer reported here: listing users is an admin
     // operation and `info` doesn't currently accept admin credentials.
     // (A future enhancement could add `--username` + interactive password
     // prompt to surface the user count when the operator provides them.)

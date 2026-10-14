@@ -6,7 +6,7 @@
 //! ## Request shape
 //!
 //! `ServiceRequest` is a flat enum holding pre-authentication lifecycle messages
-//! (`TrustedLoginUser`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
+//! (`TrustedLoginAccount`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
 //! query, and an `AuthenticatedDb` wrapper that carries every storage operation
 //! (including any user-management writes against `_users`). The wrapper
 //! bundles the `(root_id, identity)` scope so the server can validate each
@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize, de};
 use serde_json::value::RawValue;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::account::AccountInfo;
 use crate::auth::crypto::PublicKey;
 use crate::auth::types::{Permission, SigKey};
 use crate::backend::{InstanceMetadata, RecordPage, RecordRange, StoreStateRequest};
@@ -43,7 +44,6 @@ use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
-use crate::user::UserInfo;
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
 /// without notice between releases.
@@ -364,9 +364,10 @@ pub enum ServiceRequest {
     /// sign. The "Trusted" qualifier is a load-bearing reminder that this flow
     /// assumes the caller is already trusted by the socket's filesystem
     /// permissions — over a network transport this would need PAKE instead.
-    TrustedLoginUser { username: String },
+    #[serde(rename = "TrustedLoginUser")]
+    TrustedLoginAccount { username: String },
     /// Step 2 of the trusted login flow. Client returns a signature over the
-    /// challenge from `TrustedLoginUser`, computed with the user's root key.
+    /// challenge from `TrustedLoginAccount`, computed with the user's root key.
     /// Server verifies against the stored pubkey and, on success, marks the
     /// connection authenticated.
     TrustedLoginProve { signature: Vec<u8> },
@@ -494,7 +495,7 @@ pub enum Notification {
 /// dispatcher.
 ///
 /// `Response` boxes its payload because `ServiceResponse` is large (the
-/// `TrustedLoginChallenge` variant carries a full `UserInfo`), and an
+/// `TrustedLoginChallenge` variant carries a full `AccountInfo`), and an
 /// unboxed enum would force every `Notification` frame to carry that
 /// stack footprint too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -539,24 +540,26 @@ pub enum ServiceResponse {
     Error(ServiceError),
     /// Point-in-time locator for one authorized database.
     DatabaseTicket(crate::sync::DatabaseTicket),
-    /// Challenge bytes returned in response to `TrustedLoginUser`, plus the
+    /// Challenge bytes returned in response to `TrustedLoginAccount`, plus the
     /// user's full record so the client can derive the password→key, decrypt
     /// the root signing key locally, sign the challenge in a single
-    /// round-trip, and then build the `User` session from data the daemon
+    /// round-trip, and then build the `AccountSession` session from data the daemon
     /// already returned — no second wire read of `_users` is required.
     ///
-    /// `user_info.credentials` carries the (encrypted) root private key, its
+    /// `account_info.credentials` carries the (encrypted) root private key, its
     /// `KeyStorage` envelope (algorithm/ciphertext/nonce for password-protected
     /// users, raw `PrivateKey` for passwordless users), and the Argon2id salt
-    /// when password-protected. The non-credential fields (user_database_id,
-    /// status, timestamps) are what `User::new` consumes after the proof
+    /// when password-protected. The non-credential fields (account_id,
+    /// status, timestamps) are what `AccountSession::new` consumes after the proof
     /// step succeeds. See § Trusted login threat model in the Service
     /// Architecture doc for why this is safe to ship to anyone who can
     /// reach the socket.
     TrustedLoginChallenge {
         challenge: Vec<u8>,
-        user_uuid: String,
-        user_info: UserInfo,
+        #[serde(rename = "user_uuid")]
+        login_id: String,
+        #[serde(rename = "user_info")]
+        account_info: AccountInfo,
     },
     /// Trusted login succeeded; the connection is now authenticated.
     TrustedLoginOk,
@@ -962,13 +965,14 @@ mod tests {
 
     #[test]
     fn test_request_trusted_login_user_serde() {
-        let req = ServiceRequest::TrustedLoginUser {
+        let req = ServiceRequest::TrustedLoginAccount {
             username: "alice".to_string(),
         };
         let json = serde_json::to_string(&req).unwrap();
+        assert_eq!(json, r#"{"TrustedLoginUser":{"username":"alice"}}"#);
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
         match req2 {
-            ServiceRequest::TrustedLoginUser { username } => assert_eq!(username, "alice"),
+            ServiceRequest::TrustedLoginAccount { username } => assert_eq!(username, "alice"),
             _ => panic!("wrong variant"),
         }
     }
@@ -1038,14 +1042,14 @@ mod tests {
 
     #[test]
     fn test_response_trusted_login_challenge_serde() {
+        use crate::account::{AccountCredentials, AccountInfo, AccountStatus, KeyStorage};
         use crate::auth::crypto::generate_keypair;
-        use crate::user::{KeyStorage, UserCredentials, UserInfo, UserStatus};
 
         let (_signing, pubkey) = generate_keypair();
-        let user_info = UserInfo {
+        let account_info = AccountInfo {
             username: "alice".to_string(),
-            user_database_id: ID::from_bytes("alice-db"),
-            credentials: UserCredentials {
+            account_id: ID::from_bytes("alice-db"),
+            credentials: AccountCredentials {
                 root_key_id: pubkey.clone(),
                 root_key: KeyStorage::Encrypted {
                     algorithm: "aes-256-gcm".to_string(),
@@ -1055,26 +1059,49 @@ mod tests {
                 password_salt: Some("salt-string".to_string()),
             },
             created_at: 1_700_000_000,
-            status: UserStatus::Active,
+            status: AccountStatus::Active,
         };
 
         let resp = ServiceResponse::TrustedLoginChallenge {
             challenge: b"random-bytes".to_vec(),
-            user_uuid: "uuid-alice".to_string(),
-            user_info: user_info.clone(),
+            login_id: "uuid-alice".to_string(),
+            account_info: account_info.clone(),
         };
         let json = serde_json::to_string(&resp).unwrap();
+        // API vocabulary must not silently rewrite stored credentials or the
+        // trusted-login envelope. Mask only the randomly generated public key.
+        let mut encoded: serde_json::Value = serde_json::from_str(&json).unwrap();
+        encoded["TrustedLoginChallenge"]["user_info"]["credentials"]["root_key_id"] =
+            serde_json::json!("PUBLIC_KEY");
+        assert_eq!(
+            encoded,
+            serde_json::json!({"TrustedLoginChallenge": {
+                "challenge": b"random-bytes".to_vec(),
+                "user_uuid": "uuid-alice",
+                "user_info": {
+                    "username": "alice",
+                    "user_database_id": account_info.account_id,
+                    "credentials": {
+                        "root_key_id": "PUBLIC_KEY",
+                        "root_key": {"type": "encrypted", "algorithm": "aes-256-gcm",
+                            "ciphertext": b"ct".to_vec(), "nonce": b"123456789012".to_vec()},
+                        "password_salt": "salt-string"
+                    },
+                    "created_at": 1_700_000_000, "status": "Active"
+                }
+            }})
+        );
         let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
         match resp2 {
             ServiceResponse::TrustedLoginChallenge {
                 challenge,
-                user_uuid,
-                user_info: ui2,
+                login_id,
+                account_info: ui2,
             } => {
                 assert_eq!(challenge, b"random-bytes");
-                assert_eq!(user_uuid, "uuid-alice");
-                assert_eq!(ui2.username, user_info.username);
-                assert_eq!(ui2.user_database_id, user_info.user_database_id);
+                assert_eq!(login_id, "uuid-alice");
+                assert_eq!(ui2.username, account_info.username);
+                assert_eq!(ui2.account_id, account_info.account_id);
                 assert_eq!(ui2.credentials.root_key_id, pubkey);
                 assert_eq!(
                     ui2.credentials.password_salt.as_deref(),

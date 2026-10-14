@@ -66,12 +66,12 @@ sequenceDiagram
 
     Note over C,S: Connection state: PreAuth
 
-    C->>S: TrustedLoginUser { username }
-    S->>C: TrustedLoginChallenge { challenge, user_uuid, user_info }
+    C->>S: TrustedLoginAccount { username }
+    S->>C: TrustedLoginChallenge { challenge, login_id, account_info }
     Note over S: state → AwaitingProof
     C->>S: TrustedLoginProve { signature over challenge }
     S->>C: TrustedLoginOk
-    Note over S: state → Authenticated { login_pubkey, session_keyset, user_uuid }
+    Note over S: state → Authenticated { login_pubkey, session_keyset, login_id }
 
     opt Register additional per-DB keys
         C->>S: SessionKeyChallenge { pubkey }
@@ -115,7 +115,7 @@ persisted state rather than assume cancellation undid it.
 
 Client-side signing over the Unix service socket. In socket-only mode the daemon stores and serves encrypted key material and signed entries but **never holds plaintext user signing keys or passwords**. When the optional dashboard is enabled, web logins decrypt signing keys in the daemon process for their in-memory sessions; the socket protocol remains client-side signing.
 
-- **User keys stay client-side**: `TrustedLoginUser` returns the user's full record (`user_info`, including the encrypted `UserCredentials`) in the same round-trip as the challenge. The client derives the key-encryption-key locally (Argon2id over the password), decrypts the root signing key in-process, signs the challenge, and builds its `User` session from the already-returned record — no second wire read of `_users`. The signing key never crosses the socket.
+- **AccountSession keys stay client-side**: `TrustedLoginAccount` returns the user's full record (`account_info`, including the encrypted `AccountCredentials`) in the same round-trip as the challenge. The client derives the key-encryption-key locally (Argon2id over the password), decrypts the root signing key in-process, signs the challenge, and builds its `AccountSession` session from the already-returned record — no second wire read of `_users`. The signing key never crosses the socket.
 - **Authentication via challenge-response**: the daemon issues fresh random challenge bytes per login attempt. Successful decryption of the user's signing key on the client _is_ password verification; the daemon verifies the returned signature against the user's stored public key. No password is sent over the wire.
 - **`TrustedLogin` naming is load-bearing**: the flow assumes the caller is already trusted by the socket's filesystem permissions. Over a network transport this would need a PAKE instead — the name flags that gap deliberately.
 - **Encrypted stores remain opaque to the daemon**: per-database encrypted CRDTs merge as `Vec<EncryptedBlob>`; the daemon participates in storage and sync without ever holding a content encryption key.
@@ -137,7 +137,7 @@ The top-level request enum is intentionally flat, keeping the pre-auth surface v
 
 | Variant                                        | When                                                                                               |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `TrustedLoginUser { username }`                | Pre-auth step 1 — request a login challenge                                                        |
+| `TrustedLoginAccount { username }`             | Pre-auth step 1 — request a login challenge                                                        |
 | `TrustedLoginProve { signature }`              | Pre-auth step 2 — return the signed login challenge                                                |
 | `GetInstanceMetadata`                          | Pre-auth — fetch server identity (used by `Instance::connect`)                                     |
 | `SessionKeyChallenge { pubkey }`               | Post-auth — request a challenge bound to `pubkey` so the client can prove possession               |
@@ -197,7 +197,7 @@ Published views and private builds use opaque random tokens stored only in the c
 | `MergeState(MergeState)`                                    | LCA + path, response to `DatabaseOp::ComputeMergeState`            |
 | `DatabaseTicket(DatabaseTicket)`                            | Point-in-time locator, response to `DatabaseOp::CreateTicket`      |
 | `InstanceMetadata(Option<InstanceMetadata>)`                | Optional instance metadata                                         |
-| `TrustedLoginChallenge { challenge, user_uuid, user_info }` | Challenge bytes + the user's full record (login)                   |
+| `TrustedLoginChallenge { challenge, login_id, account_info }` | Challenge bytes + the user's full record (login)                   |
 | `TrustedLoginOk`                                            | Login succeeded; connection now authenticated                      |
 | `SessionKeyChallenge { challenge }`                         | Challenge bytes the client signs to register an additional key     |
 | `TicketBootstrapRoute { address, peer, tips }`              | Selected route, answering peer, and empty tips                     |
@@ -206,7 +206,7 @@ Published views and private builds use opaque random tokens stored only in the c
 
 ## Ticket Bootstrap
 
-`User::join` on a connected instance joins a database from a ticket without a client-side sync engine and without sending the user's private key to the daemon.
+`AccountSession::join` on a connected instance joins a database from a ticket without a client-side sync engine and without sending the account's private key to the daemon.
 A bootstrap request proof (`SyncRequestAuth`) is bound to the answering peer and the requester's advertised tips, so the exchange takes two requests:
 
 1. The client registers the requesting key in the session keyset, then sends `TicketBootstrapPrepare { ticket }`.
@@ -218,13 +218,13 @@ A bootstrap request proof (`SyncRequestAuth`) is bound to the answering peer and
    It re-handshakes the route before recording it, so the address must answer as `peer`; and if the daemon already holds the database, the proof's key must already be able to read it there, because the peer store is shared by every user of the daemon.
 
 Pending and rejected results travel as `TicketBootstrapOutcome` data rather than as `ServiceError`s, so the client rebuilds `SyncError::BootstrapPending` and `SyncError::BootstrapRejected` exactly.
-Neither outcome creates User state or a new serving relationship; existing legacy User rows are preserved.
-Only after a successful exchange does the client discover the valid SigKey and record mapping and preferences atomically in its User database, publishing cache from acknowledged or read-back verified state.
+Neither outcome creates Account state or a new serving relationship; existing legacy Account rows are preserved.
+Only after a successful exchange does the client discover the valid SigKey and record mapping and preferences atomically in its Account database, publishing cache from acknowledged or read-back verified state.
 An identical retry does not append equivalent configuration history, and preferences changed during the network wait are not overwritten.
 Success returns an opened `Database` only after those client-side writes finish.
 Pending requires an explicit `join` retry after approval; rejection is terminal for the request.
 Requests on a connection are handled in order, so the join occupies its connection until the peer answers.
-A dropped future or disconnected caller may leave peer-side effects, replicated data or a committed User Entry without its acknowledgement.
+A dropped future or disconnected caller may leave peer-side effects, replicated data or a committed Account Entry without its acknowledgement.
 Already-dispatched daemon work may continue after client EOF, but daemon/process death can interrupt it.
 Reconnect and retry explicitly; there is no cancellation API or automatic restart-safe completion.
 The shared [frame cancellation rules](#cancellation-and-frame-integrity) apply: an interrupted frame retires the connection, while cancelling only its response wait retains FIFO response association.
@@ -248,7 +248,7 @@ enum ConnectionState {
         login_pubkey: PublicKey,
         session_keyset: HashSet<PublicKey>,           // includes login_pubkey
         pending_key_challenges: HashMap<PublicKey, Vec<u8>>,
-        user_uuid: String,
+        login_id: String,
         ..
     },
 }
@@ -258,7 +258,7 @@ No `ConnectionState` variant holds a `PrivateKey` (enforced by a structural test
 
 ### Why a keyset, not a single pubkey?
 
-A `User` has many pubkeys — a root key, a device key, per-DB keys created via `User::add_private_key`, etc. Writes signed by a per-DB key produce entries whose tree auth grants that key, not the login key. With a single-pubkey session, reads of those trees would be denied (the login key isn't a member of the tree the per-DB key authored). The keyset model lets the same connection drive ops on every tree the user actually has a key for, without forcing one connection per key.
+A `AccountSession` has many pubkeys — a root key, a device key, per-DB keys created via `AccountSession::add_private_key`, etc. Writes signed by a per-DB key produce entries whose tree auth grants that key, not the login key. With a single-pubkey session, reads of those trees would be denied (the login key isn't a member of the tree the per-DB key authored). The keyset model lets the same connection drive ops on every tree the user actually has a key for, without forcing one connection per key.
 
 ### Registration handshake
 
@@ -273,7 +273,7 @@ The handle constructors that need per-DB identities register on the caller's beh
 
 - `Database::create(instance, signing_key, settings)` registers `signing_key` before constructing the returned `RemoteBackend`-backed handle.
 - `Database::open_remote(.., identity)` is paired by `Instance::open_system_db_for_session(root, signing_key)`, which registers `signing_key` before opening.
-- `User::open_database_with_key(root, key_id)` registers the user-held signing key for `key_id` before routing through `Database::open_remote` on a connected instance.
+- `AccountSession::open_database_with_key(root, key_id)` registers the user-held signing key for `key_id` before routing through `Database::open_remote` on a connected instance.
 
 ## Access Control: the three gates
 
@@ -332,7 +332,7 @@ Historical current state is materialized into derived record sets in the shared 
 Cached state is scoped by [`CacheScope`](crate::backend::CacheScope):
 
 - `CacheScope::Shared` — daemon-computed state (visible to every authorized user; the bytes were produced by the trusted server-side merge).
-- `CacheScope::User(uuid)` — client-computed state (scoped to the submitting user's uuid; only that user can poison their own future reads).
+- `CacheScope::AccountSession(uuid)` — client-computed state (scoped to the submitting user's uuid; only that user can poison their own future reads).
 
 Every client-supplied `StoreStateRequest` is rebound to the session before it reaches the backend: its database must be the one the request was gated against, a shared-scope request is narrowed to the session user, and a request naming another user's scope is refused. Resolution then falls back from the user scope to the shared one, so a daemon materialization is reused instead of rebuilt per user, while a client can never publish into shared cached state or another user's cached state.
 
@@ -433,13 +433,13 @@ just test service
 nix build .#test.service
 ```
 
-The full suite passes 1:1 against the service backend. Tests that exercise _process-local_ subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), client-side delegation validation that reads delegated trees via `backend.get_tree`, the CRDT merge cache, and multi-`User`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
+The full suite passes 1:1 against the service backend. Tests that exercise _process-local_ subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), client-side delegation validation that reads delegated trees via `backend.get_tree`, the CRDT merge cache, and multi-`AccountSession`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
 
 - `test_local_instance()` — like `test_instance()` but always builds an in-memory local `Instance`.
 - `test_local_instance_with_user(username)` and `test_local_instance_with_user_and_key(username, key_name)` — counterparts to the wire-aware versions.
 - `setup_tree_with_user_key_local()` and `TestContext::with_local_database()` — for tests that poke at local-only backend state.
 
-The architectural seam — wire-path tests vs. subsystem tests — is explicit at the helper level. The test harness bootstraps the server-side Instance with a passwordless `admin` user via `Instance::create_backend(..., NewUser::passwordless("admin"))`, then logs in over the wire as that user. (The old `admin`/`admin` auto-bootstrap is gone; production deployments now run `eidetica daemon init --username <NAME>` with explicit credentials, and the test harness mirrors that shape.)
+The architectural seam — wire-path tests vs. subsystem tests — is explicit at the helper level. The test harness bootstraps the server-side Instance with a passwordless `admin` user via `Instance::create_backend(..., NewAccount::passwordless("admin"))`, then logs in over the wire as that user. (The old `admin`/`admin` auto-bootstrap is gone; production deployments now run `eidetica daemon init --username <NAME>` with explicit credentials, and the test harness mirrors that shape.)
 
 ## V1 Limitations
 
@@ -448,7 +448,7 @@ This is a **fully trusted local-client** v1. Filesystem access to the socket gra
 - **Lock-poisoning posture**: the per-connection session `RwLock` and the `RemoteBackend` per-connection cache mutex are poison-tolerant (handlers recover the guard from a poisoned lock rather than panicking), but other `std::sync::Mutex` sites in the service path still use `lock().unwrap()`. Documented at the lock sites; the remaining ones must be audited before serving multiple or untrusted clients.
 - **Verification status is never asserted over the wire**: the service protocol carries no way for a client to assert a verification status; entries arriving over the wire are stored `Unverified` and earn `Verified` only via the daemon's own validation pass. The status model, the pinned-settings validation that makes it staleness-free, the disclosure posture, and the unbuilt authority-_reduction_ (revocation) gap are documented in the [Verification Model](../design/verification.md) design doc.
 - **`snapshot()` on a connected Database delegates to `self.ops()`**: handles built via `Database::create` or `Database::open_remote` carry a `RemoteBackend` bound to a per-DB identity; reads use that identity (not the connection's login pubkey). Handles built via plain `Database::open` on a connected instance share the `Instance`'s `RemoteBackend` (which uses the connection's default session identity) — appropriate for code that wants the connection's login pubkey to drive reads. The previous heuristic remote-detection in `Database::snapshot` was replaced with an explicit ops delegation.
-- **No sync delegation**: `enable_sync()` on a remote Instance is a silent no-op (sync runs daemon-side; the client can't enable it from over the wire). A future admin-gated `EnableSync` RPC would let a client ask the daemon to enable its sync subsystem, parallel to how `InstanceAdmin::create_user` reaches `_users` today.
+- **No sync delegation**: `enable_sync()` on a remote Instance is a silent no-op (sync runs daemon-side; the client can't enable it from over the wire). A future admin-gated `EnableSync` RPC would let a client ask the daemon to enable its sync subsystem, parallel to how `InstanceAdmin::create_account` reaches `_users` today.
 
 ## Future Work
 

@@ -1,12 +1,12 @@
 //! Tests for the user_session module.
 
 use super::*;
-use crate::{NewUser, backend::database::InMemory};
+use crate::{NewAccount, backend::database::InMemory};
 
-async fn create_test_user_session() -> (Instance, User) {
+async fn create_test_user_session() -> (Instance, AccountSession) {
     Instance::create_backend(
         Box::new(InMemory::new()),
-        NewUser::with_password("test_user", "test_password"),
+        NewAccount::with_password("test_user", "test_password"),
     )
     .await
     .unwrap()
@@ -17,7 +17,7 @@ async fn create_test_user_session() -> (Instance, User) {
 async fn test_user_creation() {
     let (_instance, user) = create_test_user_session().await;
     assert_eq!(user.username(), "test_user");
-    assert!(!user.user_uuid().is_empty());
+    assert!(!user.login_id().is_empty());
 }
 
 #[tokio::test]
@@ -26,9 +26,9 @@ async fn test_user_getters() {
     let (_instance, user) = create_test_user_session().await;
 
     assert_eq!(user.username(), "test_user");
-    assert!(!user.user_uuid().is_empty());
-    assert_eq!(user.user_info().username, "test_user");
-    assert!(!user.user_database().root_id().to_string().is_empty());
+    assert!(!user.login_id().is_empty());
+    assert_eq!(user.account_info().username, "test_user");
+    assert!(!user.account().root_id().to_string().is_empty());
 }
 
 #[tokio::test]
@@ -37,10 +37,10 @@ async fn test_user_logout() {
     let (_instance, user) = create_test_user_session().await;
     let username = user.username().to_string();
 
-    // Logout consumes the user
+    // Logout consumes the account
     user.logout().unwrap();
 
-    // User is dropped, keys should be cleared
+    // AccountSession is dropped, keys should be cleared
     assert_eq!(username, "test_user");
 }
 
@@ -49,20 +49,22 @@ async fn test_user_logout() {
 async fn test_user_drop() {
     {
         let (_instance, _user) = create_test_user_session().await;
-        // User will be dropped when it goes out of scope
+        // AccountSession will be dropped when it goes out of scope
     }
     // Keys should be cleared automatically
 }
 
 #[tokio::test]
 async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<()> {
-    let (instance, mut user) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))
-            .await?;
+    let (instance, mut user) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewAccount::passwordless("client"),
+    )
+    .await?;
     let key = user.get_default_key()?;
     let tree = ID::from_bytes("staged-only");
-    let before = user.user_database.snapshot().await?;
-    let tx = user.user_database.new_transaction().await?;
+    let before = user.account_database.snapshot().await?;
+    let tx = user.account_database.new_transaction().await?;
     user.map_key_in_txn(&tx, &key, &tree, SigKey::from_pubkey(&key))
         .await?;
     assert_eq!(
@@ -70,8 +72,8 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
         None,
         "mapping staging published cache"
     );
-    drop(tx); // Failure/cancellation before staging preferences or putting User Entry.
-    assert_eq!(before, user.user_database.snapshot().await?);
+    drop(tx); // Failure/cancellation before staging preferences or putting AccountSession Entry.
+    assert_eq!(before, user.account_database.snapshot().await?);
 
     let (owner, _) = crate::auth::crypto::generate_keypair();
     let db = Database::create(&instance, owner, Doc::new()).await?;
@@ -84,7 +86,7 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
     let reached = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Notify::new());
     let callback = user
-        .user_database
+        .account_database
         .on_write({
             let reached = reached.clone();
             let resume = resume.clone();
@@ -103,7 +105,7 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
     tokio::select! {
         _ = reached.notified() => {},
         result = &mut tracking => panic!("commit did not pause before acknowledgement: {result:?}"),
-        _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => panic!("User commit did not reach callback"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => panic!("AccountSession commit did not reach callback"),
     }
     drop(tracking);
     assert_eq!(
@@ -113,11 +115,11 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
     );
     resume.notify_one();
     drop(callback);
-    let persisted = user.user_database.snapshot().await?;
+    let persisted = user.account_database.snapshot().await?;
     // Retry reads the actual committed state without registry repair or duplicate history.
     user.track_database(db.root_id(), &key, SyncSettings::disabled())
         .await?;
-    assert_eq!(persisted, user.user_database.snapshot().await?);
+    assert_eq!(persisted, user.account_database.snapshot().await?);
     assert_eq!(
         user.key_mapping(&key, db.root_id())?,
         Some(SigKey::global(&key))
@@ -127,13 +129,15 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
 
 #[tokio::test]
 async fn join_bookkeeping_preserves_settings_changed_during_network_wait() -> Result<()> {
-    let (instance, mut user) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))
-            .await?;
+    let (instance, mut user) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewAccount::passwordless("client"),
+    )
+    .await?;
     let key = user.get_default_key()?;
     let db = user.create_database(Doc::new(), &key).await?;
     let original = user.tracked_database_before_join(db.root_id()).await?;
-    let mut another = instance.login_user("client", None).await?;
+    let mut another = instance.login_account("client", None).await?;
     another
         .track_database(
             db.root_id(),
@@ -176,7 +180,7 @@ async fn join_bookkeeping_preserves_settings_changed_during_network_wait() -> Re
 #[tokio::test]
 async fn join_final_open_checks_requested_permission_and_retains_committed_state() -> Result<()> {
     let (instance, mut user) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("client"))
             .await?;
     let key = user.get_default_key()?;
     let db = Database::create(
@@ -193,7 +197,7 @@ async fn join_final_open_checks_requested_permission_and_retains_committed_state
     .await?;
     user.track_database(db.root_id(), &key, SyncSettings::disabled())
         .await?;
-    let before = user.user_database.snapshot().await?;
+    let before = user.account_database.snapshot().await?;
     for rejected in [false, true] {
         let error = if rejected {
             SyncError::BootstrapRejected {
@@ -216,7 +220,7 @@ async fn join_final_open_checks_requested_permission_and_retains_committed_state
             .await
             .is_err()
         );
-        assert_eq!(before, user.user_database.snapshot().await?);
+        assert_eq!(before, user.account_database.snapshot().await?);
         assert_eq!(
             user.key_mapping(&key, db.root_id())?,
             Some(SigKey::global(&key))
@@ -236,8 +240,8 @@ async fn join_final_open_checks_requested_permission_and_retains_committed_state
     );
     assert_eq!(
         before,
-        user.user_database.snapshot().await?,
-        "open failure rewrote User state"
+        user.account_database.snapshot().await?,
+        "open failure rewrote Account state"
     );
     db.with_transaction(|tx| async move {
         tx.get_settings()?
@@ -252,17 +256,19 @@ async fn join_final_open_checks_requested_permission_and_retains_committed_state
             .await
             .is_ok()
     );
-    assert_eq!(before, user.user_database.snapshot().await?);
+    assert_eq!(before, user.account_database.snapshot().await?);
     Ok(())
 }
 
 #[tokio::test]
 async fn join_concurrent_local_bookkeeping_writes_one_equivalent_entry() -> Result<()> {
-    let (instance, mut first) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))
-            .await?;
+    let (instance, mut first) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewAccount::passwordless("client"),
+    )
+    .await?;
     let key = first.get_default_key()?;
-    let mut second = instance.login_user("client", None).await?;
+    let mut second = instance.login_account("client", None).await?;
     let db = Database::create(
         &instance,
         crate::auth::crypto::generate_keypair().0,
@@ -277,7 +283,7 @@ async fn join_concurrent_local_bookkeeping_writes_one_equivalent_entry() -> Resu
     .await?;
     let count = instance
         .require_local_engine()?
-        .get_tree(first.user_database.root_id())
+        .get_tree(first.account_database.root_id())
         .await?
         .len();
     let (a, b) = tokio::join!(
@@ -290,7 +296,7 @@ async fn join_concurrent_local_bookkeeping_writes_one_equivalent_entry() -> Resu
         count + 1,
         instance
             .require_local_engine()?
-            .get_tree(first.user_database.root_id())
+            .get_tree(first.account_database.root_id())
             .await?
             .len()
     );

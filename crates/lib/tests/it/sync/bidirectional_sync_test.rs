@@ -80,7 +80,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     settings.set("name", "Bidirectional Test Room");
     let db0 = net
         .peer_mut(0)
-        .user_mut()
+        .account_session_mut()
         .create_database(settings, &key0)
         .await?;
     let room_id = db0.root_id().clone();
@@ -111,7 +111,11 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // bootstrap(from, to, ..): peer 1 is the joiner, peer 0 the source.
     net.bootstrap(0, 1, &room_id, Permission::Write(10)).await?;
 
-    let db1 = net.peer_mut(1).user_mut().open_database(&room_id).await?;
+    let db1 = net
+        .peer_mut(1)
+        .account_session_mut()
+        .open_database(&room_id)
+        .await?;
 
     let messages = all_messages(&db1).await?;
     assert_eq!(

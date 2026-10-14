@@ -1,20 +1,20 @@
-//! Error types for the user system
+//! Error types for the account system
 use thiserror::Error;
 
 use crate::entry::ID;
 
 #[derive(Error, Debug)]
-pub enum UserError {
-    #[error("User not found: {username}")]
-    UserNotFound { username: String },
+pub enum AccountError {
+    #[error("Account not found: {username}")]
+    AccountNotFound { username: String },
 
     #[error("Username already exists: {username}")]
-    UsernameAlreadyExists { username: String },
+    LoginNameAlreadyExists { username: String },
 
     #[error(
-        "Multiple users detected with username '{username}' ({count} found). This indicates a race condition during user creation. Manual intervention required."
+        "Multiple accounts detected with username '{username}' ({count} found). This indicates a race condition during account creation. Manual intervention required."
     )]
-    DuplicateUsersDetected { username: String, count: usize },
+    DuplicateAccountsDetected { username: String, count: usize },
 
     #[error("Invalid password")]
     InvalidPassword,
@@ -40,17 +40,19 @@ pub enum UserError {
     #[error("Database not tracked: {database_id}")]
     DatabaseNotTracked { database_id: ID },
 
-    #[error("This user is not sharing database: {database_id}")]
+    #[error("This account is not sharing database: {database_id}")]
     DatabaseNotShared { database_id: ID },
 
-    #[error("Database handle lacks the user capability required to manage sharing: {database_id}")]
+    #[error(
+        "Database handle lacks the account capability required to manage sharing: {database_id}"
+    )]
     MissingDatabaseCapability { database_id: ID },
 
     #[error("Database not found by name: {name}")]
     DatabaseNotFoundByName { name: String },
 
-    #[error("User account disabled: {username}")]
-    UserDisabled { username: String },
+    #[error("Account disabled: {username}")]
+    AccountDisabled { username: String },
 
     #[error("Invalid salt length: expected {expected}, got {actual}")]
     InvalidSaltLength { expected: usize, actual: usize },
@@ -79,22 +81,22 @@ pub enum UserError {
     #[error("Invalid key format: {reason}")]
     InvalidKeyFormat { reason: String },
 
-    #[error("No keys available for user")]
+    #[error("No keys available for account")]
     NoKeysAvailable,
 
     #[error("Duplicate store name in DatabaseBuilder: {name}")]
     DuplicateBuilderStore { name: String },
 }
 
-impl UserError {
+impl AccountError {
     /// Check if this error indicates a resource was not found.
     pub fn is_not_found(&self) -> bool {
         matches!(
             self,
-            UserError::UserNotFound { .. }
-                | UserError::KeyNotFound { .. }
-                | UserError::DatabaseNotTracked { .. }
-                | UserError::DatabaseNotFoundByName { .. }
+            AccountError::AccountNotFound { .. }
+                | AccountError::KeyNotFound { .. }
+                | AccountError::DatabaseNotTracked { .. }
+                | AccountError::DatabaseNotFoundByName { .. }
         )
     }
 }

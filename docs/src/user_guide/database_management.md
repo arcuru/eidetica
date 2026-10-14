@@ -1,6 +1,6 @@
 # Database Sharing
 
-A `Database` opened or created through a `User` carries that caller's private
+A `Database` opened or created through a `AccountSession` carries that caller's private
 sharing capability. Its sharing methods work in embedded and service mode while
 keeping two kinds of state separate:
 
@@ -14,18 +14,18 @@ an explicit missing-capability error.
 
 ## Share a Database
 
-`User::create_database` returns a capability-backed handle. For an existing
-tracked database, use `User::open_database`.
+`AccountSession::create_database` returns a capability-backed handle. For an existing
+tracked database, use `AccountSession::open_database`.
 
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, NewUser, crdt::Doc};
+# use eidetica::{Instance, NewAccount, crdt::Doc};
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 let (instance, user) = Instance::connect_or_create(
     "memory://",
-    NewUser::passwordless("alice"),
+    NewAccount::passwordless("alice"),
 ).await?;
 instance.enable_sync().await?;
 let mut user = user.expect("memory backend is new");
@@ -69,8 +69,8 @@ serving the database. The combined daemon state is intentionally not exposed.
 
 ## Database-Centric Sharing
 
-Sharing controls live on the `Database` handle returned by `User`. Use
-`share`, `stop_sharing`, `sync_settings`, and `ticket` on that handle; `User`
+Sharing controls live on the `Database` handle returned by `AccountSession`. Use
+`share`, `stop_sharing`, `sync_settings`, and `ticket` on that handle; `AccountSession`
 does not expose ID-based sharing helpers.
 
 Treat the returned ticket as a point-in-time locator, not proof that the

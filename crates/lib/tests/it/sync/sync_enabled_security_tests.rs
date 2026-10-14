@@ -6,6 +6,7 @@
 
 use eidetica::{
     Database,
+    account::types::SyncSettings,
     auth::{Permission, generate_keypair, types::AuthKey},
     crdt::Doc,
     database::DatabaseKey,
@@ -16,7 +17,6 @@ use eidetica::{
         protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
         transports::http::HttpTransport,
     },
-    user::types::SyncSettings,
 };
 
 use super::helpers;
@@ -27,11 +27,11 @@ use crate::helpers::set_global_auth_key;
 async fn test_bootstrap_rejected_when_sync_disabled() {
     // Create server with database but NO sync enabled
     let server_instance = helpers::setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, "server_user", None)
+    crate::helpers::create_account(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
-        .login_user("server_user", None)
+        .login_account("server_user", None)
         .await
         .unwrap();
     let server_key_id = server_user
@@ -58,10 +58,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
     // Update sync configuration to reflect disabled state
     let server_sync = server_instance.sync().unwrap();
     server_sync
-        .sync_user(
-            server_user.user_uuid(),
-            server_user.user_database().root_id(),
-        )
+        .sync_account(server_user.login_id(), server_user.account().root_id())
         .await
         .unwrap();
 
@@ -112,11 +109,11 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
 async fn test_incremental_sync_rejected_when_sync_disabled() {
     // Create server with database and sync initially ENABLED
     let server_instance = helpers::setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, "server_user", None)
+    crate::helpers::create_account(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
-        .login_user("server_user", None)
+        .login_account("server_user", None)
         .await
         .unwrap();
     let server_key_id = server_user
@@ -146,10 +143,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     let server_sync = server_instance.sync().unwrap();
     server_sync
-        .sync_user(
-            server_user.user_uuid(),
-            server_user.user_database().root_id(),
-        )
+        .sync_account(server_user.login_id(), server_user.account().root_id())
         .await
         .unwrap();
 
@@ -202,10 +196,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .unwrap();
 
     server_sync
-        .sync_user(
-            server_user.user_uuid(),
-            server_user.user_database().root_id(),
-        )
+        .sync_account(server_user.login_id(), server_user.account().root_id())
         .await
         .unwrap();
 
@@ -255,11 +246,11 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 async fn test_sync_succeeds_when_enabled() {
     // Create server with database and sync ENABLED
     let server_instance = helpers::setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, "server_user", None)
+    crate::helpers::create_account(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
-        .login_user("server_user", None)
+        .login_account("server_user", None)
         .await
         .unwrap();
     let server_key_id = server_user
@@ -297,10 +288,7 @@ async fn test_sync_succeeds_when_enabled() {
 
     let server_sync = server_instance.sync().unwrap();
     server_sync
-        .sync_user(
-            server_user.user_uuid(),
-            server_user.user_database().root_id(),
-        )
+        .sync_account(server_user.login_id(), server_user.account().root_id())
         .await
         .unwrap();
 

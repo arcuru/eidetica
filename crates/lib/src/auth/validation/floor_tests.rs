@@ -53,7 +53,7 @@ async fn new_instance() -> Instance {
     use crate::backend::database::InMemory;
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .expect("test instance");

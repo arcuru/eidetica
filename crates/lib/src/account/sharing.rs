@@ -1,4 +1,4 @@
-//! User-scoped sharing preference support for capability-backed database handles.
+//! AccountSession-scoped sharing preference support for capability-backed database handles.
 
 use crate::{
     Result,

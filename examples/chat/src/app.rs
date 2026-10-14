@@ -1,6 +1,7 @@
 use crate::models::ChatMessage;
 use eidetica::{
     Database, Instance, Result,
+    account::{AccountSession, types::SyncSettings},
     auth::{AuthKey, Permission, types::Permission as PermissionType},
     crdt::Doc,
     store::Table,
@@ -8,13 +9,12 @@ use eidetica::{
         DatabaseTicket, SyncError,
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
-    user::{User, types::SyncSettings},
 };
 use ratatui::widgets::ScrollbarState;
 use tracing::{debug, info};
 
 pub struct App {
-    pub user: User,
+    pub user: AccountSession,
     pub instance: Instance,
 
     // Current room state
@@ -28,7 +28,7 @@ pub struct App {
     pub scroll_state: ScrollbarState,
     pub scroll_position: usize,
 
-    // User info
+    // AccountSession info
     pub username: String,
 
     // Sync state
@@ -41,7 +41,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(instance: Instance, user: User, username: String, transport: &str) -> Result<Self> {
+    pub fn new(
+        instance: Instance,
+        user: AccountSession,
+        username: String,
+        transport: &str,
+    ) -> Result<Self> {
         Ok(Self {
             user,
             instance,
@@ -68,7 +73,7 @@ impl App {
         // Get the user's default key
         let key_id = self.user.get_default_key()?;
 
-        // User API automatically configures auth with the creating key as admin
+        // AccountSession API automatically configures auth with the creating key as admin
         let database = self.user.create_database(settings, &key_id).await?;
 
         // Add global permission so anyone with the room ID can write
@@ -105,7 +110,7 @@ impl App {
             self.start_server().await?;
         }
 
-        // Database from User API already has auth key configured
+        // Database from AccountSession API already has auth key configured
 
         // Save sharing intent, then build a point-in-time locator. The ID-only
         // fallback preserves the existing handoff UI if address lookup fails.
@@ -262,7 +267,7 @@ impl App {
         let message = ChatMessage::new(self.username.clone(), self.input.trim().to_string());
 
         if let Some(database) = &self.current_room {
-            // Database from User API has auth configured automatically
+            // Database from AccountSession API has auth configured automatically
             let txn = database.new_transaction().await?;
             let store = txn.get_store::<Table<ChatMessage>>("messages").await?;
             store.insert(message.clone()).await?;

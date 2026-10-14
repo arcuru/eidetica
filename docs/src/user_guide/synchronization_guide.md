@@ -16,7 +16,7 @@ Eidetica's sync system enables real-time data synchronization between distribute
 # let backend = Box::new(Sqlite::in_memory().await?);
 let (instance, mut user) = Instance::create_backend(
     backend,
-    eidetica::NewUser::passwordless("alice"),
+    eidetica::NewAccount::passwordless("alice"),
 ).await?;
 instance.enable_sync().await?;
 
@@ -206,12 +206,12 @@ For persistent sync relationships:
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, _) = Instance::connect_or_create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("admin"),
+#     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_user("admin", None).await?;
-# admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let admin = instance.login_account("admin", None).await?;
+# admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
+# let mut user = instance.login_account("alice", None).await?;
 # let default_key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &default_key).await?;
 # let tree_id = db.root_id().clone();
@@ -242,19 +242,19 @@ Configure per-database sync behavior:
 # extern crate eidetica;
 # extern crate tokio;
 # use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
-# use eidetica::user::types::SyncSettings;
+# use eidetica::account::types::SyncSettings;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, _) = Instance::connect_or_create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("admin"),
+#     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_user("admin", None).await?;
-# admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let admin = instance.login_account("admin", None).await?;
+# admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
+# let mut user = instance.login_account("alice", None).await?;
 # let key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &key).await?;
 # let db_id = db.root_id().clone();
@@ -273,13 +273,13 @@ user.track_database(
 For joining databases that require authentication:
 
 ```rust,ignore
-use eidetica::{sync::DatabaseTicket, user::types::SyncSettings};
+use eidetica::{sync::DatabaseTicket, account::types::SyncSettings};
 
-// Request database access through User API
+// Request database access through AccountSession API
 user.request_database_access(
     &sync,
     &ticket,
-    &key_id,  // User's key ID from user.add_private_key()
+    &key_id,  // Account's key ID from user.add_private_key()
     eidetica::auth::Permission::Write,
     SyncSettings::on_commit(),
     None,

@@ -23,7 +23,7 @@ use eidetica::{
 #[tokio::test]
 async fn test_create_database_passwordless_user() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create a database
     let database = create_named_database(&mut user, "Test Database").await;
@@ -38,7 +38,7 @@ async fn test_create_database_passwordless_user() {
 #[tokio::test]
 async fn test_create_database_with_custom_name() {
     let (instance, username) = setup_instance_with_user("bob", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create database with specific name
     let db_name = "My Custom Database";
@@ -51,7 +51,7 @@ async fn test_create_database_with_custom_name() {
 #[tokio::test]
 async fn test_create_multiple_databases() {
     let (instance, username) = setup_instance_with_user("charlie", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create 3 databases
     let db1 = create_named_database(&mut user, "Database 1").await;
@@ -72,7 +72,7 @@ async fn test_create_multiple_databases() {
 #[tokio::test]
 async fn test_database_has_unique_id() {
     let (instance, username) = setup_instance_with_user("diana", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create two databases with same name
     let db1 = create_named_database(&mut user, "Same Name").await;
@@ -91,7 +91,7 @@ async fn test_database_has_unique_id() {
 #[tokio::test]
 async fn test_load_database_after_creation() {
     let (instance, username) = setup_instance_with_user("eve", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create and get ID
     let (db1, db_id) = create_database_with_id(&mut user, "Test DB").await;
@@ -109,7 +109,7 @@ async fn test_load_database_after_creation() {
 #[tokio::test]
 async fn test_load_database_preserves_name() {
     let (instance, username) = setup_instance_with_user("frank", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let db_name = "Persistent Name";
     let (_db, db_id) = create_database_with_id(&mut user, db_name).await;
@@ -127,7 +127,7 @@ async fn test_load_database_preserves_name() {
 #[tokio::test]
 async fn test_find_key_for_created_database() {
     let (instance, username) = setup_instance_with_user("grace", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create database
     let database = create_named_database(&mut user, "Test DB").await;
@@ -142,7 +142,7 @@ async fn test_find_key_for_created_database() {
 #[tokio::test]
 async fn test_find_key_returns_valid_key_id() {
     let (instance, username) = setup_instance_with_user("henry", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create database
     let database = create_named_database(&mut user, "Test DB").await;
@@ -165,7 +165,7 @@ async fn test_find_key_returns_valid_key_id() {
 #[tokio::test]
 async fn test_find_key_for_nonexistent_database() {
     let (instance, username) = setup_instance_with_user("iris", None).await;
-    let user = login_user(&instance, &username, None).await;
+    let user = login_account(&instance, &username, None).await;
 
     // Fake database ID
     let fake_id = ID::from_bytes("nonexistent_database");
@@ -184,7 +184,7 @@ async fn test_find_key_for_nonexistent_database() {
 #[tokio::test]
 async fn test_create_database_with_second_key() {
     let (instance, username) = setup_instance_with_user("jack", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Add a second key
     let _key2 = add_user_key(&mut user, Some("Second Key")).await;
@@ -203,7 +203,7 @@ async fn test_create_database_with_second_key() {
 #[tokio::test]
 async fn test_database_has_settings() {
     let (instance, username) = setup_instance_with_user("kate", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create database
     let database = create_named_database(&mut user, "Settings Test").await;
@@ -215,7 +215,7 @@ async fn test_database_has_settings() {
 #[tokio::test]
 async fn test_database_settings_include_name() {
     let (instance, username) = setup_instance_with_user("leo", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let expected_name = "Named Database";
     let database = create_named_database(&mut user, expected_name).await;
@@ -229,7 +229,7 @@ async fn test_database_settings_include_name() {
 #[tokio::test]
 async fn test_database_supports_transactions() {
     let (instance, username) = setup_instance_with_user("mia", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let database = create_named_database(&mut user, "Transaction Test").await;
 
@@ -246,7 +246,7 @@ async fn test_database_supports_transactions() {
 #[tokio::test]
 async fn test_database_supports_stores() {
     let (instance, username) = setup_instance_with_user("noah", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let database = create_named_database(&mut user, "Store Test").await;
 
@@ -271,9 +271,9 @@ async fn test_multiple_users_create_databases() {
         setup_local_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
     // Each user creates a database
-    let mut alice = login_user(&instance, "alice", None).await;
-    let mut bob = login_user(&instance, "bob", None).await;
-    let mut charlie = login_user(&instance, "charlie", None).await;
+    let mut alice = login_account(&instance, "alice", None).await;
+    let mut bob = login_account(&instance, "bob", None).await;
+    let mut charlie = login_account(&instance, "charlie", None).await;
 
     let alice_db = create_named_database(&mut alice, "Alice DB").await;
     let bob_db = create_named_database(&mut bob, "Bob DB").await;
@@ -295,7 +295,7 @@ async fn test_multiple_users_create_databases() {
 #[tokio::test]
 async fn test_database_root_id_format() {
     let (instance, username) = setup_instance_with_user("olivia", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let database = create_named_database(&mut user, "Test").await;
 
@@ -308,7 +308,7 @@ async fn test_database_root_id_format() {
 #[tokio::test]
 async fn test_database_root_id_is_stable() {
     let (instance, username) = setup_instance_with_user("paul", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let database = create_named_database(&mut user, "Stable Test").await;
 
@@ -327,7 +327,7 @@ async fn test_database_root_id_is_stable() {
 #[tokio::test]
 async fn test_find_database_by_name() {
     let (instance, username) = setup_instance_with_user("quinn", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create database with specific name
     let db_name = "Findable Database";
@@ -346,7 +346,7 @@ async fn test_find_database_by_name() {
 #[tokio::test]
 async fn test_find_database_returns_writable_database() {
     let (instance, username) = setup_instance_with_user("regression_test", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Step 1: Create database - this returns a properly authenticated database
     let db_name = "Writable Database Test";
@@ -391,7 +391,7 @@ async fn test_find_database_returns_writable_database() {
 #[tokio::test]
 async fn test_find_database_returns_all_matches() {
     let (instance, username) = setup_instance_with_user("rachel", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create multiple databases with same name
     // With entropy, these will have unique IDs
@@ -419,7 +419,7 @@ async fn test_find_database_returns_all_matches() {
 #[tokio::test]
 async fn test_find_database_among_multiple() {
     let (instance, username) = setup_instance_with_user("sam", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create multiple databases with different names
     let _db1 = create_named_database(&mut user, "Database A").await;
@@ -440,7 +440,7 @@ async fn test_find_database_among_multiple() {
 #[tokio::test]
 async fn test_find_database_nonexistent_returns_error() {
     let (instance, username) = setup_instance_with_user("tina", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create a database
     let _db = create_named_database(&mut user, "Existing Database").await;
@@ -457,7 +457,7 @@ async fn test_find_database_nonexistent_returns_error() {
 #[tokio::test]
 async fn test_find_database_empty_instance() {
     let (instance, username) = setup_instance_with_user("uma", None).await;
-    let user = login_user(&instance, &username, None).await;
+    let user = login_account(&instance, &username, None).await;
 
     // Don't create any databases
     let result = user.find_database("Any Database").await;
@@ -473,7 +473,7 @@ async fn test_find_database_empty_instance() {
 #[tokio::test]
 async fn test_load_database_with_invalid_id() {
     let (instance, username) = setup_instance_with_user("victor", None).await;
-    let user = login_user(&instance, &username, None).await;
+    let user = login_account(&instance, &username, None).await;
 
     // Try to load a database that doesn't exist
     let fake_id = ID::from_bytes("sha256:nonexistent_database_id_12345678");
@@ -489,7 +489,7 @@ async fn test_load_database_with_invalid_id() {
 #[tokio::test]
 async fn test_create_database_with_nonexistent_key() {
     let (instance, username) = setup_instance_with_user("wendy", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Try to create database with a key that doesn't exist (generate a random one)
     let mut settings = Doc::new();
@@ -504,7 +504,7 @@ async fn test_create_database_with_nonexistent_key() {
 #[tokio::test]
 async fn test_get_signing_key_for_nonexistent_key() {
     let (instance, username) = setup_instance_with_user("xavier", None).await;
-    let user = login_user(&instance, &username, None).await;
+    let user = login_account(&instance, &username, None).await;
 
     // Try to get a signing key that doesn't exist (generate a random one)
     let (_, fake_key) = generate_keypair();
@@ -518,7 +518,7 @@ async fn test_get_signing_key_for_nonexistent_key() {
 #[tokio::test]
 async fn test_create_databases_with_different_keys() {
     let (instance, username) = setup_instance_with_user("yara", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Add a second key
     let key1 = user.list_keys().expect("Should list keys")[0].clone();
@@ -565,7 +565,7 @@ async fn test_create_databases_with_different_keys() {
 #[tokio::test]
 async fn test_user_can_discover_own_databases() {
     let (instance, username) = setup_instance_with_user("zara", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Create several databases
     let _db1 = create_named_database(&mut user, "Project A").await;
@@ -587,7 +587,7 @@ async fn test_user_can_discover_own_databases() {
 #[tokio::test]
 async fn test_open_database_with_key_selects_requested_key() {
     let (instance, username) = setup_instance_with_user("octavia", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // key1 = default key (created with the user). Create DB with it (Admin(0)).
     let keys = user.list_keys().expect("list keys");
@@ -635,7 +635,7 @@ async fn test_open_database_with_key_selects_requested_key() {
 #[tokio::test]
 async fn test_open_database_with_key_errors_when_user_does_not_hold_key() {
     let (instance, username) = setup_instance_with_user("portia", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let database = create_named_database(&mut user, "db").await;
     let db_id = database.root_id().clone();
@@ -653,7 +653,7 @@ async fn test_open_database_with_key_errors_when_user_does_not_hold_key() {
 #[tokio::test]
 async fn test_open_database_with_key_errors_when_key_lacks_mapping() {
     let (instance, username) = setup_instance_with_user("quinn", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let database = create_named_database(&mut user, "db").await;
     let db_id = database.root_id().clone();
@@ -671,7 +671,7 @@ async fn test_open_database_with_key_errors_when_key_lacks_mapping() {
 #[tokio::test]
 async fn test_open_database_with_key_errors_on_nonexistent_database() {
     let (instance, username) = setup_instance_with_user("riley", None).await;
-    let user = login_user(&instance, &username, None).await;
+    let user = login_account(&instance, &username, None).await;
 
     let key = user.list_keys().expect("list keys")[0].clone();
     let fake_id = ID::from_bytes("nonexistent_database");

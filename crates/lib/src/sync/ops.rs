@@ -8,20 +8,20 @@ use tracing::{debug, info, warn};
 
 use super::{
     Address, DatabaseTicket, PeerId, Sync, SyncError,
+    account_sync_manager::AccountSyncManager,
     background::SyncCommand,
     peer_manager::PeerManager,
     peer_types,
     protocol::{self, SyncRequest, SyncRequestAuth, SyncResponse, SyncTreeRequest},
-    user_sync_manager::UserSyncManager,
 };
 use crate::{
     Database, Entry, Result,
+    account::types::AccountInfo,
     auth::Permission,
     auth::crypto::{PrivateKey, PublicKey},
     crdt::Doc,
     entry::ID,
     store::Table,
-    user::types::UserInfo,
 };
 
 use super::utils::collect_ancestors_to_send;
@@ -449,7 +449,7 @@ impl Sync {
 
         // Look up combined settings for this database
         let tx = self.sync_tree.new_transaction().await?;
-        let user_mgr = UserSyncManager::new(&tx);
+        let user_mgr = AccountSyncManager::new(&tx);
         let peer_mgr = PeerManager::new(&tx);
 
         let combined_settings = match user_mgr.get_combined_settings(database.root_id()).await? {
@@ -511,29 +511,29 @@ impl Sync {
     /// This is called during Sync initialization. For new sync trees (just created),
     /// it scans the _users database to register all existing users. For existing
     /// sync trees (loaded), it updates combined settings for already-tracked users.
-    pub(super) async fn initialize_user_settings(&self) -> Result<()> {
-        self.reconcile_user_settings().await
+    pub(super) async fn initialize_account_settings(&self) -> Result<()> {
+        self.reconcile_account_settings().await
     }
 
     /// Reconcile the persisted user directory and every tracked preferences tree.
     ///
     /// The daemon calls this at startup and whenever a service client changes
-    /// either source tree. It is intentionally idempotent: `sync_user` compares
+    /// either source tree. It is intentionally idempotent: `sync_account` compares
     /// the persisted preferences cursor before updating combined settings.
-    pub(crate) async fn reconcile_user_settings(&self) -> Result<()> {
+    pub(crate) async fn reconcile_account_settings(&self) -> Result<()> {
         let _guard = self.reconciliation.lock().await;
 
         let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
         let users_db = instance.users_db().await?;
         let users_table = users_db
-            .get_store_viewer::<Table<UserInfo>>("users")
+            .get_store_viewer::<Table<AccountInfo>>("users")
             .await?;
 
         // Always scan `_users`, not only when the sync tree is empty. A daemon
         // may already track some users when another account is created through
         // the service socket.
-        for (user_uuid, user_info) in users_table.search(|_| true).await? {
-            self.sync_user(&user_uuid, &user_info.user_database_id)
+        for (login_id, account_info) in users_table.search(|_| true).await? {
+            self.sync_account(&login_id, &account_info.account_id)
                 .await?;
         }
 
@@ -548,11 +548,11 @@ impl Sync {
         }
         let users_db = instance.users_db().await?;
         let users_table = users_db
-            .get_store_viewer::<Table<UserInfo>>("users")
+            .get_store_viewer::<Table<AccountInfo>>("users")
             .await?;
 
         Ok(users_table
-            .search(|user| &user.user_database_id == database_id)
+            .search(|user| &user.account_id == database_id)
             .await?
             .into_iter()
             .next()
@@ -1162,13 +1162,15 @@ impl Sync {
 #[cfg(test)]
 mod orphan_bootstrap_tests {
     use super::*;
-    use crate::{Instance, NewUser, backend::database::InMemory, store::DocStore};
+    use crate::{Instance, NewAccount, backend::database::InMemory, store::DocStore};
 
     #[tokio::test]
     async fn orphan_descendants_request_bootstrap_instead_of_incremental_sync() -> Result<()> {
-        let (source, mut owner) =
-            Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("source"))
-                .await?;
+        let (source, mut owner) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            NewAccount::passwordless("source"),
+        )
+        .await?;
         let key = owner.get_default_key()?;
         let db = owner.create_database(Doc::new(), &key).await?;
         let tree_id = db.root_id().clone();
@@ -1188,7 +1190,7 @@ mod orphan_bootstrap_tests {
 
         let (recipient, _user) = Instance::create_backend(
             Box::new(InMemory::new()),
-            NewUser::passwordless("recipient"),
+            NewAccount::passwordless("recipient"),
         )
         .await?;
         assert!(

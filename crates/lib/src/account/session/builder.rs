@@ -1,6 +1,6 @@
 //! Builder for creating a fully-initialized Database in a single genesis entry.
 //!
-//! See [`User::new_database`] for the entry point. The builder collects
+//! See [`AccountSession::new_database`] for the entry point. The builder collects
 //! settings, key policy, and a list of store initializers, then folds them all
 //! into one signed entry at [`DatabaseBuilder::build`] time so the new
 //! database is atomically constructed with its full initial shape.
@@ -9,10 +9,10 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
-use super::User;
+use super::AccountSession;
 use crate::{
-    Database, Result, Store, Transaction, auth::crypto::PublicKey, crdt::Doc,
-    user::errors::UserError,
+    Database, Result, Store, Transaction, account::errors::AccountError, auth::crypto::PublicKey,
+    crdt::Doc,
 };
 
 /// Type-erased per-store initialization closure. The HRTB lets the closure
@@ -31,20 +31,20 @@ enum KeyPolicy {
 /// shape — settings, signing key, registered stores, and seed data — folded
 /// into one genesis entry.
 ///
-/// Obtained via [`User::new_database`]. Terminal method is
+/// Obtained via [`AccountSession::new_database`]. Terminal method is
 /// [`DatabaseBuilder::build`].
 ///
 /// # Auto-generated keys on failure
 ///
 /// When no key policy is set (or only [`Self::key_label`] is used), the
-/// builder generates a fresh signing key via [`User::add_private_key`]
+/// builder generates a fresh signing key via [`AccountSession::add_private_key`]
 /// **before** running store initializers. If a store initializer or the
-/// genesis commit then fails, the generated key remains in the user's
-/// key store. `UserKeyManager` does not currently expose a key-removal
+/// genesis commit then fails, the generated key remains in the account's
+/// key store. `AccountKeyManager` does not currently expose a key-removal
 /// API, so this leak is by design — it matches the semantics of the
 /// pre-existing `add_private_key` + `create_database` flow.
 ///
-/// If avoiding the leak matters, call [`User::add_private_key`] yourself
+/// If avoiding the leak matters, call [`AccountSession::add_private_key`] yourself
 /// and pass the result via [`Self::with_key`]; the key persists either way
 /// but you keep ownership of when it was created.
 ///
@@ -53,7 +53,7 @@ enum KeyPolicy {
 /// ```ignore
 /// use eidetica::store::DocStoreInit;
 ///
-/// let (db, key) = user.new_database()
+/// let (db, key) = account.new_database()
 ///     .name("agent:demo")
 ///     .key_label("agent:demo")
 ///     .empty_doc("config")
@@ -62,14 +62,14 @@ enum KeyPolicy {
 ///     .await?;
 /// ```
 pub struct DatabaseBuilder<'u> {
-    user: &'u mut User,
+    user: &'u mut AccountSession,
     settings: Doc,
     key_policy: KeyPolicy,
     store_inits: Vec<(String, StoreInit)>,
 }
 
 impl<'u> DatabaseBuilder<'u> {
-    pub(super) fn new(user: &'u mut User) -> Self {
+    pub(super) fn new(user: &'u mut AccountSession) -> Self {
         Self {
             user,
             settings: Doc::new(),
@@ -102,9 +102,9 @@ impl<'u> DatabaseBuilder<'u> {
         self
     }
 
-    /// Use an existing key from the user's key manager rather than generating
-    /// a fresh one. `key` must already have been added to the user via
-    /// [`User::add_private_key`]; otherwise [`Self::create`] will fail when
+    /// Use an existing key from the account's key manager rather than generating
+    /// a fresh one. `key` must already have been added to the account via
+    /// [`AccountSession::add_private_key`]; otherwise [`Self::create`] will fail when
     /// resolving the signing key.
     pub fn with_key(mut self, key: PublicKey) -> Self {
         self.key_policy = KeyPolicy::UseExisting(key);
@@ -137,7 +137,7 @@ impl<'u> DatabaseBuilder<'u> {
     }
 
     /// Resolve the key, run every store initializer inside a single genesis
-    /// transaction, commit, then perform the user-side tracking write.
+    /// transaction, commit, then perform the account-side tracking write.
     /// Returns the new database and the public key it was created with.
     pub async fn build(self) -> Result<(Database, PublicKey)> {
         let DatabaseBuilder {
@@ -151,7 +151,7 @@ impl<'u> DatabaseBuilder<'u> {
         let mut seen: HashSet<&str> = HashSet::new();
         for (name, _) in &store_inits {
             if !seen.insert(name.as_str()) {
-                return Err(UserError::DuplicateBuilderStore { name: name.clone() }.into());
+                return Err(AccountError::DuplicateBuilderStore { name: name.clone() }.into());
             }
         }
 

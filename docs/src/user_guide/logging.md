@@ -86,7 +86,7 @@ let backend = Box::new(Sqlite::in_memory().await?);
 // Initialise with alice as the first/admin user — this logs at INFO level.
 let (instance, mut user) = Instance::create_backend(
     backend,
-    eidetica::NewUser::passwordless("alice"),
+    eidetica::NewAccount::passwordless("alice"),
 ).await?;
 
 // Create a database - this will log at INFO level

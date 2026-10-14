@@ -27,7 +27,7 @@ async fn test_subtree_operations_using_helpers() {
     // Use helper to perform basic operations
     let user_operations = &[
         ("user_id", "helper_user"),
-        ("name", "Helper User"),
+        ("name", "Helper AccountSession"),
         ("email", "helper@example.com"),
         ("role", "tester"),
     ];
@@ -86,7 +86,13 @@ async fn test_multiple_subtree_operations() {
     let tree = create_database_with_default_key(&mut user).await;
 
     // Perform operations on multiple subtrees
-    create_user_profile(&tree, "multi_user", "Multi User", "multi@test.com").await;
+    create_user_profile(
+        &tree,
+        "multi_user",
+        "Multi AccountSession",
+        "multi@test.com",
+    )
+    .await;
     create_app_config(&tree, "MultiApp", &[("version", "1.0"), ("env", "test")]).await;
 
     // Add custom data to another subtree
@@ -103,7 +109,7 @@ async fn test_multiple_subtree_operations() {
         "user_data",
         &[
             ("user_id", "multi_user"),
-            ("name", "Multi User"),
+            ("name", "Multi AccountSession"),
             ("email", "multi@test.com"),
         ],
     )
@@ -137,7 +143,7 @@ async fn test_data_persistence_across_operations() {
     create_user_profile(
         &tree,
         "persistent_user",
-        "Persistent User",
+        "Persistent AccountSession",
         "persist@test.com",
     )
     .await;
@@ -159,7 +165,7 @@ async fn test_data_persistence_across_operations() {
         "user_data",
         &[
             ("user_id", "persistent_user"),
-            ("name", "Persistent User"),
+            ("name", "Persistent AccountSession"),
             ("email", "persist@test.com"),
             ("last_login", "2023-01-01"),
             ("preferences", "dark_mode"),
@@ -322,7 +328,7 @@ async fn test_basic_operations_integration() {
     create_user_profile(
         &tree,
         "integration_user",
-        "Integration User",
+        "Integration AccountSession",
         "integration@test.com",
     )
     .await;
@@ -356,7 +362,7 @@ async fn test_basic_operations_integration() {
         "user_data",
         &[
             ("user_id", "integration_user"),
-            ("name", "Integration User"),
+            ("name", "Integration AccountSession"),
             ("email", "integration@test.com"),
         ],
     )

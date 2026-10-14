@@ -363,7 +363,7 @@ in {
         # Only the dashboard routes are exposed; no trusted service RPC on HTTP.
         PORT=$(sed -n 's/.*Dashboard listening on http:\/\/127.0.0.1:\([0-9]*\).*/\1/p' "$DAEMON_LOG" | head -1)
         test -n "$PORT"
-        curl -fsS "http://127.0.0.1:$PORT/health" | grep -q '"backend":"sqlite"'
+        curl -fsS "http://127.0.0.1:$PORT/health" | grep '"backend":"sqlite"' >/dev/null
         test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/api/v0")" = 404
         test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'username=admin' "http://127.0.0.1:$PORT/login")" = 403
         curl -fsS -D "$TMPDIR/login-headers" -c "$TMPDIR/admin-cookies" -o /dev/null -X POST \
@@ -399,7 +399,7 @@ in {
           --archive-file ${testPkgs.archive}/archive.tar.zst \
           --workspace-remap "$TMPDIR/src" \
           --show-progress=none \
-          -E 'test(=user::user_lifecycle_tests::test_complete_lifecycle_passwordless)'
+          -E 'test(=account::account_lifecycle_tests::test_complete_lifecycle_passwordless)'
 
         # A separate process writes through the *external* daemon socket.
         export EIDETICA_EXTERNAL_SOCKET="$SOCKET"
@@ -446,7 +446,7 @@ in {
         # /proc/net/tcp records the kernel listener address in hex.
         awk -v port="$(printf '%04X' "$PORT")" \
           '$2 == "00000000:" port && $4 == "0A" { found=1 } END { exit !found }' /proc/net/tcp
-        curl -fsS -H "Host: db.example:$PORT" "http://127.0.0.1:$PORT/health" | grep -q '"backend":"sqlite"'
+        curl -fsS -H "Host: db.example:$PORT" "http://127.0.0.1:$PORT/health" | grep '"backend":"sqlite"' >/dev/null
         test "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: db.example:$PORT" \
           -H "Origin: http://attacker.invalid" -d 'username=admin' "http://127.0.0.1:$PORT/login")" = 403
         curl -fsS -D "$TMPDIR/public-login-headers" -c "$TMPDIR/public-cookies" -o /dev/null \
@@ -457,7 +457,7 @@ in {
         curl -fsS -c "$TMPDIR/public-cookies" -o /dev/null -H "Host: db.example:$PORT" \
           -H "Origin: http://db.example:$PORT" -d 'username=admin' "http://127.0.0.1:$PORT/login"
         curl -fsS -b "$TMPDIR/public-cookies" -H "Host: db.example:$PORT" \
-          "http://127.0.0.1:$PORT/dashboard" | grep -q "$(cat "$EIDETICA_EXTERNAL_DB_ID_FILE")"
+          "http://127.0.0.1:$PORT/dashboard" | grep "$(cat "$EIDETICA_EXTERNAL_DB_ID_FILE")" >/dev/null
         kill -TERM "$DAEMON_PID"
         wait "$DAEMON_PID"
         DAEMON_PID=""

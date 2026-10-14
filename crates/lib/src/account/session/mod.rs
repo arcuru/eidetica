@@ -1,16 +1,16 @@
-//! User session management
+//! AccountSession management
 //!
-//! Represents an authenticated user session with decrypted keys.
+//! Represents an authenticated account session with decrypted keys.
 //!
 //! # API Overview
 //!
-//! The User API is organized into three areas for managing Databases:
+//! The AccountSession API is organized into three areas for managing Databases:
 //!
 //! ## Database Lifecycle
 //!
 //! - **`create_database()`** - Create a new database
 //! - **`open_database()`** - Open an existing database
-//! - **`open_database_with_key()`** - Open with an explicitly chosen user key
+//! - **`open_database_with_key()`** - Open with an explicitly chosen account key
 //! - **`join()`** - Join a database from a ticket and open it
 //! - **`find_database()`** - Search for databases by name
 //!
@@ -22,7 +22,7 @@
 //! - **`database()`** - Get a specific tracked database
 //! - **`track_database()`** - Add or update a tracked database (upsert)
 //! - **`untrack_database()`** - Remove a database from your tracked list
-//! - **`is_sync_enabled()`** - Check this user's sync preference for a database
+//! - **`is_sync_enabled()`** - Check this account's sync preference for a database
 //!
 //! ## Key-Database Mappings
 //!
@@ -40,12 +40,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{
-    UserKeyManager,
+    AccountKeyManager,
     admin::InstanceAdmin,
-    types::{UserInfo, UserKey},
+    types::{AccountInfo, AccountKey},
 };
 use crate::{
     Database, Error, Instance, Result, Snapshot, Transaction,
+    account::{AccountError, SyncSettings, TrackedDatabase},
     auth::{Permission, SigKey, crypto::PublicKey},
     crdt::Doc,
     database::DatabaseKey,
@@ -53,7 +54,6 @@ use crate::{
     instance::{InstanceError, backend::Backend},
     store::{StoreError, Table},
     sync::{BootstrapRequest, DatabaseTicket, Sync, SyncError},
-    user::{SyncSettings, TrackedDatabase, UserError},
 };
 
 mod builder;
@@ -62,79 +62,80 @@ mod tests;
 
 pub use builder::DatabaseBuilder;
 
-/// User session object, returned after successful login
+/// AccountSession object, returned after successful login
 ///
-/// Represents an authenticated user with decrypted private keys loaded in memory.
-/// The User struct provides access to key management, tracked databases, and
+/// Represents an authenticated account with decrypted private keys loaded in memory.
+/// The AccountSession struct provides access to key management, tracked databases, and
 /// bootstrap approval operations.
-pub struct User {
-    /// Stable internal user UUID (Table primary key)
-    user_uuid: String,
+pub struct AccountSession {
+    /// Stable internal account UUID (Table primary key)
+    login_id: String,
 
     /// Username (login identifier)
     username: String,
 
-    /// User's private database (contains encrypted keys and tracked databases)
-    user_database: Database,
+    /// Account's private database (contains encrypted keys and tracked databases)
+    account_database: Database,
 
     /// Instance reference for database operations
     instance: Instance,
 
-    /// Decrypted user keys (in memory only during session)
-    key_manager: UserKeyManager,
+    /// Decrypted account keys (in memory only during session)
+    key_manager: AccountKeyManager,
 
-    /// User info (cached from _users database)
-    user_info: UserInfo,
+    /// Account info (cached from _users database)
+    account_info: AccountInfo,
 }
 
-impl std::fmt::Debug for User {
+impl std::fmt::Debug for AccountSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("User")
-            .field("user_uuid", &self.user_uuid)
+        f.debug_struct("AccountSession")
+            .field("login_id", &self.login_id)
             .field("username", &self.username)
-            .field("user_database", &self.user_database)
+            .field("account_database", &self.account_database)
             .field("instance", &self.instance)
             .field("key_manager", &"<KeyManager [sensitive]>")
-            .field("user_info", &self.user_info)
+            .field("account_info", &self.account_info)
             .finish()
     }
 }
 
-impl User {
-    /// Create a new User session
+impl AccountSession {
+    /// Create a new AccountSession
     ///
     /// This is an internal constructor used after successful login.
-    /// Use `Instance::login_user()` to create a User session.
+    /// Use `Instance::login_account()` to create an AccountSession.
     ///
     /// # Arguments
-    /// * `user_uuid` - Internal UUID (Table primary key)
-    /// * `user_info` - User information from _users database
-    /// * `user_database` - The user's private database
+    /// * `login_id` - Internal UUID (Table primary key)
+    /// * `account_info` - Account information from _users database
+    /// * `account_database` - The account's private database
     /// * `instance` - Instance reference
     /// * `key_manager` - Initialized key manager with decrypted keys
     #[allow(dead_code)]
     pub(crate) fn new(
-        user_uuid: String,
-        user_info: UserInfo,
-        user_database: Database,
+        login_id: String,
+        account_info: AccountInfo,
+        account_database: Database,
         instance: Instance,
-        key_manager: UserKeyManager,
+        key_manager: AccountKeyManager,
     ) -> Self {
         Self {
-            user_uuid,
-            username: user_info.username.clone(),
-            user_database,
+            login_id,
+            username: account_info.username.clone(),
+            account_database,
             instance,
             key_manager,
-            user_info,
+            account_info,
         }
     }
 
     // === Basic Session Methods ===
 
-    /// Get the internal user UUID (stable identifier)
-    pub fn user_uuid(&self) -> &str {
-        &self.user_uuid
+    /// Instance-local login record UUID, not the Account's portable identity.
+    /// Use [`Self::account_id`] for references to the Account database.
+    pub fn login_id(&self) -> &str {
+        &self.login_id
     }
 
     /// Get the username (login identifier)
@@ -142,9 +143,19 @@ impl User {
         &self.username
     }
 
-    /// Get a reference to the user's database
-    pub fn user_database(&self) -> &Database {
-        &self.user_database
+    /// The Account's ordinary private root database, bound to this session's key.
+    ///
+    /// Applications may store direct database IDs in their own stores here. A
+    /// reference grants no authority and does not activate or download its target.
+    /// The current root also retains legacy key and sync bookkeeping; this API
+    /// does not yet separate private-key custody from portable application data.
+    pub fn account(&self) -> &Database {
+        &self.account_database
+    }
+
+    /// Stable Account identity: the root ID, independent of login and display names.
+    pub fn account_id(&self) -> &ID {
+        self.account_database.root_id()
     }
 
     /// Get a reference to the backend seam.
@@ -152,18 +163,18 @@ impl User {
         self.instance.backend()
     }
 
-    /// Get a reference to the user info
-    pub fn user_info(&self) -> &UserInfo {
-        &self.user_info
+    /// Get a reference to the account info
+    pub fn account_info(&self) -> &AccountInfo {
+        &self.account_info
     }
 
-    /// Whether this user is an instance admin.
+    /// Whether this account is an instance admin.
     ///
-    /// "Instance admin" means the user's default pubkey holds `Admin` in the
-    /// `_users` system database's `auth_settings`. The `admin`/`admin` user
-    /// created during instance bootstrap is auto-promoted; subsequent users
+    /// "Instance admin" means the account's default pubkey holds `Admin` in the
+    /// `_users` system database's `auth_settings`. The `admin`/`admin` account
+    /// created during instance bootstrap is auto-promoted; subsequent accounts
     /// land as non-admins until promoted via
-    /// [`InstanceAdmin::grant_instance_admin`](crate::user::InstanceAdmin::grant_instance_admin).
+    /// [`InstanceAdmin::grant_instance_admin`](crate::account::InstanceAdmin::grant_instance_admin).
     ///
     /// Returns `false` if the key resolution fails (key not in auth_settings,
     /// non-Admin permission, etc.). For the capability handle rather than a
@@ -174,26 +185,26 @@ impl User {
 
     /// Obtain the instance-admin capability view.
     ///
-    /// Returns an [`InstanceAdmin`] only if this user's default key holds
+    /// Returns an [`InstanceAdmin`] only if this account's default key holds
     /// `Admin` on the `_users` system database. All admin-gated operations
-    /// (creating users, listing users, promoting admins) live on the
+    /// (creating accounts, listing accounts, promoting admins) live on the
     /// returned view, so the privilege boundary is explicit at the call site
     /// and those operations need no further permission check of their own.
     ///
     /// # Errors
-    /// - [`UserError::InsufficientPermissions`] if this user is not an
+    /// - [`AccountError::InsufficientPermissions`] if this account is not an
     ///   instance admin.
     pub async fn admin(&self) -> Result<InstanceAdmin<'_>> {
         if self.admin_check().await? {
             Ok(InstanceAdmin::new(self))
         } else {
-            Err(UserError::InsufficientPermissions.into())
+            Err(AccountError::InsufficientPermissions.into())
         }
     }
 
-    /// Single source of truth for "is this user an instance admin".
+    /// Single source of truth for "is this account an instance admin".
     ///
-    /// Reads the `_users` `auth_settings` snapshot via the user's **session
+    /// Reads the `_users` `auth_settings` snapshot via the account's **session
     /// key** (not the device key), so it behaves identically on local and
     /// remote instances. Returns `Ok(false)` for a non-admin or unresolved
     /// key; propagates real infrastructure errors. Shared by
@@ -202,7 +213,7 @@ impl User {
         let default_pubkey =
             self.key_manager
                 .get_default_key_id()
-                .ok_or_else(|| UserError::KeyNotFound {
+                .ok_or_else(|| AccountError::KeyNotFound {
                     key_id: "<default>".to_string(),
                 })?;
         let signing_key = self.default_signing_key()?;
@@ -216,22 +227,22 @@ impl User {
         }
     }
 
-    /// The user's default signing key (decrypted, in-session).
+    /// The account's default signing key (decrypted, in-session).
     ///
-    /// Shared by admin / system-DB paths that must sign as the user
+    /// Shared by admin / system-DB paths that must sign as the account
     /// directly, rather than via a tracked-database SigKey mapping.
     pub(crate) fn default_signing_key(&self) -> Result<crate::auth::crypto::PrivateKey> {
         let key_id =
             self.key_manager
                 .get_default_key_id()
-                .ok_or_else(|| UserError::KeyNotFound {
+                .ok_or_else(|| AccountError::KeyNotFound {
                     key_id: "<default>".to_string(),
                 })?;
         self.key_manager
             .get_signing_key(&key_id)
             .cloned()
             .ok_or_else(|| {
-                UserError::KeyNotFound {
+                AccountError::KeyNotFound {
                     key_id: key_id.to_string(),
                 }
                 .into()
@@ -246,7 +257,7 @@ impl User {
     /// Logout (consumes self and clears decrypted keys from memory)
     ///
     /// After logout, all decrypted keys are zeroized and the session is ended.
-    /// Keys are automatically cleared when the User is dropped.
+    /// Keys are automatically cleared when the AccountSession is dropped.
     pub fn logout(self) -> Result<()> {
         // Consume self, all keys are stored in other Types that zeroize themselves on drop
         Ok(())
@@ -256,17 +267,17 @@ impl User {
 
     /// Get a reference to the key manager (for internal use)
     #[allow(dead_code)]
-    pub(crate) fn key_manager(&self) -> &UserKeyManager {
+    pub(crate) fn key_manager(&self) -> &AccountKeyManager {
         &self.key_manager
     }
 
     /// Get a mutable reference to the key manager (for internal use)
     #[allow(dead_code)]
-    pub(crate) fn key_manager_mut(&mut self) -> &mut UserKeyManager {
+    pub(crate) fn key_manager_mut(&mut self) -> &mut AccountKeyManager {
         &mut self.key_manager
     }
 
-    // === Database Operations (User Context) ===
+    // === Database Operations (AccountSession Context) ===
 
     /// Start building a new database via the chainable [`DatabaseBuilder`] API.
     ///
@@ -298,13 +309,13 @@ impl User {
     /// # Example
     /// ```rust,ignore
     /// // Get available keys
-    /// let keys = user.list_keys()?;
+    /// let keys = account.list_keys()?;
     /// let key_id = &keys[1]; // Use the second key
     ///
     /// // Create database with explicit key selection
     /// let mut settings = Doc::new();
     /// settings.set("name", "My Database");
-    /// let database = user.new_database(settings, key_id)?;
+    /// let database = account.new_database(settings, key_id)?;
     /// ```
     pub async fn create_database(&mut self, settings: Doc, key_id: &PublicKey) -> Result<Database> {
         self.create_database_with_init(settings, key_id, async |_| Ok(()))
@@ -322,8 +333,8 @@ impl User {
     /// [`Database::create_with_init`] for details on the atomicity guarantee.
     ///
     /// After the genesis entry commits, this method performs the standard
-    /// user-side tracking write (key-database mapping, `TrackedDatabase` entry)
-    /// in a separate transaction on the user's own system database.
+    /// account-side tracking write (key-database mapping, `TrackedDatabase` entry)
+    /// in a separate transaction on the account's own system database.
     pub async fn create_database_with_init<F>(
         &mut self,
         settings: Doc,
@@ -333,13 +344,13 @@ impl User {
     where
         F: AsyncFnOnce(&Transaction) -> Result<()>,
     {
-        use crate::user::types::{SyncSettings, UserKey};
+        use crate::account::types::{AccountKey, SyncSettings};
 
-        // Get the signing key from UserKeyManager
+        // Get the signing key from AccountKeyManager
         let signing_key = self
             .key_manager
             .get_signing_key(key_id)
-            .ok_or_else(|| UserError::KeyNotFound {
+            .ok_or_else(|| AccountError::KeyNotFound {
                 key_id: key_id.to_string(),
             })?
             .clone();
@@ -348,9 +359,9 @@ impl User {
         let database =
             Database::create_with_init(&self.instance, signing_key, settings, init).await?;
 
-        // Store the mapping in UserKey and track the database
-        let tx = self.user_database.new_transaction().await?;
-        let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
+        // Store the mapping in AccountKey and track the database
+        let tx = self.account_database.new_transaction().await?;
+        let keys_table = tx.get_store::<Table<AccountKey>>("keys").await?;
 
         // Find the key metadata in the database
         let (uuid_primary_key, mut metadata) = keys_table
@@ -358,7 +369,7 @@ impl User {
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| UserError::KeyNotFound {
+            .ok_or_else(|| AccountError::KeyNotFound {
                 key_id: key_id.to_string(),
             })?;
 
@@ -367,7 +378,7 @@ impl User {
             .database_sigkeys
             .insert(database.root_id().clone(), None);
 
-        // Update the key in user database using the UUID primary key
+        // Update the key in account database using the UUID primary key
         keys_table.set(&uuid_primary_key, metadata.clone()).await?;
 
         // Also track the database in the databases table
@@ -386,90 +397,90 @@ impl User {
         // Update the in-memory key manager with the updated metadata
         self.key_manager.add_key(metadata)?;
 
-        Ok(database.with_user_database(self.user_database.clone()))
+        Ok(database.with_account_database(self.account_database.clone()))
     }
 
-    /// Open an existing database by its root ID using this user's keys.
+    /// Open an existing database by its root ID using this account's keys.
     ///
     /// This method automatically:
     /// 1. Finds an appropriate key that has access to the database
-    /// 2. Retrieves the decrypted SigningKey from the UserKeyManager
+    /// 2. Retrieves the decrypted SigningKey from the AccountKeyManager
     /// 3. Gets the SigKey mapping for this database
-    /// 4. Creates a Database instance configured with the user's key
+    /// 4. Creates a Database instance configured with the account's key
     ///
-    /// The returned Database will use the user's provided key for all operations,
+    /// The returned Database will use the account's provided key for all operations,
     /// without requiring backend key lookups.
     ///
     /// # Arguments
     /// * `root_id` - The root entry ID of the database
     ///
     /// # Returns
-    /// The opened Database configured to use this user's keys
+    /// The opened Database configured to use this account's keys
     ///
     /// # Errors
     /// - Returns an error if no key is found for the database
     /// - Returns an error if no SigKey mapping exists
-    /// - Returns an error if the key is not in the UserKeyManager
+    /// - Returns an error if the key is not in the AccountKeyManager
     pub async fn open_database(&self, root_id: &ID) -> Result<Database> {
         // Find an appropriate key for this database
-        let key_id =
-            self.find_key(root_id)?
-                .ok_or_else(|| super::errors::UserError::NoKeyForDatabase {
-                    database_id: root_id.clone(),
-                })?;
+        let key_id = self.find_key(root_id)?.ok_or_else(|| {
+            super::errors::AccountError::NoKeyForDatabase {
+                database_id: root_id.clone(),
+            }
+        })?;
 
         self.open_database_with_key(root_id, &key_id).await
     }
 
     /// Open an existing database with an explicitly chosen key.
     ///
-    /// Equivalent to `open_database`, but selects the user's signing key by
+    /// Equivalent to `open_database`, but selects the account's signing key by
     /// public key instead of relying on `find_key`'s iteration order. Use this
-    /// when the user holds multiple authorized keys for a database and you
+    /// when the account holds multiple authorized keys for a database and you
     /// need writes signed by a specific one (e.g. agent-as-signer scenarios
     /// where cryptographic provenance matters, not just authorization).
     ///
-    /// The `key_id` is purely a selector into this user's `UserKeyManager`;
+    /// The `key_id` is purely a selector into this account's `AccountKeyManager`;
     /// no crypto material is passed in.
     ///
     /// # Arguments
     /// * `root_id` - The root entry ID of the database
-    /// * `key_id` - Public key of the user-held key to sign with
+    /// * `key_id` - Public key of the account-held key to sign with
     ///
     /// # Returns
     /// The opened Database configured to use the specified key
     ///
     /// # Errors
     /// - Returns an error if the root entry does not exist
-    /// - Returns an error if the user does not hold a key with that pubkey
+    /// - Returns an error if the account does not hold a key with that pubkey
     /// - Returns an error if the key has no SigKey mapping for this database
     pub async fn open_database_with_key(
         &self,
         root_id: &ID,
         key_id: &PublicKey,
     ) -> Result<Database> {
-        // Get the SigningKey from UserKeyManager
+        // Get the SigningKey from AccountKeyManager
         let signing_key = self.key_manager.get_signing_key(key_id).ok_or_else(|| {
-            super::errors::UserError::KeyNotFound {
+            super::errors::AccountError::KeyNotFound {
                 key_id: key_id.to_string(),
             }
         })?;
 
         // Get the SigKey mapping for this database
         let sigkey = self.key_mapping(key_id, root_id)?.ok_or_else(|| {
-            super::errors::UserError::NoSigKeyMapping {
+            super::errors::AccountError::NoSigKeyMapping {
                 key_id: key_id.to_string(),
                 database_id: root_id.clone(),
             }
         })?;
 
-        // Create Database with user-provided key using resolved SigKey identity.
+        // Create Database with account-provided key using resolved SigKey identity.
         //
         // On a connected (remote) instance, the read path must travel as the
-        // user's per-DB identity so the daemon's per-tree gate sees a key the
+        // account's per-DB identity so the daemon's per-tree gate sees a key the
         // tree actually authorises. `Database::open` would clone the
         // instance's session backend, which on a remote instance carries the
-        // connection's login pubkey — and the user's login key is not a member
+        // connection's login pubkey — and the account's login key is not a member
         // of every tree they hold a per-DB key for. Route through
         // `Database::open_remote` with the per-DB
         // identity instead, after proving possession of the per-DB key to
@@ -477,7 +488,7 @@ impl User {
         // keyset.
         let key = DatabaseKey::with_identity(signing_key.clone(), sigkey.clone());
         // A SigKey mapping exists (resolved above), so the database is one this
-        // user has requested access to. If its root entry isn't present, the
+        // account has requested access to. If its root entry isn't present, the
         // access is still pending — the bootstrap request hasn't been approved or
         // the database hasn't synced yet. Surface that explicitly instead of a
         // bare backend "not found", on both the remote and local open paths.
@@ -487,9 +498,9 @@ impl User {
             return match Database::open_remote(&self.instance, conn, root_id, sigkey).await {
                 Ok(database) => Ok(database
                     .with_key(key)
-                    .with_user_database(self.user_database.clone())),
+                    .with_account_database(self.account_database.clone())),
                 Err(e) if e.is_not_found() => {
-                    Err(super::errors::UserError::DatabaseAccessPending {
+                    Err(super::errors::AccountError::DatabaseAccessPending {
                         database_id: root_id.clone(),
                     }
                     .into())
@@ -500,8 +511,8 @@ impl User {
         match Database::open(&self.instance, root_id).await {
             Ok(database) => Ok(database
                 .with_key(key)
-                .with_user_database(self.user_database.clone())),
-            Err(e) if e.is_not_found() => Err(super::errors::UserError::DatabaseAccessPending {
+                .with_account_database(self.account_database.clone())),
+            Err(e) if e.is_not_found() => Err(super::errors::AccountError::DatabaseAccessPending {
                 database_id: root_id.clone(),
             }
             .into()),
@@ -509,15 +520,15 @@ impl User {
         }
     }
 
-    /// Find databases by name among the user's tracked databases.
+    /// Find databases by name among the account's tracked databases.
     ///
-    /// Searches only the databases this user has tracked for those matching the given name.
+    /// Searches only the databases this account has tracked for those matching the given name.
     ///
     /// # Arguments
     /// * `name` - Database name to search for
     ///
     /// # Returns
-    /// Vector of matching databases from the user's tracked list
+    /// Vector of matching databases from the account's tracked list
     pub async fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
         let name = name.as_ref();
         let tracked = self.databases().await?;
@@ -533,7 +544,7 @@ impl User {
         }
 
         if matching.is_empty() {
-            Err(UserError::DatabaseNotFoundByName {
+            Err(AccountError::DatabaseNotFoundByName {
                 name: name.to_string(),
             }
             .into())
@@ -544,8 +555,8 @@ impl User {
 
     /// Find which key can access a database.
     ///
-    /// Searches this user's keys to find one that can access the specified database.
-    /// Considers the SigKey mappings stored in user key metadata.
+    /// Searches this account's keys to find one that can access the specified database.
+    /// Considers the SigKey mappings stored in account key metadata.
     ///
     /// Returns the key_id of a suitable key, preferring keys with mappings for this database.
     ///
@@ -578,7 +589,7 @@ impl User {
     /// which this method resolves to the concrete `SigKey::from_pubkey(...)` value.
     ///
     /// # Arguments
-    /// * `key_id` - The user's key identifier
+    /// * `key_id` - The account's key identifier
     /// * `database_id` - The database ID
     ///
     /// # Returns
@@ -586,10 +597,10 @@ impl User {
     /// `Ok(None)` if no mapping is configured for this database
     ///
     /// # Errors
-    /// Returns an error if the key_id doesn't exist in the UserKeyManager
+    /// Returns an error if the key_id doesn't exist in the AccountKeyManager
     pub fn key_mapping(&self, key_id: &PublicKey, database_id: &ID) -> Result<Option<SigKey>> {
         let metadata = self.key_manager.get_key_metadata(key_id).ok_or_else(|| {
-            super::errors::UserError::KeyNotFound {
+            super::errors::AccountError::KeyNotFound {
                 key_id: key_id.to_string(),
             }
         })?;
@@ -606,8 +617,8 @@ impl User {
 
     /// Map a key to a SigKey identity for a specific database.
     ///
-    /// Registers that this user's key should be used with a specific SigKey identity
-    /// when interacting with a database. This is typically used when a user has been
+    /// Registers that this account's key should be used with a specific SigKey identity
+    /// when interacting with a database. This is typically used when a account has been
     /// granted access to a database and needs to configure their local key to work with it.
     ///
     /// If the provided SigKey matches the default pubkey identity for this key,
@@ -616,16 +627,16 @@ impl User {
     /// # Multi-Key Support
     ///
     /// **Note**: A database may have mappings to multiple keys. This is useful for
-    /// multi-device scenarios where the same user wants to access a database from
+    /// multi-device scenarios where the same account wants to access a database from
     /// different devices, each with their own key.
     ///
     /// # Arguments
-    /// * `key_id` - The user's key identifier (public key)
+    /// * `key_id` - The account's key identifier (public key)
     /// * `database_id` - The database ID
     /// * `sigkey` - The SigKey identity to use for this database
     ///
     /// # Errors
-    /// Returns an error if the key_id doesn't exist in the user database
+    /// Returns an error if the key_id doesn't exist in the account database
     pub async fn map_key(
         &mut self,
         key_id: &PublicKey,
@@ -660,8 +671,8 @@ impl User {
         key_id: &PublicKey,
         database_id: &ID,
         sigkey: SigKey,
-    ) -> Result<(UserKey, bool)> {
-        let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
+    ) -> Result<(AccountKey, bool)> {
+        let keys_table = tx.get_store::<Table<AccountKey>>("keys").await?;
 
         // Find the key metadata in the database
         let (uuid_primary_key, mut metadata) = keys_table
@@ -669,7 +680,7 @@ impl User {
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| super::errors::UserError::KeyNotFound {
+            .ok_or_else(|| super::errors::AccountError::KeyNotFound {
                 key_id: key_id.to_string(),
             })?;
 
@@ -688,7 +699,7 @@ impl User {
             .database_sigkeys
             .insert(database_id.clone(), stored);
 
-        // Update the key in user database using the UUID primary key
+        // Update the key in account database using the UUID primary key
         keys_table.set(&uuid_primary_key, metadata.clone()).await?;
 
         // Staging is not persistence; the caller publishes cache only after
@@ -698,15 +709,15 @@ impl User {
 
     async fn refresh_key_metadata(&mut self, key_id: &PublicKey) -> Result<()> {
         let keys = self
-            .user_database
-            .get_store_viewer::<Table<UserKey>>("keys")
+            .account_database
+            .get_store_viewer::<Table<AccountKey>>("keys")
             .await?;
         let (_, metadata) = keys
             .search(|key| &key.key_id == key_id)
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| UserError::KeyNotFound {
+            .ok_or_else(|| AccountError::KeyNotFound {
                 key_id: key_id.to_string(),
             })?;
         self.key_manager.add_key(metadata)
@@ -716,29 +727,29 @@ impl User {
         &self,
     ) -> Result<(Transaction, tokio::sync::OwnedMutexGuard<()>)> {
         // Resolve reusable committed-but-unacknowledged entries before locking.
-        self.user_database.snapshot().await?;
+        self.account_database.snapshot().await?;
         let guard = self
             .instance
-            .tree_lock(self.user_database.root_id())
+            .tree_lock(self.account_database.root_id())
             .lock_owned()
             .await;
         let snapshot = if self.instance.backend().local_engine().is_some() {
-            Snapshot::from(self.user_database.verified_frontier().await?)
+            Snapshot::from(self.account_database.verified_frontier().await?)
         } else {
-            self.user_database.snapshot().await?
+            self.account_database.snapshot().await?
         };
         Ok((
-            self.user_database.new_transaction_at(&snapshot).await?,
+            self.account_database.new_transaction_at(&snapshot).await?,
             guard,
         ))
     }
 
-    // === Key Management (User Context) ===
+    // === Key Management (AccountSession Context) ===
 
-    /// Add a new private key to this user's keyring.
+    /// Add a new private key to this account's keyring.
     ///
-    /// Generates a new Ed25519 keypair, encrypts it (for password-protected users)
-    /// or stores it unencrypted (for passwordless users), and adds it to the user's
+    /// Generates a new Ed25519 keypair, encrypts it (for password-protected accounts)
+    /// or stores it unencrypted (for passwordless accounts), and adds it to the account's
     /// key database.
     ///
     /// # Arguments
@@ -747,8 +758,8 @@ impl User {
     /// # Returns
     /// The key ID (public key string)
     pub async fn add_private_key(&mut self, display_name: Option<&str>) -> Result<PublicKey> {
+        use crate::account::types::{AccountKey, KeyStorage};
         use crate::auth::crypto::generate_keypair;
-        use crate::user::types::{KeyStorage, UserKey};
 
         // Generate new keypair
         let (private_key, public_key) = generate_keypair();
@@ -756,13 +767,13 @@ impl User {
         // Get current timestamp using the instance's clock
         let timestamp = self.instance.clock().now_secs();
 
-        // Prepare UserKey based on encryption type
+        // Prepare AccountKey based on encryption type
         let user_key = if let Some(encryption_key) = self.key_manager.encryption_key() {
-            // Password-protected user: encrypt the key
-            use crate::user::crypto::encrypt_private_key;
+            // Password-protected account: encrypt the key
+            use crate::account::crypto::encrypt_private_key;
             let (ciphertext, nonce) = encrypt_private_key(&private_key, encryption_key)?;
 
-            UserKey {
+            AccountKey {
                 key_id: public_key.clone(),
                 storage: KeyStorage::Encrypted {
                     algorithm: "aes-256-gcm".to_string(),
@@ -776,8 +787,8 @@ impl User {
                 database_sigkeys: HashMap::new(),
             }
         } else {
-            // Passwordless user: store unencrypted
-            UserKey {
+            // Passwordless account: store unencrypted
+            AccountKey {
                 key_id: public_key.clone(),
                 storage: KeyStorage::Unencrypted { key: private_key },
                 display_name: display_name.map(|s| s.to_string()),
@@ -788,9 +799,9 @@ impl User {
             }
         };
 
-        // Store in user database
-        let tx = self.user_database.new_transaction().await?;
-        let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
+        // Store in account database
+        let tx = self.account_database.new_transaction().await?;
+        let keys_table = tx.get_store::<Table<AccountKey>>("keys").await?;
         keys_table.insert(user_key.clone()).await?;
         tx.commit().await?;
 
@@ -800,10 +811,10 @@ impl User {
         Ok(public_key)
     }
 
-    /// List all key IDs owned by this user.
+    /// List all key IDs owned by this account.
     ///
     /// Keys are returned sorted by creation timestamp (oldest first), making the
-    /// first key in the list the "default" key created when the user was set up.
+    /// first key in the list the "default" key created when the account was set up.
     ///
     /// # Returns
     /// Vector of PublicKeys sorted by creation time
@@ -831,18 +842,18 @@ impl User {
     ///
     /// Display names are caller-supplied human-readable labels passed to
     /// `add_private_key`. They have no cryptographic significance and are
-    /// not unique across keys. Returns `None` if the user does not hold a
+    /// not unique across keys. Returns `None` if the account does not hold a
     /// key with this pubkey, or if it was added without a display name.
     ///
     /// # Arguments
-    /// * `key_id` - Public key of a key held by this user
+    /// * `key_id` - Public key of a key held by this account
     pub fn key_display_name(&self, key_id: &PublicKey) -> Option<&str> {
         self.key_manager
             .get_key_metadata(key_id)
             .and_then(|metadata| metadata.display_name.as_deref())
     }
 
-    /// Find user-held keys whose display name matches `name`.
+    /// Find account-held keys whose display name matches `name`.
     ///
     /// Display names are not unique, so this returns every key whose
     /// `display_name` exactly matches the provided string. Keys without a
@@ -867,7 +878,7 @@ impl User {
     /// Get a signing key by its ID.
     ///
     /// Hands out key material from this session's unlocked key manager. Callers
-    /// that sign on the user's behalf need it — signing a sync request as the
+    /// that sign on the account's behalf need it — signing a sync request as the
     /// key whose access they are claiming, for example.
     ///
     /// # Arguments
@@ -880,14 +891,14 @@ impl User {
             .get_signing_key(key_id)
             .cloned()
             .ok_or_else(|| {
-                UserError::KeyNotFound {
+                AccountError::KeyNotFound {
                     key_id: key_id.to_string(),
                 }
                 .into()
             })
     }
 
-    // === Bootstrap Request Management (User Context) ===
+    // === Bootstrap Request Management (AccountSession Context) ===
 
     /// Get all pending bootstrap requests from the sync system.
     ///
@@ -912,13 +923,13 @@ impl User {
     /// # Arguments
     /// * `sync` - Mutable reference to the Instance's Sync object
     /// * `request_id` - The unique identifier of the request to approve
-    /// * `approving_key_id` - The ID of this user's key to use for approval (must have Admin permission)
+    /// * `approving_key_id` - The ID of this account's key to use for approval (must have Admin permission)
     ///
     /// # Returns
     /// Result indicating success or failure of the approval operation
     ///
     /// # Errors
-    /// - Returns an error if the user doesn't own the specified approving key
+    /// - Returns an error if the account doesn't own the specified approving key
     /// - Returns an error if the approving key doesn't have Admin permission on the target database
     /// - Returns an error if the request doesn't exist or was rejected
     /// - Reduced, removed or uncertain authority needs a fresh explicit grant
@@ -933,11 +944,11 @@ impl User {
         let signing_key = self
             .key_manager
             .get_signing_key(approving_key_id)
-            .ok_or_else(|| super::errors::UserError::KeyNotFound {
+            .ok_or_else(|| super::errors::AccountError::KeyNotFound {
                 key_id: approving_key_id.to_string(),
             })?;
 
-        // Delegate to Sync layer with the user-provided key
+        // Delegate to Sync layer with the account-provided key
         // The Sync layer will validate permissions when committing the transaction
         let key = DatabaseKey::new(signing_key.clone());
         sync.approve_bootstrap_request_with_key(request_id, &key)
@@ -950,18 +961,18 @@ impl User {
     ///
     /// This method marks the request as rejected. The requesting device will not
     /// be granted access to the target database. Requires Admin permission on the
-    /// target database to prevent unauthorized users from disrupting the bootstrap protocol.
+    /// target database to prevent unauthorized accounts from disrupting the bootstrap protocol.
     ///
     /// # Arguments
     /// * `sync` - Mutable reference to the Instance's Sync object
     /// * `request_id` - The unique identifier of the request to reject
-    /// * `rejecting_key_id` - The ID of this user's key (for permission validation and audit trail)
+    /// * `rejecting_key_id` - The ID of this account's key (for permission validation and audit trail)
     ///
     /// # Returns
     /// Result indicating success or failure of the rejection operation
     ///
     /// # Errors
-    /// - Returns an error if the user doesn't own the specified rejecting key
+    /// - Returns an error if the account doesn't own the specified rejecting key
     /// - Returns an error if the request doesn't exist or was approved
     /// - Returns an error if the rejecting key lacks Admin permission on the target database
     pub async fn reject_bootstrap_request(
@@ -974,11 +985,11 @@ impl User {
         let signing_key = self
             .key_manager
             .get_signing_key(rejecting_key_id)
-            .ok_or_else(|| super::errors::UserError::KeyNotFound {
+            .ok_or_else(|| super::errors::AccountError::KeyNotFound {
                 key_id: rejecting_key_id.to_string(),
             })?;
 
-        // Delegate to Sync layer with the user-provided key
+        // Delegate to Sync layer with the account-provided key
         // The Sync layer will validate Admin permission on the target database
         let key = DatabaseKey::new(signing_key.clone());
         sync.reject_bootstrap_request_with_key(request_id, &key)
@@ -990,12 +1001,12 @@ impl User {
     /// Request access to a database from a peer (bootstrap sync).
     ///
     /// This convenience method initiates a bootstrap sync request to access a database
-    /// that this user doesn't have locally yet. The user's key will be sent to the peer
+    /// that this account doesn't have locally yet. The account's key will be sent to the peer
     /// to request the specified permission level.
     ///
-    /// This is useful for multi-device scenarios where a user wants to access their
+    /// This is useful for multi-device scenarios where a account wants to access their
     /// existing database from a new device, or when requesting access to a database
-    /// shared by another user.
+    /// shared by another account.
     ///
     /// On a successful (already-authorized) request the database is synced and its
     /// SigKey mapping is recorded, so [`open_database`](Self::open_database) works
@@ -1004,16 +1015,16 @@ impl User {
     /// the database, including when a pending request is retried after approval.
     ///
     /// When approval is still pending the request returns
-    /// [`SyncError::BootstrapPending`] without changing User mappings or
+    /// [`SyncError::BootstrapPending`] without changing Account mappings or
     /// preferences. Supply the arguments again when retrying after approval.
     /// Existing legacy mappings are preserved rather than deleted.
     ///
     /// # Arguments
     /// * `sync` - Reference to the Instance's Sync object
     /// * `ticket` - A ticket containing the database ID and address hints
-    /// * `key_id` - The ID of this user's key to use for the request
+    /// * `key_id` - The ID of this account's key to use for the request
     /// * `requested_permission` - The permission level being requested
-    /// * `sync_settings` - This user's durable synchronization preferences for
+    /// * `sync_settings` - This account's durable synchronization preferences for
     ///   the database once its access mapping is recorded
     /// * `metadata` - Optional free-form context for the approver to inspect on
     ///   the stored bootstrap request when deciding whether to grant access
@@ -1022,16 +1033,16 @@ impl User {
     /// Result indicating success or failure of the bootstrap request
     ///
     /// # Errors
-    /// - Returns an error if the user doesn't own the specified key
+    /// - Returns an error if the account doesn't own the specified key
     /// - Returns an error if all addresses in the ticket fail
     /// - Returns an error if the bootstrap sync fails
     ///
     /// # Example
     /// ```rust,ignore
     /// // Request write access to a shared database
-    /// let user_key_id = user.get_default_key()?;
+    /// let user_key_id = account.get_default_key()?;
     /// let ticket: DatabaseTicket = "eidetica:?db=sha256:abc...&pr=http:192.168.1.1:8080".parse()?;
-    /// user.request_database_access(
+    /// account.request_database_access(
     ///     &sync,
     ///     &ticket,
     ///     &user_key_id,
@@ -1041,7 +1052,7 @@ impl User {
     /// ).await?;
     ///
     /// // After approval, the database can be opened
-    /// let database = user.open_database(ticket.database_id())?;
+    /// let database = account.open_database(ticket.database_id())?;
     /// ```
     pub async fn request_database_access(
         &mut self,
@@ -1057,7 +1068,7 @@ impl User {
         let signing_key = self
             .key_manager
             .get_signing_key(key_id)
-            .ok_or_else(|| super::errors::UserError::KeyNotFound {
+            .ok_or_else(|| super::errors::AccountError::KeyNotFound {
                 key_id: key_id.to_string(),
             })?
             .clone();
@@ -1104,7 +1115,7 @@ impl User {
     ///   mapping and `sync_settings` are recorded, and the opened database is
     ///   returned.
     /// - When approval is pending, this returns [`SyncError::BootstrapPending`]
-    ///   without changing User mappings or preferences. Call `join` again with
+    ///   without changing Account mappings or preferences. Call `join` again with
     ///   the same arguments once the request is approved.
     /// - A rejected request returns [`SyncError::BootstrapRejected`] and
     ///   records nothing.
@@ -1113,7 +1124,7 @@ impl User {
     /// not global catch-up. Identical completed settings are not written again;
     /// preferences changed during the network wait are preserved.
     /// Dropping the future, disconnecting, or an error may leave peer requests,
-    /// replicated entries, routing or a committed User Entry without its ack.
+    /// replicated entries, routing or a committed Account Entry without its ack.
     /// Retry explicitly; nothing automatically resumes a join after restart.
     /// Held/unreadable acquisition remains refused. Missing delegated history
     /// stays Unverified until supplied and verified separately; this call does
@@ -1131,7 +1142,7 @@ impl User {
     /// * `metadata` - Optional context for the approver
     ///
     /// # Errors
-    /// - [`UserError::KeyNotFound`] if this user does not hold `key_id`
+    /// - [`AccountError::KeyNotFound`] if this user does not hold `key_id`
     /// - [`SyncError::SyncNotEnabled`] on an embedded instance without sync
     /// - [`SyncError::BootstrapPending`] or [`SyncError::BootstrapRejected`]
     ///   as described above
@@ -1160,7 +1171,7 @@ impl User {
             let signing_key = self
                 .key_manager
                 .get_signing_key(key_id)
-                .ok_or_else(|| super::errors::UserError::KeyNotFound {
+                .ok_or_else(|| super::errors::AccountError::KeyNotFound {
                     key_id: key_id.to_string(),
                 })?
                 .clone();
@@ -1217,13 +1228,13 @@ impl User {
         Ok(database)
     }
 
-    /// Record the User-layer SigKey mapping for a bootstrap whose network phase
+    /// Record the Account-layer SigKey mapping for a bootstrap whose network phase
     /// has already completed, given the [`Result`] returned by
     /// [`Sync::bootstrap_with_ticket`](crate::sync::Sync::bootstrap_with_ticket).
     ///
     /// [`request_database_access`](Self::request_database_access) is the usual
     /// entry point and performs the network bootstrap for you. This split-out
-    /// method exists for callers that hold a coarse lock around the `User` (e.g.
+    /// method exists for callers that hold a coarse lock around the `AccountSession` (e.g.
     /// a daemon's per-session lock): they can run the network round-trip without
     /// the lock held and re-acquire it only for this cheap, local mapping write,
     /// so a slow or hung peer never blocks the rest of the session. The mapping
@@ -1259,7 +1270,7 @@ impl User {
         bootstrap_result: Result<()>,
         original: Option<Option<TrackedDatabase>>,
     ) -> Result<()> {
-        // Pending, Rejected and failures do not create or delete User state.
+        // Pending, Rejected and failures do not create or delete AccountSession state.
         bootstrap_result?;
         self.track_database_with_expected(database_id.clone(), key_id, sync_settings, original)
             .await
@@ -1270,7 +1281,7 @@ impl User {
         database_id: &ID,
     ) -> Result<Option<TrackedDatabase>> {
         let table = self
-            .user_database
+            .account_database
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?;
         match table.get(&database_id.to_string()).await {
@@ -1282,13 +1293,13 @@ impl User {
 
     // === Tracked Databases ===
 
-    /// Track a database, adding it to this user's list with auto-discovery of SigKeys.
+    /// Track a database, adding it to this account's list with auto-discovery of SigKeys.
     ///
     /// This method adds an existing database to your tracked list, or updates it if
     /// already tracked (upsert behavior).
     ///
     /// When tracking:
-    /// 1. Uses Database::find_sigkeys() to discover which SigKey the user can use
+    /// 1. Uses Database::find_sigkeys() to discover which SigKey the account can use
     /// 2. Automatically selects the SigKey with highest permission
     /// 3. Stores the key mapping and sync settings
     ///
@@ -1298,7 +1309,7 @@ impl User {
     ///
     /// # Arguments
     /// * `database_id` - ID of the database to track
-    /// * `key_id` - Which user key to use for this database
+    /// * `key_id` - Which account key to use for this database
     /// * `sync_settings` - Sync preferences for this database
     ///
     /// # Returns
@@ -1330,19 +1341,21 @@ impl User {
             sync_settings,
         };
         if self.key_manager.get_signing_key(key_id).is_none() {
-            return Err(UserError::KeyNotFound {
+            return Err(AccountError::KeyNotFound {
                 key_id: key_id.to_string(),
             }
             .into());
         }
         // Discovery can read delegated databases, so do it before holding the
-        // User write lock. Even an unchanged tracked key needs a valid identity.
+        // AccountSession write lock. Even an unchanged tracked key needs a valid identity.
         let available =
             Database::find_sigkeys(&self.instance, &tracked.database_id, key_id).await?;
-        let (sigkey, _) = available.first().ok_or_else(|| UserError::NoSigKeyFound {
-            key_id: key_id.to_string(),
-            database_id: tracked.database_id.clone(),
-        })?;
+        let (sigkey, _) = available
+            .first()
+            .ok_or_else(|| AccountError::NoSigKeyFound {
+                key_id: key_id.to_string(),
+                database_id: tracked.database_id.clone(),
+            })?;
         let (tx, guard) = self.key_mapping_transaction().await?;
         let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
 
@@ -1377,9 +1390,9 @@ impl User {
         // Update sync system to immediately recompute combined settings
         // This ensures automatic sync works right away, without waiting for background worker
         if let Some(sync) = self.instance.sync() {
-            // Auto-sync user tracking if not already synced
+            // Auto-sync account tracking if not already synced
             // This is idempotent - safe to call multiple times
-            sync.sync_user(&self.user_uuid, self.user_database.root_id())
+            sync.sync_account(&self.login_id, self.account_database.root_id())
                 .await?;
         }
 
@@ -1388,13 +1401,13 @@ impl User {
 
     /// List all tracked databases.
     ///
-    /// Returns all databases this user has added to their tracked list.
+    /// Returns all databases this account has added to their tracked list.
     ///
     /// # Returns
     /// Vector of TrackedDatabase entries
     pub async fn databases(&self) -> Result<Vec<TrackedDatabase>> {
         let databases_table = self
-            .user_database
+            .account_database
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?;
 
@@ -1413,36 +1426,36 @@ impl User {
     /// * `database_id` - The ID of the database
     ///
     /// # Returns
-    /// The TrackedDatabase if it's in the user's tracked list
+    /// The TrackedDatabase if it's in the account's tracked list
     ///
     /// # Errors
-    /// Returns `DatabaseNotTracked` if the database is not in the user's list
+    /// Returns `DatabaseNotTracked` if the database is not in the account's list
     pub async fn database(&self, database_id: &ID) -> Result<TrackedDatabase> {
         let databases_table = self
-            .user_database()
+            .account()
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?;
 
         // Direct O(1) lookup using database ID as key
         let db_id_key = database_id.to_string();
         databases_table.get(&db_id_key).await.map_err(|_| {
-            UserError::DatabaseNotTracked {
+            AccountError::DatabaseNotTracked {
                 database_id: database_id.clone(),
             }
             .into()
         })
     }
 
-    /// Check whether this user has sync enabled for a tracked database.
+    /// Check whether this account has sync enabled for a tracked database.
     ///
-    /// Returns this user's own preference, not the host's combined state.
-    /// A `false` result means this user is not personally sharing the database;
-    /// another user on the same instance may still have sync enabled for it.
+    /// Returns this account's own preference, not the host's combined state.
+    /// A `false` result means this account is not personally sharing the database;
+    /// another account on the same instance may still have sync enabled for it.
     ///
-    /// Returns `Ok(false)` for databases not tracked by this user.
+    /// Returns `Ok(false)` for databases not tracked by this account.
     pub async fn is_sync_enabled(&self, database_id: &ID) -> Result<bool> {
         let databases_table = self
-            .user_database()
+            .account()
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?;
         let db_id_key = database_id.to_string();
@@ -1454,16 +1467,16 @@ impl User {
 
     /// Stop tracking a database.
     ///
-    /// This removes the database from the user's tracked list.
+    /// This removes the database from the account's tracked list.
     /// It does not delete the database itself, remove key mappings, or delete any data.
     ///
     /// # Arguments
     /// * `database_id` - The ID of the database to stop tracking
     ///
     /// # Errors
-    /// Returns `DatabaseNotTracked` if the database is not in the user's list
+    /// Returns `DatabaseNotTracked` if the database is not in the account's list
     pub async fn untrack_database(&mut self, database_id: &ID) -> Result<()> {
-        let tx = self.user_database.new_transaction().await?;
+        let tx = self.account_database.new_transaction().await?;
         let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
 
         // Direct O(1) delete using database ID as key
@@ -1471,7 +1484,7 @@ impl User {
 
         // Verify it exists before deleting
         if databases_table.get(&db_id_key).await.is_err() {
-            return Err(UserError::DatabaseNotTracked {
+            return Err(AccountError::DatabaseNotTracked {
                 database_id: database_id.clone(),
             }
             .into());

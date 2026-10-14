@@ -32,13 +32,13 @@ use crate::{
 ///   stores never land here (the daemon has no encryptor key — see
 ///   [`crate::store::PasswordStore`]), so shared state is always plaintext.
 ///
-/// - **User(uuid)**: state a specific user computed and published over the
+/// - **Login(uuid)**: state a specific user computed and published over the
 ///   service wire. The daemon cannot verify the merge result, so it is
 ///   scoped to that user only — alice's publication is invisible to bob.
 ///   This is where encrypted-store materializations live (the client
 ///   decrypts, merges, re-encrypts, and publishes the ciphertext).
 ///
-/// On read, the wire handler resolves `User(session_user)` first and falls
+/// On read, the wire handler resolves `Login(session_user)` first and falls
 /// back to `Shared` on miss — so a remote read of an unencrypted store
 /// benefits from cross-user dedup via the shared scope, while encrypted
 /// store reads only ever hit user-scoped cached state.
@@ -46,8 +46,9 @@ use crate::{
 pub enum CacheScope {
     /// Daemon-computed; visible to every user with database read permission.
     Shared,
-    /// Client-uploaded; visible only to the named user.
-    User(String),
+    /// Client-uploaded; scoped to an instance-local login UUID, not an Account root ID.
+    #[serde(rename = "User")]
+    Login(String),
 }
 
 /// Lifecycle of stored Store state.
@@ -145,13 +146,13 @@ pub struct RecordPage {
 
 impl CacheScope {
     /// Storage key for the scope — `None` encodes [`Self::Shared`], `Some`
-    /// encodes [`Self::User`]. Useful for backends that need a single
+    /// encodes [`Self::Login`]. Useful for backends that need a single
     /// nullable column or a uniform key prefix (e.g. SQL primary keys,
     /// Redis key formatting).
     pub fn storage_key(&self) -> Option<&str> {
         match self {
             CacheScope::Shared => None,
-            CacheScope::User(uuid) => Some(uuid.as_str()),
+            CacheScope::Login(uuid) => Some(uuid.as_str()),
         }
     }
 }
@@ -869,7 +870,21 @@ pub trait BackendImpl: Send + Sync + Any {
 
 #[cfg(test)]
 mod verification_status_codec_tests {
-    use super::VerificationStatus;
+    use super::{CacheScope, VerificationStatus};
+
+    #[test]
+    fn cache_scope_login_preserves_encoding() {
+        let scope = CacheScope::Login("login-uuid".into());
+        let wire = r#"{"User":"login-uuid"}"#;
+        assert_eq!(serde_json::to_string(&scope).unwrap(), wire);
+        assert_eq!(serde_json::from_str::<CacheScope>(wire).unwrap(), scope);
+        assert_eq!(scope.storage_key(), Some("login-uuid"));
+        assert_eq!(
+            serde_json::to_string(&CacheScope::Shared).unwrap(),
+            r#""Shared""#
+        );
+        assert_eq!(CacheScope::Shared.storage_key(), None);
+    }
 
     /// Every variant round-trips through the persistence codec, the codes
     /// are the expected stable values, and they are mutually distinct. This

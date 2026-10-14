@@ -1,4 +1,4 @@
-//! Cryptographic functions for user system
+//! Cryptographic functions for account system
 //!
 //! Provides key derivation and encryption using:
 //! - Argon2id for key derivation from password + salt
@@ -11,7 +11,7 @@ use aes_gcm::{
 use argon2::{Argon2, password_hash::SaltString};
 use zeroize::Zeroize;
 
-use super::errors::UserError;
+use super::errors::AccountError;
 use crate::{Result, auth::crypto::PrivateKey};
 
 /// Salt string length for Argon2 (base64 encoded, 22 chars)
@@ -37,7 +37,7 @@ pub fn generate_salt() -> String {
 /// Derive an encryption key from a password and salt using Argon2id
 ///
 /// # Arguments
-/// * `password` - The user's password
+/// * `password` - The account's password
 /// * `salt` - The salt string (base64 encoded, from `generate_salt`)
 ///
 /// # Returns
@@ -45,14 +45,14 @@ pub fn generate_salt() -> String {
 pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -> Result<Vec<u8>> {
     let salt_str = salt.as_ref();
     if salt_str.len() != SALT_LENGTH {
-        return Err(UserError::InvalidSaltLength {
+        return Err(AccountError::InvalidSaltLength {
             expected: SALT_LENGTH,
             actual: salt_str.len(),
         }
         .into());
     }
 
-    let salt = SaltString::from_b64(salt_str).map_err(|e| UserError::EncryptionFailed {
+    let salt = SaltString::from_b64(salt_str).map_err(|e| AccountError::EncryptionFailed {
         reason: format!("Invalid salt format: {e}"),
     })?;
 
@@ -65,7 +65,7 @@ pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -
             salt.as_str().as_bytes(),
             &mut key,
         )
-        .map_err(|e| UserError::EncryptionFailed {
+        .map_err(|e| AccountError::EncryptionFailed {
             reason: format!("Key derivation failed: {e}"),
         })?;
 
@@ -88,7 +88,7 @@ pub fn encrypt_private_key(
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     let encryption_key = encryption_key.as_ref();
     if encryption_key.len() != KEY_LENGTH {
-        return Err(UserError::EncryptionFailed {
+        return Err(AccountError::EncryptionFailed {
             reason: format!(
                 "Invalid key length: expected {}, got {}",
                 KEY_LENGTH,
@@ -104,7 +104,7 @@ pub fn encrypt_private_key(
 
     // Create cipher
     let cipher =
-        Aes256Gcm::new_from_slice(encryption_key).map_err(|e| UserError::EncryptionFailed {
+        Aes256Gcm::new_from_slice(encryption_key).map_err(|e| AccountError::EncryptionFailed {
             reason: format!("Failed to create cipher: {e}"),
         })?;
 
@@ -112,12 +112,11 @@ pub fn encrypt_private_key(
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
     // Encrypt (serialized is Zeroizing<String>, auto-zeroized on drop)
-    let ciphertext =
-        cipher
-            .encrypt(&nonce, serialized.as_bytes())
-            .map_err(|e| UserError::EncryptionFailed {
-                reason: format!("Encryption failed: {e}"),
-            })?;
+    let ciphertext = cipher.encrypt(&nonce, serialized.as_bytes()).map_err(|e| {
+        AccountError::EncryptionFailed {
+            reason: format!("Encryption failed: {e}"),
+        }
+    })?;
 
     Ok((ciphertext, nonce.to_vec()))
 }
@@ -141,7 +140,7 @@ pub fn decrypt_private_key(
     let ciphertext = ciphertext.as_ref();
 
     if encryption_key.len() != KEY_LENGTH {
-        return Err(UserError::DecryptionFailed {
+        return Err(AccountError::DecryptionFailed {
             reason: format!(
                 "Invalid key length: expected {}, got {}",
                 KEY_LENGTH,
@@ -152,7 +151,7 @@ pub fn decrypt_private_key(
     }
 
     if nonce_bytes.len() != NONCE_LENGTH {
-        return Err(UserError::InvalidNonceLength {
+        return Err(AccountError::InvalidNonceLength {
             expected: NONCE_LENGTH,
             actual: nonce_bytes.len(),
         }
@@ -161,7 +160,7 @@ pub fn decrypt_private_key(
 
     // Create cipher
     let cipher =
-        Aes256Gcm::new_from_slice(encryption_key).map_err(|e| UserError::DecryptionFailed {
+        Aes256Gcm::new_from_slice(encryption_key).map_err(|e| AccountError::DecryptionFailed {
             reason: format!("Failed to create cipher: {e}"),
         })?;
 
@@ -169,7 +168,7 @@ pub fn decrypt_private_key(
     let nonce_array: [u8; NONCE_LENGTH] =
         nonce_bytes
             .try_into()
-            .map_err(|_| UserError::InvalidNonceLength {
+            .map_err(|_| AccountError::InvalidNonceLength {
                 expected: NONCE_LENGTH,
                 actual: nonce_bytes.len(),
             })?;
@@ -179,7 +178,7 @@ pub fn decrypt_private_key(
     let plaintext =
         cipher
             .decrypt(&nonce, ciphertext)
-            .map_err(|e| UserError::DecryptionFailed {
+            .map_err(|e| AccountError::DecryptionFailed {
                 reason: format!("Decryption failed: {e}"),
             })?;
 
@@ -187,14 +186,14 @@ pub fn decrypt_private_key(
     let mut prefixed = String::from_utf8(plaintext).map_err(|e| {
         let mut bytes = e.into_bytes();
         bytes.zeroize();
-        UserError::DecryptionFailed {
+        AccountError::DecryptionFailed {
             reason: "Decrypted key is not valid UTF-8".to_string(),
         }
     })?;
 
     let key = PrivateKey::from_prefixed_string(&prefixed).map_err(|e| {
         prefixed.zeroize();
-        UserError::DecryptionFailed {
+        AccountError::DecryptionFailed {
             reason: format!("Failed to parse decrypted private key: {e}"),
         }
     })?;

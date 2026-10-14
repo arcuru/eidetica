@@ -51,7 +51,7 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -93,7 +93,7 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -143,7 +143,7 @@ The `Table<T>` store manages collections of serializable items, similar to a tab
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -219,7 +219,7 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -257,7 +257,7 @@ transaction.commit().await?;
 # // Setup database for testing
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "stores_auth_example");
@@ -301,7 +301,7 @@ Multiple auth operations within a transaction are accumulated in a single entry:
 # // Setup database for testing
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "complex_auth_example");
@@ -377,7 +377,7 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 # let backend = Sqlite::in_memory().await?;
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(backend),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "y_crdt_stores");
@@ -458,7 +458,7 @@ When you first access a Store using `Transaction::get_store()`, it's automatical
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -495,7 +495,7 @@ Use `get_index()` to query information about registered subtrees:
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");

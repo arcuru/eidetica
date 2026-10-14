@@ -19,7 +19,7 @@ must be opened in each transaction that uses it.
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "secrets_db");
@@ -54,7 +54,7 @@ Open the wrapper before asking for the inner Store:
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "secrets_db");
@@ -183,7 +183,7 @@ from verified Entries.
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "creds_db");

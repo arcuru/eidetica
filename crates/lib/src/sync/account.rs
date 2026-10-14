@@ -1,15 +1,15 @@
-//! User synchronization methods for the sync system.
+//! AccountSession synchronization methods for the sync system.
 
 use tracing::{debug, info};
 
-use super::{Sync, SyncError, user_sync_manager::UserSyncManager};
+use super::{Sync, SyncError, account_sync_manager::AccountSyncManager};
 use crate::{
-    Database, Result, Snapshot, entry::ID, instance::settings_merge::merge_sync_settings,
-    store::Table, user::types::TrackedDatabase,
+    Database, Result, Snapshot, account::types::TrackedDatabase, entry::ID,
+    instance::settings_merge::merge_sync_settings, store::Table,
 };
 
 impl Sync {
-    // === User Synchronization Methods ===
+    // === AccountSession Synchronization Methods ===
 
     /// Synchronize a user's preferences with the sync system.
     ///
@@ -27,7 +27,7 @@ impl Sync {
     /// to ensure atomicity.
     ///
     /// # Arguments
-    /// * `user_uuid` - The user's unique identifier
+    /// * `login_id` - The user's unique identifier
     /// * `preferences_db_id` - The ID of the user's private database
     ///
     /// # Returns
@@ -36,27 +36,27 @@ impl Sync {
     /// # Example
     /// ```rust,ignore
     /// // After creating or logging in a user
-    /// let user = instance.login_user("alice", Some("password"))?;
-    /// sync.sync_user(user.user_uuid(), user.user_database().root_id())?;
+    /// let user = instance.login_account("alice", Some("password"))?;
+    /// sync.sync_account(user.login_id(), user.account().root_id())?;
     /// ```
-    pub async fn sync_user(
+    pub async fn sync_account(
         &self,
-        user_uuid: impl AsRef<str>,
+        login_id: impl AsRef<str>,
         preferences_db_id: &ID,
     ) -> Result<()> {
-        let user_uuid_str = user_uuid.as_ref();
+        let user_uuid_str = login_id.as_ref();
 
         // CRITICAL: Single transaction for all sync tree updates
         let tx = self.sync_tree.new_transaction().await?;
-        let user_mgr = UserSyncManager::new(&tx);
+        let user_mgr = AccountSyncManager::new(&tx);
 
         // Ensure user is tracked, get their current preferences state
-        let old_tips = match user_mgr.get_tracked_user_state(user_uuid_str).await? {
+        let old_tips = match user_mgr.get_tracked_account_state(user_uuid_str).await? {
             Some((_stored_prefs_db_id, tips)) => tips,
             None => {
-                // User not yet tracked - register them
+                // AccountSession not yet tracked - register them
                 user_mgr
-                    .track_user_preferences(user_uuid_str, preferences_db_id)
+                    .track_account_preferences(user_uuid_str, preferences_db_id)
                     .await?;
                 Vec::new() // Empty tips means this is first sync
             }
@@ -72,11 +72,11 @@ impl Sync {
 
         // Check if preferences have changed via snapshot comparison (set-equal).
         if current_snapshot == Snapshot::from(old_tips.clone()) {
-            debug!(user_uuid = %user_uuid_str, "No changes to user preferences, skipping update");
+            debug!(login_id = %user_uuid_str, "No changes to user preferences, skipping update");
             return Ok(());
         }
 
-        debug!(user_uuid = %user_uuid_str, "User preferences changed, updating sync configuration");
+        debug!(login_id = %user_uuid_str, "Account preferences changed, updating sync configuration");
 
         // Read all tracked databases
         let databases_table = prefs_db
@@ -102,10 +102,10 @@ impl Sync {
         for old_db in &old_databases {
             if !current_databases.contains(old_db) {
                 user_mgr
-                    .unlink_user_from_database(old_db, user_uuid_str)
+                    .unlink_account_from_database(old_db, user_uuid_str)
                     .await?;
                 affected_databases.insert(old_db.clone());
-                debug!(user_uuid = %user_uuid_str, database_id = %old_db, "Removed user from database");
+                debug!(login_id = %user_uuid_str, database_id = %old_db, "Removed user from database");
             }
         }
 
@@ -113,7 +113,7 @@ impl Sync {
         for (_uuid, tracked) in &all_tracked {
             if tracked.sync_settings.sync_enabled {
                 user_mgr
-                    .link_user_to_database(&tracked.database_id, user_uuid_str)
+                    .link_account_to_database(&tracked.database_id, user_uuid_str)
                     .await?;
                 affected_databases.insert(tracked.database_id.clone());
             }
@@ -122,10 +122,10 @@ impl Sync {
         // Recompute combined settings for all affected databases
         let affected_count = affected_databases.len();
         for db_id in affected_databases {
-            let users = user_mgr.get_linked_users(&db_id).await?;
+            let users = user_mgr.get_linked_accounts(&db_id).await?;
 
             if users.is_empty() {
-                // unlink_user_from_database removes the whole record, including
+                // unlink_account_from_database removes the whole record, including
                 // stale combined settings, when the last user leaves.
                 continue;
             }
@@ -136,7 +136,9 @@ impl Sync {
             let mut settings_list = Vec::new();
             for uuid in &users {
                 // Read preferences from each user's database using device key (Read permission)
-                if let Some((user_prefs_db_id, _)) = user_mgr.get_tracked_user_state(uuid).await? {
+                if let Some((user_prefs_db_id, _)) =
+                    user_mgr.get_tracked_account_state(uuid).await?
+                {
                     let user_db = Database::open(&instance, &user_prefs_db_id)
                         .await?
                         .with_key(device_key.clone());
@@ -170,7 +172,7 @@ impl Sync {
         // Commit all changes atomically
         tx.commit().await?;
 
-        info!(user_uuid = %user_uuid_str, affected_count = affected_count, "Updated user database sync configuration");
+        info!(login_id = %user_uuid_str, affected_count = affected_count, "Updated user database sync configuration");
         Ok(())
     }
 
@@ -180,14 +182,14 @@ impl Sync {
     /// combined settings. This should be called when a user is deleted.
     ///
     /// # Arguments
-    /// * `user_uuid` - The user's unique identifier
+    /// * `login_id` - The user's unique identifier
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub async fn remove_user(&self, user_uuid: impl AsRef<str>) -> Result<()> {
-        let user_uuid_str = user_uuid.as_ref();
+    pub async fn remove_account(&self, login_id: impl AsRef<str>) -> Result<()> {
+        let user_uuid_str = login_id.as_ref();
         let tx = self.sync_tree.new_transaction().await?;
-        let user_mgr = UserSyncManager::new(&tx);
+        let user_mgr = AccountSyncManager::new(&tx);
 
         // Get all databases this user was tracking
         let databases = user_mgr.get_linked_databases(user_uuid_str).await?;
@@ -195,11 +197,11 @@ impl Sync {
         // Remove user from each database
         for db_id in &databases {
             user_mgr
-                .unlink_user_from_database(db_id, user_uuid_str)
+                .unlink_account_from_database(db_id, user_uuid_str)
                 .await?;
 
             // Recompute combined settings for this database
-            let remaining_users = user_mgr.get_linked_users(db_id).await?;
+            let remaining_users = user_mgr.get_linked_accounts(db_id).await?;
             if remaining_users.is_empty() {
                 // No more users, settings will be cleared automatically
                 continue;
@@ -213,7 +215,7 @@ impl Sync {
 
         tx.commit().await?;
 
-        info!(user_uuid = %user_uuid_str, database_count = databases.len(), "Removed user from sync system");
+        info!(login_id = %user_uuid_str, database_count = databases.len(), "Removed user from sync system");
         Ok(())
     }
 }

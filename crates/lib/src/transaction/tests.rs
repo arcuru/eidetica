@@ -70,7 +70,7 @@ impl Store for CounterStore {
 async fn test_database() -> (Instance, Database) {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -89,7 +89,7 @@ async fn test_database() -> (Instance, Database) {
 async fn test_prevent_auth_corruption() {
     let backend = InMemory::new();
     let (instance, _admin) =
-        Instance::create_backend(Box::new(backend), crate::NewUser::passwordless("admin"))
+        Instance::create_backend(Box::new(backend), crate::NewAccount::passwordless("admin"))
             .await
             .unwrap();
     let (private_key, _) = generate_keypair();
@@ -151,7 +151,7 @@ async fn test_prevent_auth_corruption() {
 async fn test_docstore_set_preserves_malformed_staged_data() {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -294,7 +294,7 @@ async fn fixed_parent_subtree_read_ignores_concurrent_live_write() {
 async fn fixed_parent_auth_settings_read_ignores_concurrent_grant() {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();

@@ -220,7 +220,7 @@ pub async fn create_linear_chain(
     entry_ids
 }
 
-/// Create tree with authentication using User API.
+/// Create tree with authentication using AccountSession API.
 ///
 /// Returns (Instance, Database, key_id) where key_id is the PublicKey
 /// that should be used in assertions like `is_signed_by(&key_id.to_string())`.

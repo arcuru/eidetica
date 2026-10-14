@@ -59,7 +59,7 @@ struct SerializableDatabase {
     #[serde(default)]
     instance_secrets: Option<InstanceSecrets>,
     /// CRDT state cache *was* serialized here pre-unification. The cache is
-    /// now scope-keyed (Shared vs User) and bounded by an LRU; rather than
+    /// now scope-keyed (Shared vs Login) and bounded by an LRU; rather than
     /// serializing an opaque LRU snapshot, we treat the cache as ephemeral
     /// performance state and rebuild lazily on load. Field retained as
     /// `#[serde(default, skip_serializing)]` so old snapshots still

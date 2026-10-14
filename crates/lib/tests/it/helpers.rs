@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::os::unix::fs::PermissionsExt;
 
 use eidetica::{
-    Database, Error, FixedClock, Instance, NewUser,
+    Database, Error, FixedClock, Instance, NewAccount,
+    account::AccountSession,
     auth::{crypto::PublicKey, types::AuthKey},
     backend::BackendImpl,
     backend::VerificationStatus,
@@ -13,7 +14,6 @@ use eidetica::{
     entry::{Entry, ID},
     instance::backend::Backend,
     store::DocStore,
-    user::User,
 };
 
 #[cfg(all(unix, feature = "service"))]
@@ -150,7 +150,7 @@ pub async fn test_instance() -> Instance {
 ///
 /// Bootstraps a passwordless `admin` user as the initial admin — matches
 /// the historic test convention so existing `users.contains("admin")` style
-/// assertions and `login_user("admin", None)` calls keep working. Tests
+/// assertions and `login_account("admin", None)` calls keep working. Tests
 /// that need a specific bootstrap identity should use
 /// [`test_local_instance_with_user`] instead.
 #[allow(dead_code)]
@@ -159,7 +159,7 @@ pub async fn test_local_instance() -> Instance {
     let (instance, _admin) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         clock,
-        NewUser::passwordless("admin"),
+        NewAccount::passwordless("admin"),
     )
     .await
     .expect("Failed to create local test instance");
@@ -170,13 +170,13 @@ pub async fn test_local_instance() -> Instance {
 /// tests that need a logged-in user against a process-local instance
 /// regardless of `TEST_BACKEND`. See [`test_local_instance`].
 #[allow(dead_code)]
-pub async fn test_local_instance_with_user(username: &str) -> (Instance, User) {
+pub async fn test_local_instance_with_user(username: &str) -> (Instance, AccountSession) {
     let instance = test_local_instance().await;
-    create_user(&instance, username, None)
+    create_account(&instance, username, None)
         .await
         .expect("Failed to create user");
     let user = instance
-        .login_user(username, None)
+        .login_account(username, None)
         .await
         .expect("Failed to login user");
     (instance, user)
@@ -189,13 +189,13 @@ pub async fn test_local_instance_with_user(username: &str) -> (Instance, User) {
 pub async fn test_local_instance_with_user_and_key(
     username: &str,
     key_display_name: Option<&str>,
-) -> (Instance, User, PublicKey) {
+) -> (Instance, AccountSession, PublicKey) {
     let instance = test_local_instance().await;
-    create_user(&instance, username, None)
+    create_account(&instance, username, None)
         .await
         .expect("Failed to create user");
     let mut user = instance
-        .login_user(username, None)
+        .login_account(username, None)
         .await
         .expect("Failed to login user");
     let key_id = user
@@ -209,31 +209,31 @@ pub async fn test_local_instance_with_user_and_key(
 ///
 /// The test bootstrap uses a passwordless `admin` user (see
 /// [`test_local_instance`] and [`test_remote_instance`]). This helper logs
-/// in as that admin and drives [`InstanceAdmin::create_user`] —
+/// in as that admin and drives [`InstanceAdmin::create_account`] —
 /// the same admin path that production code uses. Returns the new user's
-/// UUID, mirroring the old `Instance::create_user` signature so call sites
+/// UUID, mirroring the old `Instance::create_account` signature so call sites
 /// stay one-liners.
-pub async fn create_user(
+pub async fn create_account(
     instance: &Instance,
     username: &str,
     password: Option<&str>,
 ) -> eidetica::Result<String> {
-    let admin = instance.login_user("admin", None).await?;
-    let new_user = match password {
-        Some(pw) => NewUser::with_password(username, pw),
-        None => NewUser::passwordless(username),
+    let admin = instance.login_account("admin", None).await?;
+    let new_account = match password {
+        Some(pw) => NewAccount::with_password(username, pw),
+        None => NewAccount::passwordless(username),
     };
-    admin.admin().await?.create_user(new_user).await
+    admin.admin().await?.create_account(new_account).await
 }
 
 /// List all user IDs via the bootstrapped admin session.
 ///
-/// Replaces the removed `Instance::list_users` — listing users reads `_users`
-/// and is an admin operation reached through [`User::admin`].
+/// Replaces the removed `Instance::list_accounts` — listing users reads `_users`
+/// and is an admin operation reached through [`AccountSession::admin`].
 #[allow(dead_code)]
-pub async fn list_users(instance: &Instance) -> eidetica::Result<Vec<String>> {
-    let admin = instance.login_user("admin", None).await?;
-    admin.admin().await?.list_users().await
+pub async fn list_accounts(instance: &Instance) -> eidetica::Result<Vec<String>> {
+    let admin = instance.login_account("admin", None).await?;
+    admin.admin().await?.list_accounts().await
 }
 
 /// Spawn an in-process daemon over an InMemory backend, then connect and
@@ -254,7 +254,7 @@ async fn test_remote_instance() -> Instance {
     let socket_path = dir.path().join("test.sock");
 
     let (server, _admin) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::bind(server.clone(), socket_path.clone())
@@ -269,7 +269,7 @@ async fn test_remote_instance() -> Instance {
         .await
         .expect("Failed to connect to test daemon");
     instance
-        .login_user("admin", None)
+        .login_account("admin", None)
         .await
         .expect("Failed to login as bootstrapped admin");
 
@@ -284,8 +284,8 @@ pub async fn test_instance_arc() -> Arc<Instance> {
 
 /// Creates an Instance with a passwordless user (most common test pattern)
 ///
-/// Returns (Instance, User) for immediate use with User API
-pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
+/// Returns (Instance, AccountSession) for immediate use with AccountSession API
+pub async fn test_instance_with_user(username: &str) -> (Instance, AccountSession) {
     #[cfg(all(unix, feature = "service"))]
     {
         if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
@@ -293,11 +293,11 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
         }
     }
     let instance = test_instance().await;
-    create_user(&instance, username, None)
+    create_account(&instance, username, None)
         .await
         .expect("Failed to create user");
     let user = instance
-        .login_user(username, None)
+        .login_account(username, None)
         .await
         .expect("Failed to login user");
     (instance, user)
@@ -306,12 +306,12 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
 /// Service-mode variant: spawns a daemon, creates the named user server-side,
 /// connects and authenticates as that user.
 #[cfg(all(unix, feature = "service"))]
-async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
+async fn test_remote_instance_with_user(username: &str) -> (Instance, AccountSession) {
     let dir = Box::leak(Box::new(private_tempdir()));
     let socket_path = dir.path().join("test.sock");
 
     let (server, _admin) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::bind(server.clone(), socket_path.clone())
@@ -321,8 +321,8 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
     let _tx = Box::leak(Box::new(tx));
     tokio::spawn(service.run(rx));
 
-    // create_user is not available over the wire — create user server-side.
-    create_user(&server, username, None)
+    // create_account is not available over the wire — create user server-side.
+    create_account(&server, username, None)
         .await
         .expect("Failed to create user server-side");
 
@@ -330,26 +330,26 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
         .await
         .expect("Failed to connect to test daemon");
     let user = instance
-        .login_user(username, None)
+        .login_account(username, None)
         .await
         .expect("Failed to login user");
 
     (instance, user)
 }
 
-/// Creates an Instance with a user and key, returning user and key_id for User API tests.
+/// Creates an Instance with a user and key, returning user and key_id for AccountSession API tests.
 ///
 /// The key_id is the public key (e.g., "ed25519:abc123...") which is used
-/// as the SigKey when creating databases via User API.
+/// as the SigKey when creating databases via AccountSession API.
 ///
 /// # Returns
 /// - Instance: The database instance
-/// - User: Logged-in user session
+/// - AccountSession: Logged-in user session
 /// - PublicKey: The key_id for database operations
 pub async fn test_instance_with_user_and_key(
     username: &str,
     key_display_name: Option<&str>,
-) -> (Instance, User, PublicKey) {
+) -> (Instance, AccountSession, PublicKey) {
     #[cfg(all(unix, feature = "service"))]
     {
         if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
@@ -357,11 +357,11 @@ pub async fn test_instance_with_user_and_key(
         }
     }
     let instance = test_instance().await;
-    create_user(&instance, username, None)
+    create_account(&instance, username, None)
         .await
         .expect("Failed to create user");
     let mut user = instance
-        .login_user(username, None)
+        .login_account(username, None)
         .await
         .expect("Failed to login user");
 
@@ -379,12 +379,12 @@ pub async fn test_instance_with_user_and_key(
 async fn test_remote_instance_with_user_and_key(
     username: &str,
     key_display_name: Option<&str>,
-) -> (Instance, User, PublicKey) {
+) -> (Instance, AccountSession, PublicKey) {
     let dir = Box::leak(Box::new(private_tempdir()));
     let socket_path = dir.path().join("test.sock");
 
     let (server, _admin) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::bind(server.clone(), socket_path.clone())
@@ -395,11 +395,11 @@ async fn test_remote_instance_with_user_and_key(
     tokio::spawn(service.run(rx));
 
     // Create user and add key server-side.
-    create_user(&server, username, None)
+    create_account(&server, username, None)
         .await
         .expect("Failed to create user server-side");
     let mut server_user = server
-        .login_user(username, None)
+        .login_account(username, None)
         .await
         .expect("Failed to login user server-side");
     server_user
@@ -412,18 +412,18 @@ async fn test_remote_instance_with_user_and_key(
         .await
         .expect("Failed to connect to test daemon");
     let user = instance
-        .login_user(username, None)
+        .login_account(username, None)
         .await
         .expect("Failed to login user");
 
     let key_id = user
         .get_default_key()
-        .expect("User should have a default key");
+        .expect("AccountSession should have a default key");
 
     (instance, user, key_id)
 }
 
-/// Creates a tree using User API and returns (Instance, Database, key_id).
+/// Creates a tree using AccountSession API and returns (Instance, Database, key_id).
 ///
 /// This is the preferred pattern for new tests. The key_id should be used
 /// in assertions like `is_signed_by(&key_id)`.
@@ -465,18 +465,18 @@ pub async fn setup_tree_with_user_key_local() -> (Instance, Database, PublicKey)
 // ==========================
 // COMPATIBILITY HELPERS
 // ==========================
-// These maintain compatibility with existing tests while using the new User API
+// These maintain compatibility with existing tests while using the new AccountSession API
 
 const DEFAULT_TEST_USER: &str = "test_user";
 
-/// Creates a basic authenticated database with User API and default key
+/// Creates a basic authenticated database with AccountSession API and default key
 ///
 /// This replaces the old `setup_db()` pattern. Uses a default test user.
-pub async fn setup_db() -> (Instance, User) {
+pub async fn setup_db() -> (Instance, AccountSession) {
     test_instance_with_user(DEFAULT_TEST_USER).await
 }
 
-/// Creates a basic tree using User API with default key
+/// Creates a basic tree using AccountSession API with default key
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
@@ -494,7 +494,7 @@ pub async fn setup_tree() -> (Instance, Database) {
     (instance, tree)
 }
 
-/// Creates a tree with initial settings using User API
+/// Creates a tree with initial settings using AccountSession API
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.

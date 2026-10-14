@@ -15,7 +15,7 @@ use std::{
 };
 
 use eidetica::{
-    Database, Instance, NewUser, Result, Snapshot,
+    Database, Instance, NewAccount, Result, Snapshot,
     auth::crypto::generate_keypair,
     backend::database::InMemory,
     backend::{
@@ -251,7 +251,7 @@ impl<B: BackendImpl> BackendImpl for Recordless<B> {
 async fn old_backend_without_record_support_reads_through_history() {
     let (instance, _admin) = Instance::create_backend(
         Box::new(Recordless(InMemory::new(), None)),
-        NewUser::passwordless("admin"),
+        NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -286,7 +286,7 @@ struct TableRow {
 async fn table_uses_history_when_record_storage_is_unsupported() {
     let (instance, _admin) = Instance::create_backend(
         Box::new(Recordless(InMemory::new(), None)),
-        NewUser::passwordless("admin"),
+        NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -319,7 +319,7 @@ async fn table_uses_history_when_record_storage_is_unsupported() {
 async fn table_dotted_json_rows_match_fresh_and_historical_projection() {
     let (instance, _admin) = Instance::create_backend(
         Box::new(Recordless(InMemory::new(), None)),
-        NewUser::passwordless("admin"),
+        NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -409,7 +409,7 @@ async fn stale_record_view_retries_fallback_to_history() {
     });
     let (instance, _admin) = Instance::create_backend(
         Box::new(Recordless(InMemory::new(), Some(state.clone()))),
-        NewUser::passwordless("admin"),
+        NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -488,7 +488,7 @@ async fn encrypted_table_history_fallback_preserves_physical_pagination() {
     });
     let (instance, _admin) = Instance::create_backend(
         Box::new(Recordless(InMemory::new(), Some(state.clone()))),
-        NewUser::passwordless("admin"),
+        NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
