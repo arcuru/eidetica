@@ -562,6 +562,45 @@ fn test_id_memo_is_invalidated_by_set_auth() {
 }
 
 #[test]
+fn test_sign_attaches_verifiable_signature_and_invalidates_memo() {
+    use crate::auth::crypto::{PrivateKey, sign_entry, verify_entry_signature};
+
+    let key = PrivateKey::generate();
+    let entry = Entry::root_builder()
+        .set_subtree_data("test", b"value")
+        .set_auth(AuthInfo::from_pubkey(&key.public_key()))
+        .build()
+        .expect("Root entry should build successfully");
+    let expected_signature = sign_entry(&entry, &key).unwrap();
+    let unsigned_id = entry.id();
+
+    let signed = entry.sign(&key).unwrap();
+
+    assert_eq!(signed.auth().signature, Some(expected_signature));
+    verify_entry_signature(&signed, &key.public_key()).unwrap();
+    assert_eq!(signed.id(), uncached_id(&signed));
+    assert_ne!(signed.id(), unsigned_id);
+}
+
+#[test]
+fn test_sign_replaces_existing_signature() {
+    use crate::auth::crypto::{PrivateKey, verify_entry_signature};
+
+    let first = PrivateKey::generate();
+    let second = PrivateKey::generate();
+    let entry = Entry::root_builder()
+        .set_subtree_data("test", b"value")
+        .set_auth(AuthInfo::from_pubkey(&second.public_key()))
+        .build()
+        .expect("Root entry should build successfully");
+
+    let resigned = entry.sign(&first).unwrap().sign(&second).unwrap();
+
+    verify_entry_signature(&resigned, &second.public_key()).unwrap();
+    assert!(verify_entry_signature(&resigned, &first.public_key()).is_err());
+}
+
+#[test]
 fn test_id_memo_does_not_leak_across_canonical_for_signing() {
     let entry = Entry::root_builder()
         .set_subtree_data("test", b"value")
@@ -662,12 +701,10 @@ fn test_delegated_dagcbor_wire_format_is_pinned() {
     let entry = Entry::builder(ID::from_bytes("root"))
         .add_parent(ID::from_bytes("parent"))
         .set_subtree_data("test", b"value")
-        .set_auth(
-            AuthInfo::builder()
-                .key(key)
-                .signature("fixed-signature")
-                .build(),
-        )
+        .set_auth(AuthInfo {
+            signature: Some("fixed-signature".to_string()),
+            key,
+        })
         .build()
         .unwrap();
     let bytes = entry.to_dagcbor().unwrap();
