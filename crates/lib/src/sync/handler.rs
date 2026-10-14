@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 
 use super::{
+    account_sync_manager::AccountSyncManager,
     bootstrap_request_manager::{BootstrapRequest, BootstrapRequestManager, RequestStatus},
     peer_manager::PeerManager,
     peer_types::Address,
@@ -20,7 +21,6 @@ use super::{
         BootstrapResponse, HandshakeRequest, HandshakeResponse, IncrementalResponse,
         PROTOCOL_VERSION, RequestContext, SyncRequest, SyncResponse, SyncTreeRequest,
     },
-    user_sync_manager::UserSyncManager,
 };
 use crate::{
     Database, Entry, Error, Instance, Result, Snapshot, WeakInstance,
@@ -506,8 +506,8 @@ impl SyncHandlerImpl {
             Err(_) => return false, // Fail closed
         };
 
-        // Use UserSyncManager to get combined settings
-        let user_mgr = UserSyncManager::new(&transaction);
+        // Use AccountSyncManager to get combined settings
+        let user_mgr = AccountSyncManager::new(&transaction);
         match user_mgr.get_combined_settings(tree_id).await {
             Ok(Some(settings)) => settings.sync_enabled,
             _ => false, // Fail closed: no settings or error

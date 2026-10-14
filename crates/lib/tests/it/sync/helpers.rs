@@ -8,6 +8,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use eidetica::{
     Cluster, Database, Entry, Error, Instance, Result,
+    account::{AccountSession, types::SyncSettings},
     auth::{AuthKey, Permission as AuthPermission, crypto::PublicKey},
     crdt::Doc,
     entry::ID,
@@ -21,7 +22,6 @@ use eidetica::{
         protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
-    user::{User, types::SyncSettings},
 };
 use iroh::RelayMode;
 
@@ -37,7 +37,7 @@ use iroh::RelayMode;
 /// `setup_db` contract.
 pub async fn setup_db() -> Instance {
     let instance = crate::helpers::test_local_instance().await;
-    crate::helpers::create_user(&instance, "test_user", None)
+    crate::helpers::create_account(&instance, "test_user", None)
         .await
         .expect("Failed to create test user");
     instance
@@ -220,12 +220,13 @@ impl TransportFactory for IrohTransportFactory {
 /// Create a server instance configured for manual bootstrap approval
 ///
 /// # Returns
-/// (Instance, User, key_id, Database, Sync, tree_id)
+/// (Instance, AccountSession, key_id, Database, Sync, tree_id)
 ///
 /// # Implementation Note
 /// This function uses the admin for sync handler operations. The device key
 /// is accessed via Instance internals and will be migrated to InstanceMetadata shortly
-pub async fn setup_manual_approval_server() -> (Instance, User, PublicKey, Database, Sync, ID) {
+pub async fn setup_manual_approval_server()
+-> (Instance, AccountSession, PublicKey, Database, Sync, ID) {
     let (instance, mut user, key_id) =
         crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
             .await;
@@ -277,8 +278,9 @@ pub async fn setup_manual_approval_server() -> (Instance, User, PublicKey, Datab
 /// Create a server with global wildcard permission for automatic bootstrap approval
 ///
 /// # Returns
-/// (Instance, User, key_id, Database, Sync, tree_id)
-pub async fn setup_global_wildcard_server() -> (Instance, User, PublicKey, Database, Sync, ID) {
+/// (Instance, AccountSession, key_id, Database, Sync, tree_id)
+pub async fn setup_global_wildcard_server()
+-> (Instance, AccountSession, PublicKey, Database, Sync, ID) {
     let (instance, mut user, key_id) =
         crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
             .await;
@@ -337,8 +339,9 @@ pub async fn setup_global_wildcard_server() -> (Instance, User, PublicKey, Datab
 
 /// Create a server with auto approval (auto_approve = true)
 ///
-/// Returns (Instance, User, key_id, Database, Arc<Sync>, tree_id)
-pub async fn setup_auto_approval_server() -> (Instance, User, PublicKey, Database, Arc<Sync>, ID) {
+/// Returns (Instance, AccountSession, key_id, Database, Arc<Sync>, tree_id)
+pub async fn setup_auto_approval_server()
+-> (Instance, AccountSession, PublicKey, Database, Arc<Sync>, ID) {
     let (instance, user, key_id, database, tree_id, sync) =
         setup_sync_enabled_server_with_auto_approve("server_user", "server_key", "test_database")
             .await;
@@ -434,9 +437,9 @@ pub async fn create_pending_bootstrap_request(
     }
 }
 
-/// Approve a bootstrap request using a User's key
+/// Approve a bootstrap request using an AccountSession's key
 pub async fn approve_request(
-    user: &User,
+    user: &AccountSession,
     sync: &Sync,
     request_id: &str,
     approver_key_id: &PublicKey,
@@ -493,7 +496,7 @@ pub fn create_test_sync_handler(sync: &Sync) -> SyncHandlerImpl {
 ///
 /// Uses global wildcard permission for automatic bootstrap approval.
 ///
-/// Returns (Instance, User, key_id: PublicKey, Database, TreeId)
+/// Returns (Instance, AccountSession, key_id: PublicKey, Database, TreeId)
 ///
 /// # Implementation Note
 /// This function uses the admin for sync handler operations.
@@ -501,12 +504,12 @@ pub async fn setup_server_with_bootstrap_database(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (Instance, User, PublicKey, Database, ID) {
+) -> (Instance, AccountSession, PublicKey, Database, ID) {
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, username, None)
+    crate::helpers::create_account(&server_instance, username, None)
         .await
         .unwrap();
-    let mut server_user = server_instance.login_user(username, None).await.unwrap();
+    let mut server_user = server_instance.login_account(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
     let mut settings = Doc::new();
@@ -549,12 +552,9 @@ pub async fn setup_server_with_bootstrap_database(
         .unwrap();
 
     // Sync the user database to update combined settings
-    sync.sync_user(
-        server_user.user_uuid(),
-        server_user.user_database().root_id(),
-    )
-    .await
-    .unwrap();
+    sync.sync_account(server_user.login_id(), server_user.account().root_id())
+        .await
+        .unwrap();
 
     (
         server_instance,
@@ -568,15 +568,15 @@ pub async fn setup_server_with_bootstrap_database(
 /// Creates a client instance with an indexed user and key (for concurrent test scenarios)
 ///
 /// Creates a user with name format "client_user_{index}" and key "client_key_{index}"
-/// Returns (Instance, User, key_id: PublicKey)
-pub async fn setup_indexed_client(index: usize) -> (Instance, User, PublicKey) {
+/// Returns (Instance, AccountSession, key_id: PublicKey)
+pub async fn setup_indexed_client(index: usize) -> (Instance, AccountSession, PublicKey) {
     let client_instance = setup_instance_with_initialized().await;
     let client_username = format!("client_user_{index}");
-    crate::helpers::create_user(&client_instance, &client_username, None)
+    crate::helpers::create_account(&client_instance, &client_username, None)
         .await
         .unwrap();
     let mut client_user = client_instance
-        .login_user(&client_username, None)
+        .login_account(&client_username, None)
         .await
         .unwrap();
 
@@ -598,7 +598,7 @@ pub async fn setup_indexed_client(index: usize) -> (Instance, User, PublicKey) {
 /// 4. Adding the database-key mapping
 pub async fn request_and_map_database_access(
     instance: &mut Instance,
-    user: &mut User,
+    user: &mut AccountSession,
     server_addr: &Address,
     tree_id: &ID,
     key_id: &PublicKey,
@@ -632,7 +632,7 @@ pub async fn request_and_map_database_access(
 /// Simplified version with default sync delay (100ms) and Write(5) permission
 pub async fn request_database_access_default(
     instance: &mut Instance,
-    user: &mut User,
+    user: &mut AccountSession,
     server_addr: &Address,
     tree_id: &ID,
     key_id: &PublicKey,
@@ -698,7 +698,7 @@ pub async fn set_global_wildcard_permission(database: &Database) -> Result<()> {
 /// - Syncs the user database to update combined settings
 ///
 /// # Returns
-/// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
+/// (Instance, AccountSession, key_id, Database, tree_id, Arc<Sync>)
 ///
 /// # Implementation Note
 /// This function uses the admin for sync handler operations.
@@ -706,12 +706,12 @@ pub async fn setup_sync_enabled_server(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
+) -> (Instance, AccountSession, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, username, None)
+    crate::helpers::create_account(&server_instance, username, None)
         .await
         .unwrap();
-    let mut server_user = server_instance.login_user(username, None).await.unwrap();
+    let mut server_user = server_instance.login_account(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
     let mut settings = Doc::new();
@@ -744,12 +744,9 @@ pub async fn setup_sync_enabled_server(
         .unwrap();
 
     // Sync the user database to update combined settings
-    sync.sync_user(
-        server_user.user_uuid(),
-        server_user.user_database().root_id(),
-    )
-    .await
-    .unwrap();
+    sync.sync_account(server_user.login_id(), server_user.account().root_id())
+        .await
+        .unwrap();
 
     (
         server_instance,
@@ -766,12 +763,12 @@ pub async fn setup_sync_enabled_server(
 /// Combines sync enablement with bootstrap auto-approval for bootstrap tests.
 ///
 /// # Returns
-/// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
+/// (Instance, AccountSession, key_id, Database, tree_id, Arc<Sync>)
 pub async fn setup_sync_enabled_server_with_auto_approve(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
+) -> (Instance, AccountSession, PublicKey, Database, ID, Arc<Sync>) {
     let (instance, user, key_id, database, tree_id, sync) =
         setup_sync_enabled_server(username, key_name, db_name).await;
 
@@ -784,16 +781,16 @@ pub async fn setup_sync_enabled_server_with_auto_approve(
 /// Creates a client with sync initialized, ready to request database access.
 ///
 /// # Returns
-/// (Instance, User, key_id, Arc<Sync>)
+/// (Instance, AccountSession, key_id, Arc<Sync>)
 pub async fn setup_sync_enabled_client(
     username: &str,
     key_name: &str,
-) -> (Instance, User, PublicKey, Arc<Sync>) {
+) -> (Instance, AccountSession, PublicKey, Arc<Sync>) {
     let client_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&client_instance, username, None)
+    crate::helpers::create_account(&client_instance, username, None)
         .await
         .unwrap();
-    let mut client_user = client_instance.login_user(username, None).await.unwrap();
+    let mut client_user = client_instance.login_account(username, None).await.unwrap();
     let client_key_id = client_user.add_private_key(Some(key_name)).await.unwrap();
 
     let sync = client_instance.sync().expect("Sync should be initialized");
@@ -801,12 +798,12 @@ pub async fn setup_sync_enabled_client(
     (client_instance, client_user, client_key_id, sync)
 }
 
-/// Enable sync for a database created without the User API.
+/// Enable sync for a database created without the AccountSession API.
 ///
 /// This directly updates the sync tree for databases created via instance.new_database()
 /// instead of user.create_database().
 ///
-/// TODO: This should go away eventually or be replaced by the User API
+/// TODO: This should go away eventually or be replaced by the AccountSession API
 pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) -> Result<()> {
     // Open the sync tree to set combined settings
     let instance = sync.instance()?;
@@ -866,7 +863,7 @@ pub async fn cluster_shared_database(
     settings.set("name", db_name);
     let db0 = net
         .peer_mut(0)
-        .user_mut()
+        .account_session_mut()
         .create_database(settings, &key0)
         .await?;
     let room = db0.root_id().clone();
@@ -895,7 +892,11 @@ pub async fn cluster_shared_database(
         net.bootstrap(0, j, &room, AuthPermission::Write(10))
             .await?;
         net.peer_mut(j).serve(&room).await?;
-        let db = net.peer_mut(j).user_mut().open_database(&room).await?;
+        let db = net
+            .peer_mut(j)
+            .account_session_mut()
+            .open_database(&room)
+            .await?;
         dbs.push(db);
     }
     Ok((room, dbs))
@@ -964,7 +965,7 @@ impl Prng {
 /// access the database without providing credentials.
 ///
 /// # Returns
-/// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
+/// (Instance, AccountSession, key_id, Database, tree_id, Arc<Sync>)
 ///
 /// # Implementation Note
 /// This function uses the admin for sync handler operations.
@@ -972,12 +973,12 @@ pub async fn setup_public_sync_enabled_server(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
+) -> (Instance, AccountSession, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, username, None)
+    crate::helpers::create_account(&server_instance, username, None)
         .await
         .unwrap();
-    let mut server_user = server_instance.login_user(username, None).await.unwrap();
+    let mut server_user = server_instance.login_account(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
     // Create database settings for public access
@@ -1024,12 +1025,9 @@ pub async fn setup_public_sync_enabled_server(
         .unwrap();
 
     // Sync the user database to update combined settings
-    sync.sync_user(
-        server_user.user_uuid(),
-        server_user.user_database().root_id(),
-    )
-    .await
-    .unwrap();
+    sync.sync_account(server_user.login_id(), server_user.account().root_id())
+        .await
+        .unwrap();
 
     (
         server_instance,

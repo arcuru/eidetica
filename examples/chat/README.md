@@ -8,7 +8,7 @@ It's a Terminal User Interface (TUI) chat application with room-based messaging,
 
 This example showcases:
 
-- **User accounts**: Automatic passwordless user creation and management
+- **Accounts**: Automatic passwordless user creation and management
 - **Room-based chat**: Create and join multiple chat rooms (each room is a separate database)
 - **Multi-transport sync**: Choose between HTTP (simple client-server) or Iroh (P2P with NAT traversal)
 - **Connection sharing**: Share room addresses to invite others
@@ -95,7 +95,7 @@ Options:
 
 ## Example Workflow
 
-### Two-User Chat Session
+### Two-AccountSession Chat Session
 
 **Terminal 1 (Alice - Room Creator):**
 
@@ -144,7 +144,7 @@ cargo run -- --username alice --transport iroh
 The example demonstrates Eidetica's key components:
 
 - **Instance**: Main database system managing storage and sync
-- **User**: Passwordless user account with automatic key management
+- **AccountSession**: Passwordless user account with automatic key management
 - **Database**: Each room is a separate database with its own authentication
 - **Table Store**: Messages stored in a `Table<ChatMessage>` store within each room
 - **Sync System**: Automatic peer synchronization with configurable transports

@@ -131,15 +131,15 @@ let instance = Instance::connect(eidetica::service::default_socket_url()).await?
 // an initial admin user via `eidetica daemon init --username ops`
 // (see the CLI reference); log in as that user, then create application
 // users via the admin path.
-let admin = instance.login_user("ops", None).await?;
-admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-let mut user = instance.login_user("alice", None).await?;
+let admin = instance.login_account("ops", None).await?;
+admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
+let mut user = instance.login_account("alice", None).await?;
 
 let default_key = user.get_default_key()?;
 let db = user.create_database(eidetica::crdt::Doc::new(), &default_key).await?;
 ```
 
-The returned Instance is fully transparent -- all downstream code (Database, Transaction, Store, User) works identically whether the Instance is local or connected to a daemon.
+The returned Instance is fully transparent -- all downstream code (Database, Transaction, Store, AccountSession) works identically whether the Instance is local or connected to a daemon.
 
 ## Security Model
 
@@ -183,19 +183,19 @@ An adjacent lock coordinates cooperating daemons, stale sockets are recovered, a
 
 ## Multiple Clients
 
-Multiple clients can connect to the same daemon simultaneously. Each client maintains its own connection and User session:
+Multiple clients can connect to the same daemon simultaneously. Each client maintains its own connection and AccountSession:
 
 <!-- Code block ignored: Requires a running daemon -->
 
 ```rust,ignore
 // Client 1: an admin session creates the new user via the InstanceAdmin path.
 let instance1 = Instance::connect(eidetica::service::default_socket_url()).await?;
-let admin = instance1.login_user("ops", None).await?;
-admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
+let admin = instance1.login_account("ops", None).await?;
+admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
 
 // Client 2 (separate process or task): log in as the user that was just created.
 let instance2 = Instance::connect(eidetica::service::default_socket_url()).await?;
-let user = instance2.login_user("alice", None).await?;
+let user = instance2.login_account("alice", None).await?;
 ```
 
 All clients share the same underlying storage through the daemon's backend.
@@ -223,7 +223,7 @@ the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
 
 ## Limitations
 
-- **Sync management is server-side.** The daemon always loads persisted sync state, starts its Iroh listener, and keeps syncing without connected service clients. Use `--sync-ticket <TICKET>` for owner-side bootstrap and peer setup; the resulting relationships persist across restart. A connected client can't drive that lifecycle over the wire; `enable_sync()` on a remote Instance remains a no-op. To join a database from a ticket, a connected client calls `User::join`: the daemon performs the network exchange, while the client holds its private key and signs the access request. Success returns an opened database after recording the user's key mapping and sync preferences; pending approval requires an explicit retry. Pending and rejection create no new User state. Failed or interrupted calls can leave committed effects; retry explicitly rather than assuming rollback. There is no automatic restart-safe completion, cancellation API, or device enrollment. Held/unreadable acquisition, automatic delegated-history acquisition and stronger authority recovery remain unsupported; see [current recovery limits](bootstrap.md#current-recovery-limits). Ongoing daemon replication needs device-key authorization or a global grant; user-key access alone does not supply private background authority. User tracking changes made through the socket are reconciled by the daemon's Instance callbacks.
+- **Sync management is server-side.** The daemon always loads persisted sync state, starts its Iroh listener, and keeps syncing without connected service clients. Use `--sync-ticket <TICKET>` for owner-side bootstrap and peer setup; the resulting relationships persist across restart. A connected client can't drive that lifecycle over the wire; `enable_sync()` on a remote Instance remains a no-op. To join a database from a ticket, a connected client calls `AccountSession::join`: the daemon performs the network exchange, while the client holds its private key and signs the access request. Success returns an opened database after recording the account's key mapping and sync preferences; pending approval requires an explicit retry. Pending and rejection create no new Account state. Failed or interrupted calls can leave committed effects; retry explicitly rather than assuming rollback. There is no automatic restart-safe completion, cancellation API, or device enrollment. Held/unreadable acquisition, automatic delegated-history acquisition and stronger authority recovery remain unsupported; see [current recovery limits](bootstrap.md#current-recovery-limits). Ongoing daemon replication needs device-key authorization or a global grant; account-key access alone does not supply private background authority. Account tracking changes made through the socket are reconciled by the daemon's Instance callbacks.
 - **Unix-only.** The service module requires Unix domain sockets and is not available on Windows.
 - **Feature flag required.** The `service` feature must be enabled (included in the default `full` feature set).
 

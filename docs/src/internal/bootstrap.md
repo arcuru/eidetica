@@ -80,14 +80,14 @@ Entry in the configuration history.
 
 ## Manual Approval API
 
-<!-- Code block ignored: Caller supplies a Sync handle, User, request ID and Admin key ID -->
+<!-- Code block ignored: Caller supplies a Sync handle, AccountSession, request ID and Admin key ID -->
 
 ```rust,ignore
 // Query requests
 let pending = sync.pending_bootstrap_requests().await?;
 let approved = sync.approved_bootstrap_requests().await?;
 
-// Approve or reject using an Admin key held by this User.
+// Approve or reject using an Admin key held by this AccountSession.
 user.approve_bootstrap_request(&sync, request_id, &admin_key_id).await?;
 // Alternatively:
 user.reject_bootstrap_request(&sync, request_id, &admin_key_id).await?;

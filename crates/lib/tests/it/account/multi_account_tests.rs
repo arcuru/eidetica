@@ -1,9 +1,9 @@
 //! Multi-user tests: concurrent access, sharing, and isolation
 //!
 //! Tests multi-user scenarios including:
-//! - User isolation
+//! - AccountSession isolation
 //! - Concurrent operations
-//! - User enumeration
+//! - AccountSession enumeration
 
 use eidetica::store::DocStore;
 
@@ -27,7 +27,7 @@ async fn test_many_users_create_databases() {
 
     for i in 1..=user_count {
         let username = format!("user{i}");
-        let mut user = login_user(&instance, &username, None).await;
+        let mut user = login_account(&instance, &username, None).await;
         let db = create_named_database(&mut user, &format!("Database {i}")).await;
         databases.push(db);
     }
@@ -60,7 +60,7 @@ async fn test_user_cannot_access_another_users_key() {
     // Should fail
     assert!(
         result.is_err(),
-        "User should not be able to access another user's key"
+        "AccountSession should not be able to access another user's key"
     );
 }
 
@@ -116,10 +116,10 @@ async fn test_multiple_simultaneous_logins() {
     let (instance, _) = setup_local_instance_with_users(&[("alice", None), ("bob", None)]).await;
 
     // Simulate simultaneous logins
-    let alice1 = login_user(&instance, "alice", None).await;
-    let bob1 = login_user(&instance, "bob", None).await;
-    let alice2 = login_user(&instance, "alice", None).await;
-    let bob2 = login_user(&instance, "bob", None).await;
+    let alice1 = login_account(&instance, "alice", None).await;
+    let bob1 = login_account(&instance, "bob", None).await;
+    let alice2 = login_account(&instance, "alice", None).await;
+    let bob2 = login_account(&instance, "bob", None).await;
 
     // All should have valid keys
     assert_user_key_count(&alice1, 1);
@@ -136,7 +136,7 @@ async fn test_list_users() {
         setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
     // List all users
-    let users = crate::helpers::list_users(&instance)
+    let users = crate::helpers::list_accounts(&instance)
         .await
         .expect("Should list users");
 
@@ -152,7 +152,7 @@ async fn test_list_users() {
 async fn test_list_users_empty_instance() {
     let instance = setup_instance().await;
 
-    let users = crate::helpers::list_users(&instance)
+    let users = crate::helpers::list_accounts(&instance)
         .await
         .expect("Should list users");
 

@@ -39,7 +39,7 @@ async fn unsupported_then_metadata(
 #[tokio::test]
 async fn v0_unknown_requests_have_no_effects_across_auth_states() {
     let (path, _shutdown, server, _dir) = start_test_server().await;
-    let mut admin = server.login_user("admin", None).await.unwrap();
+    let mut admin = server.login_account("admin", None).await.unwrap();
     let pubkey = admin.get_default_key().unwrap();
     let private = admin.get_signing_key(&pubkey).unwrap();
     let db = admin.create_database(Doc::new(), &pubkey).await.unwrap();
@@ -94,7 +94,7 @@ async fn v0_unknown_requests_have_no_effects_across_auth_states() {
 
     write_frame(
         &mut writer,
-        &ServiceRequest::TrustedLoginUser {
+        &ServiceRequest::TrustedLoginAccount {
             username: "admin".into(),
         },
     )

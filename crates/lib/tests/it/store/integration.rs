@@ -70,7 +70,7 @@ async fn test_mixed_subtree_operations() {
             .expect("Failed to get Table");
 
         let record = TestRecord {
-            name: "Mixed Operation User".to_string(),
+            name: "Mixed Operation AccountSession".to_string(),
             age: 30,
             email: "mixed@test.com".to_string(),
         };
@@ -113,7 +113,7 @@ async fn test_mixed_subtree_operations() {
         .get(&table_key)
         .await
         .expect("Failed to get record");
-    assert_eq!(record.name, "Mixed Operation User");
+    assert_eq!(record.name, "Mixed Operation AccountSession");
 
     // Check Doc data
     assert_dict_value(&dict_viewer, "mode", "mixed").await;
@@ -236,7 +236,7 @@ async fn test_subtree_concurrent_access_patterns() {
             .expect("Base: Failed to get Doc");
 
         let record = TestRecord {
-            name: "Base User".to_string(),
+            name: "Base AccountSession".to_string(),
             age: 25,
             email: "base@test.com".to_string(),
         };
@@ -266,7 +266,7 @@ async fn test_subtree_concurrent_access_patterns() {
             .expect("Branch A: Failed to get Table");
 
         let updated_record = TestRecord {
-            name: "Branch A User".to_string(),
+            name: "Branch A AccountSession".to_string(),
             age: 26,
             email: "branch_a@test.com".to_string(),
         };
@@ -335,7 +335,7 @@ async fn test_subtree_concurrent_access_patterns() {
 
     // Verify the merge results
     // Table should have Branch A's changes
-    assert_eq!(merged_record.name, "Branch A User");
+    assert_eq!(merged_record.name, "Branch A AccountSession");
     assert_eq!(merged_record.age, 26);
 
     // Doc should have Branch B's changes
@@ -396,7 +396,7 @@ async fn test_subtree_helper_functions_integration() {
 
     // Test Table helper functions
     let table_records = &[TestRecord {
-        name: "Helper Test User".to_string(),
+        name: "Helper Test AccountSession".to_string(),
         age: 25,
         email: "helper@test.com".to_string(),
     }];

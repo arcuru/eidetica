@@ -28,7 +28,7 @@ impl Sync {
     // permission level to the peer, creating a pending bootstrap request that
     // an administrator can approve or reject.
     //
-    // Use `sync_with_peer_for_bootstrap_with_key()` with User API managed keys.
+    // Use `sync_with_peer_for_bootstrap_with_key()` with AccountSession API managed keys.
 
     /// Internal helper for bootstrap sync operations.
     ///
@@ -92,7 +92,7 @@ impl Sync {
     /// device doesn't have access to the target tree yet and needs to request
     /// permission during the initial sync. The public key is provided directly
     /// rather than looked up from backend storage, making it compatible with
-    /// User API managed keys.
+    /// AccountSession API managed keys.
     ///
     /// # Arguments
     /// * `address` - The transport address of the peer to sync with
@@ -106,7 +106,7 @@ impl Sync {
     ///
     /// # Example
     /// ```rust,ignore
-    /// // With User API managed keys:
+    /// // With AccountSession API managed keys:
     /// let signing_key = user.get_signing_key(user_key_id)?;
     /// sync.sync_with_peer_for_bootstrap_with_key(
     ///     &Address::http("127.0.0.1:8080"),
@@ -554,7 +554,7 @@ impl Sync {
         if matches!(request.status, RequestStatus::Rejected { .. }) {
             return Ok(());
         }
-        // User has Admin permission, proceed with rejection
+        // AccountSession has Admin permission, proceed with rejection
         let rejecter_id = key.identity().display_id();
         let rejection_time = self
             .instance

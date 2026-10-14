@@ -180,7 +180,7 @@ fn test_complex_nested_structures() -> Result<()> {
     let mut doc = Doc::new();
 
     // Create nested structure - set() returns Option<Value>, not Result
-    doc.set(path!("app.users.123.name"), "Test User");
+    doc.set(path!("app.users.123.name"), "Test AccountSession");
     doc.set(path!("app.users.123.permissions.read"), true);
     doc.set(path!("app.users.123.permissions.write"), false);
     doc.set(path!("app.config.max_users"), 1000);
@@ -191,7 +191,7 @@ fn test_complex_nested_structures() -> Result<()> {
             key: "app.users.123.name".to_string(),
         }))
     })?;
-    assert_eq!(username, "Test User");
+    assert_eq!(username, "Test AccountSession");
 
     let can_read: bool = doc
         .get_as(path!("app.users.123.permissions.read"))

@@ -1,17 +1,17 @@
 //! Inputs for creating a user.
 //!
-//! [`NewUser`] is the request shape for "create a user with these settings",
+//! [`NewAccount`] is the request shape for "create a user with these settings",
 //! used in two places:
 //!
 //! - [`Instance::create_backend`](super::Instance::create_backend) and
 //!   [`Instance::connect_or_create`](super::Instance::connect_or_create) — the
 //!   initial user who bootstraps a fresh instance, automatically granted
 //!   Admin on the system databases by virtue of being the first user.
-//! - [`InstanceAdmin::create_user`](crate::user::InstanceAdmin::create_user) —
+//! - [`InstanceAdmin::create_account`](crate::account::InstanceAdmin::create_account) —
 //!   every subsequent user created by an existing admin.
 //!
 //! There is no separate "initial user" concept: the entity that creates the
-//! instance is just the first `NewUser`, and from that point on additional
+//! instance is just the first `NewAccount`, and from that point on additional
 //! users are created through the admin path. This eliminates the prior
 //! hardcoded `admin/admin` bootstrap.
 
@@ -28,7 +28,7 @@
 /// literal syntax.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct NewUser {
+pub struct NewAccount {
     /// Login identifier for the user. Must be unique within the instance.
     pub username: String,
     /// Optional password. `None` produces a passwordless user whose root key
@@ -39,7 +39,7 @@ pub struct NewUser {
     pub password: Option<String>,
 }
 
-impl NewUser {
+impl NewAccount {
     /// Create a passwordless user. The root signing key will be stored
     /// unencrypted in the user's credentials.
     pub fn passwordless(name: impl Into<String>) -> Self {

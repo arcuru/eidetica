@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use eidetica::Entry;
 use eidetica::Instance;
-use eidetica::NewUser;
+use eidetica::NewAccount;
 use eidetica::auth::crypto::{PrivateKey, create_challenge_response, generate_keypair, sign_entry};
 use eidetica::auth::types::{
     DelegatedTreeRef, DelegationStep, KeyHint, Permission, PermissionBounds, SigKey, TreeReference,
@@ -67,7 +67,7 @@ async fn start_test_server_with_token_ttls(
     let socket_path = dir.path().join("test.sock");
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        eidetica::NewUser::passwordless("admin"),
+        eidetica::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -86,7 +86,7 @@ async fn start_test_server_with_token_ttls(
 
 /// Helper: log in as the bootstrap admin and create a user server-side.
 async fn create_user_via_admin(server: &Instance, username: &str) {
-    crate::helpers::create_user(server, username, None)
+    crate::helpers::create_account(server, username, None)
         .await
         .unwrap();
 }
@@ -103,18 +103,18 @@ async fn setup_db(
     username: &str,
 ) -> (Instance, eidetica::entry::ID, eidetica::auth::types::SigKey) {
     // Admin was created by Instance::open_backend bootstrap — use it to create the test user.
-    crate::helpers::create_user(server, username, None)
+    crate::helpers::create_account(server, username, None)
         .await
         .unwrap();
 
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_user(username, None).await.unwrap();
+    let user = instance.login_account(username, None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     // Create db server-side
-    let mut server_user = server.login_user(username, None).await.unwrap();
+    let mut server_user = server.login_account(username, None).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", format!("{username}_db"));
     let server_key = server_user.get_default_key().unwrap();
@@ -141,7 +141,7 @@ async fn test_connect_and_create_instance() {
     let _instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let users = crate::helpers::list_users(&server).await.unwrap();
+    let users = crate::helpers::list_accounts(&server).await.unwrap();
     // Admin user bootstrapped at Instance creation
     assert_eq!(users.len(), 1);
     assert_eq!(users[0], "admin");
@@ -151,7 +151,7 @@ async fn test_connect_and_create_instance() {
 async fn test_user_lifecycle() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     // Admin is bootstrapped — use it to create test user
-    crate::helpers::create_user(&server, "alice", None)
+    crate::helpers::create_account(&server, "alice", None)
         .await
         .unwrap();
 
@@ -159,11 +159,11 @@ async fn test_user_lifecycle() {
         .await
         .unwrap();
 
-    let user = instance.login_user("alice", None).await.unwrap();
+    let user = instance.login_account("alice", None).await.unwrap();
     assert_eq!(user.username(), "alice");
 
     // Create a database server-side
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", None).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "test_db");
     let default_key = server_user.get_default_key().unwrap();
@@ -184,7 +184,7 @@ async fn test_error_propagation() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_user("err-test", None).await.unwrap();
+    let user = instance.login_account("err-test", None).await.unwrap();
 
     let pubkey = user.get_default_key().unwrap();
     let root_id = eidetica::ID::from_bytes("nonexistent-db");
@@ -235,8 +235,8 @@ async fn test_concurrent_clients() {
         .await
         .unwrap();
 
-    let _user1 = instance1.login_user("bob", None).await.unwrap();
-    let user2 = instance2.login_user("bob", None).await.unwrap();
+    let _user1 = instance1.login_account("bob", None).await.unwrap();
+    let user2 = instance2.login_account("bob", None).await.unwrap();
     assert_eq!(user2.username(), "bob");
 }
 
@@ -247,7 +247,7 @@ async fn two_service_clients_share_one_sqlite_daemon() {
     let socket_path = dir.path().join("daemon.sock");
     let (server, _) = Instance::connect_or_create(
         format!("sqlite:{}?mode=rwc", database_path.display()),
-        NewUser::passwordless("admin"),
+        NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -268,7 +268,7 @@ async fn two_service_clients_share_one_sqlite_daemon() {
     assert_eq!(client1.id(), server.id());
     assert_eq!(client2.id(), server.id());
 
-    let mut admin1 = client1.login_user("admin", None).await.unwrap();
+    let mut admin1 = client1.login_account("admin", None).await.unwrap();
     let key = admin1.get_default_key().unwrap();
     let database = admin1.create_database(Doc::new(), &key).await.unwrap();
     let root_id = database.root_id().clone();
@@ -281,7 +281,7 @@ async fn two_service_clients_share_one_sqlite_daemon() {
         .await
         .unwrap();
 
-    let admin2 = client2.login_user("admin", None).await.unwrap();
+    let admin2 = client2.login_account("admin", None).await.unwrap();
     let database = admin2.open_database(&root_id).await.unwrap();
     let transaction = database.new_transaction().await.unwrap();
     let store = transaction.get_store::<DocStore>("shared").await.unwrap();
@@ -299,8 +299,8 @@ async fn test_instance_connect_convenience() {
     let _instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut users = crate::helpers::list_users(&server).await.unwrap();
-    // `list_users` returns users in UUID order (random per run), so sort
+    let mut users = crate::helpers::list_accounts(&server).await.unwrap();
+    // `list_accounts` returns users in UUID order (random per run), so sort
     // before comparing — the set is what matters, not iteration order.
     users.sort();
     assert_eq!(users, vec!["admin", "charlie"]);
@@ -337,7 +337,7 @@ async fn test_trusted_login_challenge_response_round_trip() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
 
     create_user_via_admin(&server, "alice").await;
-    let alice = server.login_user("alice", None).await.unwrap();
+    let alice = server.login_account("alice", None).await.unwrap();
     let alice_pubkey = alice.get_default_key().unwrap();
     let alice_signing_key = alice.get_signing_key(&alice_pubkey).unwrap();
 
@@ -345,7 +345,7 @@ async fn test_trusted_login_challenge_response_round_trip() {
 
     write_frame(
         &mut writer,
-        &ServiceRequest::TrustedLoginUser {
+        &ServiceRequest::TrustedLoginAccount {
             username: "alice".to_string(),
         },
     )
@@ -376,7 +376,7 @@ async fn test_trusted_login_unknown_user_errors() {
 
     write_frame(
         &mut writer,
-        &ServiceRequest::TrustedLoginUser {
+        &ServiceRequest::TrustedLoginAccount {
             username: "ghost".to_string(),
         },
     )
@@ -426,7 +426,7 @@ async fn test_database_begin_transaction() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", None).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "test_db");
     let server_key = server_user.get_default_key().unwrap();
@@ -439,7 +439,7 @@ async fn test_database_begin_transaction() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_user("alice", None).await.unwrap();
+    let user = instance.login_account("alice", None).await.unwrap();
 
     let pubkey = user.get_default_key().unwrap();
     let sigkeys = eidetica::Database::find_sigkeys(&server, &root_id, &pubkey)
@@ -482,7 +482,7 @@ async fn test_database_get_verified_tips() {
     let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     // Add a commit server-side so tips diverge.
-    let server_user = server.login_user("alice", None).await.unwrap();
+    let server_user = server.login_account("alice", None).await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -512,7 +512,7 @@ async fn test_database_get_store_state() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", None).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "test_db");
     let server_key = server_user.get_default_key().unwrap();
@@ -535,7 +535,7 @@ async fn test_database_get_store_state() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_user("alice", None).await.unwrap();
+    let user = instance.login_account("alice", None).await.unwrap();
 
     let pubkey = user.get_default_key().unwrap();
     let sigkeys = eidetica::Database::find_sigkeys(&server, &root_id, &pubkey)
@@ -566,7 +566,7 @@ async fn test_database_get_store_entries() {
     let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     // Write data server-side.
-    let server_user = server.login_user("alice", None).await.unwrap();
+    let server_user = server.login_account("alice", None).await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -629,7 +629,7 @@ async fn test_database_submit_signed_entry() {
         .await
         .unwrap();
 
-    let user = instance.login_user("alice", None).await.unwrap();
+    let user = instance.login_account("alice", None).await.unwrap();
     let key = user.get_default_key().unwrap();
     let signing_key = user.get_signing_key(&key).unwrap();
 
@@ -678,7 +678,7 @@ async fn test_database_encrypted_store_roundtrip() {
     let secret_data = "top-secret-value";
 
     // Write encrypted data server-side.
-    let server_user = server.login_user("alice", None).await.unwrap();
+    let server_user = server.login_account("alice", None).await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -765,7 +765,7 @@ async fn test_backend_snapshot_denied_for_unauthorised_user() {
     let bob_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let bob_user = bob_inst.login_user("bob", None).await.unwrap();
+    let bob_user = bob_inst.login_account("bob", None).await.unwrap();
     let bob_key = bob_user.get_default_key().unwrap();
     let bob_identity = eidetica::auth::types::SigKey::from_pubkey(&bob_key);
     let conn = remote_conn(&bob_inst);
@@ -800,7 +800,7 @@ async fn test_backend_get_denied_cross_tree() {
     let bob_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let bob_user = bob_inst.login_user("bob", None).await.unwrap();
+    let bob_user = bob_inst.login_account("bob", None).await.unwrap();
     let bob_key = bob_user.get_default_key().unwrap();
     let bob_identity = eidetica::auth::types::SigKey::from_pubkey(&bob_key);
     let bob_conn = remote_conn(&bob_inst);
@@ -824,7 +824,7 @@ async fn test_set_instance_metadata_allowed_for_admin() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _admin = instance.login_user("admin", None).await.unwrap();
+    let _admin = instance.login_account("admin", None).await.unwrap();
 
     let current = instance
         .backend()
@@ -848,7 +848,7 @@ async fn test_set_instance_metadata_denied_for_non_admin() {
     let bob_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _bob = bob_inst.login_user("bob", None).await.unwrap();
+    let _bob = bob_inst.login_account("bob", None).await.unwrap();
 
     let current = bob_inst
         .backend()
@@ -877,7 +877,7 @@ async fn test_trusted_login_bad_signature_errors_and_resets() {
 
     write_frame(
         &mut writer,
-        &ServiceRequest::TrustedLoginUser {
+        &ServiceRequest::TrustedLoginAccount {
             username: "bob".to_string(),
         },
     )
@@ -919,7 +919,7 @@ async fn test_remote_database_ops_e2e() {
     let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     // Write data server-side.
-    let server_user = server.login_user("alice", None).await.unwrap();
+    let server_user = server.login_account("alice", None).await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -1019,7 +1019,7 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
 
     // Bob owns a database (created server-side, bob is Admin(0) on it).
     create_user_via_admin(&server, "bob").await;
-    let mut server_bob = server.login_user("bob", None).await.unwrap();
+    let mut server_bob = server.login_account("bob", None).await.unwrap();
     let bob_pub = server_bob.get_default_key().unwrap();
     let bob_sk = server_bob.get_signing_key(&bob_pub).unwrap();
     let mut settings = eidetica::crdt::Doc::new();
@@ -1036,7 +1036,7 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
     let admin_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _admin_user = admin_inst.login_user("admin", None).await.unwrap();
+    let _admin_user = admin_inst.login_account("admin", None).await.unwrap();
     let conn = remote_conn(&admin_inst);
 
     // Resolve bob's SigKey in his own tree (the same shape `setup_db`
@@ -1217,7 +1217,7 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
     let receiver_socket = receiver_dir.path().join("receiver.sock");
     let (receiver, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        eidetica::NewUser::passwordless("admin"),
+        eidetica::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -1244,7 +1244,7 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
     let client = Instance::connect(format!("unix://{}", receiver_socket.display()))
         .await
         .unwrap();
-    let _admin_user = client.login_user("admin", None).await.unwrap();
+    let _admin_user = client.login_account("admin", None).await.unwrap();
     remote_conn(&client)
         .submit_signed_entry(
             fixture.target_root.clone(),
@@ -1345,7 +1345,7 @@ async fn test_submit_delegated_snapshot_regression_is_failed() {
     let receiver_socket = receiver_dir.path().join("receiver-regression.sock");
     let (receiver, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        eidetica::NewUser::passwordless("admin"),
+        eidetica::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -1372,7 +1372,7 @@ async fn test_submit_delegated_snapshot_regression_is_failed() {
     let client = Instance::connect(format!("unix://{}", receiver_socket.display()))
         .await
         .unwrap();
-    let _admin_user = client.login_user("admin", None).await.unwrap();
+    let _admin_user = client.login_account("admin", None).await.unwrap();
     remote_conn(&client)
         .submit_signed_entry(fixture.target_root, regressed.auth().key.clone(), regressed)
         .await
@@ -1401,7 +1401,7 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
 
     create_user_via_admin(&server, "bob").await;
-    let mut server_bob = server.login_user("bob", None).await.unwrap();
+    let mut server_bob = server.login_account("bob", None).await.unwrap();
     let bob_pub = server_bob.get_default_key().unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "bob_db");
@@ -1417,7 +1417,7 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let admin_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let admin_user = admin_inst.login_user("admin", None).await.unwrap();
+    let admin_user = admin_inst.login_account("admin", None).await.unwrap();
     let admin_pub = admin_user.get_default_key().unwrap();
     let admin_sk = admin_user.get_signing_key(&admin_pub).unwrap();
     let conn = remote_conn(&admin_inst);
@@ -1471,7 +1471,7 @@ async fn test_daemon_survives_abrupt_client_disconnect() {
         let instance = Instance::connect(format!("unix://{}", socket_path.display()))
             .await
             .unwrap();
-        let _user = instance.login_user("alice", None).await.unwrap();
+        let _user = instance.login_account("alice", None).await.unwrap();
         // Drop instance — the underlying UnixStream tears down without the
         // server ever seeing an EOF-after-request boundary.
     }
@@ -1482,7 +1482,7 @@ async fn test_daemon_survives_abrupt_client_disconnect() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_user("alice", None).await.unwrap();
+    let user = instance.login_account("alice", None).await.unwrap();
     assert_eq!(user.username(), "alice");
 }
 
@@ -1519,7 +1519,7 @@ async fn test_daemon_survives_malformed_frame_from_client() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_user("alice", None).await.unwrap();
+    let user = instance.login_account("alice", None).await.unwrap();
     assert_eq!(user.username(), "alice");
 }
 
@@ -1550,7 +1550,7 @@ async fn test_daemon_survives_half_written_request_frame() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_user("alice", None).await.unwrap();
+    let user = instance.login_account("alice", None).await.unwrap();
     assert_eq!(user.username(), "alice");
 }
 
@@ -1572,7 +1572,7 @@ async fn login_client(socket_path: &std::path::Path, username: &str) -> Instance
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    instance.login_user(username, None).await.unwrap();
+    instance.login_account(username, None).await.unwrap();
     instance
 }
 
@@ -1653,7 +1653,7 @@ async fn test_remote_store_state_round_trip_survives_reconnect() {
     let reconnected = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _user = reconnected.login_user("alice", None).await.unwrap();
+    let _user = reconnected.login_account("alice", None).await.unwrap();
     let conn = remote_conn(&reconnected);
     let view = conn
         .resolve_store_state(identity.clone(), request)
@@ -1704,7 +1704,7 @@ async fn test_remote_store_state_scope_is_bound_to_the_session_user() {
     .await;
 
     let foreign = StoreStateRequest {
-        scope: eidetica::backend::CacheScope::User("someone-else".to_string()),
+        scope: eidetica::backend::CacheScope::Login("someone-else".to_string()),
         ..request.clone()
     };
     assert!(
@@ -1880,7 +1880,7 @@ async fn test_historical_table_service_reads_use_row_record_set() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", None).await.unwrap();
     let key = server_user.get_default_key().unwrap();
     let database = server_user.create_database(Doc::new(), &key).await.unwrap();
     let root_id = database.root_id().clone();
@@ -1956,7 +1956,7 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", None).await.unwrap();
     let key = server_user.get_default_key().unwrap();
     let database = server_user.create_database(Doc::new(), &key).await.unwrap();
     let root_id = database.root_id().clone();
@@ -2061,7 +2061,7 @@ async fn test_connected_table_recovers_after_published_view_expiry() {
             .await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", None).await.unwrap();
     let key = server_user.get_default_key().unwrap();
     let database = server_user.create_database(Doc::new(), &key).await.unwrap();
     let root_id = database.root_id().clone();
@@ -2165,7 +2165,7 @@ async fn test_on_write_fires_for_local_commit_on_connected_instance() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_user("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -2217,7 +2217,7 @@ async fn test_on_write_fires_across_clients_on_same_daemon() {
     create_user_via_admin(&server, "alice").await;
 
     // Set up a database server-side so both clients have the same root_id.
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", None).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "cross_client_test");
     let server_key = server_user.get_default_key().unwrap();
@@ -2231,7 +2231,7 @@ async fn test_on_write_fires_across_clients_on_same_daemon() {
     let observer = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let observer_user = observer.login_user("alice", None).await.unwrap();
+    let observer_user = observer.login_account("alice", None).await.unwrap();
     let observer_db = observer_user.open_database(&root_id).await.unwrap();
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
@@ -2250,7 +2250,7 @@ async fn test_on_write_fires_across_clients_on_same_daemon() {
     let writer = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let writer_user = writer.login_user("alice", None).await.unwrap();
+    let writer_user = writer.login_account("alice", None).await.unwrap();
     let writer_db = writer_user.open_database(&root_id).await.unwrap();
     writer_db
         .with_transaction(|tx| async move {
@@ -2277,7 +2277,7 @@ async fn test_on_write_previous_tips_populated_on_connected_instance() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_user("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -2343,7 +2343,7 @@ async fn test_on_write_dropped_handle_stops_callback() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_user("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -2405,7 +2405,7 @@ async fn test_on_write_only_fires_for_subscribed_tree() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_user("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings_a = eidetica::crdt::Doc::new();
@@ -2472,7 +2472,7 @@ async fn test_on_write_concurrent_registrations_both_observe_commit() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_user("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -2574,7 +2574,7 @@ async fn test_lazy_unsubscribe_after_grace_window() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_user("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -2671,7 +2671,7 @@ async fn test_on_write_per_tree_concurrent_dispatch() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_user("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings_a = eidetica::crdt::Doc::new();
@@ -2765,7 +2765,7 @@ async fn test_on_write_preserves_daemon_canonical_order_under_burst() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_user("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -2866,7 +2866,7 @@ async fn test_on_write_canonical_order_under_concurrent_writers() {
     let writer1 = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user1 = writer1.login_user("alice", None).await.unwrap();
+    let mut user1 = writer1.login_account("alice", None).await.unwrap();
     let pubkey = user1.get_default_key().unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "concurrent_writers");
@@ -2876,7 +2876,7 @@ async fn test_on_write_canonical_order_under_concurrent_writers() {
     let writer2 = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user2 = writer2.login_user("alice", None).await.unwrap();
+    let user2 = writer2.login_account("alice", None).await.unwrap();
     let db2 = user2.open_database(&root_id).await.unwrap();
 
     // Subscriber records each event's post_tips in fire order.
@@ -2984,7 +2984,7 @@ async fn test_request_after_reader_exit_returns_connection_aborted() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _user = instance.login_user("alice", None).await.unwrap();
+    let _user = instance.login_account("alice", None).await.unwrap();
     let conn = remote_conn(&instance);
 
     // Shut the daemon down and wait for the reader task to actually observe
@@ -3029,7 +3029,7 @@ async fn test_client_drop_releases_daemon_subscription() {
         let instance = Instance::connect(format!("unix://{}", socket_path.display()))
             .await
             .unwrap();
-        let mut user = instance.login_user("alice", None).await.unwrap();
+        let mut user = instance.login_account("alice", None).await.unwrap();
         let pubkey = user.get_default_key().unwrap();
 
         let mut settings = eidetica::crdt::Doc::new();
@@ -3063,7 +3063,7 @@ async fn test_client_drop_releases_daemon_subscription() {
 /// A user's non-default, per-database key must be usable to open that database
 /// over a service connection.
 ///
-/// A `User` holds many keys, and `User::add_private_key` + `create_database`
+/// A `AccountSession` holds many keys, and `AccountSession::add_private_key` + `create_database`
 /// is the ordinary way to give one database its own signing identity. The
 /// resulting tree's `auth_settings` grant that per-database key and **not**
 /// the user's default key, which is also the pubkey the connection logged in
@@ -3079,7 +3079,7 @@ async fn test_open_database_with_non_login_per_database_key() {
     // Server-side: give the database its own key, distinct from alice's
     // default (login) key, and create it under that key so the tree's auth
     // settings bind only the per-database key.
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", None).await.unwrap();
     let login_key = server_user.get_default_key().unwrap();
     let per_db_key = server_user.add_private_key(Some("per-db")).await.unwrap();
     assert_ne!(
@@ -3101,7 +3101,7 @@ async fn test_open_database_with_non_login_per_database_key() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_user("alice", None).await.unwrap();
+    let user = instance.login_account("alice", None).await.unwrap();
     assert_eq!(
         user.get_default_key().unwrap(),
         login_key,
@@ -3134,7 +3134,7 @@ async fn test_open_database_with_unheld_key_is_rejected() {
     create_user_via_admin(&server, "alice").await;
     create_user_via_admin(&server, "mallory").await;
 
-    let mut alice_server = server.login_user("alice", None).await.unwrap();
+    let mut alice_server = server.login_account("alice", None).await.unwrap();
     let alice_db_key = alice_server.add_private_key(Some("per-db")).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "alices_database");
@@ -3148,7 +3148,7 @@ async fn test_open_database_with_unheld_key_is_rejected() {
     let mallory_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mallory = mallory_inst.login_user("mallory", None).await.unwrap();
+    let mallory = mallory_inst.login_account("mallory", None).await.unwrap();
 
     let err = mallory
         .open_database_with_key(&root_id, &alice_db_key)

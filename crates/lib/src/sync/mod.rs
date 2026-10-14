@@ -112,6 +112,8 @@ pub mod transports;
 pub mod utils;
 
 // Private submodules
+mod account;
+mod account_sync_manager;
 mod bootstrap;
 mod bootstrap_request_manager;
 #[cfg(any(test, feature = "testing"))]
@@ -124,8 +126,6 @@ mod peer_state;
 mod queue;
 mod transport;
 mod transport_manager;
-mod user;
-mod user_sync_manager;
 
 // Re-exports
 use background::SyncCommand;
@@ -325,7 +325,7 @@ impl Sync {
         };
 
         // Initialize combined settings for all tracked users
-        sync.initialize_user_settings().await?;
+        sync.initialize_account_settings().await?;
 
         Ok(sync)
     }
@@ -355,7 +355,7 @@ impl Sync {
         };
 
         // Initialize combined settings for all tracked users
-        sync.initialize_user_settings().await?;
+        sync.initialize_account_settings().await?;
 
         Ok(sync)
     }

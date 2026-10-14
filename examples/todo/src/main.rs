@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::{
-    Database, Instance, Result,
+    Database, ID, Instance, Result,
+    account::AccountSession,
     crdt::Doc,
     store::{StoreError, Table, YDoc},
-    user::User,
     y_crdt::{Map as YMap, Transact},
 };
 use serde::{Deserialize, Serialize};
@@ -93,10 +93,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Load or create the instance + the single application user.
-    let (_instance, mut user) = load_or_create_instance_and_user(&cli.database_path).await?;
+    let (_instance, user) = load_or_create_instance_and_user(&cli.database_path).await?;
 
     // Load or create the todo database
-    let todo_database = load_or_create_todo_database(&mut user).await?;
+    let todo_database = open_todo_database(&user).await?;
 
     // Handle the command with proper error context
     let result = match &cli.command {
@@ -149,8 +149,8 @@ async fn main() -> Result<()> {
 /// `todo-user` as the initial admin (the example is single-user). On
 /// subsequent runs the file already has metadata, so the call loads the
 /// existing instance and we log back in.
-async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, User)> {
-    use eidetica::NewUser;
+async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, AccountSession)> {
+    use eidetica::NewAccount;
 
     let username = "todo-user";
     // SQLite via the URL surface — `sqlite://<path>` is handed through to
@@ -158,15 +158,28 @@ async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, User
     let url = format!("sqlite://{}?mode=rwc", path.display());
 
     let (instance, maybe_user) =
-        Instance::connect_or_create(&url, NewUser::passwordless(username)).await?;
+        Instance::connect_or_create(&url, NewAccount::passwordless(username)).await?;
 
     let user = match maybe_user {
-        Some(u) => {
+        Some(mut session) => {
+            // Only the first creator initializes application roots. This embedded
+            // SQLite example has exclusive instance storage ownership. Returning
+            // logins never repair missing metadata by creating a replacement.
+            let key = session.get_default_key()?;
+            let mut settings = Doc::new();
+            settings.set("name", "todo");
+            let todos = session.create_database(settings, &key).await?;
+            let tx = session.account().new_transaction().await?;
+            tx.get_store::<Table<ID>>("todo_roots")
+                .await?
+                .set("todos", todos.root_id().clone())
+                .await?;
+            tx.commit().await?;
             println!("✓ Initialised new instance and bootstrapped {username} as admin");
-            u
+            session
         }
         None => {
-            let u = instance.login_user(username, None).await?;
+            let u = instance.login_account(username, None).await?;
             println!("✓ Logged in as passwordless user: {username}");
             u
         }
@@ -175,35 +188,17 @@ async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, User
     Ok((instance, user))
 }
 
-async fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
-    let database_name = "todo";
-
-    // Try to find the database by name
-    let database = match user.find_database(database_name).await {
-        Ok(mut databases) => {
-            // If multiple databases with the same name exist, pop will return one arbitrarily.
-            // We might want more robust handling later (e.g., error or config option).
-            databases.pop().unwrap() // unwrap is safe because find_database errors if empty
-        }
-        Err(e) if e.is_not_found() => {
-            // If not found, create a new one
-            println!("No existing todo database found, creating a new one...");
-            let mut settings = Doc::new();
-            settings.set("name", database_name);
-
-            // Get the default key (earliest created key)
-            let default_key = user.get_default_key()?;
-
-            // User API automatically configures the database with user's keys
-            user.create_database(settings, &default_key).await?
-        }
-        Err(e) => {
-            // Propagate other errors
-            return Err(e);
-        }
-    };
-
-    Ok(database)
+/// Read the app-owned reference and open exactly that database.
+/// Missing metadata, corrupt IDs, unavailable targets and denied access remain
+/// errors. A display-name change does not change this reference. Initialization
+/// failure requires explicit repair, not a name scan or a replacement database.
+async fn open_todo_database(session: &AccountSession) -> Result<Database> {
+    let roots = session
+        .account()
+        .get_store_viewer::<Table<ID>>("todo_roots")
+        .await?;
+    let id = roots.get("todos").await?;
+    session.open_database(&id).await
 }
 
 async fn add_todo(database: &Database, title: String) -> Result<()> {

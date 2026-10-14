@@ -1,17 +1,17 @@
-//! Regression tests for bootstrap establishing the User-layer SigKey mapping.
+//! Regression tests for bootstrap establishing the AccountSession-layer SigKey mapping.
 //!
 //! A successful bootstrap grants access at the sync layer (auth + entries) but
-//! historically left no User-layer SigKey mapping, so `User::open_database`
+//! historically left no AccountSession-layer SigKey mapping, so `AccountSession::open_database`
 //! failed with "No key found" unless the caller manually invoked
-//! `track_database`. `User::request_database_access` now establishes the mapping
+//! `track_database`. `AccountSession::request_database_access` now establishes the mapping
 //! itself. Pending creates no new mapping or preferences.
 
 use eidetica::{
     Error,
+    account::types::SyncSettings,
     auth::Permission,
     store::DocStore,
     sync::{DatabaseTicket, SyncError, transports::http::HttpTransport},
-    user::types::SyncSettings,
 };
 
 use super::helpers::*;
@@ -23,7 +23,7 @@ async fn record_access_pending_retries_leave_user_state_unchanged() {
     let (_client_instance, mut client_user, client_key_id, _client_sync) =
         setup_sync_enabled_client("client_user", "client_key").await;
     let pending_settings = SyncSettings::on_commit().with_interval(31);
-    let before = client_user.user_database().snapshot().await.unwrap();
+    let before = client_user.account().snapshot().await.unwrap();
 
     let result = client_user
         .record_database_access(
@@ -63,10 +63,7 @@ async fn record_access_pending_retries_leave_user_state_unchanged() {
         .await;
     assert!(result.is_err());
     assert!(client_user.database(&database_id).await.is_err());
-    assert_eq!(
-        before,
-        client_user.user_database().snapshot().await.unwrap()
-    );
+    assert_eq!(before, client_user.account().snapshot().await.unwrap());
 }
 
 /// Auto-approve server -> client `request_database_access` -> the database is
@@ -139,7 +136,7 @@ async fn request_access_makes_database_openable_without_manual_track() {
     server_sync.stop_server().await.unwrap();
 }
 
-/// Manual approval leaves User state unchanged until a successful retry.
+/// Manual approval leaves AccountSession state unchanged until a successful retry.
 #[tokio::test]
 async fn pending_access_reports_clear_error_then_opens_after_approval() {
     let (server_instance, server_user, server_key_id, _server_database, server_sync, tree_id) =
@@ -155,7 +152,7 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
 
     let ticket = DatabaseTicket::with_addresses(tree_id.clone(), vec![server_addr.clone()]);
     let sync_settings = SyncSettings::on_commit().with_interval(23);
-    let before = client_user.user_database().snapshot().await.unwrap();
+    let before = client_user.account().snapshot().await.unwrap();
 
     // Only the peer's request is stored; the caller supplies settings on retry.
     let result = client_user
@@ -173,10 +170,7 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
         "request against a manual-approval server should be pending"
     );
     assert!(client_user.database(&tree_id).await.is_err());
-    assert_eq!(
-        before,
-        client_user.user_database().snapshot().await.unwrap()
-    );
+    assert_eq!(before, client_user.account().snapshot().await.unwrap());
     client_user
         .open_database(&tree_id)
         .await

@@ -120,9 +120,9 @@ Collects server addresses from all running transports and bundles them with
 the database ID into a `DatabaseTicket`. Lower-level helper that does not
 touch user-level sync preferences.
 
-### User-scoped ticket lookup
+### AccountSession-scoped ticket lookup
 
-A `Database` opened or created by a `User` is the high-level API for making a
+A `Database` opened or created by a `AccountSession` is the high-level API for making a
 tracked database shareable. It deliberately does not combine the process into
 one atomic call:
 
@@ -143,7 +143,7 @@ remain separate.
 
 ## Joining through a client or daemon
 
-`User::join` is the high-level consumer of a ticket. On an embedded instance it
+`AccountSession::join` is the high-level consumer of a ticket. On an embedded instance it
 uses the existing `request_database_access` facility. On a connected instance the
 daemon owns transports, while the client retains the user's private signing key.
 Neither a second client sync engine nor daemon custody of that key is needed.
@@ -158,11 +158,11 @@ for the wire exchange.
 
 The interface composes existing facilities rather than making them one atomic
 operation: [bootstrap transfer and approval](../internal/bootstrap.md),
-[User mapping persistence](users.md#mapping-persistence-and-retry-safety), and
+[Account mapping persistence](accounts.md#mapping-persistence-and-retry-safety), and
 [service framing](../internal/service.md#cancellation-and-frame-integrity) have
 separate failure boundaries. Success returns an opened database after verified
-transfer, User bookkeeping and a final requested-permission check. Pending requires
-an explicit retry and writes no User state; an error does not imply rollback.
+transfer, Account bookkeeping and a final requested-permission check. Pending requires
+an explicit retry and writes no Account state; an error does not imply rollback.
 
 This is not device enrollment or a durable completion job. Later daemon sync uses
 its device key and needs separate authority or a global grant. The existing

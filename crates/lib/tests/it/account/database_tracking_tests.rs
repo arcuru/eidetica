@@ -1,16 +1,16 @@
-//! Tests for User database tracking functionality
+//! Tests for AccountSession database tracking functionality
 
 use eidetica::{
     Database, Result,
+    account::types::SyncSettings,
     auth::{
         crypto::generate_keypair,
         types::{AuthKey, Permission},
     },
     crdt::Doc,
-    user::types::SyncSettings,
 };
 
-use super::helpers::{login_user, setup_instance};
+use super::helpers::{login_account, setup_instance};
 use crate::helpers::set_global_auth_key;
 
 /// Test tracking a database
@@ -20,8 +20,8 @@ async fn test_track_database() -> Result<()> {
     let instance = setup_instance().await;
 
     // Create a user
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
     // Create a database with global Write permission
@@ -56,8 +56,8 @@ async fn test_track_database() -> Result<()> {
 async fn test_track_database_no_sigkey_error() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
     // Create a database without global permissions (user has no access)
@@ -83,8 +83,8 @@ async fn test_track_database_no_sigkey_error() -> Result<()> {
 async fn test_list_databases() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
     // Initially should be empty
@@ -118,8 +118,8 @@ async fn test_list_databases() -> Result<()> {
 async fn test_get_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
     // Create database
@@ -158,8 +158,8 @@ async fn test_get_tracked_database() -> Result<()> {
 async fn test_update_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
     // Create database
@@ -200,8 +200,8 @@ async fn test_update_tracked_database() -> Result<()> {
 async fn test_untrack_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
     // Create database
@@ -237,8 +237,8 @@ async fn test_untrack_database() -> Result<()> {
 async fn test_load_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
     // Create database with global permission
@@ -270,8 +270,8 @@ async fn test_load_tracked_database() -> Result<()> {
 async fn test_update_tracked_valid_key_change() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let key1 = user.get_default_key()?;
 
     // Add a second key to the user
@@ -316,8 +316,8 @@ async fn test_update_tracked_valid_key_change() -> Result<()> {
 async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
     // Create database with global permission
@@ -352,8 +352,8 @@ async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
 async fn test_update_tracked_no_access_fails() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let key1 = user.get_default_key()?;
 
     // Add a second key
@@ -398,8 +398,8 @@ async fn test_update_tracked_no_access_fails() -> Result<()> {
 async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
     let key1 = user.get_default_key()?;
 
     // Add a second key
@@ -452,8 +452,8 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
 async fn test_is_sync_enabled_returns_false_for_untracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let user = login_user(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let user = login_account(&instance, "test_user", None).await;
     let (signing_key, _) = generate_keypair();
     let database = Database::create(&instance, signing_key, Doc::new()).await?;
 

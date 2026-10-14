@@ -19,7 +19,7 @@ fn start_call(
     let conn = conn.clone();
     let username = label.to_owned();
     tokio::spawn(async move {
-        conn.request_ok(ServiceRequest::TrustedLoginUser { username })
+        conn.request_ok(ServiceRequest::TrustedLoginAccount { username })
             .await
     })
 }
@@ -127,7 +127,7 @@ async fn v0_unknown_notification_does_not_consume_response_or_invoke_callback() 
     let (conn, mut peer) = connect_peer().await;
     let (instance, _admin) = crate::Instance::create_backend(
         Box::new(crate::backend::database::InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -297,21 +297,21 @@ const LOGIN_CHALLENGE: &[u8] = b"login challenge";
 const KEY_CHALLENGE: &[u8] = b"session key challenge";
 
 fn passwordless_login_challenge(key: &PrivateKey) -> ServerFrame {
-    use crate::user::{UserCredentials, UserStatus};
+    use crate::account::{AccountCredentials, AccountStatus};
 
     ServerFrame::Response(Box::new(ServiceResponse::TrustedLoginChallenge {
         challenge: LOGIN_CHALLENGE.to_vec(),
-        user_uuid: "uuid-alice".to_owned(),
-        user_info: UserInfo {
+        login_id: "uuid-alice".to_owned(),
+        account_info: AccountInfo {
             username: "alice".to_owned(),
-            user_database_id: ID::from_bytes("alice-db"),
-            credentials: UserCredentials {
+            account_id: ID::from_bytes("alice-db"),
+            credentials: AccountCredentials {
                 root_key_id: key.public_key(),
                 root_key: KeyStorage::Unencrypted { key: key.clone() },
                 password_salt: None,
             },
             created_at: 1_700_000_000,
-            status: UserStatus::Active,
+            status: AccountStatus::Active,
         },
     }))
 }
@@ -504,12 +504,12 @@ async fn v0_unknown_required_login_enums_retire_connection() {
         serde_json::to_value(ServerFrame::Response(response)).unwrap(),
         valid
     );
-    for field in ["KeyStorage", "UserStatus"] {
+    for field in ["KeyStorage", "AccountStatus"] {
         let mut malformed = valid.clone();
         let info = &mut malformed["Response"]["TrustedLoginChallenge"]["user_info"];
         match field {
             "KeyStorage" => info["credentials"]["root_key"]["type"] = "future-storage".into(),
-            "UserStatus" => info["status"] = "FutureStatus".into(),
+            "AccountStatus" => info["status"] = "FutureStatus".into(),
             _ => unreachable!(),
         }
         assert!(serde_json::from_value::<IncomingServerFrame>(malformed.clone()).is_err());

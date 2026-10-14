@@ -6,7 +6,7 @@
 //!
 //! Authentication uses the client-side-signing flow described in the Service
 //! Architecture doc § Security Model: `RemoteConnection::trusted_login` drives
-//! the daemon's `TrustedLoginUser` / `TrustedLoginProve` challenge-response,
+//! the daemon's `TrustedLoginAccount` / `TrustedLoginProve` challenge-response,
 //! decrypts the user's root signing key in-process, and signs the challenge
 //! locally. The daemon never sees the password or the plaintext signing key.
 //! After login, subsequent backend operations travel inside the `Authenticated`
@@ -24,6 +24,9 @@ use tokio::net::{
 };
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
+use crate::account::AccountError;
+use crate::account::crypto::{decrypt_private_key, derive_encryption_key};
+use crate::account::types::{AccountInfo, KeyStorage};
 use crate::auth::crypto::PrivateKey;
 use crate::auth::crypto::{PublicKey, create_challenge_response};
 use crate::auth::types::SigKey;
@@ -42,9 +45,6 @@ use crate::service::protocol::{
     write_frame,
 };
 use crate::snapshot::Snapshot;
-use crate::user::UserError;
-use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
-use crate::user::types::{KeyStorage, UserInfo};
 
 /// How long an `Idle` per-tree subscription is kept warm before the
 /// sweep sends `UnsubscribeWrites`. A re-registration arriving inside
@@ -124,9 +124,9 @@ pub fn set_sweep_interval_for_test(d: std::time::Duration) {
 ///
 /// Holds only the public key the daemon verified during challenge-response.
 /// The plaintext signing key is intentionally **not** stored here — it lives
-/// in the `User::key_manager` session that owns this connection. The
+/// in the `AccountSession::key_manager` session that owns this connection. The
 /// daemon-side `ConnectionState::Authenticated` is what carries the
-/// `user_uuid` (for chunk 6's cache scoping); the client doesn't need it.
+/// `login_id` (for chunk 6's cache scoping); the client doesn't need it.
 #[derive(Clone, Debug)]
 struct SessionState {
     session_pubkey: PublicKey,
@@ -681,8 +681,8 @@ impl RemoteConnection {
     /// Authenticate this connection as `username` by completing the
     /// `TrustedLogin*` handshake against the daemon.
     ///
-    /// Flow: send `TrustedLoginUser` → receive challenge + the user's full
-    /// `UserInfo` (encrypted credentials, user-database id, status) → derive
+    /// Flow: send `TrustedLoginAccount` → receive challenge + the user's full
+    /// `AccountInfo` (encrypted credentials, user-database id, status) → derive
     /// the password-encryption key locally (Argon2id) and decrypt the root
     /// signing key in-process (or take it raw for passwordless users) → sign
     /// the challenge → send `TrustedLoginProve` → expect `TrustedLoginOk`.
@@ -693,7 +693,7 @@ impl RemoteConnection {
     ///
     /// On success the connection's server-side state is `Authenticated`. The
     /// caller receives the user's record and the decrypted root key so it can
-    /// build the `User` session without a second wire read of `_users` —
+    /// build the `AccountSession` session without a second wire read of `_users` —
     /// reads through the wire always travel as the authenticated user, which
     /// with the per-tree gate means a fresh user without permissions on
     /// `_users` would not be able to re-fetch it.
@@ -701,26 +701,26 @@ impl RemoteConnection {
         &self,
         username: &str,
         password: Option<&str>,
-    ) -> crate::Result<(String, UserInfo, PrivateKey)> {
+    ) -> crate::Result<(String, AccountInfo, PrivateKey)> {
         // Step 1: name the user, receive challenge + user record.
         let resp = self
-            .request_ok(ServiceRequest::TrustedLoginUser {
+            .request_ok(ServiceRequest::TrustedLoginAccount {
                 username: username.to_string(),
             })
             .await?;
-        let (challenge, user_uuid, user_info) = match resp {
+        let (challenge, login_id, account_info) = match resp {
             ServiceResponse::TrustedLoginChallenge {
                 challenge,
-                user_uuid,
-                user_info,
-            } => (challenge, user_uuid, user_info),
+                login_id,
+                account_info,
+            } => (challenge, login_id, account_info),
             other => return Err(unexpected_response("TrustedLoginChallenge", &other)),
         };
 
         // Step 2: decrypt the root signing key locally. Cross-check that the
         // caller's password/no-password matches the credential's salt/no-salt;
         // a mismatch is the same UX-level error as a wrong password.
-        let credentials = &user_info.credentials;
+        let credentials = &account_info.credentials;
         let is_passwordless = credentials.password_salt.is_none();
         let signing_key = match (&credentials.root_key, password, is_passwordless) {
             (KeyStorage::Unencrypted { key }, None, true) => key.clone(),
@@ -732,14 +732,14 @@ impl RemoteConnection {
                 false,
             ) => {
                 let salt = credentials.password_salt.as_deref().ok_or_else(|| {
-                    UserError::PasswordRequired {
+                    AccountError::PasswordRequired {
                         operation: "decrypt root key for remote login".to_string(),
                     }
                 })?;
                 let kek = derive_encryption_key(pwd, salt)?;
                 decrypt_private_key(ciphertext, nonce, &kek)?
             }
-            _ => return Err(UserError::InvalidPassword.into()),
+            _ => return Err(AccountError::InvalidPassword.into()),
         };
 
         // Step 3: sign the challenge and send the proof.
@@ -765,7 +765,7 @@ impl RemoteConnection {
                     .lock()
                     .await
                     .insert(credentials.root_key_id.clone());
-                Ok((user_uuid, user_info, signing_key))
+                Ok((login_id, account_info, signing_key))
             }
             other => Err(unexpected_response("TrustedLoginOk", &other)),
         }
@@ -1893,7 +1893,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert!(
-            matches!(request, ServiceRequest::TrustedLoginUser { username } if username == label)
+            matches!(request, ServiceRequest::TrustedLoginAccount { username } if username == label)
         );
     }
 
@@ -1941,7 +1941,7 @@ mod tests {
         // registry, which is the same registry on connected instances.
         let (instance, _admin) = crate::Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2021,7 +2021,7 @@ mod frame_cancellation_tests {
     async fn cancelled_partial_service_frame_retires_connection() {
         let (conn, mut peer) = super::tests::test_conn();
         // Larger than a socket's send buffer, but below the protocol cap.
-        let request = ServiceRequest::TrustedLoginUser {
+        let request = ServiceRequest::TrustedLoginAccount {
             username: "x".repeat(2 * 1024 * 1024),
         };
         let mut sending = Box::pin(conn.request(request));
@@ -2065,7 +2065,7 @@ mod frame_cancellation_tests {
     #[tokio::test]
     async fn cancelled_response_wait_keeps_fifo_association() {
         let (conn, mut peer) = super::tests::connect_peer().await;
-        let mut first = Box::pin(conn.request(ServiceRequest::TrustedLoginUser {
+        let mut first = Box::pin(conn.request(ServiceRequest::TrustedLoginAccount {
             username: "first".into(),
         }));
         tokio::select! {
@@ -2077,7 +2077,7 @@ mod frame_cancellation_tests {
             !conn.inner.closed.load(Ordering::Acquire),
             "dropping a response waiter retired a complete frame"
         );
-        let second = conn.request(ServiceRequest::TrustedLoginUser {
+        let second = conn.request(ServiceRequest::TrustedLoginAccount {
             username: "second".into(),
         });
         let respond = async {

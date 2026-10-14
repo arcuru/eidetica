@@ -13,7 +13,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
 use eidetica::Instance;
-use eidetica::NewUser;
+use eidetica::NewAccount;
 use eidetica::instance::InstanceError;
 use eidetica::service::ServiceServer;
 use eidetica::service::default_socket_path;
@@ -198,7 +198,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Initialise a fresh daemon instance with an initial admin user.
 ///
-/// Builds the [`NewUser`] from `--username` + one of `--password` /
+/// Builds the [`NewAccount`] from `--username` + one of `--password` /
 /// `--passwordless` / an interactive double-prompt, then calls
 /// [`Instance::create_backend`]. Exits after initialisation; the operator runs
 /// `eidetica daemon` separately to actually serve the socket.
@@ -210,10 +210,10 @@ pub async fn run_init(
 
     // Resolve the password choice. `--passwordless` and explicit `--password`
     // are mutually exclusive (enforced by clap); otherwise prompt twice.
-    let new_user = if args.passwordless {
-        NewUser::passwordless(&args.username)
+    let new_account = if args.passwordless {
+        NewAccount::passwordless(&args.username)
     } else if let Some(pw) = &args.password {
-        NewUser::with_password(&args.username, pw)
+        NewAccount::with_password(&args.username, pw)
     } else {
         let pw = rpassword::prompt_password(format!(
             "Password for new admin user '{}': ",
@@ -229,11 +229,11 @@ pub async fn run_init(
                     .into(),
             );
         }
-        NewUser::with_password(&args.username, pw)
+        NewAccount::with_password(&args.username, pw)
     };
 
     let backend = create_backend(backend_args).await?;
-    let (instance, _user) = match Instance::create_backend(backend, new_user).await {
+    let (instance, _user) = match Instance::create_backend(backend, new_account).await {
         Ok(pair) => pair,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e
@@ -309,7 +309,7 @@ mod tests {
         })
         .await
         .unwrap();
-        Instance::create_backend(backend, NewUser::passwordless("admin"))
+        Instance::create_backend(backend, NewAccount::passwordless("admin"))
             .await
             .unwrap();
 
@@ -335,7 +335,7 @@ mod tests {
         })
         .await
         .unwrap();
-        Instance::create_backend(backend, NewUser::passwordless("admin"))
+        Instance::create_backend(backend, NewAccount::passwordless("admin"))
             .await
             .unwrap();
         let occupied = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -368,9 +368,10 @@ mod tests {
         })
         .await
         .unwrap();
-        let (instance, _admin) = Instance::create_backend(backend, NewUser::passwordless("admin"))
-            .await
-            .unwrap();
+        let (instance, _admin) =
+            Instance::create_backend(backend, NewAccount::passwordless("admin"))
+                .await
+                .unwrap();
         let owner = ServiceServer::bind(instance.clone(), &socket_path)
             .await
             .unwrap();

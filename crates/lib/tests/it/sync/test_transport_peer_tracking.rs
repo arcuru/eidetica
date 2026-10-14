@@ -7,13 +7,13 @@
 use std::sync::Arc;
 
 use eidetica::{
+    account::types::SyncSettings,
     auth::{AuthKey, Permission},
     crdt::Doc,
     sync::{
         Address,
         transports::{SyncTransport, http::HttpTransport},
     },
-    user::types::SyncSettings,
 };
 
 use super::helpers::*;
@@ -26,11 +26,11 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     // ===== Setup Server =====
     let server_instance = setup_empty_db().await;
     server_instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&server_instance, "server_user", None)
+    crate::helpers::create_account(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
-        .login_user("server_user", None)
+        .login_account("server_user", None)
         .await
         .unwrap();
     let server_key_id = server_user
@@ -62,10 +62,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
 
     // Update sync configuration
     server_sync
-        .sync_user(
-            server_user.user_uuid(),
-            server_user.user_database().root_id(),
-        )
+        .sync_account(server_user.login_id(), server_user.account().root_id())
         .await
         .unwrap();
 

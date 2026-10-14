@@ -3,9 +3,9 @@
 use criterion::{BenchmarkGroup, measurement::Measurement};
 use eidetica::{
     Database, Instance,
+    account::AccountSession,
     backend::{BackendImpl, database::InMemory},
     crdt::Doc,
-    user::User,
 };
 
 /// Creates a test backend based on TEST_BACKEND env var.
@@ -53,9 +53,9 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
 /// Creates a fresh empty tree with configurable backend for benchmarking.
 ///
 /// Uses TEST_BACKEND env var to select backend (default: sqlite).
-/// Returns (Instance, User, Database) tuple.
+/// Returns (Instance, AccountSession, Database) tuple.
 #[allow(dead_code)]
-pub async fn setup_tree_async() -> (Instance, User, Database) {
+pub async fn setup_tree_async() -> (Instance, AccountSession, Database) {
     let backend = test_backend().await;
     setup_tree_with_backend(backend).await
 }
@@ -65,7 +65,7 @@ pub async fn setup_tree_async() -> (Instance, User, Database) {
 /// Use this for benchmarks that test InMemory-specific functionality
 /// (e.g., is_tip method which is not on the BackendImpl trait).
 #[allow(dead_code)]
-pub async fn setup_tree_inmemory() -> (Instance, User, Database) {
+pub async fn setup_tree_inmemory() -> (Instance, AccountSession, Database) {
     let backend = Box::new(InMemory::new());
     setup_tree_with_backend(backend).await
 }
@@ -99,14 +99,16 @@ pub fn apply_large_setup_sample_size<M: Measurement>(
 }
 
 /// Creates a fresh empty tree with the given backend.
-async fn setup_tree_with_backend(backend: Box<dyn BackendImpl>) -> (Instance, User, Database) {
-    use eidetica::NewUser;
+async fn setup_tree_with_backend(
+    backend: Box<dyn BackendImpl>,
+) -> (Instance, AccountSession, Database) {
+    use eidetica::NewAccount;
 
     // Bootstrap "bench_user" as the initial admin. They double as the
-    // benchmark's only User session and (since they're the first user)
+    // benchmark's only AccountSession and (since they're the first user)
     // hold Admin on the system DBs by construction.
     let (instance, mut user) =
-        Instance::create_backend(backend, NewUser::passwordless("bench_user"))
+        Instance::create_backend(backend, NewAccount::passwordless("bench_user"))
             .await
             .expect("Benchmark setup failed");
 

@@ -1,7 +1,7 @@
 # Encryption
 
 This chapter describes `PasswordStore` as implemented. It covers content encryption and encrypted
-derived Store-state caches. User signing-key encryption is a separate use of Argon2id and
+derived Store-state caches. AccountSession signing-key encryption is a separate use of Argon2id and
 AES-256-GCM in `user/crypto.rs`; its salt handling, envelope, and lifetime are not the
 `PasswordStore` format described here.
 
@@ -221,7 +221,7 @@ custom backends fall back directly to history. Other storage or authentication f
 they are not treated as benign cache misses.
 
 Over the service, encrypted materializations are client-computed and rebound to
-`CacheScope::User(session_user)`. They cannot be published into shared scope or another user's
+`CacheScope::AccountSession(session_user)`. They cannot be published into shared scope or another user's
 scope. Warm reads use record get/scan operations over opaque views; a warm point read need not scan
 the row set or fetch Store history.
 

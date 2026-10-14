@@ -431,7 +431,7 @@ transaction.commit()?;
 Delegation allows any database to be referenced as a source of authentication keys for another database. This enables flexible authentication patterns where databases can delegate authentication to other databases without granting administrative privileges on the delegating database. Key benefits include:
 
 - **Flexible Delegation**: Any database can delegate authentication to any other database
-- **User Autonomy**: Users can manage their own personal databases with keys they control
+- **AccountSession Autonomy**: Users can manage their own personal databases with keys they control
 - **Cross-Project Authentication**: Share authentication across multiple projects or databases
 - **Granular Permissions**: Set both minimum and maximum permission bounds for delegated keys
 
@@ -854,7 +854,7 @@ The authenticated bootstrap protocol enables devices to join existing databases 
 - `SyncTreeRequest` includes: `requesting_key`, `requesting_key_name`, `requested_permission`
 - `BootstrapResponse` includes: `key_approved`, `granted_permission`
 - `BootstrapPending` response for manual approval scenarios
-- User API: `user.request_database_access()` for authenticated bootstrap scenarios
+- AccountSession API: `user.request_database_access()` for authenticated bootstrap scenarios
 
 **Security**:
 
@@ -923,7 +923,7 @@ AuthKey {
 
 1. **Advanced Key Status**: Add Ignore and Banned statuses for more nuanced key management
 2. **Performance Optimizations**: Further caching and validation improvements
-3. User experience improvements for key management
+3. AccountSession experience improvements for key management
 
 ## References
 

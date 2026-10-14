@@ -85,11 +85,11 @@ async fn test_bootstrap_pending_error_propagation() {
 
     // Setup server with manual approval
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, "server_user", None)
+    crate::helpers::create_account(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
-        .login_user("server_user", None)
+        .login_account("server_user", None)
         .await
         .unwrap();
     let server_key_id = server_user
@@ -114,11 +114,11 @@ async fn test_bootstrap_pending_error_propagation() {
 
     // Setup client (sync already initialized by setup_instance_with_initialized)
     let client_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&client_instance, "client_user", None)
+    crate::helpers::create_account(&client_instance, "client_user", None)
         .await
         .unwrap();
     let mut client_user = client_instance
-        .login_user("client_user", None)
+        .login_account("client_user", None)
         .await
         .unwrap();
     let _client_key_id = client_user
@@ -347,11 +347,11 @@ async fn test_unauthenticated_sync_should_fail() {
 
     // Setup server with authenticated database
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, "server_user", None)
+    crate::helpers::create_account(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
-        .login_user("server_user", None)
+        .login_account("server_user", None)
         .await
         .unwrap();
     let server_key_id = server_user
@@ -401,11 +401,11 @@ async fn test_unauthenticated_sync_should_fail() {
 
     // Setup client with NO authorized key (sync already initialized by setup_instance_with_initialized)
     let client_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&client_instance, "client_user", None)
+    crate::helpers::create_account(&client_instance, "client_user", None)
         .await
         .unwrap();
     let mut client_user = client_instance
-        .login_user("client_user", None)
+        .login_account("client_user", None)
         .await
         .unwrap();
     let client_key_id = client_user

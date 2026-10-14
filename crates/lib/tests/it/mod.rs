@@ -1,3 +1,4 @@
+pub mod account;
 pub mod auth;
 pub mod backend;
 pub mod context;
@@ -11,4 +12,3 @@ pub mod service;
 pub mod store;
 pub mod sync;
 pub mod transaction;
-pub mod user;

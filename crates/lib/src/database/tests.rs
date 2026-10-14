@@ -21,7 +21,7 @@ async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
     // Create instance
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await?;
 
@@ -72,7 +72,7 @@ async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
 async fn test_create_bootstraps_signing_key_as_admin_zero() -> Result<()> {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await?;
 
@@ -97,7 +97,7 @@ async fn test_create_bootstraps_signing_key_as_admin_zero() -> Result<()> {
 async fn test_non_genesis_first_auth_cannot_authorize_its_signer_locally() -> Result<()> {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await?;
     let backend = instance.require_local_engine()?;
@@ -132,7 +132,7 @@ async fn test_non_genesis_first_auth_cannot_authorize_its_signer_locally() -> Re
 async fn test_genesis_first_auth_survives_reverification() -> Result<()> {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await?;
     let (signer, _) = generate_keypair();
@@ -160,7 +160,7 @@ async fn test_genesis_first_auth_survives_reverification() -> Result<()> {
 async fn test_create_rejects_preconfigured_auth() -> Result<()> {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await?;
 
@@ -198,7 +198,7 @@ async fn test_create_rejects_preconfigured_auth() -> Result<()> {
 async fn setup_callback_test() -> (Instance, Database) {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -222,7 +222,7 @@ struct DelegatedVerificationFixture {
 async fn delegated_verification_fixture() -> DelegatedVerificationFixture {
     let (source, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -417,7 +417,7 @@ async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
     let fixture = delegated_verification_fixture().await;
     let (receiver, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("receiver"),
+        crate::NewAccount::passwordless("receiver"),
     )
     .await
     .unwrap();
@@ -463,7 +463,7 @@ async fn test_remote_ingest_missing_delegated_tip_stays_retryable_then_promotes(
     let fixture = delegated_verification_fixture().await;
     let (receiver, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("receiver"),
+        crate::NewAccount::passwordless("receiver"),
     )
     .await
     .unwrap();
@@ -511,7 +511,7 @@ async fn test_remote_ingest_missing_delegated_intermediate_stays_retryable_then_
     );
     let (receiver, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("receiver"),
+        crate::NewAccount::passwordless("receiver"),
     )
     .await
     .unwrap();
@@ -573,7 +573,7 @@ async fn test_local_commit_missing_delegated_history_is_rejected_without_storage
     let fixture = delegated_verification_fixture().await;
     let (receiver, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("receiver"),
+        crate::NewAccount::passwordless("receiver"),
     )
     .await
     .unwrap();
@@ -619,7 +619,7 @@ async fn test_remote_ingest_invalid_delegated_signature_fails_definitively() {
     let fixture = delegated_verification_fixture().await;
     let (receiver, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("receiver"),
+        crate::NewAccount::passwordless("receiver"),
     )
     .await
     .unwrap();

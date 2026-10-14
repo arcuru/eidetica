@@ -1,5 +1,6 @@
 use eidetica::{
     Database, Instance, Result,
+    account::AccountSession,
     auth::{
         crypto::PublicKey,
         settings::AuthSettings,
@@ -12,7 +13,6 @@ use eidetica::{
     crdt::Doc,
     entry::ID,
     store::DocStore,
-    user::User,
 };
 
 // Helper functions for auth testing
@@ -22,7 +22,7 @@ use eidetica::{
 //
 // ## Key Naming and Aliases
 //
-// When using User API, `user.new_database()` automatically bootstraps auth by adding
+// When using AccountSession API, `user.new_database()` automatically bootstraps auth by adding
 // the signing key with its public key string as the name (e.g., "Ed25519:abc123...").
 // For delegation paths to use readable names, auth settings can contain multiple names
 // for the same public key:
@@ -38,18 +38,18 @@ use eidetica::{
 
 // ===== BASIC SETUP HELPERS =====
 
-/// Create an instance with user and tree with a test key using User API
+/// Create an instance with user and tree with a test key using AccountSession API
 ///
 /// Returns (instance, user, tree, key_id) where key_id can be used for authenticated operations.
 /// The database is automatically bootstrapped with auth settings containing the key under
 /// its public key string name (e.g., "Ed25519:abc123..."), not the friendly display name.
 ///
-/// Note: `key_name` is stored in the UserKey metadata but NOT in the database's auth settings.
+/// Note: `key_name` is stored in the AccountKey metadata but NOT in the database's auth settings.
 /// For delegation to work with friendly names, use `configure_database_auth()` to add aliases.
 pub async fn setup_user_and_tree_with_key(
     username: &str,
     key_name: &str,
-) -> (Instance, User, Database, PublicKey) {
+) -> (Instance, AccountSession, Database, PublicKey) {
     let (instance, mut user) = crate::helpers::test_local_instance_with_user(username).await;
 
     // Add a key with the specified display name
@@ -75,12 +75,12 @@ pub fn auth_key(permission: Permission, status: KeyStatus) -> AuthKey {
     AuthKey::new(None, permission, status)
 }
 
-/// Create a user with multiple keys pre-configured for testing using User API
+/// Create a user with multiple keys pre-configured for testing using AccountSession API
 /// Returns (instance, user, key_ids) where key_ids[i] corresponds to key_names[i]
 pub async fn setup_test_user_with_keys(
     username: &str,
     key_names: &[&str],
-) -> (Instance, User, Vec<PublicKey>) {
+) -> (Instance, AccountSession, Vec<PublicKey>) {
     let (instance, mut user) = crate::helpers::test_local_instance_with_user(username).await;
 
     let mut key_ids = Vec::new();
@@ -89,7 +89,7 @@ pub async fn setup_test_user_with_keys(
     if !key_names.is_empty() {
         let default_key_id = user
             .get_default_key()
-            .expect("User should have default key");
+            .expect("AccountSession should have default key");
         key_ids.push(default_key_id);
 
         // Add additional keys
@@ -108,7 +108,7 @@ pub async fn setup_test_user_with_keys(
 /// Helper to configure database auth settings via SettingsStore API
 ///
 /// Creates friendly name aliases for keys in the database's auth settings.
-/// When using User API, `user.new_database()` automatically adds the signing key
+/// When using AccountSession API, `user.new_database()` automatically adds the signing key
 /// with the public key string as the name (e.g., "Ed25519:abc123...").
 /// This function adds additional entries with friendly names that reference the
 /// same public key, enabling delegation paths to use readable names.
@@ -143,7 +143,7 @@ pub async fn configure_database_auth(
 
 // ===== DELEGATION HELPERS =====
 
-/// Create a complete authentication environment with multiple keys and permission levels using User API
+/// Create a complete authentication environment with multiple keys and permission levels using AccountSession API
 ///
 /// Returns (instance, user, database, key_ids) where key_ids[i] corresponds to keys[i].
 ///
@@ -158,7 +158,7 @@ pub async fn configure_database_auth(
 pub async fn setup_complete_auth_environment_with_user(
     username: &str,
     keys: &[(&str, Permission, KeyStatus)],
-) -> (Instance, User, Database, Vec<PublicKey>) {
+) -> (Instance, AccountSession, Database, Vec<PublicKey>) {
     // Extract key display names
     let key_names: Vec<&str> = keys.iter().map(|(name, _, _)| *name).collect();
 
@@ -194,7 +194,7 @@ pub async fn setup_complete_auth_environment_with_user(
     (instance, user, database, key_ids)
 }
 
-/// Create a delegated tree with specified keys and permissions using User API
+/// Create a delegated tree with specified keys and permissions using AccountSession API
 ///
 /// Returns the created database and a vector of key_ids corresponding to the input keys.
 ///
@@ -210,7 +210,7 @@ pub async fn setup_complete_auth_environment_with_user(
 /// - `auth[key_id] = AuthKey(pubkey, Admin(0))` - Bootstrap entry
 /// - `auth[friendly_name] = AuthKey(pubkey, specified_perm)` - Friendly name alias for each key
 pub async fn create_delegated_tree_with_user(
-    user: &mut User,
+    user: &mut AccountSession,
     keys: &[(&str, Permission, KeyStatus)],
 ) -> Result<(Database, Vec<PublicKey>)> {
     let mut key_ids = Vec::new();
@@ -298,7 +298,7 @@ pub struct DelegationChain {
 }
 
 impl DelegationChain {
-    /// Create delegation chain using User API
+    /// Create delegation chain using AccountSession API
     ///
     /// Returns chain where keys[i] contains the display name for the key used in trees[i].
     ///

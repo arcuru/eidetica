@@ -8,24 +8,24 @@ use tracing::debug;
 
 use super::error::SyncError;
 use crate::{
-    Error, Result, Transaction, crdt::doc::path, entry::ID, store::DocStore,
-    user::types::SyncSettings,
+    Error, Result, Transaction, account::types::SyncSettings, crdt::doc::path, entry::ID,
+    store::DocStore,
 };
 
-/// User-aware sync subtree constants
+/// AccountSession-aware sync subtree constants
 pub(super) const DATABASE_USERS_SUBTREE: &str = "database_users"; // Maps database_id -> {users, combined_settings}
-pub(super) const USER_TRACKING_SUBTREE: &str = "user_tracking"; // Maps user_uuid -> {preferences_db_id, preferences_tips}
+pub(super) const USER_TRACKING_SUBTREE: &str = "user_tracking"; // Maps login_id -> {preferences_db_id, preferences_tips}
 
 /// Internal user sync manager for the sync module.
 ///
 /// This struct manages all user sync coordination operations for the sync module,
 /// operating on a Transaction to stage changes.
-pub(super) struct UserSyncManager<'a> {
+pub(super) struct AccountSyncManager<'a> {
     txn: &'a Transaction,
 }
 
-impl<'a> UserSyncManager<'a> {
-    /// Create a new UserSyncManager that operates on the given Transaction.
+impl<'a> AccountSyncManager<'a> {
+    /// Create a new AccountSyncManager that operates on the given Transaction.
     pub(super) fn new(txn: &'a Transaction) -> Self {
         Self { txn }
     }
@@ -36,14 +36,14 @@ impl<'a> UserSyncManager<'a> {
     /// for ongoing sync tracking. This operation is idempotent.
     ///
     /// # Arguments
-    /// * `user_uuid` - The user's unique identifier
+    /// * `login_id` - The user's unique identifier
     /// * `preferences_db_id` - The ID of the user's private database
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) async fn track_user_preferences(
+    pub(super) async fn track_account_preferences(
         &self,
-        user_uuid: impl AsRef<str>,
+        login_id: impl AsRef<str>,
         preferences_db_id: &ID,
     ) -> Result<()> {
         let user_tracking = self
@@ -53,7 +53,7 @@ impl<'a> UserSyncManager<'a> {
 
         // Check if the user is already registered
         if user_tracking
-            .get_path(path!(user_uuid.as_ref(), "preferences_db_id"))
+            .get_path(path!(login_id.as_ref(), "preferences_db_id"))
             .await
             .is_ok()
         {
@@ -63,7 +63,7 @@ impl<'a> UserSyncManager<'a> {
         // Store the preferences database ID
         user_tracking
             .set_path(
-                path!(user_uuid.as_ref(), "preferences_db_id"),
+                path!(login_id.as_ref(), "preferences_db_id"),
                 preferences_db_id.to_string(),
             )
             .await?;
@@ -71,12 +71,12 @@ impl<'a> UserSyncManager<'a> {
         // Initialize with empty tips (will be populated on first update)
         user_tracking
             .set_path(
-                path!(user_uuid.as_ref(), "preferences_tips"),
+                path!(login_id.as_ref(), "preferences_tips"),
                 serde_json::to_string(&Vec::<String>::new()).unwrap(),
             )
             .await?;
 
-        debug!(user_uuid = %user_uuid.as_ref(), "Tracking user preferences for sync");
+        debug!(login_id = %login_id.as_ref(), "Tracking user preferences for sync");
         Ok(())
     }
 
@@ -86,13 +86,13 @@ impl<'a> UserSyncManager<'a> {
     /// enabling change detection via tip comparison.
     ///
     /// # Arguments
-    /// * `user_uuid` - The user's unique identifier
+    /// * `login_id` - The user's unique identifier
     ///
     /// # Returns
     /// A tuple of (preferences_db_id, preferences_tips) or None if user not tracked
-    pub(super) async fn get_tracked_user_state(
+    pub(super) async fn get_tracked_account_state(
         &self,
-        user_uuid: impl AsRef<str>,
+        login_id: impl AsRef<str>,
     ) -> Result<Option<(ID, Vec<ID>)>> {
         let user_tracking = self
             .txn
@@ -100,13 +100,13 @@ impl<'a> UserSyncManager<'a> {
             .await?;
 
         // Check if user exists
-        if !user_tracking.contains_path_str(user_uuid.as_ref()).await {
+        if !user_tracking.contains_path_str(login_id.as_ref()).await {
             return Ok(None);
         }
 
         // Get preferences DB ID
         let prefs_db_id_str = user_tracking
-            .get_path_as::<String>(path!(user_uuid.as_ref(), "preferences_db_id"))
+            .get_path_as::<String>(path!(login_id.as_ref(), "preferences_db_id"))
             .await
             .map_err(|_| {
                 Error::Sync(Box::new(SyncError::SerializationError(
@@ -117,7 +117,7 @@ impl<'a> UserSyncManager<'a> {
 
         // Get preferences tips
         let tips_json = user_tracking
-            .get_path_as::<String>(path!(user_uuid.as_ref(), "preferences_tips"))
+            .get_path_as::<String>(path!(login_id.as_ref(), "preferences_tips"))
             .await
             .unwrap_or_else(|_| "[]".to_string());
         let tips_strings: Vec<String> = serde_json::from_str(&tips_json).unwrap_or_default();
@@ -136,14 +136,14 @@ impl<'a> UserSyncManager<'a> {
     /// into the sync tree.
     ///
     /// # Arguments
-    /// * `user_uuid` - The user's unique identifier
+    /// * `login_id` - The user's unique identifier
     /// * `new_tips` - The current tips of the user's preferences database
     ///
     /// # Returns
     /// A Result indicating success or an error.
     pub(super) async fn update_tracked_tips(
         &self,
-        user_uuid: impl AsRef<str>,
+        login_id: impl AsRef<str>,
         new_tips: &[ID],
     ) -> Result<()> {
         let user_tracking = self
@@ -156,10 +156,10 @@ impl<'a> UserSyncManager<'a> {
         let tips_json = serde_json::to_string(&tips_strings).unwrap();
 
         user_tracking
-            .set_path(path!(user_uuid.as_ref(), "preferences_tips"), tips_json)
+            .set_path(path!(login_id.as_ref(), "preferences_tips"), tips_json)
             .await?;
 
-        debug!(user_uuid = %user_uuid.as_ref(), tip_count = new_tips.len(), "Updated user preferences tips");
+        debug!(login_id = %login_id.as_ref(), tip_count = new_tips.len(), "Updated user preferences tips");
         Ok(())
     }
 
@@ -169,14 +169,14 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Arguments
     /// * `database_id` - The ID of the database
-    /// * `user_uuid` - The user's unique identifier
+    /// * `login_id` - The user's unique identifier
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) async fn link_user_to_database(
+    pub(super) async fn link_account_to_database(
         &self,
         database_id: &ID,
-        user_uuid: impl AsRef<str>,
+        login_id: impl AsRef<str>,
     ) -> Result<()> {
         let database_users = self
             .txn
@@ -196,21 +196,21 @@ impl<'a> UserSyncManager<'a> {
         let user_exists = users.iter().any(|u| {
             u.get("user_uuid")
                 .and_then(|v| v.as_str())
-                .map(|uuid| uuid == user_uuid.as_ref())
+                .map(|uuid| uuid == login_id.as_ref())
                 .unwrap_or(false)
         });
 
         if !user_exists {
             // Add new user
             users.push(serde_json::json!({
-                "user_uuid": user_uuid.as_ref()
+                "user_uuid": login_id.as_ref()
             }));
 
             // Store updated users list
             let users_json = serde_json::to_string(&users).unwrap();
             database_users.set_path(&users_path, users_json).await?;
 
-            debug!(database_id = %database_id, user_uuid = %user_uuid.as_ref(), "Linked user to database for sync tracking");
+            debug!(database_id = %database_id, login_id = %login_id.as_ref(), "Linked user to database for sync tracking");
         }
 
         Ok(())
@@ -220,14 +220,14 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Arguments
     /// * `database_id` - The ID of the database
-    /// * `user_uuid` - The user's unique identifier
+    /// * `login_id` - The user's unique identifier
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) async fn unlink_user_from_database(
+    pub(super) async fn unlink_account_from_database(
         &self,
         database_id: &ID,
-        user_uuid: impl AsRef<str>,
+        login_id: impl AsRef<str>,
     ) -> Result<()> {
         let database_users = self
             .txn
@@ -246,7 +246,7 @@ impl<'a> UserSyncManager<'a> {
             users.retain(|u| {
                 u.get("user_uuid")
                     .and_then(|v| v.as_str())
-                    .map(|uuid| uuid != user_uuid.as_ref())
+                    .map(|uuid| uuid != login_id.as_ref())
                     .unwrap_or(true)
             });
 
@@ -260,7 +260,7 @@ impl<'a> UserSyncManager<'a> {
                     database_users.set_path(&users_path, updated_json).await?;
                 }
 
-                debug!(database_id = %database_id, user_uuid = %user_uuid.as_ref(), "Unlinked user from database sync tracking");
+                debug!(database_id = %database_id, login_id = %login_id.as_ref(), "Unlinked user from database sync tracking");
             }
         }
 
@@ -277,7 +277,7 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A vector of user UUIDs
-    pub(super) async fn get_linked_users(&self, database_id: &ID) -> Result<Vec<String>> {
+    pub(super) async fn get_linked_accounts(&self, database_id: &ID) -> Result<Vec<String>> {
         let database_users = self
             .txn
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
@@ -293,8 +293,8 @@ impl<'a> UserSyncManager<'a> {
 
         let mut result = Vec::new();
         for user in users {
-            if let Some(user_uuid) = user.get("user_uuid").and_then(|v| v.as_str()) {
-                result.push(user_uuid.to_string());
+            if let Some(login_id) = user.get("user_uuid").and_then(|v| v.as_str()) {
+                result.push(login_id.to_string());
             }
         }
 
@@ -304,11 +304,11 @@ impl<'a> UserSyncManager<'a> {
     /// Get all databases linked to a user.
     ///
     /// # Arguments
-    /// * `user_uuid` - The user's unique identifier
+    /// * `login_id` - The user's unique identifier
     ///
     /// # Returns
     /// A vector of database IDs
-    pub(super) async fn get_linked_databases(&self, user_uuid: impl AsRef<str>) -> Result<Vec<ID>> {
+    pub(super) async fn get_linked_databases(&self, login_id: impl AsRef<str>) -> Result<Vec<ID>> {
         let database_users = self
             .txn
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
@@ -325,7 +325,7 @@ impl<'a> UserSyncManager<'a> {
                 let has_user = users.iter().any(|u| {
                     u.get("user_uuid")
                         .and_then(|v| v.as_str())
-                        .map(|uuid| uuid == user_uuid.as_ref())
+                        .map(|uuid| uuid == login_id.as_ref())
                         .unwrap_or(false)
                 });
 

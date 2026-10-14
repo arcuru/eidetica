@@ -1035,7 +1035,7 @@ async fn test_genesis_verifies_after_persist_reload() {
     // service-mode admin login dance — this is a local persist/reload test.
     let (instance, mut user) = Instance::create_backend(
         Box::new(InMemory::new()),
-        eidetica::NewUser::passwordless("u"),
+        eidetica::NewAccount::passwordless("u"),
     )
     .await
     .unwrap();

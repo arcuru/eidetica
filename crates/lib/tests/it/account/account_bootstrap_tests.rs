@@ -1,10 +1,11 @@
-//! Tests for User-level bootstrap request approval/rejection workflow.
+//! Tests for AccountSession-level bootstrap request approval/rejection workflow.
 //!
 //! This test suite verifies that users can approve and reject bootstrap requests
 //! using their keys, with proper permission validation and error handling.
 
 use eidetica::{
     Database, Instance, Result,
+    account::{AccountSession, types::SyncSettings},
     auth::{
         AuthKey, Permission,
         crypto::{PrivateKey, PublicKey, generate_keypair},
@@ -19,7 +20,6 @@ use eidetica::{
         handler::{SyncHandler, SyncHandlerImpl},
         protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
     },
-    user::{User, types::SyncSettings},
 };
 
 use crate::helpers::test_local_instance as test_instance;
@@ -28,16 +28,17 @@ use crate::helpers::test_local_instance as test_instance;
 
 /// Create a server instance with a user who owns a database
 ///
-/// Returns: (Instance, User, Database, Sync, tree_id, user_key_id)
-async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, ID, PublicKey)> {
+/// Returns: (Instance, AccountSession, Database, Sync, tree_id, user_key_id)
+async fn setup_user_with_database()
+-> Result<(Instance, AccountSession, Database, Sync, ID, PublicKey)> {
     let instance = test_instance().await;
 
     // Create and login user
-    crate::helpers::create_user(&instance, "alice", None)
+    crate::helpers::create_account(&instance, "alice", None)
         .await
         .expect("Failed to create user");
     let mut user = instance
-        .login_user("alice", None)
+        .login_account("alice", None)
         .await
         .expect("Failed to login user");
 
@@ -82,7 +83,7 @@ async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, I
         .expect("Failed to add database to user preferences");
 
     // Sync the user database to update combined settings
-    sync.sync_user(user.user_uuid(), user.user_database().root_id())
+    sync.sync_account(user.login_id(), user.account().root_id())
         .await
         .expect("Failed to sync user database");
 
@@ -180,11 +181,11 @@ async fn test_user_approve_bootstrap_request() {
     assert_eq!(pending.len(), 1);
     println!("✅ Bootstrap request created and pending");
 
-    // User approves the request using their key
+    // AccountSession approves the request using their key
     user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
         .await
         .expect("Failed to approve bootstrap request");
-    println!("✅ User successfully approved bootstrap request");
+    println!("✅ AccountSession successfully approved bootstrap request");
 
     // Verify request is now approved
     let (_, approved_request) = sync
@@ -248,11 +249,11 @@ async fn test_user_reject_bootstrap_request() {
         .expect("Failed to list pending requests");
     assert_eq!(pending.len(), 1);
 
-    // User rejects the request
+    // AccountSession rejects the request
     user.reject_bootstrap_request(&sync, &request_id, &user_key_id)
         .await
         .expect("Failed to reject bootstrap request");
-    println!("✅ User successfully rejected bootstrap request");
+    println!("✅ AccountSession successfully rejected bootstrap request");
 
     // Verify request is now rejected
     let (_, rejected_request) = sync
@@ -463,22 +464,22 @@ async fn test_user_cannot_reject_after_approval() {
 async fn test_multiple_users() {
     // Create instances with 2 users
     let instance = test_instance().await;
-    crate::helpers::create_user(&instance, "alice", None)
+    crate::helpers::create_account(&instance, "alice", None)
         .await
         .expect("Failed to create alice");
     let mut alice = instance
-        .login_user("alice", None)
+        .login_account("alice", None)
         .await
         .expect("Failed to login alice");
     let alice_key = alice
         .get_default_key()
         .expect("Failed to get alice's default key");
 
-    crate::helpers::create_user(&instance, "bob", None)
+    crate::helpers::create_account(&instance, "bob", None)
         .await
         .expect("Failed to create bob");
     let mut bob = instance
-        .login_user("bob", None)
+        .login_account("bob", None)
         .await
         .expect("Failed to login bob");
     let bob_key = bob
@@ -553,10 +554,10 @@ async fn test_multiple_users() {
         .expect("Failed to create sync object");
 
     // Sync both users to propagate combined settings
-    sync.sync_user(alice.user_uuid(), alice.user_database().root_id())
+    sync.sync_account(alice.login_id(), alice.account().root_id())
         .await
         .expect("Failed to sync Alice's user data");
-    sync.sync_user(bob.user_uuid(), bob.user_database().root_id())
+    sync.sync_account(bob.login_id(), bob.account().root_id())
         .await
         .expect("Failed to sync Bob's user data");
 
@@ -673,18 +674,18 @@ async fn test_user_list_pending_bootstrap_requests() {
         assert!(matches!(request.status, RequestStatus::Pending));
     }
 
-    println!("✅ User can list all pending bootstrap requests");
+    println!("✅ AccountSession can list all pending bootstrap requests");
 }
 
 #[tokio::test]
 async fn test_user_without_admin_cannot_modify() {
     // Create Alice with a database
     let instance = test_instance().await;
-    crate::helpers::create_user(&instance, "alice", None)
+    crate::helpers::create_account(&instance, "alice", None)
         .await
         .expect("Failed to create alice");
     let mut alice = instance
-        .login_user("alice", None)
+        .login_account("alice", None)
         .await
         .expect("Failed to login alice");
     let alice_key = alice
@@ -726,11 +727,11 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to add Alice's database preferences");
 
     // Create Bob and add a key for him
-    crate::helpers::create_user(&instance, "bob", None)
+    crate::helpers::create_account(&instance, "bob", None)
         .await
         .expect("Failed to create bob");
     let mut bob = instance
-        .login_user("bob", None)
+        .login_account("bob", None)
         .await
         .expect("Failed to login bob");
     let bob_key = bob
@@ -758,7 +759,7 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to create sync");
 
     // Sync Alice's user data to propagate combined settings
-    sync.sync_user(alice.user_uuid(), alice.user_database().root_id())
+    sync.sync_account(alice.login_id(), alice.account().root_id())
         .await
         .expect("Failed to sync Alice's user data");
 
@@ -782,7 +783,9 @@ async fn test_user_without_admin_cannot_modify() {
         "Error should indicate insufficient permission: {error_msg}"
     );
 
-    println!("✅ User without Admin permission correctly cannot reject bootstrap requests");
+    println!(
+        "✅ AccountSession without Admin permission correctly cannot reject bootstrap requests"
+    );
 
     // Now confirm that Bob cannot approve the request either
     let result = bob
@@ -800,5 +803,7 @@ async fn test_user_without_admin_cannot_modify() {
         "Error should indicate insufficient permission: {error_msg}"
     );
 
-    println!("✅ User without Admin permission correctly cannot approve bootstrap requests");
+    println!(
+        "✅ AccountSession without Admin permission correctly cannot approve bootstrap requests"
+    );
 }

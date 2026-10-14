@@ -381,12 +381,12 @@ pub async fn test_table_multi_operations(
             .unwrap();
 
         let record1 = TestRecord {
-            name: "Initial User 1".to_string(),
+            name: "Initial AccountSession 1".to_string(),
             age: 20,
             email: "user1@initial.com".to_string(),
         };
         let record2 = TestRecord {
-            name: "Initial User 2".to_string(),
+            name: "Initial AccountSession 2".to_string(),
             age: 25,
             email: "user2@initial.com".to_string(),
         };
@@ -407,7 +407,7 @@ pub async fn test_table_multi_operations(
 
         // Update existing
         let updated_record1 = TestRecord {
-            name: "Updated User 1".to_string(),
+            name: "Updated AccountSession 1".to_string(),
             age: 21,
             email: "user1@updated.com".to_string(),
         };
@@ -415,7 +415,7 @@ pub async fn test_table_multi_operations(
 
         // Add new
         let record3 = TestRecord {
-            name: "New User 3".to_string(),
+            name: "New AccountSession 3".to_string(),
             age: 30,
             email: "user3@new.com".to_string(),
         };
@@ -526,7 +526,7 @@ pub async fn test_table_concurrent_modifications(
             .await
             .unwrap();
         let record = TestRecord {
-            name: "Original User".to_string(),
+            name: "Original AccountSession".to_string(),
             age: 25,
             email: "original@test.com".to_string(),
         };

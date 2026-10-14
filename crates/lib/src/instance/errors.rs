@@ -44,7 +44,7 @@ pub enum InstanceError {
     /// Returned by [`Instance::connect`](super::Instance::connect) when the
     /// backend at the URL has no instance metadata. Use
     /// [`Instance::connect_or_create`](super::Instance::connect_or_create)
-    /// with a [`NewUser`](super::NewUser) to initialise it first.
+    /// with a [`NewAccount`](super::NewAccount) to initialise it first.
     #[error(
         "Instance not initialised on this backend; use Instance::connect_or_create to bootstrap"
     )]

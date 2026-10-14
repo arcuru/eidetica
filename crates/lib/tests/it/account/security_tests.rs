@@ -2,7 +2,7 @@
 //!
 //! Tests security-related functionality including:
 //! - Password edge cases (empty, unicode, special chars)
-//! - User key isolation and uniqueness
+//! - AccountSession key isolation and uniqueness
 //! - Database access permission boundaries
 //! - Session security
 
@@ -17,17 +17,17 @@ async fn test_empty_password_different_from_no_password() {
     let username = "alice";
 
     // Create user with empty password (different from passwordless)
-    crate::helpers::create_user(&instance, username, Some(""))
+    crate::helpers::create_account(&instance, username, Some(""))
         .await
         .expect("Create with empty password");
 
     // Should require empty password to login
-    let result = instance.login_user(username, None).await;
+    let result = instance.login_account(username, None).await;
     assert!(result.is_err(), "Empty password is not same as no password");
 
     // Should succeed with empty password
     let _user = instance
-        .login_user(username, Some(""))
+        .login_account(username, Some(""))
         .await
         .expect("Login with empty password");
 }
@@ -39,10 +39,10 @@ async fn test_case_sensitive_passwords() {
     let (instance, _) = setup_local_instance_with_user(username, Some(password)).await;
 
     // Wrong case should fail
-    let result = instance.login_user(username, Some("mypassword")).await;
+    let result = instance.login_account(username, Some("mypassword")).await;
     assert!(result.is_err(), "Passwords should be case-sensitive");
 
-    let result = instance.login_user(username, Some("MYPASSWORD")).await;
+    let result = instance.login_account(username, Some("MYPASSWORD")).await;
     assert!(result.is_err(), "Passwords should be case-sensitive");
 }
 
@@ -52,7 +52,7 @@ async fn test_special_characters_in_password() {
     let password = "p@ssw0rd!#$%^&*()";
     let (instance, _) = setup_instance_with_user(username, Some(password)).await;
 
-    let _user = login_user(&instance, username, Some(password)).await;
+    let _user = login_account(&instance, username, Some(password)).await;
 }
 
 #[tokio::test]
@@ -61,7 +61,7 @@ async fn test_unicode_in_password() {
     let password = "密码🔒パスワード";
     let (instance, _) = setup_instance_with_user(username, Some(password)).await;
 
-    let _user = login_user(&instance, username, Some(password)).await;
+    let _user = login_account(&instance, username, Some(password)).await;
 }
 
 #[tokio::test]
@@ -70,7 +70,7 @@ async fn test_long_password() {
     let password = "a".repeat(1000); // Very long password
     let (instance, _) = setup_instance_with_user(username, Some(&password)).await;
 
-    let _user = login_user(&instance, username, Some(&password)).await;
+    let _user = login_account(&instance, username, Some(&password)).await;
 }
 
 // ===== KEY ISOLATION AND UNIQUENESS =====
@@ -80,9 +80,9 @@ async fn test_key_ids_are_unique_per_user() {
     let (instance, _) =
         setup_local_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
-    let alice = login_user(&instance, "alice", None).await;
-    let bob = login_user(&instance, "bob", None).await;
-    let charlie = login_user(&instance, "charlie", None).await;
+    let alice = login_account(&instance, "alice", None).await;
+    let bob = login_account(&instance, "bob", None).await;
+    let charlie = login_account(&instance, "charlie", None).await;
 
     let alice_keys = alice.list_keys().expect("Alice keys");
     let bob_keys = bob.list_keys().expect("Bob keys");
@@ -144,7 +144,7 @@ async fn test_user_list_keys_only_shows_own_keys() {
 #[tokio::test]
 async fn test_generated_keys_are_unique() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Generate multiple keys
     let key1 = add_user_key(&mut user, None).await;
@@ -178,7 +178,7 @@ async fn test_keys_from_different_users_are_unique() {
 #[tokio::test]
 async fn test_invalid_key_id_fails() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let user = login_user(&instance, &username, None).await;
+    let user = login_account(&instance, &username, None).await;
 
     let (_, fake_key) = generate_keypair();
     let result = user.get_signing_key(&fake_key);
@@ -215,7 +215,10 @@ async fn test_database_access_requires_key() {
     let result = user2.open_database(db_id).await;
 
     // Bob should not be able to load without proper bootstrap
-    assert!(result.is_err(), "User without key should not load database");
+    assert!(
+        result.is_err(),
+        "AccountSession without key should not load database"
+    );
 }
 
 // ===== SESSION SECURITY =====
@@ -225,12 +228,12 @@ async fn test_multiple_sessions_see_persisted_changes() {
     let (instance, username) = setup_local_instance_with_user("alice", None).await;
 
     // Session 1: Add a key
-    let mut user1 = login_user(&instance, &username, None).await;
+    let mut user1 = login_account(&instance, &username, None).await;
     let key1 = add_user_key(&mut user1, Some("Key from session 1")).await;
     user1.logout().expect("Logout session 1");
 
     // Session 2: Should see the key that was persisted
-    let user2 = login_user(&instance, &username, None).await;
+    let user2 = login_account(&instance, &username, None).await;
     let user2_keys = user2.list_keys().expect("User2 keys");
 
     assert!(

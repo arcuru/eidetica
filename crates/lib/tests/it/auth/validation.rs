@@ -22,7 +22,7 @@ use crate::create_auth_keys;
 // Auth validation tests exercise signing/verification paths that need a
 // local backend; bypass the service routing for the default `setup_db`.
 use crate::helpers::test_local_instance_with_user;
-async fn setup_db() -> (eidetica::Instance, eidetica::user::User) {
+async fn setup_db() -> (eidetica::Instance, eidetica::account::AccountSession) {
     test_local_instance_with_user("test_user").await
 }
 
@@ -77,7 +77,7 @@ async fn test_permission_checking_admin_operations() {
     let (instance, user, tree, key_ids) =
         setup_complete_auth_environment_with_user("test_user", &keys).await;
 
-    // Get signing keys using User API (index 1 = WRITE_KEY)
+    // Get signing keys using AccountSession API (index 1 = WRITE_KEY)
     let write_signing_key = user
         .get_signing_key(&key_ids[1])
         .expect("Failed to get write key")
@@ -261,7 +261,7 @@ async fn test_entry_validation_with_mixed_key_states() {
     let (instance, user, tree, key_ids) =
         setup_complete_auth_environment_with_user("test_user", &keys).await;
 
-    // Get signing keys using User API (index 1 = ACTIVE_KEY)
+    // Get signing keys using AccountSession API (index 1 = ACTIVE_KEY)
     let active_signing_key = user
         .get_signing_key(&key_ids[1])
         .expect("Failed to get active key")

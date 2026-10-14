@@ -1,4 +1,4 @@
-//! Tests for `User::new_database()` — the chainable `DatabaseBuilder` API.
+//! Tests for `AccountSession::new_database()` — the chainable `DatabaseBuilder` API.
 //!
 //! Covers builder ergonomics, atomic multi-store initialization, the
 //! extension-trait pattern (`DocStoreInit::initialize_doc` / `empty_doc`),
@@ -15,7 +15,7 @@ use super::helpers::*;
 #[tokio::test]
 async fn test_builder_creates_basic_database() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let (db, _key) = user
         .new_database()
@@ -30,7 +30,7 @@ async fn test_builder_creates_basic_database() {
 #[tokio::test]
 async fn test_builder_empty_doc_registers_store() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let (db, _) = user
         .new_database()
@@ -50,7 +50,7 @@ async fn test_builder_empty_doc_registers_store() {
 #[tokio::test]
 async fn test_builder_initialize_doc_persists_value() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let mut meta = Doc::new();
     meta.set("name", "agent");
@@ -78,7 +78,7 @@ async fn test_builder_initialize_doc_preserves_nested_values() {
     // key of the input Doc becomes a top-level key of the DocStore, with the
     // original Value variant intact".
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let mut nested = Doc::new();
     nested.set("inner", "deep");
@@ -113,7 +113,7 @@ async fn test_builder_initialize_doc_preserves_nested_values() {
 #[tokio::test]
 async fn test_builder_multiple_stores_in_single_genesis_entry() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let (db, _) = user
         .new_database()
@@ -141,7 +141,7 @@ async fn test_builder_name_after_settings_overrides_name_in_doc() {
     // settings, so a prior `.name("x")` is discarded; a subsequent `.name("y")`
     // mutates the freshly-installed settings.
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Case 1: settings AFTER name → settings wins (name dropped).
     let mut d = Doc::new();
@@ -179,7 +179,7 @@ async fn test_builder_with_key_rejects_key_not_in_user_keystore() {
     // time; the failure surfaces inside `build()` when the underlying
     // `create_database_with_init` tries to resolve the signing key.
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Generate a key OUTSIDE the user's key manager.
     let (_, foreign_key) = eidetica::auth::crypto::generate_keypair();
@@ -200,7 +200,7 @@ async fn test_builder_with_key_rejects_key_not_in_user_keystore() {
 #[tokio::test]
 async fn test_builder_with_existing_key() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     // Pre-generate a key
     let key_id = user.add_private_key(Some("explicit-key")).await.unwrap();
@@ -221,7 +221,7 @@ async fn test_builder_with_existing_key() {
 #[tokio::test]
 async fn test_builder_auto_generated_key_uses_label() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let initial_keys = user.list_keys().expect("list_keys").len();
 
@@ -241,7 +241,7 @@ async fn test_builder_auto_generated_key_uses_label() {
 #[tokio::test]
 async fn test_builder_duplicate_store_name_errors() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let result = user
         .new_database()
@@ -260,7 +260,7 @@ async fn test_builder_duplicate_store_name_errors() {
 #[tokio::test]
 async fn test_builder_init_callback_failure_aborts() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let initial_dbs = user.databases().await.expect("databases").len();
 
@@ -284,12 +284,12 @@ async fn test_builder_init_callback_failure_aborts() {
 async fn test_builder_auto_generated_key_persists_after_init_failure() {
     // Documents the accepted tradeoff: the builder calls `add_private_key`
     // BEFORE running store initializers, so an init failure leaves the
-    // generated key in the user's key store. `UserKeyManager` does not
+    // generated key in the user's key store. `AccountKeyManager` does not
     // expose a removal API, and the same leak exists for the pre-existing
     // `add_private_key` + `create_database` flow. If this changes
     // (rollback or deferred key generation), this assert must flip.
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let initial_keys = user.list_keys().expect("list_keys").len();
 
@@ -315,7 +315,7 @@ async fn test_builder_auto_generated_key_persists_after_init_failure() {
 #[tokio::test]
 async fn test_builder_writes_tracked_database_row() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let initial_count = user.databases().await.expect("databases").len();
 
@@ -352,7 +352,7 @@ async fn test_builder_registers_password_store_uninitialized() {
     // in the Uninitialized state — its `_index` config is empty until a
     // caller invokes `initialize(password, ...)` to set up encryption.
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let (db, _) = user
         .new_database()
@@ -382,7 +382,7 @@ async fn test_builder_password_store_initialize_and_roundtrip() {
     // the builder's registration is wire-compatible with PasswordStore's
     // post-genesis initialization flow.
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let (db, _) = user
         .new_database()
@@ -426,7 +426,7 @@ async fn test_builder_password_store_wrong_password_rejected() {
     // the wrong password must fail. This locks in the security contract:
     // the builder path doesn't accidentally bypass the password check.
     let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_user(&instance, &username, None).await;
+    let mut user = login_account(&instance, &username, None).await;
 
     let (db, _) = user
         .new_database()

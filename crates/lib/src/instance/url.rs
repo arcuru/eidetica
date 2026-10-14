@@ -345,9 +345,9 @@ mod tests {
             }
             other => panic!("expected sqlite, got {other:?}"),
         }
-        match parse("Postgres://User:Pass@Host.Example/MyDB").unwrap() {
+        match parse("Postgres://AccountSession:Pass@Host.Example/MyDB").unwrap() {
             ConnectionUrl::Postgres { url } => {
-                assert_eq!(url, "postgres://User:Pass@Host.Example/MyDB")
+                assert_eq!(url, "postgres://AccountSession:Pass@Host.Example/MyDB")
             }
             other => panic!("expected postgres, got {other:?}"),
         }

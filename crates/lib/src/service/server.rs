@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::Instance;
+use crate::account::system_databases::lookup_account_record;
 use crate::auth::crypto::{PublicKey, generate_challenge, verify_challenge_response};
 use crate::auth::errors::AuthError;
 use crate::auth::types::{Permission, SigKey};
@@ -33,7 +34,6 @@ use crate::service::protocol::{
     TicketBootstrapRequest, read_frame, write_frame,
 };
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
-use crate::user::system_databases::lookup_user_record;
 
 /// Connection identifier. Monotonic per server-run; reused only after
 /// `AtomicU64` wraps (effectively never on a real daemon). Purely
@@ -50,7 +50,7 @@ const TOKEN_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
 /// still owes an abort if the session goes away.
 struct SessionStaging {
     backend: StagingToken,
-    user_uuid: String,
+    login_id: String,
     database: ID,
     published: bool,
     chunks: HashMap<u64, Vec<u8>>,
@@ -154,7 +154,7 @@ impl Drop for ConnectionGuard {
 /// Per-connection authentication state.
 ///
 /// A connection moves `PreAuth → AwaitingProof → Authenticated` on a successful
-/// `TrustedLoginUser` / `TrustedLoginProve` exchange. A failed proof drops the
+/// `TrustedLoginAccount` / `TrustedLoginProve` exchange. A failed proof drops the
 /// connection back to `PreAuth` so the client can retry without reconnecting.
 /// Any other request while in `AwaitingProof` also resets the state so a
 /// half-finished login can't be exploited mid-flight.
@@ -166,10 +166,10 @@ impl Drop for ConnectionGuard {
 enum ConnectionState {
     /// No login attempt yet, or last attempt failed/abandoned.
     PreAuth,
-    /// `TrustedLoginUser` succeeded; waiting for the client's `TrustedLoginProve`.
+    /// `TrustedLoginAccount` succeeded; waiting for the client's `TrustedLoginProve`.
     AwaitingProof {
         username: String,
-        user_uuid: String,
+        login_id: String,
         challenge: Vec<u8>,
         expected_pubkey: PublicKey,
     },
@@ -182,8 +182,8 @@ enum ConnectionState {
     /// validates the identity hint against this set and gates against the
     /// resulting *acting* pubkey, so a single connection can drive ops on
     /// databases authored by any key the user has proven they hold.
-    /// `user_uuid` is the per-user scope key for the unified CRDT-state
-    /// cache (see [`crate::backend::CacheScope::User`]).
+    /// `login_id` is the per-user scope key for the unified CRDT-state
+    /// cache (see [`crate::backend::CacheScope::Login`]).
     /// `pending_key_challenges` holds outstanding registration challenges,
     /// keyed by the pubkey the challenge was issued for. Each challenge is
     /// single-use: the matching `SessionKeyRegister` consumes it whether
@@ -191,7 +191,7 @@ enum ConnectionState {
     #[allow(dead_code)] // username surfaces in audit/logging follow-ups
     Authenticated {
         username: String,
-        user_uuid: String,
+        login_id: String,
         login_pubkey: PublicKey,
         session_keyset: HashSet<PublicKey>,
         pending_key_challenges: HashMap<PublicKey, Vec<u8>>,
@@ -770,8 +770,8 @@ async fn dispatch_inner(
     }
     match request {
         // === Pre-auth: login handshake ===
-        ServiceRequest::TrustedLoginUser { username } => {
-            handle_trusted_login_user(instance, state, username).await
+        ServiceRequest::TrustedLoginAccount { username } => {
+            handle_trusted_login_account(instance, state, username).await
         }
         ServiceRequest::TrustedLoginProve { signature } => {
             handle_trusted_login_prove(state, &signature)
@@ -819,12 +819,12 @@ async fn dispatch_inner(
                 ConnectionState::Authenticated {
                     login_pubkey,
                     session_keyset,
-                    user_uuid,
+                    login_id,
                     ..
                 } => (
                     login_pubkey.clone(),
                     session_keyset.clone(),
-                    user_uuid.clone(),
+                    login_id.clone(),
                 ),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
@@ -972,13 +972,13 @@ async fn dispatch_database_op(
     ctx: &ConnectionContext,
     acting_pubkey: &PublicKey,
     identity: &SigKey,
-    user_uuid: &str,
+    login_id: &str,
     root_id: ID,
     op: DatabaseOp,
 ) -> crate::Result<ServiceResponse> {
     match op {
         DatabaseOp::ResolveStoreState { request } => {
-            let request = session_store_state_request(request, user_uuid, &root_id)?;
+            let request = session_store_state_request(request, login_id, &root_id)?;
             let view = match instance.backend().resolve_store_state(&request).await? {
                 Some(view) => Some(view),
                 // A client asks with its own scope; the daemon's own
@@ -1001,7 +1001,7 @@ async fn dispatch_database_op(
                             namespace_id: view.namespace_id,
                             target: request.clone(),
                         },
-                        user_uuid: user_uuid.to_string(),
+                        login_id: login_id.to_string(),
                         database: request.database.clone(),
                         published: true,
                         chunks: HashMap::new(),
@@ -1013,7 +1013,7 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::RecordView(token))
         }
         DatabaseOp::BeginStoreStateStaging { request } => {
-            let request = session_store_state_request(request, user_uuid, &root_id)?;
+            let request = session_store_state_request(request, login_id, &root_id)?;
             let backend = instance
                 .backend()
                 .begin_store_state_staging(request.clone())
@@ -1023,7 +1023,7 @@ async fn dispatch_database_op(
                 token.clone(),
                 SessionStaging {
                     backend,
-                    user_uuid: user_uuid.to_string(),
+                    login_id: login_id.to_string(),
                     database: request.database,
                     published: false,
                     chunks: HashMap::new(),
@@ -1048,7 +1048,7 @@ async fn dispatch_database_op(
                 .into_iter()
                 .collect::<crate::backend::RecordMutations>();
             let (backend, duplicate) =
-                session_staging(ctx, user_uuid, &root_id, &token, chunk_id, &digest)?;
+                session_staging(ctx, login_id, &root_id, &token, chunk_id, &digest)?;
             if duplicate {
                 return Ok(ServiceResponse::Ok);
             }
@@ -1070,7 +1070,7 @@ async fn dispatch_database_op(
                 .lock()
                 .unwrap()
                 .remove(&token)
-                .filter(|value| value.user_uuid == user_uuid && value.database == root_id)
+                .filter(|value| value.login_id == login_id && value.database == root_id)
                 .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
             let backend_token = staged.backend;
             let view = match instance
@@ -1095,7 +1095,7 @@ async fn dispatch_database_op(
                             database: database.clone(),
                             store: String::new(),
                             lifecycle: StoreStateLifecycle::Derived,
-                            scope: CacheScope::User(user_uuid.to_string()),
+                            scope: CacheScope::Login(login_id.to_string()),
                             projection: crate::backend::ProjectionDescriptor {
                                 name: String::new(),
                                 version: 0,
@@ -1103,7 +1103,7 @@ async fn dispatch_database_op(
                             source_key: Vec::new(),
                         },
                     },
-                    user_uuid: user_uuid.to_string(),
+                    login_id: login_id.to_string(),
                     database,
                     published: true,
                     chunks: HashMap::new(),
@@ -1117,7 +1117,7 @@ async fn dispatch_database_op(
                 let mut staging = ctx.staging.lock().unwrap();
                 if staging
                     .get(&token)
-                    .is_some_and(|value| value.user_uuid != user_uuid || value.database != root_id)
+                    .is_some_and(|value| value.login_id != login_id || value.database != root_id)
                 {
                     return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
                 }
@@ -1134,7 +1134,7 @@ async fn dispatch_database_op(
                 staged
                     .get_mut(&view)
                     .filter(|value| {
-                        value.user_uuid == user_uuid && value.database == root_id && value.published
+                        value.login_id == login_id && value.database == root_id && value.published
                     })
                     .map(|value| {
                         value.last_used = Instant::now();
@@ -1161,7 +1161,7 @@ async fn dispatch_database_op(
                 staged
                     .get_mut(&view)
                     .filter(|value| {
-                        value.user_uuid == user_uuid && value.database == root_id && value.published
+                        value.login_id == login_id && value.database == root_id && value.published
                     })
                     .map(|value| {
                         value.last_used = Instant::now();
@@ -1434,7 +1434,7 @@ async fn dispatch_database_op(
         }
 
         DatabaseOp::CreateTicket => Ok(ServiceResponse::DatabaseTicket(
-            crate::user::ticket_locator(instance, &root_id).await?,
+            crate::account::ticket_locator(instance, &root_id).await?,
         )),
     }
 }
@@ -1497,16 +1497,16 @@ fn bounded_page(
 /// session cannot publish into another's namespace or into the daemon's.
 fn session_store_state_request(
     mut request: StoreStateRequest,
-    user_uuid: &str,
+    login_id: &str,
     database: &ID,
 ) -> crate::Result<StoreStateRequest> {
     if request.database != *database || request.lifecycle != StoreStateLifecycle::Derived {
         return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
     }
     match &request.scope {
-        CacheScope::Shared => request.scope = CacheScope::User(user_uuid.to_string()),
-        CacheScope::User(uuid) if uuid == user_uuid => {}
-        CacheScope::User(_) => {
+        CacheScope::Shared => request.scope = CacheScope::Login(login_id.to_string()),
+        CacheScope::Login(uuid) if uuid == login_id => {}
+        CacheScope::Login(_) => {
             return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
         }
     }
@@ -1517,7 +1517,7 @@ fn session_store_state_request(
 /// upload is idempotent and a changed one is refused.
 fn session_staging(
     ctx: &ConnectionContext,
-    user_uuid: &str,
+    login_id: &str,
     database: &ID,
     token: &str,
     chunk_id: u64,
@@ -1526,7 +1526,7 @@ fn session_staging(
     let mut staging = ctx.staging.lock().unwrap();
     let value = staging
         .get_mut(token)
-        .filter(|value| value.user_uuid == user_uuid && value.database == *database)
+        .filter(|value| value.login_id == login_id && value.database == *database)
         .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
     if let Some(existing) = value.chunks.get(&chunk_id) {
         if existing != digest {
@@ -1539,22 +1539,22 @@ fn session_staging(
     Ok((value.backend.clone(), false))
 }
 
-/// Handle `ServiceRequest::TrustedLoginUser`: look up the user's full record,
+/// Handle `ServiceRequest::TrustedLoginAccount`: look up the user's full record,
 /// mint a challenge, and move the connection into `AwaitingProof`.
-async fn handle_trusted_login_user(
+async fn handle_trusted_login_account(
     instance: &Instance,
     state: &mut ConnectionState,
     username: String,
 ) -> crate::Result<ServiceResponse> {
-    // Look up the full `UserInfo`. The encrypted root key + salt ship to the
+    // Look up the full `AccountInfo`. The encrypted root key + salt ship to the
     // client so it can decrypt locally and sign the challenge in the same
     // round-trip; the daemon never sees the password or the plaintext key.
-    // The non-credential fields (user_database_id, status) ride along so the
-    // client can build the `User` session after proof without a second wire
+    // The non-credential fields (account_id, status) ride along so the
+    // client can build the `AccountSession` session after proof without a second wire
     // read of `_users`. If the lookup fails (no such user, disabled,
     // duplicates), drop back to `PreAuth` and bubble the error.
     let users_db = instance.users_db().await?;
-    let (user_uuid, user_info) = match lookup_user_record(&users_db, &username).await {
+    let (login_id, account_info) = match lookup_account_record(&users_db, &username).await {
         Ok(v) => v,
         Err(e) => {
             *state = ConnectionState::PreAuth;
@@ -1562,18 +1562,18 @@ async fn handle_trusted_login_user(
         }
     };
 
-    let expected_pubkey = user_info.credentials.root_key_id.clone();
+    let expected_pubkey = account_info.credentials.root_key_id.clone();
     let challenge = generate_challenge();
     *state = ConnectionState::AwaitingProof {
         username,
-        user_uuid: user_uuid.clone(),
+        login_id: login_id.clone(),
         challenge: challenge.clone(),
         expected_pubkey,
     };
     Ok(ServiceResponse::TrustedLoginChallenge {
         challenge,
-        user_uuid,
-        user_info,
+        login_id,
+        account_info,
     })
 }
 
@@ -1584,14 +1584,14 @@ fn handle_trusted_login_prove(
     state: &mut ConnectionState,
     signature: &[u8],
 ) -> crate::Result<ServiceResponse> {
-    let (username, user_uuid, challenge, expected_pubkey) =
+    let (username, login_id, challenge, expected_pubkey) =
         match std::mem::replace(state, ConnectionState::PreAuth) {
             ConnectionState::AwaitingProof {
                 username,
-                user_uuid,
+                login_id,
                 challenge,
                 expected_pubkey,
-            } => (username, user_uuid, challenge, expected_pubkey),
+            } => (username, login_id, challenge, expected_pubkey),
             other => {
                 // Restore the (unexpected) state we just took out so subsequent
                 // requests see consistent state.
@@ -1609,7 +1609,7 @@ fn handle_trusted_login_prove(
             session_keyset.insert(expected_pubkey.clone());
             *state = ConnectionState::Authenticated {
                 username,
-                user_uuid,
+                login_id,
                 login_pubkey: expected_pubkey,
                 session_keyset,
                 pending_key_challenges: HashMap::new(),
@@ -1926,7 +1926,7 @@ mod tests {
         let socket_path = dir.keep().join("test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -1954,7 +1954,7 @@ mod tests {
         let socket_path = parents[1].join("test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -1990,7 +1990,7 @@ mod tests {
         let socket_path = parent.join("test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2022,7 +2022,7 @@ mod tests {
             .unwrap();
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2052,7 +2052,7 @@ mod tests {
             let socket_path = parent.join("test.sock");
             let (instance, _admin) = Instance::create_backend(
                 Box::new(InMemory::new()),
-                crate::NewUser::passwordless("admin"),
+                crate::NewAccount::passwordless("admin"),
             )
             .await
             .unwrap();
@@ -2075,7 +2075,7 @@ mod tests {
         let socket_path = link.join("nested/test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2115,7 +2115,7 @@ mod tests {
         let socket_path = parents[1].join("test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2184,13 +2184,13 @@ mod tests {
             ConnectionState::PreAuth,
             ConnectionState::AwaitingProof {
                 username: "u".to_string(),
-                user_uuid: "uu".to_string(),
+                login_id: "uu".to_string(),
                 challenge: vec![1, 2, 3],
                 expected_pubkey: pubkey.clone(),
             },
             ConnectionState::Authenticated {
                 username: "u".to_string(),
-                user_uuid: "uu".to_string(),
+                login_id: "uu".to_string(),
                 login_pubkey: pubkey.clone(),
                 session_keyset: {
                     let mut s = HashSet::new();
@@ -2206,24 +2206,24 @@ mod tests {
                 ConnectionState::PreAuth => {}
                 ConnectionState::AwaitingProof {
                     username,
-                    user_uuid,
+                    login_id,
                     challenge,
                     expected_pubkey,
                 } => {
                     assert_not_private_key(username, "AwaitingProof::username");
-                    assert_not_private_key(user_uuid, "AwaitingProof::user_uuid");
+                    assert_not_private_key(login_id, "AwaitingProof::login_id");
                     assert_not_private_key(challenge, "AwaitingProof::challenge");
                     assert_not_private_key(expected_pubkey, "AwaitingProof::expected_pubkey");
                 }
                 ConnectionState::Authenticated {
                     username,
-                    user_uuid,
+                    login_id,
                     login_pubkey,
                     session_keyset,
                     pending_key_challenges,
                 } => {
                     assert_not_private_key(username, "Authenticated::username");
-                    assert_not_private_key(user_uuid, "Authenticated::user_uuid");
+                    assert_not_private_key(login_id, "Authenticated::login_id");
                     assert_not_private_key(login_pubkey, "Authenticated::login_pubkey");
                     for k in session_keyset {
                         assert_not_private_key(k, "Authenticated::session_keyset entry");
@@ -2334,7 +2334,7 @@ mod tests {
         drop(UnixListener::bind(&socket_path).unwrap());
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2351,7 +2351,7 @@ mod tests {
         let socket_path = dir.path().join("test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2411,7 +2411,7 @@ mod tests {
         tokio::fs::write(&socket_path, b"keep me").await.unwrap();
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2426,7 +2426,7 @@ mod tests {
         let socket_path = dir.path().join("test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2448,7 +2448,7 @@ mod tests {
         tokio::fs::write(&parent, "file").await.unwrap();
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
@@ -2468,7 +2468,7 @@ mod tests {
 
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
+            crate::NewAccount::passwordless("admin"),
         )
         .await
         .unwrap();
