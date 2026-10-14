@@ -782,16 +782,16 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
 
 /// Read a length-prefixed JSON frame from an async reader.
 ///
-/// Returns `None` on clean EOF (connection closed).
+/// Returns `None` only on EOF before any length-prefix bytes are read.
+/// EOF within the length prefix or payload returns an `UnexpectedEof` I/O error.
 pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> crate::Result<Option<T>> {
     let mut len_buf = [0u8; 4];
-    match reader.read_exact(&mut len_buf).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
+    if reader.read(&mut len_buf[..1]).await? == 0 {
+        return Ok(None);
     }
+    reader.read_exact(&mut len_buf[1..]).await?;
     let len = u32::from_be_bytes(len_buf);
     if len > MAX_FRAME_SIZE {
         return Err(crate::Error::Io(std::io::Error::new(
@@ -1277,6 +1277,60 @@ mod tests {
         let (mut reader, _writer) = tokio::io::split(client);
         let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut reader).await;
         assert!(result.unwrap().is_none());
+    }
+
+    async fn assert_truncated_header(header: &[u8]) {
+        let mut reader = header;
+        let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut reader).await;
+        assert!(matches!(
+            result,
+            Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_frame_truncated_header_one_byte() {
+        assert_truncated_header(&[0]).await;
+    }
+
+    #[tokio::test]
+    async fn test_frame_truncated_header_two_bytes() {
+        assert_truncated_header(&[0, 0]).await;
+    }
+
+    #[tokio::test]
+    async fn test_frame_truncated_header_three_bytes() {
+        assert_truncated_header(&[0, 0, 0]).await;
+    }
+
+    #[tokio::test]
+    async fn test_frame_complete_then_clean_eof() {
+        let payload = br#"{"protocol_version":0}"#;
+        let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(payload);
+        let mut reader = frame.as_slice();
+        let handshake: Handshake = read_frame(&mut reader).await.unwrap().unwrap();
+        assert_eq!(handshake.protocol_version, 0);
+        assert!(
+            read_frame::<_, Handshake>(&mut reader)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_frame_truncated_body() {
+        let payload = br#"{"protocol_version":0}"#;
+        for received in 0..payload.len() {
+            let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+            frame.extend_from_slice(&payload[..received]);
+            let result: crate::Result<Option<Handshake>> = read_frame(&mut frame.as_slice()).await;
+            assert!(matches!(
+                result,
+                Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof
+            ));
+        }
     }
 
     #[tokio::test]
