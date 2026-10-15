@@ -1,0 +1,96 @@
+# Temporary fit/cost comparison, not a runner migration or merge gate.
+# Keep the normal CI workflow unchanged; see internal/ci.md for interpretation.
+name: Runner Trial
+
+on:
+  pull_request:
+    branches: ["ci/cache-cost-trials-20261015"]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-trial-${{ github.event_name }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Runner trial (${{ matrix.runner }})
+    # Exact same-repository stack only; a moved parent requires a new comparison.
+    if: >-
+      github.repository == 'arcuru/eidetica' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'ci/runner-comparison-20261015' &&
+      github.event.pull_request.base.sha == '19869e3627923cd050778509e9ed0a9575d32823'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubicloud-standard-4, ubicloud-standard-8]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Runner identity and initial capacity
+        run: |
+          git rev-parse HEAD
+          sha256sum flake.lock
+          uname -a
+          cat /etc/os-release
+          nproc
+          df -Pk . /tmp
+          free -m
+          cat /proc/loadavg
+
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Checks with passive resource sampling
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix --version
+          readlink -f "$(command -v nix-fast-build)"
+          # Log effective scheduling, not the entire possibly sensitive config.
+          nix config show | grep -E '^(cores|max-jobs|sandbox|substituters) =' || echo 'runner-trial: config sample unavailable'
+          sample() {
+            printf '\nrunner-trial sample %(%FT%T%z)T\n' -1
+            df -Pk . /tmp /nix/store || echo 'runner-trial: disk sample unavailable'
+            free -m || echo 'runner-trial: memory sample unavailable'
+            cat /proc/loadavg || echo 'runner-trial: load sample unavailable'
+          }
+          sample
+          (
+            sleeper=
+            trap 'if [[ -n "$sleeper" ]]; then kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; fi' EXIT
+            trap 'exit 0' INT TERM
+            while true; do
+              sleep 15 &
+              sleeper=$!
+              wait "$sleeper"
+              sleeper=
+              sample
+            done
+          ) &
+          sampler=$!
+          finish() {
+            status=$?
+            trap - EXIT INT TERM
+            kill "$sampler" 2>/dev/null || true
+            wait "$sampler" 2>/dev/null || true
+            sample
+            printf 'runner-trial gate exit=%s elapsed=%ss\n' "$status" "$SECONDS"
+            exit "$status"
+          }
+          trap finish EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          SECONDS=0
+          # Exactly the normal PR gate: no concurrency override or fallback.
+          # Native Nix/nextest logs + Actions timestamps show fetch/build/test
+          # phases; a substituted check is NOT an executed test suite.
+          time nix-fast-build --skip-cached --no-nom --no-link
