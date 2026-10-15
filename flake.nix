@@ -219,6 +219,16 @@
               all = mkAll "eval" nixTests.eval;
             };
 
+          # PR checks keep every non-backend gate, including minimal-feature
+          # tests, but run the backend matrix only against SQLite.
+          ci-pr =
+            config.checks
+            // {
+              test = mkAggregate "test-pr" {
+                inherit (testPkgs.builds) sqlite minimal;
+              };
+            };
+
           # Combined push-CI target: the full check set (including the
           # module-injected treefmt check, via config.checks) plus integration
           # tests, as a single attrset. nix-fast-build only accepts one target,

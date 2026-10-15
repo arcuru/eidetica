@@ -27,6 +27,11 @@ The primary CI runs on GitHub with these workflows. The main CI workflow cancels
 - **[dependency-hold.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/dependency-hold.yml)**: Merge gate for dependency PRs
 - **[update-hold.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/update-hold.yml)**: Automatic hold expiry
 
+Ordinary pull requests run the backend test suite only against SQLite, while keeping all other checks, including minimal-feature tests, unchanged (`legacyPackages.x86_64-linux.ci-pr`).
+Main pushes and manual CI runs retain the full backend suite, x86 integration tests and ARM checks.
+To test a PR's branch with the full suite, select that branch in the CI workflow's **Run workflow** branch selector.
+The manual run checks the selected branch head, not a synthetic merge with main.
+
 ### Forgejo CI
 
 A dedicated Forgejo runner provides CI redundancy on [code.jackson.dev](https://code.jackson.dev/arcuru/eidetica). The Forgejo workflows mirror the testing in the GitHub Actions setup with minor adaptations for the Forgejo environment. The lint and test jobs each request their existing Nix targets in a single `nix build` invocation so shared dependencies can be scheduled together; job boundaries and checks are unchanged.
