@@ -7,6 +7,7 @@ use std::{os::unix::fs::PermissionsExt, path::PathBuf};
 
 use eidetica::{
     Error, Instance, NewAccount,
+    account::types::SyncSettings,
     auth::{
         AuthKey, Permission,
         crypto::{create_challenge_response, generate_keypair},
@@ -26,7 +27,6 @@ use eidetica::{
         DatabaseTicket, SyncError, peer_types::Address, protocol::SyncRequestAuth,
         transports::http::HttpTransport,
     },
-    account::types::SyncSettings,
 };
 use tempfile::TempDir;
 use tokio::{
