@@ -39,7 +39,7 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 └──────────────────┴──────────────────────┘
 ```
 
-Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF.
+Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF (before any length-prefix byte) and an `UnexpectedEof` I/O error when the stream ends mid-prefix or mid-payload.
 
 `PROTOCOL_VERSION` remains `0`, an unstable protocol. Version mismatches fail the handshake; the handshake and acknowledgment still advertise only the version, with no feature-capability negotiation.
 
