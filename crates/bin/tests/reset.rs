@@ -4,8 +4,16 @@ use eidetica::{
 };
 use std::{fs, process::Command};
 
+fn eidetica() -> Command {
+    // Nextest archives relocate binaries; keep Cargo's path for ordinary cargo test.
+    Command::new(
+        std::env::var_os("NEXTEST_BIN_EXE_eidetica")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_eidetica").into()),
+    )
+}
+
 fn reset(dir: &std::path::Path, confirm: bool) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_eidetica"));
+    let mut cmd = eidetica();
     cmd.args([
         "db",
         "reset-local-verification",
@@ -61,7 +69,7 @@ async fn cli_sqlite_reset_survives_reopen() {
         .await
         .unwrap();
     drop(backend);
-    let result = Command::new(env!("CARGO_BIN_EXE_eidetica"))
+    let result = eidetica()
         .args([
             "db",
             "reset-local-verification",
