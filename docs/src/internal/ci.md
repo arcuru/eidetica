@@ -38,6 +38,10 @@ The Nix flake defines reproducible builds and CI checks that run identically loc
 - `nix build` - Build the default package
 - `nix flake check` - Run all CI checks (audit, clippy, doc, test, etc.)
 
+Backend test checks and interactive runners share one all-feature workspace nextest archive.
+Each backend check extracts only the runtime archive and remaps the workspace to its own writable source tree, rather than restoring the Cargo dependency and test build targets.
+The minimal-feature check still builds separately, and doctests remain in the documentation checks.
+
 Binary caching via a [nix binary cache](https://wiki.nixos.org/wiki/Binary_Cache) speeds up builds by providing pre-built dependencies. It is located at:
 
 - URL - `https://cache.eidetica.dev`
