@@ -179,9 +179,11 @@ async fn join_bookkeeping_preserves_settings_changed_during_network_wait() -> Re
 
 #[tokio::test]
 async fn join_final_open_checks_requested_permission_and_retains_committed_state() -> Result<()> {
-    let (instance, mut user) =
-        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("client"))
-            .await?;
+    let (instance, mut user) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewAccount::passwordless("client"),
+    )
+    .await?;
     let key = user.get_default_key()?;
     let db = Database::create(
         &instance,
