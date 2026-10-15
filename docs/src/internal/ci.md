@@ -27,6 +27,52 @@ The primary CI runs on GitHub with these workflows. The main CI workflow cancels
 - **[dependency-hold.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/dependency-hold.yml)**: Merge gate for dependency PRs
 - **[update-hold.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/update-hold.yml)**: Automatic hold expiry
 
+### Temporary runner comparison
+
+`runner-trial.yml` is a test-only stacked PR from `ci/runner-comparison-20261015`
+into `ci/cache-cost-trials-20261015`, with the parent pinned to
+`19869e3627923cd050778509e9ed0a9575d32823` (PR #162).
+Only same-repository PR opened/synchronize/reopened events match; there is no
+push, dispatch, schedule or merge-queue trigger.
+Remove this workflow after the experiment; do not merge the trial into either parent or main.
+
+The three independent jobs use `ubuntu-24.04`, `ubicloud-standard-4` and the
+`ubicloud-standard-8` control, each with a 30-minute total timeout and no
+matrix fail-fast cancellation.
+All check out the same synthetic PR merge commit, use the existing secretless
+Setup Nix action and run the full normal PR command:
+`nix-fast-build --skip-cached --no-nom --no-link`.
+No Nix, Cargo or nextest parallelism settings change; effective Nix settings
+and CPU count are logged because defaults can scale with runner hardware.
+No retries, fallback, cache pushes, artifact uploads or disk cleanup are added.
+Resource exhaustion is a trial result, not permission to omit a check.
+
+Actions step timestamps include setup time; Nix phase logs, copy/build messages
+and nextest summaries distinguish fetching, compiling and actual test execution.
+A cached terminal check is not an executed suite: report each gate as executed,
+substituted or absent/failed, and do not claim test execution from a green job.
+The checks step logs disk free space, system memory and load every 15 seconds
+and at exit, preserving the gate's failure status and stopping its sampler.
+These are sampled system totals, not per-process RSS or guaranteed peaks;
+forced termination may prevent final samples.
+Compare minimum free disk and memory with initial capacity, and retain raw logs
+including phase timestamps and test summaries before Actions log retention expires.
+Cache warmth, network, image, CPU/RAM/disk limits and concurrent build/test
+contention remain confounders; this is a fit/cost probe, not a causal speedup claim.
+
+Trial statuses have distinct names and are not merge approval.
+Normal CI and Dependency Hold filter PRs to main, so they do not run for this
+stack base; the trial runs the unchanged checks command explicitly instead.
+Do not change required-check settings or impersonate the missing statuses.
+A future main-targeting change must pass the ordinary main PR checks.
+Normal push/dispatch VM integration and native ARM coverage are unchanged;
+the trial proves neither, and adds no merge-queue coverage to the existing workflow.
+Its unique workflow name cannot trigger Publish, and it receives only a read-only
+token with no signing key or publishing environment.
+Budget each opened/synchronize/reopened event or manual rerun as up to 90
+runner-minutes (30 per runner); cancellation is not a spending cap.
+Publication and any additional event or rerun need a separate budget reservation.
+
 ### Forgejo CI
 
 A dedicated Forgejo runner provides CI redundancy on [code.jackson.dev](https://code.jackson.dev/arcuru/eidetica). The Forgejo workflows mirror the testing in the GitHub Actions setup with minor adaptations for the Forgejo environment. The lint and test jobs each request their existing Nix targets in a single `nix build` invocation so shared dependencies can be scheduled together; job boundaries and checks are unchanged.
