@@ -97,7 +97,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> eidetica::Result<Self> {
         let (socket, shutdown, owner, dir) = super::start_test_server().await;
-        let mut user = owner.login_user("admin", None).await?;
+        let mut user = owner.login_account("admin", None).await?;
         let admin = user.get_default_key()?;
         let authority = user.create_database(Doc::new(), &admin).await?;
         let local = user.create_database(Doc::new(), &admin).await?;
@@ -153,7 +153,7 @@ impl Fixture {
 
         super::create_user_via_admin(&owner, "reader").await;
         let client = Instance::connect(format!("unix://{}", socket.display())).await?;
-        let login = client.login_user("reader", None).await?;
+        let login = client.login_account("reader", None).await?;
         assert!(login.admin().await.is_err(), "reader is not a host admin");
         assert!(
             Database::open(&client, local.root_id()).await.is_err(),

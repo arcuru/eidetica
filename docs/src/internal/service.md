@@ -191,26 +191,26 @@ Published views and private builds use opaque random tokens stored only in the c
 
 ### ServiceResponse
 
-| Variant                                                     | Payload                                                            |
-| ----------------------------------------------------------- | ------------------------------------------------------------------ |
-| `Entry(Entry)` / `Entries(Vec<Entry>)`                      | One or many entries                                                |
-| `EntrySignatureValid(bool)`                                 | Historical signature verdict, not verification status              |
-| `Ids(Vec<ID>)`                                              | One or many IDs                                                    |
-| `Ok`                                                        | Success with no data                                               |
-| `Unsupported`                                               | Unknown operation; no action performed                             |
-| `Token(String)`                                             | Opaque server-issued staging capability                            |
-| `Record` / `RecordPage` / `RecordView`                      | Lazy point, bounded page, and published-record-set responses       |
-| `TransactionContext(TransactionContext)`                    | Parent tips + settings, response to `DatabaseOp::BeginTransaction` |
-| `CrdtValue(WireCrdtValue)`                                  | Materialized merged state, response to `DatabaseOp::GetStoreState` |
-| `MergeState(MergeState)`                                    | LCA + path, response to `DatabaseOp::ComputeMergeState`            |
-| `DatabaseTicket(DatabaseTicket)`                            | Point-in-time locator, response to `DatabaseOp::CreateTicket`      |
-| `InstanceMetadata(Option<InstanceMetadata>)`                | Optional instance metadata                                         |
+| Variant                                                       | Payload                                                            |
+| ------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `Entry(Entry)` / `Entries(Vec<Entry>)`                        | One or many entries                                                |
+| `EntrySignatureValid(bool)`                                   | Historical signature verdict, not verification status              |
+| `Ids(Vec<ID>)`                                                | One or many IDs                                                    |
+| `Ok`                                                          | Success with no data                                               |
+| `Unsupported`                                                 | Unknown operation; no action performed                             |
+| `Token(String)`                                               | Opaque server-issued staging capability                            |
+| `Record` / `RecordPage` / `RecordView`                        | Lazy point, bounded page, and published-record-set responses       |
+| `TransactionContext(TransactionContext)`                      | Parent tips + settings, response to `DatabaseOp::BeginTransaction` |
+| `CrdtValue(WireCrdtValue)`                                    | Materialized merged state, response to `DatabaseOp::GetStoreState` |
+| `MergeState(MergeState)`                                      | LCA + path, response to `DatabaseOp::ComputeMergeState`            |
+| `DatabaseTicket(DatabaseTicket)`                              | Point-in-time locator, response to `DatabaseOp::CreateTicket`      |
+| `InstanceMetadata(Option<InstanceMetadata>)`                  | Optional instance metadata                                         |
 | `TrustedLoginChallenge { challenge, login_id, account_info }` | Challenge bytes + the user's full record (login)                   |
-| `TrustedLoginOk`                                            | Login succeeded; connection now authenticated                      |
-| `SessionKeyChallenge { challenge }`                         | Challenge bytes the client signs to register an additional key     |
-| `TicketBootstrapRoute { address, peer, tips }`              | Selected route, answering peer, and empty tips                     |
-| `TicketBootstrapOutcome(TicketBootstrapOutcome)`            | `Complete`, `Pending { .. }`, or `Rejected { .. }`                 |
-| `Error(ServiceError)`                                       | Error response                                                     |
+| `TrustedLoginOk`                                              | Login succeeded; connection now authenticated                      |
+| `SessionKeyChallenge { challenge }`                           | Challenge bytes the client signs to register an additional key     |
+| `TicketBootstrapRoute { address, peer, tips }`                | Selected route, answering peer, and empty tips                     |
+| `TicketBootstrapOutcome(TicketBootstrapOutcome)`              | `Complete`, `Pending { .. }`, or `Rejected { .. }`                 |
+| `Error(ServiceError)`                                         | Error response                                                     |
 
 ## Ticket Bootstrap
 
