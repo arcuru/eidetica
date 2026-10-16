@@ -153,7 +153,7 @@ pub fn assert_map_data(map: &Map, expected_data: &[(&str, &str)]) {
 // ===== TOMBSTONE AND DELETE HELPERS =====
 
 /// Create operation that deletes a key and verify tombstone behavior
-pub async fn test_delete_operation(tree: &Database, subtree_name: &str, key_to_delete: &str) -> ID {
+pub async fn commit_key_deletion(tree: &Database, subtree_name: &str, key_to_delete: &str) -> ID {
     let txn = tree.new_transaction().await.unwrap();
     let dict = txn.get_store::<DocStore>(subtree_name).await.unwrap();
     dict.delete(key_to_delete).await.unwrap();
@@ -184,7 +184,7 @@ pub fn assert_tombstone_hidden(map: &Map, key: &str) {
 // ===== NESTED VALUE HELPERS =====
 
 /// Create a nested Map value for testing complex data structures
-pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
+pub fn create_doc_value(data: &[(&str, &str)]) -> Value {
     let mut map = Doc::new();
     for (key, value) in data {
         map.set(key, value.to_string());
@@ -201,7 +201,7 @@ pub async fn create_operation_with_nested_data(tree: &Database) -> ID {
     store.set("string_key", "string_value").await.unwrap();
 
     // Set nested map value
-    let nested = create_nested_map(&[("inner1", "value1"), ("inner2", "value2")]);
+    let nested = create_doc_value(&[("inner1", "value1"), ("inner2", "value2")]);
     store.set("map_key", nested).await.unwrap();
 
     txn.commit().await.unwrap()

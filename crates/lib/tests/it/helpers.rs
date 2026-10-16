@@ -153,7 +153,6 @@ pub async fn test_instance() -> Instance {
 /// assertions and `login_account("admin", None)` calls keep working. Tests
 /// that need a specific bootstrap identity should use
 /// [`test_local_instance_with_user`] instead.
-#[allow(dead_code)]
 pub async fn test_local_instance() -> Instance {
     let clock = Arc::new(FixedClock::default());
     let (instance, _admin) = Instance::create_backend_with_clock(
@@ -169,7 +168,6 @@ pub async fn test_local_instance() -> Instance {
 /// Local-only counterpart of `test_instance_with_user`, for subsystem
 /// tests that need a logged-in user against a process-local instance
 /// regardless of `TEST_BACKEND`. See [`test_local_instance`].
-#[allow(dead_code)]
 pub async fn test_local_instance_with_user(username: &str) -> (Instance, AccountSession) {
     let instance = test_local_instance().await;
     create_account(&instance, username, None)
@@ -185,7 +183,6 @@ pub async fn test_local_instance_with_user(username: &str) -> (Instance, Account
 /// Local-only counterpart of `test_instance_with_user_and_key`, for
 /// subsystem tests that need a logged-in user against a process-local
 /// instance regardless of `TEST_BACKEND`. See [`test_local_instance`].
-#[allow(dead_code)]
 pub async fn test_local_instance_with_user_and_key(
     username: &str,
     key_display_name: Option<&str>,
@@ -230,7 +227,6 @@ pub async fn create_account(
 ///
 /// Replaces the removed `Instance::list_accounts` — listing users reads `_users`
 /// and is an admin operation reached through [`AccountSession::admin`].
-#[allow(dead_code)]
 pub async fn list_accounts(instance: &Instance) -> eidetica::Result<Vec<String>> {
     let admin = instance.login_account("admin", None).await?;
     admin.admin().await?.list_accounts().await
@@ -274,12 +270,6 @@ async fn test_remote_instance() -> Instance {
         .expect("Failed to login as bootstrapped admin");
 
     instance
-}
-
-/// Creates an Instance wrapped in Arc (common for sync tests)
-#[allow(dead_code)]
-pub async fn test_instance_arc() -> Arc<Instance> {
-    Arc::new(test_instance().await)
 }
 
 /// Creates an Instance with a passwordless user (most common test pattern)
@@ -446,7 +436,6 @@ pub async fn setup_tree_with_user_key() -> (Instance, Database, PublicKey) {
 /// poke at backend internals (`get_verification_status`,
 /// `update_verification_status`, `all_roots`, etc.) which have no wire
 /// equivalent. See [`test_local_instance`].
-#[allow(dead_code)]
 pub async fn setup_tree_with_user_key_local() -> (Instance, Database, PublicKey) {
     let (instance, mut user, key_id) =
         test_local_instance_with_user_and_key("test_user", Some("test_key")).await;
@@ -688,4 +677,104 @@ impl LocalBackendTestExt for Arc<dyn Backend> {
     async fn clear_derived_store_state(&self) -> eidetica::Result<()> {
         eidetica::instance::backend::Backend::clear_derived_store_state(self.as_ref()).await
     }
+}
+
+// Shared Doc fixtures and assertions for data and CRDT tests.
+
+/// Assert that a string value matches expected content
+pub fn assert_text_value(value: &Value, expected: &str) {
+    match value {
+        Value::Text(actual) => assert_eq!(actual, expected),
+        _ => panic!("Expected text value '{expected}', got {value:?}"),
+    }
+}
+
+/// Assert that a nested value matches expected string
+pub fn assert_nested_value(map: &Doc, path: &[&str], expected: &str) {
+    let mut current = map;
+
+    // Navigate to the parent of the final key
+    for &key in &path[..path.len() - 1] {
+        match current.get(key) {
+            Some(Value::Doc(inner)) => current = inner,
+            _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
+        }
+    }
+
+    // Check the final value
+    let final_key = path.last().expect("Path should not be empty");
+    match current.get(final_key) {
+        Some(Value::Text(s)) => assert_eq!(s, expected, "Value mismatch at path {path:?}"),
+        Some(other) => panic!("Expected text value at path {path:?}, got {other:?}"),
+        None => panic!("No value found at path {path:?}"),
+    }
+}
+
+/// Assert that a path is deleted (tombstone exists)
+pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
+    if path.len() == 1 {
+        // Simple case: check directly in this map using is_tombstone
+        assert!(
+            map.is_tombstone(path[0]),
+            "Expected tombstone at '{path:?}'"
+        );
+    } else {
+        // Navigate to parent and check final key
+        let mut current = map;
+        for &key in &path[..path.len() - 1] {
+            match current.get(key) {
+                Some(Value::Doc(inner)) => current = inner,
+                _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
+            }
+        }
+
+        let final_key = path.last().expect("Path should not be empty");
+        assert!(
+            current.is_tombstone(*final_key),
+            "Expected tombstone at '{path:?}'"
+        );
+    }
+}
+
+/// Create a complex nested structure for testing
+pub fn create_complex_nested_structure() -> Doc {
+    let mut root = Doc::new();
+
+    // Level 1
+    root.set("top_key", "top_value");
+
+    // Level 2
+    let mut level2 = Doc::new();
+    level2.set("level2_key1", "level2_value1");
+    level2.set("shared_key", "original_value");
+
+    // Level 3
+    let mut level3 = Doc::new();
+    level3.set("level3_key1", "level3_value1");
+    level2.set("level3", level3);
+
+    root.set("level2", level2);
+    root
+}
+
+/// Build complex merge scenario data
+pub fn build_complex_merge_data() -> (Doc, Doc) {
+    let mut map1 = Doc::new();
+    let mut level1a = Doc::new();
+    level1a.set("key1", "value1");
+    level1a.set("to_delete", "will_be_deleted");
+    level1a.set("to_update", "initial_value");
+    map1.set("level1", level1a);
+    map1.set("top_level_key", "top_value");
+
+    let mut map2 = Doc::new();
+    let mut level1b = Doc::new();
+    level1b.set("key2", "value2");
+    level1b.remove("to_delete");
+    level1b.set("to_update", "updated_value");
+    map2.set("level1", level1b);
+    map2.remove("top_level_key");
+    map2.set("new_top_key", "new_top_value");
+
+    (map1, map2)
 }

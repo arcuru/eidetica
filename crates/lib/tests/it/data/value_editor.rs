@@ -13,7 +13,7 @@ use super::helpers::*;
 async fn test_value_editor_set_and_get_string_at_root() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
-    test_editor_basic_set_get(&dict, "user", Value::Text("alice".to_string())).await?;
+    assert_editor_set_get(&dict, "user", Value::Text("alice".to_string())).await?;
 
     // Verify directly from store as well
     assert_eq!(dict.get_string("user").await?, "alice");
@@ -26,7 +26,7 @@ async fn test_value_editor_set_and_get_nested_string() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Test nested editor operations
-    test_nested_editor_operations(
+    assert_nested_editor_set_get(
         &dict,
         &["user", "profile", "name"],
         Value::Text("bob".to_string()),
@@ -41,7 +41,7 @@ async fn test_value_editor_set_and_get_nested_string() -> Result<()> {
 
     // Get user.profile (should be a map)
     let profile_map_value = user_editor.get_value("profile").await?;
-    assert_map_contains(&profile_map_value, &["name"]);
+    assert_doc_value_has_keys(&profile_map_value, &["name"]);
 
     // Get the whole user object
     let user_data = dict.get("user").await?;
@@ -66,7 +66,7 @@ async fn test_value_editor_overwrite_non_map_with_map() -> Result<()> {
     dict.set("user", "string_value").await?;
 
     // Now try to set user.profile.name = "charlie" through editor
-    test_nested_editor_operations(
+    assert_nested_editor_set_get(
         &dict,
         &["user", "profile", "name"],
         Value::Text("charlie".to_string()),
@@ -114,7 +114,7 @@ async fn test_value_editor_set_deeply_nested_creates_path() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Test deep nesting in one transaction
-    test_nested_editor_operations(
+    assert_nested_editor_set_get(
         &dict,
         &["a", "b", "c"],
         Value::Text("deep_value".to_string()),
@@ -149,7 +149,7 @@ async fn test_value_editor_set_string_on_editor_path() -> Result<()> {
         .await?;
 
     let user_data = dict.get("user").await?;
-    assert_map_contains(&user_data, &["name"]);
+    assert_doc_value_has_keys(&user_data, &["name"]);
     match user_data {
         Value::Doc(user_map) => {
             assert_text_value(user_map.get("name").unwrap(), "dave");
@@ -219,7 +219,7 @@ async fn test_value_editor_root_operations() -> Result<()> {
         .await?;
 
     // Verify the nested structure
-    assert_map_contains(&root_editor.get_value("nested").await?, &["nested_key"]);
+    assert_doc_value_has_keys(&root_editor.get_value("nested").await?, &["nested_key"]);
 
     // Delete a value at root level
     root_editor.delete_child("key1").await?;
@@ -263,7 +263,7 @@ async fn test_value_editor_delete_methods() -> Result<()> {
     assert_not_found_error(user_editor.get_value("role").await);
 
     // The profile should still exist
-    assert_map_contains(&user_editor.get_value("profile").await?, &["name", "email"]);
+    assert_doc_value_has_keys(&user_editor.get_value("profile").await?, &["name", "email"]);
 
     // Get editor for profile
     let profile_editor = user_editor.get_value_mut("profile");

@@ -12,6 +12,11 @@ use eidetica::{
     },
 };
 
+pub use crate::helpers::{
+    assert_nested_value, assert_path_deleted, assert_text_value, build_complex_merge_data,
+    create_complex_nested_structure,
+};
+
 // Type alias for local usage
 type Map = Doc;
 
@@ -48,7 +53,11 @@ pub fn create_merge_test_maps(
 }
 
 /// Test merge operation and verify expected results
-pub fn test_merge_result(map1: &Map, map2: &Map, expected_values: &[(&str, &str)]) -> Result<Map> {
+pub fn assert_merge_result(
+    map1: &Map,
+    map2: &Map,
+    expected_values: &[(&str, &str)],
+) -> Result<Map> {
     let merged = map1.merge(map2)?;
 
     for (key, expected_value) in expected_values {
@@ -61,82 +70,6 @@ pub fn test_merge_result(map1: &Map, map2: &Map, expected_values: &[(&str, &str)
     Ok(merged)
 }
 
-/// Assert that a string value matches expected content
-pub fn assert_text_value(value: &Value, expected: &str) {
-    match value {
-        Value::Text(actual) => assert_eq!(actual, expected),
-        _ => panic!("Expected text value '{expected}', got {value:?}"),
-    }
-}
-
-/// Assert that a nested value matches expected string
-pub fn assert_nested_value(map: &Map, path: &[&str], expected: &str) {
-    let mut current = map;
-
-    // Navigate to the parent of the final key
-    for &key in &path[..path.len() - 1] {
-        match current.get(key) {
-            Some(Value::Doc(inner)) => current = inner,
-            _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
-        }
-    }
-
-    // Check the final value
-    let final_key = path.last().expect("Path should not be empty");
-    match current.get(final_key) {
-        Some(Value::Text(s)) => assert_eq!(s, expected, "Value mismatch at path {path:?}"),
-        Some(other) => panic!("Expected text value at path {path:?}, got {other:?}"),
-        None => panic!("No value found at path {path:?}"),
-    }
-}
-
-/// Assert that a path is deleted (tombstone exists)
-pub fn assert_path_deleted(map: &Map, path: &[&str]) {
-    if path.len() == 1 {
-        // Simple case: check directly in this map using is_tombstone
-        assert!(
-            map.is_tombstone(path[0]),
-            "Expected tombstone at '{path:?}'"
-        );
-    } else {
-        // Navigate to parent and check final key
-        let mut current = map;
-        for &key in &path[..path.len() - 1] {
-            match current.get(key) {
-                Some(Value::Doc(inner)) => current = inner,
-                _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
-            }
-        }
-
-        let final_key = path.last().expect("Path should not be empty");
-        assert!(
-            current.is_tombstone(*final_key),
-            "Expected tombstone at '{path:?}'"
-        );
-    }
-}
-
-/// Create a complex nested structure for testing
-pub fn create_complex_nested_structure() -> Map {
-    let mut root = Doc::new();
-
-    // Level 1
-    root.set("top_key", "top_value");
-
-    // Level 2
-    let mut level2 = Doc::new();
-    level2.set("level2_key1", "level2_value1");
-    level2.set("shared_key", "original_value");
-
-    // Level 3
-    let mut level3 = Doc::new();
-    level3.set("level3_key1", "level3_value1");
-    level2.set("level3", level3);
-
-    root.set("level2", level2);
-    root
-}
-
 /// Build test data for multi-generation update scenarios
 pub fn build_generation_test_data() -> Vec<(&'static str, Value)> {
     vec![
@@ -145,28 +78,6 @@ pub fn build_generation_test_data() -> Vec<(&'static str, Value)> {
         ("gen3", Value::Deleted),
         ("gen4", Value::Text("resurrected".to_string())),
     ]
-}
-
-/// Build complex merge scenario data
-pub fn build_complex_merge_data() -> (Map, Map) {
-    let mut map1 = Doc::new();
-    let mut level1a = Doc::new();
-    level1a.set("key1", "value1");
-    level1a.set("to_delete", "will_be_deleted");
-    level1a.set("to_update", "initial_value");
-    map1.set("level1", level1a);
-    map1.set("top_level_key", "top_value");
-
-    let mut map2 = Doc::new();
-    let mut level1b = Doc::new();
-    level1b.set("key2", "value2");
-    level1b.remove("to_delete");
-    level1b.set("to_update", "updated_value");
-    map2.set("level1", level1b);
-    map2.remove("top_level_key");
-    map2.set("new_top_key", "new_top_value");
-
-    (map1, map2)
 }
 
 /// Create a test Map with some initial data
@@ -340,7 +251,7 @@ pub fn assert_maps_equivalent(map1: &Map, map2: &Map) {
 // ===== MERGE TESTING HELPERS =====
 
 /// Test CRDT merge associativity: (A ⊕ B) ⊕ C = A ⊕ (B ⊕ C)
-pub fn test_merge_associativity<T: CRDT + PartialEq + std::fmt::Debug>(
+pub fn assert_merge_associativity<T: CRDT + PartialEq + std::fmt::Debug>(
     a: &T,
     b: &T,
     c: &T,
