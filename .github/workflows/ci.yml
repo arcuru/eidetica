@@ -30,11 +30,13 @@ jobs:
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
 
-      # On PRs: build the checks only — fast feedback, integration is push-only.
+      # On PRs: keep all non-backend checks and minimal-feature tests, but
+      # run only SQLite in the backend matrix. Integration is push/dispatch-only.
       - name: Checks
         if: github.event_name == 'pull_request'
         run: |
-          nix-fast-build --skip-cached --no-nom --no-link
+          nix-fast-build --skip-cached --no-nom --no-link \
+            -f '.#legacyPackages.x86_64-linux.ci-pr'
 
       # On push/dispatch: build checks + integration in ONE nix-fast-build
       # invocation. nix-fast-build only takes a single target, so we point it at
