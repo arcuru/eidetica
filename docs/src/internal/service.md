@@ -184,7 +184,7 @@ As with other reads, the access gates can trigger normal opportunistic verificat
 There is no privileged client fallback, dependency acquisition or retry on an unsupported operation.
 Updated v0 peers recognize these variants; older peers follow the compatibility limits above.
 
-Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
+Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and raw verification-status/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
 
 `update_verification_status` is off-wire **by design, not just for tidiness**: verification is a local trust decision. If a client could set it over the socket, a client (or anything that reached the socket) could assert "this entry is `Verified`" without the server having validated it — exactly the caller-asserted-status hole the storage API was hardened to close. So the daemon's Instance owns verification: it stores everything `Unverified` and runs `Database::verify()` itself. The frontier/`allow_unverified` distinction is applied by the daemon-side `Database`, and every client connected to the same daemon therefore observes the same verified view.
 
@@ -452,6 +452,7 @@ The full suite passes 1:1 against the service backend. Tests that exercise _proc
 
 `service::historical_signatures::native_provider_service_parity` exercises the high-level historical signature query through the real socket with a non-admin login and a separate Read-only acting key.
 It checks operating-key attribution with native Entry signature verification, forged and unauthorized claims, incomplete proof, inherited-floor regression, attenuation, and historical validity after current revocation.
+Two-hop delegation and reader revocation on already-open handles check that every claimed delegated tree needs a current Read grant.
 A reader authorized only on the target cannot query delegated proof, and unregistered identities and foreign Entry IDs are refused.
 
 The architectural seam — wire-path tests vs. subsystem tests — is explicit at the helper level. The test harness bootstraps the server-side Instance with a passwordless `admin` user via `Instance::create_backend(..., NewAccount::passwordless("admin"))`, then logs in over the wire as that user. (The old `admin`/`admin` auto-bootstrap is gone; production deployments now run `eidetica daemon init --username <NAME>` with explicit credentials, and the test harness mirrors that shape.)

@@ -892,6 +892,7 @@ mod tests {
             r#"{"TrustedLoginProve":{"signature":[1,2,3]}}"#,
             r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"BeginTransaction":{"stores":["data"],"scope":"Verified"}}}}"#,
             r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":"GetVerifiedTips"}}"#,
+            r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"VerifyEntrySignature":{"id":""}}}}"#,
         ] {
             let IncomingRequest::Known(request) = serde_json::from_str(fixture).unwrap() else {
                 panic!("known fixture was classified Unsupported: {fixture}");
@@ -901,6 +902,8 @@ mod tests {
         for fixture in [
             r#"{"Response":"Ok"}"#,
             r#"{"Response":{"Ids":[]}}"#,
+            r#"{"Response":{"EntrySignatureValid":true}}"#,
+            r#"{"Response":{"EntrySignatureValid":false}}"#,
             r#"{"Response":{"InstanceMetadata":null}}"#,
             r#"{"Response":{"SessionKeyChallenge":{"challenge":[1,2,3]}}}"#,
             r#"{"Response":{"Error":{"module":"instance","kind":"AuthenticationRequired","message":"authentication required"}}}"#,
@@ -922,6 +925,29 @@ mod tests {
             .unwrap(),
             r#"{"Response":"Unsupported"}"#
         );
+    }
+
+    #[test]
+    fn historical_signature_query_rejects_malformed_known_payloads() {
+        for op in [
+            r#""VerifyEntrySignature""#,
+            r#"{"VerifyEntrySignature":{}}"#,
+        ] {
+            let request = format!(
+                r#"{{"AuthenticatedDb":{{"root_id":"","identity":{{"Direct":{{"hint":{{}}}}}},"op":{op}}}}}"#
+            );
+            assert!(
+                serde_json::from_str::<IncomingRequest>(&request).is_err(),
+                "{request}"
+            );
+        }
+        for verdict in ["null", "1", r#""true""#] {
+            let response = format!(r#"{{"Response":{{"EntrySignatureValid":{verdict}}}}}"#);
+            assert!(
+                serde_json::from_str::<IncomingServerFrame>(&response).is_err(),
+                "{response}"
+            );
+        }
     }
 
     /// Extract the inner `DatabaseOp` from a deserialised request, panicking if
