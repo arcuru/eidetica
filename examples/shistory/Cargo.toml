@@ -16,5 +16,5 @@ tokio = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
-eidetica = { path = "../../crates/lib", features = ["service"] }
+eidetica = { path = "../../crates/lib", features = ["service", "sqlite", "testing"] }
 tempfile = { workspace = true }

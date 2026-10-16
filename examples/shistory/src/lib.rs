@@ -5,18 +5,21 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use eidetica::{
-    Database, Instance, Result,
+    AccountSession, Database, ID, Instance, Result,
+    account::SyncSettings,
     auth::{AuthKey, Permission},
     crdt::Doc,
     service::default_socket_url,
-    store::Table,
+    store::{StoreError, Table},
     sync::DatabaseTicket,
-    user::{SyncSettings, User},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const DATABASE_NAME: &str = "shistory";
+/// Account reference namespace and name remembering the selected history root.
+pub const REFERENCE_NAMESPACE: &str = "shistory";
+pub const REFERENCE_NAME: &str = "history";
 const HOSTS_STORE: &str = "hosts";
 const HISTORY_STORE_PREFIX: &str = "history-";
 pub const DEFAULT_LIMIT: usize = 20;
@@ -59,49 +62,120 @@ pub struct HistorySummary {
     pub machine_counts: Vec<(Uuid, String, usize)>,
 }
 
-pub async fn connect(username: &str) -> Result<(Instance, User)> {
+pub async fn connect(username: &str) -> Result<(Instance, AccountSession)> {
     connect_to(default_socket_url(), username).await
 }
 
-pub async fn connect_to(socket_url: impl AsRef<str>, username: &str) -> Result<(Instance, User)> {
+pub async fn connect_to(
+    socket_url: impl AsRef<str>,
+    username: &str,
+) -> Result<(Instance, AccountSession)> {
     let socket_url = socket_url.as_ref();
-    let instance = Instance::connect(socket_url).await.map_err(|error| {
-        eidetica::store::StoreError::InvalidOperation {
-            store: "shistory".to_owned(),
-            operation: "connect".to_owned(),
-            reason: format!("Eidetica daemon at {socket_url} is unavailable: {error}"),
-        }
-    })?;
-    let user = instance.login_user(username, None).await?;
-    Ok((instance, user))
+    let instance =
+        Instance::connect(socket_url)
+            .await
+            .map_err(|error| StoreError::InvalidOperation {
+                store: "shistory".to_owned(),
+                operation: "connect".to_owned(),
+                reason: format!("Eidetica daemon at {socket_url} is unavailable: {error}"),
+            })?;
+    let session = instance.login_account(username, None).await?;
+    Ok((instance, session))
 }
 
-pub async fn setup(user: &mut User, ticket: Option<&DatabaseTicket>, name: &str) -> Result<Host> {
+/// Create the first history database, or join one from a ticket, then add a host.
+///
+/// Setup is the only path that creates or joins a history root. Run it from one
+/// shell at a time per Account: the remembered reference is an ordinary CRDT
+/// write, not a distributed compare-and-set.
+pub async fn setup(
+    session: &mut AccountSession,
+    ticket: Option<&DatabaseTicket>,
+    name: &str,
+) -> Result<Host> {
     validate_name(name)?;
+    let remembered = session
+        .reference(REFERENCE_NAMESPACE, REFERENCE_NAME)
+        .await?;
+    if let Some(id) = &remembered
+        && ticket.is_none_or(|ticket| ticket.database_id() != id)
+    {
+        return Err(configuration_error(format!(
+            "history database {id} is already selected for this account; add a host to it with setup --database {id}, never a replacement tree"
+        )));
+    }
     let database = match ticket {
         Some(ticket) => {
-            let key = user.get_default_key()?;
-            user.join(
-                ticket,
-                &key,
-                Permission::Write(10),
-                SyncSettings::on_commit(),
-                None,
-            )
-            .await?
+            let key = session.get_default_key()?;
+            session
+                .join(
+                    ticket,
+                    &key,
+                    Permission::Write(10),
+                    SyncSettings::on_commit(),
+                    None,
+                )
+                .await?
         }
-        None => create_database(user).await?,
+        None => {
+            refuse_unremembered_legacy(session).await?;
+            create_database(session).await?
+        }
     };
+    add_host(session, &database, remembered.is_none(), name).await
+}
+
+/// Add a host to an existing history root named by its ID.
+///
+/// This adopts a legacy installation's database, or repairs a setup that created
+/// or joined the root but did not finish remembering it or recording the host.
+pub async fn setup_existing(session: &AccountSession, id: &ID, name: &str) -> Result<Host> {
+    validate_name(name)?;
+    let remembered = session
+        .reference(REFERENCE_NAMESPACE, REFERENCE_NAME)
+        .await?;
+    if remembered
+        .as_ref()
+        .is_some_and(|remembered| remembered != id)
+    {
+        return Err(configuration_error(format!(
+            "history database {} is already selected for this account; refusing to select {id}",
+            remembered.unwrap()
+        )));
+    }
+    let database = open_selected(session, id).await?;
+    add_host(session, &database, remembered.is_none(), name).await
+}
+
+async fn add_host(
+    session: &AccountSession,
+    database: &Database,
+    remember: bool,
+    name: &str,
+) -> Result<Host> {
+    let id = database.root_id();
+    let repair = |error: eidetica::Error| -> eidetica::Error {
+        configuration_error(format!(
+            "history database {id} exists but setup did not finish ({error}); retry with setup --database {id}"
+        ))
+    };
+    // Remember the root before adding a host so a retry repairs this target.
+    if remember {
+        session
+            .set_reference(REFERENCE_NAMESPACE, REFERENCE_NAME, id)
+            .await
+            .map_err(repair)?;
+    }
     let host = Host {
         id: Uuid::new_v4(),
         name: name.to_owned(),
     };
-    save_host(&database, &host).await?;
+    save_host(database, &host).await.map_err(repair)?;
     Ok(host)
 }
 
-pub async fn ticket(user: &User) -> Result<DatabaseTicket> {
-    let database = open_database(user).await?;
+pub async fn ticket(session: &AccountSession) -> Result<DatabaseTicket> {
+    let database = open_database(session).await?;
     database.share().await?;
     database.ticket().await
 }
@@ -388,7 +462,7 @@ async fn matching_entries(
 
 fn validate_limit(limit: usize) -> Result<()> {
     if limit == 0 || limit > MAX_LIMIT {
-        return Err(eidetica::store::StoreError::InvalidConfiguration {
+        return Err(StoreError::InvalidConfiguration {
             store: "shistory".to_owned(),
             reason: format!("limit must be between 1 and {MAX_LIMIT}"),
         }
@@ -417,50 +491,103 @@ pub fn bounded_escaped(value: &str, limit: usize) -> String {
     display
 }
 
-async fn create_database(user: &mut User) -> Result<Database> {
-    match user.find_database(DATABASE_NAME).await {
-        Ok(_) => Err(eidetica::store::StoreError::InvalidConfiguration {
-            store: DATABASE_NAME.to_owned(),
-            reason: "history database already exists; omit the ticket only on the first host"
-                .to_owned(),
+async fn create_database(session: &mut AccountSession) -> Result<Database> {
+    let mut settings = Doc::new();
+    settings.set("name", DATABASE_NAME);
+    let key = session.get_default_key()?;
+    let database = session.create_database(settings, &key).await?;
+    let transaction = database.new_transaction().await?;
+    transaction
+        .get_settings()?
+        .set_auth_key(&key, AuthKey::active(None, Permission::Admin(0)))
+        .await?;
+    transaction
+        .get_settings()?
+        .set_global_auth_key(AuthKey::active(None, Permission::Write(10)))
+        .await?;
+    transaction.commit().await?;
+    session
+        .track_database(database.root_id().clone(), &key, SyncSettings::on_commit())
+        .await?;
+    Ok(database)
+}
+
+/// Refuse first-host setup when an unremembered legacy history database exists.
+async fn refuse_unremembered_legacy(session: &AccountSession) -> Result<()> {
+    match session.find_database(DATABASE_NAME).await {
+        Ok(databases) => {
+            let ids = databases
+                .iter()
+                .map(|database| database.root_id().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(configuration_error(format!(
+                "existing history database {ids} is not yet remembered; select it with setup --database <ID> instead of creating another"
+            )))
         }
-        .into()),
-        Err(error) if error.is_not_found() => {
-            let mut settings = Doc::new();
-            settings.set("name", DATABASE_NAME);
-            let key = user.get_default_key()?;
-            let database = user.create_database(settings, &key).await?;
-            let transaction = database.new_transaction().await?;
-            transaction
-                .get_settings()?
-                .set_auth_key(&key, AuthKey::active(None, Permission::Admin(0)))
-                .await?;
-            transaction
-                .get_settings()?
-                .set_global_auth_key(AuthKey::active(None, Permission::Write(10)))
-                .await?;
-            transaction.commit().await?;
-            user.track_database(database.root_id().clone(), &key, SyncSettings::on_commit())
-                .await?;
-            Ok(database)
-        }
+        Err(error) if error.is_not_found() => Ok(()),
         Err(error) => Err(error),
     }
 }
 
-pub async fn open_database(user: &User) -> Result<Database> {
-    let mut databases = user.find_database(DATABASE_NAME).await?;
+/// Open the remembered history database without changing any state.
+///
+/// Installations without a reference fall back to the unique tracked database
+/// named `shistory`; only a validated capture migrates them. A present reference
+/// never falls back to a name scan or a replacement tree.
+pub async fn open_database(session: &AccountSession) -> Result<Database> {
+    match session
+        .reference(REFERENCE_NAMESPACE, REFERENCE_NAME)
+        .await?
+    {
+        Some(id) => open_selected(session, &id).await,
+        None => legacy_database(session).await,
+    }
+}
+
+/// Open and validate this host's history before writing or migrating a legacy selection.
+///
+/// Permissions and tips are rechecked on every call; nothing is cached.
+pub async fn open_capture_database(session: &AccountSession, host_id: Uuid) -> Result<Database> {
+    let remembered = session
+        .reference(REFERENCE_NAMESPACE, REFERENCE_NAME)
+        .await?;
+    let database = match &remembered {
+        Some(id) => open_selected(session, id).await?,
+        None => legacy_database(session).await?,
+    };
+    host(&database, host_id).await?;
+    if remembered.is_none() {
+        session
+            .set_reference(REFERENCE_NAMESPACE, REFERENCE_NAME, database.root_id())
+            .await?;
+    }
+    Ok(database)
+}
+
+async fn open_selected(session: &AccountSession, id: &ID) -> Result<Database> {
+    // Key mappings can outlive tracking; require both, without caching access.
+    session.database(id).await?;
+    session.open_database(id).await
+}
+
+async fn legacy_database(session: &AccountSession) -> Result<Database> {
+    let mut databases = session.find_database(DATABASE_NAME).await?;
     if databases.len() != 1 {
-        return Err(eidetica::store::StoreError::InvalidConfiguration {
-            store: DATABASE_NAME.to_owned(),
-            reason: format!(
-                "found {} tracked databases named {DATABASE_NAME}; keep exactly one",
-                databases.len()
-            ),
-        }
-        .into());
+        return Err(configuration_error(format!(
+            "found {} tracked databases named {DATABASE_NAME} and no remembered reference; select one with setup --database <ID>",
+            databases.len()
+        )));
     }
     Ok(databases.pop().unwrap())
+}
+
+fn configuration_error(reason: String) -> eidetica::Error {
+    StoreError::InvalidConfiguration {
+        store: DATABASE_NAME.to_owned(),
+        reason,
+    }
+    .into()
 }
 
 async fn configured_hosts(database: &Database) -> Result<Vec<Uuid>> {
@@ -476,7 +603,7 @@ async fn configured_hosts(database: &Database) -> Result<Vec<Uuid>> {
 
 fn validate_name(name: &str) -> Result<()> {
     if name.trim().is_empty() {
-        return Err(eidetica::store::StoreError::InvalidConfiguration {
+        return Err(StoreError::InvalidConfiguration {
             store: HOSTS_STORE.to_owned(),
             reason: "host display name must not be empty".to_owned(),
         }

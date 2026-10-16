@@ -12,7 +12,8 @@ identity; the host's display name can change without moving its history.
 
 ## Before setup
 
-Every host needs a running Eidetica daemon and a passwordless daemon user.
+Every host needs a running Eidetica daemon and a passwordless daemon account.
+`--user`/`SHISTORY_USER` names that account's login.
 By default, the daemon and `shistory` use
 `$XDG_RUNTIME_DIR/eidetica/service.sock`. If `XDG_RUNTIME_DIR` is absent, they
 fall back to `/tmp/eidetica-$USER/service.sock`. A systemd user service
@@ -34,7 +35,7 @@ socket filesystem permissions are the local trust boundary.
 data directory while `eidetica daemon` owns that directory.
 
 The daemon owns synchronization and advertises the addresses embedded in an
-Eidetica database ticket. `setup` calls the public `User::join` API through the
+Eidetica database ticket. `setup` calls the public `AccountSession::join` API through the
 service socket with the user's default key, Write(10) permission, and explicit
 sync-on-commit settings. The client signs with its own key; the daemon performs
 the network exchange. Only a successful join registers a local host UUID.
@@ -48,12 +49,64 @@ approval; the ticket is a locator, not an access grant or secret credential.
 This is unsuitable for sensitive history on an untrusted network.
 
 For an operator-configured database requiring approval, setup reports Pending
-and exits unsuccessfully without a host UUID or new User tracking/preferences.
+and exits unsuccessfully without a host UUID, history reference, or new Account
+tracking/preferences.
 After approval, explicitly rerun `setup` with the same ticket and `--name`.
 Rejection is an error, not a completed setup. There is no automatic or
 restart-safe completion. An interrupted or failed call can still leave peer
-requests, replicated data, routing, or a committed User update; retry rather
+requests, replicated data, routing, or a committed Account update; retry rather
 than assuming rollback.
+
+## Database selection and upgrades
+
+Setup remembers the history database root ID in the Account as the `history`
+reference in the `shistory` namespace, using `AccountSession::set_reference`.
+Start, finish, and queries read that one reference and open the named database
+through the normal key and Auth checks; they do not open unrelated tracked
+databases or look at display names, so renaming the database changes nothing.
+Capture also checks that the database is still tracked and contains the
+configured host before writing. Permissions and tips are never cached across
+shell processes. The reference grants no access by itself.
+
+Run setup from one shell at a time for an Account. The reference is an ordinary
+CRDT write, not a distributed compare-and-set, so two concurrent first setups
+could each create a database.
+
+Installations from before references keep working through the unique tracked
+database named `shistory`. The first successful start or finish that finds the
+configured host there remembers that root ID, inside the same one-second
+deadline. List, search, summary, ticket, and status use the name lookup but do
+not migrate it. If no database or several databases have that name, capture
+fails without creating or choosing one.
+
+Once a reference exists, a malformed, stale, untracked, inaccessible, or
+unavailable target is an error. It never falls back to the name lookup or
+creates a replacement database, and setup refuses to select a different root.
+Migration changes only the reference, not history, host UUIDs, or host Stores.
+
+To adopt a legacy database explicitly, or finish a setup that created or joined
+the database but failed before printing a host UUID, add a host to the existing
+root by ID. Setup errors in that state print the root ID to use:
+
+```console
+"$SHISTORY_BIN" setup --database bafyr4i... --name "$SHISTORY_HOST_NAME"
+```
+
+A failed ticket setup can also be retried with the same ticket.
+
+For an isolated populated SQLite comparison of capture latency, build a
+baseline `shistory` binary with the same Cargo profile, then run:
+
+```console
+SHISTORY_BASELINE_BIN=/absolute/path/to/baseline/shistory \
+  cargo test -p shistory --all-features --test service populated_sql_capture_profile -- --ignored --nocapture
+```
+
+The ignored exercise seeds 20 unrelated tracked databases and 100 completed
+records, then alternates baseline and candidate start/finish runs through a
+recording socket proxy. It reports the storage requests and the time before the
+history write is submitted, and never logs command text. Pair 0 is a warm-up.
+Timings include the proxy and process startup; they are not a latency guarantee.
 
 ## Install the hook
 
