@@ -27,8 +27,11 @@ The primary CI runs on GitHub with these workflows. The main CI workflow cancels
 - **[dependency-hold.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/dependency-hold.yml)**: Merge gate for dependency PRs
 - **[update-hold.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/update-hold.yml)**: Automatic hold expiry
 
-Ordinary pull requests run the backend test suite only against SQLite, while keeping all other checks, including minimal-feature tests, unchanged (`legacyPackages.x86_64-linux.ci-pr`).
-Main pushes and manual CI runs retain the full backend suite, x86 integration tests and ARM checks.
+Ordinary pull requests run formatting (treefmt), lint (including Clippy), module evaluation, the debug binary build and the complete SQLite backend test suite (`legacyPackages.x86_64-linux.ci-pr`).
+SQLite is selected at runtime with `TEST_BACKEND=sqlite`; the test binaries still use all features.
+Standalone API documentation, doctests and minimal-feature tests are excluded from this lean PR target.
+Main pushes and manual CI runs retain all checks, including documentation, doctests, minimal-feature tests and the full backend suite, plus x86 integration tests and ARM checks.
+The full `checks` and `legacyPackages.<system>.ci` targets, individual backend/platform/integration targets and their dependency artifacts are unchanged.
 To test a PR's branch with the full suite, select that branch in the CI workflow's **Run workflow** branch selector.
 The manual run checks the selected branch head, not a synthetic merge with main.
 

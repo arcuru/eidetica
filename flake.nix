@@ -222,13 +222,13 @@
               all = mkAll "eval" nixTests.eval;
             };
 
-          # PR checks keep every non-backend gate, including minimal-feature
-          # tests, but run the backend matrix only against SQLite.
+          # Fast PR feedback: keep formatting, lint, eval and the debug build,
+          # but leave documentation and minimal-feature tests to full CI.
           ci-pr =
-            config.checks
+            builtins.removeAttrs config.checks ["doc"]
             // {
               test = mkAggregate "test-pr" {
-                inherit (testPkgs.builds) sqlite minimal;
+                inherit (testPkgs.builds) sqlite;
               };
             };
 
