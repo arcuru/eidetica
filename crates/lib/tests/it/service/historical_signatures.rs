@@ -1,37 +1,64 @@
-//! Historical authentication and operating-key attribution across the service.
-//! Labels and key hints are never treated as authenticated signer identities.
+//! Historical authentication over the socket, including Read gates on delegated proof.
 
 use eidetica::{
-    Database, Entry, Instance, NewUser,
+    Database, Entry, Instance,
     auth::{
         crypto::{PrivateKey, PublicKey, sign_entry, verify_entry_signature},
         types::{
-            AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, KeyStatus, Permission,
-            PermissionBounds, SigKey, TreeReference,
+            AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, Permission, PermissionBounds,
+            SigKey, TreeReference,
         },
         validation::AuthValidator,
     },
-    backend::database::InMemory,
+    backend::VerificationStatus,
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
-    service::{ServiceServer, protocol::ReadScope},
-    store::DocStore,
+    store::{DocStore, SettingsStore},
 };
-use tokio::sync::watch;
 
-async fn publish(db: &Database, key: DatabaseKey, provider: &ID) -> eidetica::Result<ID> {
-    let tx = db.clone().with_key(key).new_transaction().await?;
-    let store = tx.get_store::<DocStore>("records").await?;
-    // This label is data, not proof of who wrote it.
-    store.set("provider", provider.to_string()).await?;
-    tx.commit().await
+async fn grant(
+    settings: &SettingsStore,
+    keys: &[(&PrivateKey, Permission)],
+) -> eidetica::Result<()> {
+    for (key, permission) in keys {
+        settings
+            .set_auth_key(&key.public_key(), AuthKey::active(None, *permission))
+            .await?;
+    }
+    Ok(())
 }
 
-async fn records(db: &Database) -> eidetica::Result<Vec<Entry>> {
-    let frontier = db.snapshot().await?;
-    db.get_store_entries("records", frontier.tips(), ReadScope::Verified)
-        .await
+async fn step(db: &Database) -> eidetica::Result<DelegationStep> {
+    Ok(DelegationStep {
+        tree: db.root_id().clone(),
+        tips: db.snapshot().await?.into_tips(),
+    })
+}
+
+async fn delegate(db: &Database, authority: &Database, max: Permission) -> eidetica::Result<()> {
+    let tx = db.new_transaction().await?;
+    let step = step(authority).await?;
+    tx.get_settings()?
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds { max, min: None },
+            tree: TreeReference {
+                root: step.tree,
+                tips: step.tips,
+            },
+        })
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn publish(db: &Database, key: impl Into<DatabaseKey>) -> eidetica::Result<ID> {
+    let tx = db.clone().with_key(key).new_transaction().await?;
+    tx.get_store::<DocStore>("records")
+        .await?
+        .set("value", "signed")
+        .await?;
+    tx.commit().await
 }
 
 fn resign(entry: Entry, identity: SigKey, key: &PrivateKey) -> eidetica::Result<Entry> {
@@ -40,568 +67,492 @@ fn resign(entry: Entry, identity: SigKey, key: &PrivateKey) -> eidetica::Result<
     Ok(entry.with_auth(|auth| auth.signature = Some(signature)))
 }
 
-#[tokio::test]
-async fn native_provider_service_parity() -> Result<(), Box<dyn std::error::Error>> {
-    tokio::time::timeout(std::time::Duration::from_secs(30), proof()).await??;
-    Ok(())
+async fn open_as(remote: &Instance, db: &Database, key: &PrivateKey) -> eidetica::Result<Database> {
+    Database::open_remote(
+        remote,
+        remote.remote_connection().unwrap().clone(),
+        db.root_id(),
+        SigKey::from_pubkey(&key.public_key()),
+    )
+    .await
 }
 
-async fn proof() -> Result<(), Box<dyn std::error::Error>> {
-    let (owner, mut user) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("proof")).await?;
-    let admin = user.get_default_key()?;
-    let provider = user.create_database(Doc::new(), &admin).await?;
-    let session = user.create_database(Doc::new(), &admin).await?;
-    let nested_authority = user.create_database(Doc::new(), &admin).await?;
-    let direct = PrivateKey::generate();
-    let delegated = PrivateKey::generate();
-    let forger = PrivateKey::generate();
-    let reader = PrivateKey::generate();
-    let target_only = PrivateKey::generate();
-    user.admin()
-        .await?
-        .create_user(NewUser::passwordless("reader"))
+struct Fixture {
+    // Database handles hold weak Instance references.
+    _client: Instance,
+    local: Database,
+    remote: Database,
+    authority: Database,
+    nested: Database,
+    direct: PrivateKey,
+    delegated: PrivateKey,
+    forger: PrivateKey,
+    reader: PrivateKey,
+    identity: SigKey,
+    socket: std::path::PathBuf,
+    _shutdown: tokio::sync::watch::Sender<()>,
+    _dir: tempfile::TempDir,
+}
+
+impl Fixture {
+    async fn new() -> eidetica::Result<Self> {
+        let (socket, shutdown, owner, dir) = super::start_test_server().await;
+        let mut user = owner.login_user("admin", None).await?;
+        let admin = user.get_default_key()?;
+        let authority = user.create_database(Doc::new(), &admin).await?;
+        let local = user.create_database(Doc::new(), &admin).await?;
+        let nested = user.create_database(Doc::new(), &admin).await?;
+        let direct = PrivateKey::generate();
+        let delegated = PrivateKey::generate();
+        let forger = PrivateKey::generate();
+        let reader = PrivateKey::generate();
+
+        let tx = nested.new_transaction().await?;
+        grant(
+            &tx.get_settings()?,
+            &[
+                (&delegated, Permission::Admin(10)),
+                (&reader, Permission::Read),
+            ],
+        )
         .await?;
+        tx.commit().await?;
+        delegate(&authority, &nested, Permission::Admin(10)).await?;
+        let tx = authority.new_transaction().await?;
+        let settings = tx.get_settings()?;
+        // A shared name must not be mistaken for a concrete signer.
+        for (key, permission) in [
+            (&direct, Permission::Write(10)),
+            (&delegated, Permission::Admin(10)),
+        ] {
+            settings
+                .set_auth_key(
+                    &key.public_key(),
+                    AuthKey::active(Some("operator"), permission),
+                )
+                .await?;
+        }
+        grant(&settings, &[(&reader, Permission::Read)]).await?;
+        tx.commit().await?;
+        let tx = local.new_transaction().await?;
+        grant(
+            &tx.get_settings()?,
+            &[
+                (&direct, Permission::Write(10)),
+                (&forger, Permission::Write(10)),
+                (&reader, Permission::Read),
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+        delegate(&local, &authority, Permission::Write(10)).await?;
+        let identity = SigKey::Delegation {
+            path: vec![step(&authority).await?],
+            hint: KeyHint::from_name("operator"),
+        };
 
-    let tx = nested_authority.new_transaction().await?;
-    for (key, permission) in [
-        (&delegated, Permission::Admin(10)),
-        (&reader, Permission::Read),
-    ] {
-        tx.get_settings()?
-            .set_auth_key(&key.public_key(), AuthKey::active(None, permission))
-            .await?;
-    }
-    tx.commit().await?;
-    let nested_tips = nested_authority.snapshot().await?.into_tips();
-
-    let tx = provider.new_transaction().await?;
-    tx.get_settings()?
-        .add_delegated_tree(DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                max: Permission::Admin(10),
-                min: None,
-            },
-            tree: TreeReference {
-                root: nested_authority.root_id().clone(),
-                tips: nested_tips.clone(),
-            },
+        super::create_user_via_admin(&owner, "reader").await;
+        let client = Instance::connect(format!("unix://{}", socket.display())).await?;
+        let login = client.login_user("reader", None).await?;
+        assert!(login.admin().await.is_err(), "reader is not a host admin");
+        assert!(
+            Database::open(&client, local.root_id()).await.is_err(),
+            "login alone grants no target access"
+        );
+        // Native proof-of-possession registers a separate acting key, not a target grant.
+        Database::create(&client, reader.clone(), Doc::new()).await?;
+        let remote = open_as(&client, &local, &reader).await?;
+        Ok(Self {
+            _client: client,
+            local,
+            remote,
+            authority,
+            nested,
+            direct,
+            delegated,
+            forger,
+            reader,
+            identity,
+            socket,
+            _shutdown: shutdown,
+            _dir: dir,
         })
-        .await?;
-    for (key, permission) in [
-        (&direct, Permission::Write(10)),
-        (&delegated, Permission::Admin(10)),
+    }
+
+    async fn delegated_entry(&self) -> eidetica::Result<ID> {
+        publish(
+            &self.local,
+            DatabaseKey::with_identity(self.delegated.clone(), self.identity.clone()),
+        )
+        .await
+    }
+
+    async fn nested_entry(&self) -> eidetica::Result<ID> {
+        let SigKey::Delegation { mut path, .. } = self.identity.clone() else {
+            unreachable!()
+        };
+        path.push(step(&self.nested).await?);
+        publish(
+            &self.local,
+            DatabaseKey::with_identity(
+                self.delegated.clone(),
+                SigKey::Delegation {
+                    path,
+                    hint: KeyHint::from_pubkey(&self.delegated.public_key()),
+                },
+            ),
+        )
+        .await
+    }
+
+    async fn verdict(&self, id: &ID, expected: bool) -> eidetica::Result<()> {
+        for db in [&self.local, &self.remote] {
+            assert_eq!(db.verify_entry_signature(id).await?, expected, "entry {id}");
+        }
+        Ok(())
+    }
+
+    async fn put(&self, entry: Entry) -> eidetica::Result<ID> {
+        let id = entry.id();
+        self.local.backend()?.put(entry).await?;
+        Ok(id)
+    }
+}
+
+async fn with_timeout(
+    test: impl std::future::Future<Output = eidetica::Result<()>>,
+) -> eidetica::Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(30), test)
+        .await
+        .expect("historical signature test timed out")
+}
+
+#[tokio::test]
+async fn test_historical_signature_parity_and_operating_key() -> eidetica::Result<()> {
+    with_timeout(async {
+    let f = Fixture::new().await?;
+    let direct = publish(&f.local, f.direct.clone()).await?;
+    let forged = publish(&f.local, f.forger.clone()).await?;
+    let delegated = f.delegated_entry().await?;
+    let nested = f.nested_entry().await?;
+    for (id, signer) in [
+        (&direct, &f.direct),
+        (&forged, &f.forger),
+        (&delegated, &f.delegated),
+        (&nested, &f.delegated),
     ] {
-        tx.get_settings()?
-            .set_auth_key(
-                &key.public_key(),
-                AuthKey::active(Some("operator"), permission),
-            )
-            .await?;
+        f.verdict(id, true).await?;
+        let entry = f.remote.get_entry(id).await?;
+        assert_eq!(entry, f.local.get_entry(id).await?);
+        assert!(verify_entry_signature(&entry, &signer.public_key()).is_ok());
     }
-    tx.get_settings()?
-        .set_auth_key(
-            &reader.public_key(),
-            AuthKey::active(None, Permission::Read),
-        )
-        .await?;
-    tx.commit().await?;
-    let provider_tips = provider.snapshot().await?.into_tips();
-    let tx = session.new_transaction().await?;
-    for key in [&direct, &forger] {
-        tx.get_settings()?
-            .set_auth_key(
-                &key.public_key(),
-                AuthKey::active(None, Permission::Write(10)),
-            )
-            .await?;
+    let forged = f.remote.get_entry(&forged).await?;
+    for key in [&f.direct, &f.delegated] {
+        assert!(verify_entry_signature(&forged, &key.public_key()).is_err());
     }
-    for key in [&reader, &target_only] {
-        tx.get_settings()?
-            .set_auth_key(&key.public_key(), AuthKey::active(None, Permission::Read))
-            .await?;
-    }
-    tx.get_settings()?
-        .add_delegated_tree(DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                max: Permission::Write(10),
-                min: None,
-            },
-            tree: TreeReference {
-                root: provider.root_id().clone(),
-                tips: provider_tips.clone(),
-            },
+    // Enumerate authorized concrete keys through that database's own Read handle.
+    let client = f.remote.instance()?;
+    let authority = open_as(&client, &f.authority, &f.reader).await?;
+    let auth = authority.get_settings().await?.auth_snapshot().await?;
+    assert!(
+        auth.get_key_by_pubkey(&f.direct.public_key())?
+            .permissions()
+            .can_write()
+    );
+    let entry = f.remote.get_entry(&delegated).await?;
+    let signers = auth
+        .get_all_keys()?
+        .into_iter()
+        .filter_map(|(key, auth)| {
+            let public = PublicKey::from_prefixed_string(&key).ok()?;
+            (auth.is_active()
+                && auth.permissions().can_write()
+                && verify_entry_signature(&entry, &public).is_ok())
+            .then_some(public)
         })
-        .await?;
-    tx.commit().await?;
-    let tx = session.new_transaction().await?;
-    tx.get_settings()?
-        .set_name("signed settings operation")
-        .await?;
-    let settings_id = tx.commit().await?;
+        .collect::<Vec<_>>();
+    assert_eq!(signers, vec![f.delegated.public_key()]);
 
-    let direct_id = publish(
-        &session,
-        DatabaseKey::new(direct.clone()),
-        provider.root_id(),
-    )
-    .await?;
-    let forged_id = publish(
-        &session,
-        DatabaseKey::new(forger.clone()),
-        provider.root_id(),
-    )
-    .await?;
-    let identity = SigKey::Delegation {
-        path: vec![DelegationStep {
-            tree: provider.root_id().clone(),
-            tips: provider_tips.clone(),
-        }],
-        // Both operating keys share this name. Only signature verification
-        // can distinguish the actual signer from a matching name hint.
-        hint: KeyHint::from_name("operator"),
-    };
-    let delegated_id = publish(
-        &session,
-        DatabaseKey::with_identity(delegated.clone(), identity),
-        provider.root_id(),
-    )
-    .await?;
-
-    let nested_id = publish(
-        &session,
-        DatabaseKey::with_identity(
-            delegated.clone(),
-            SigKey::Delegation {
-                path: vec![
-                    DelegationStep {
-                        tree: provider.root_id().clone(),
-                        tips: provider_tips.clone(),
-                    },
-                    DelegationStep {
-                        tree: nested_authority.root_id().clone(),
-                        tips: nested_tips,
-                    },
-                ],
-                hint: KeyHint::from_pubkey(&delegated.public_key()),
-            },
-        ),
-        provider.root_id(),
-    )
-    .await?;
-
-    let dir = tempfile::tempdir()?;
-    let socket = dir.path().join("proof.sock");
-    let service = ServiceServer::bind(owner.clone(), &socket).await?;
-    let (shutdown, receiver) = watch::channel(());
-    let running = tokio::spawn(service.run(receiver));
-    let remote = Instance::connect(format!("unix://{}", socket.display())).await?;
-    assert!(
-        remote
-            .remote_connection()
-            .unwrap()
-            .verify_entry_signature(
-                session.root_id().clone(),
-                SigKey::default(),
-                delegated_id.clone()
-            )
-            .await
-            .is_err(),
-        "login is required even for verification queries"
-    );
-    let login = remote.login_user("reader", None).await?;
-    assert!(login.admin().await.is_err(), "reader is not a host admin");
-    assert!(
-        Database::open(&remote, session.root_id()).await.is_err(),
-        "login identity has no target grant"
-    );
-    // Creation is a native proof-of-possession registration path. Neither
-    // registration nor owning this unrelated tree grants Read on the target.
-    Database::create(&remote, reader.clone(), Doc::new()).await?;
-    Database::create(&remote, target_only.clone(), Doc::new()).await?;
-    let conn = remote.remote_connection().unwrap();
-    let remote_session = Database::open_remote(
-        &remote,
-        conn.clone(),
-        session.root_id(),
-        SigKey::from_pubkey(&reader.public_key()),
-    )
-    .await?;
-    let remote_provider = Database::open_remote(
-        &remote,
-        conn.clone(),
-        provider.root_id(),
-        SigKey::from_pubkey(&reader.public_key()),
-    )
-    .await?;
-    let target_only_session = Database::open_remote(
-        &remote,
-        conn.clone(),
-        session.root_id(),
-        SigKey::from_pubkey(&target_only.public_key()),
-    )
-    .await?;
-    assert!(
-        target_only_session
-            .verify_entry_signature(&direct_id)
-            .await?
-    );
-    assert!(
-        target_only_session
-            .verify_entry_signature(&delegated_id)
-            .await
-            .is_err(),
-        "a target-only reader cannot read delegated proof"
-    );
-    assert!(
-        Database::open_remote(
-            &remote,
-            conn.clone(),
-            provider.root_id(),
-            SigKey::from_pubkey(&target_only.public_key())
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        conn.verify_entry_signature(
-            session.root_id().clone(),
-            SigKey::from_pubkey(&PrivateKey::generate().public_key()),
-            delegated_id.clone()
-        )
-        .await
-        .is_err(),
-        "unregistered identity cannot request a verdict"
-    );
-    assert!(
-        conn.verify_entry_signature(
-            session.root_id().clone(),
-            SigKey::from_pubkey(&reader.public_key()),
-            provider.root_id().clone()
-        )
-        .await
-        .is_err(),
-        "a target envelope cannot query another database's entry"
-    );
-
-    // The same server-verified Entry bytes reach both readers. No callback tips
-    // or plain provider/sender field is used as the authorization boundary.
-    let local_records = records(&session).await?;
-    let remote_records = records(&remote_session).await?;
-    assert_eq!(
-        serde_json::to_value(&local_records)?,
-        serde_json::to_value(&remote_records)?
-    );
-    assert_eq!(local_records.len(), 4);
-    for (db, authority) in [(&session, &provider), (&remote_session, &remote_provider)] {
-        let direct_entry = db.get_entry(&direct_id).await?;
-        assert!(db.verify_entry_signature(&direct_id).await?);
-        assert!(verify_entry_signature(&direct_entry, &direct.public_key()).is_ok());
-        let provider_auth = authority.get_settings().await?.auth_snapshot().await?;
-        assert!(
-            provider_auth
-                .get_key_by_pubkey(&direct.public_key())?
-                .permissions()
-                .can_write()
-        );
-        let forged = db.get_entry(&forged_id).await?;
-        assert!(
-            db.verify_entry_signature(&forged_id).await?,
-            "forger is a valid session writer"
-        );
-        assert!(verify_entry_signature(&forged, &direct.public_key()).is_err());
-        assert!(verify_entry_signature(&forged, &delegated.public_key()).is_err());
-        assert!(db.verify_entry_signature(&nested_id).await?);
-        assert!(
-            verify_entry_signature(&db.get_entry(&nested_id).await?, &delegated.public_key())
-                .is_ok()
-        );
-        assert!(db.verify_entry_signature(&delegated_id).await?);
-        let delegated_entry = db.get_entry(&delegated_id).await?;
-        // Native historical validation establishes authorization. Separately
-        // verify native Entry bytes with concrete, authorized operating keys:
-        // neither the record label, hint, nor frontier inclusion identifies one.
-        let signers = provider_auth
-            .get_all_keys()?
-            .into_iter()
-            .filter_map(|(key, auth)| {
-                let public = PublicKey::from_prefixed_string(&key).ok()?;
-                (auth.is_active()
-                    && auth.permissions().can_write()
-                    && verify_entry_signature(&delegated_entry, &public).is_ok())
-                .then_some(public)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(signers, vec![delegated.public_key()]);
-    }
-
-    // Native delegation resolves to an actual operating key, not a trusted hint.
-    let entry = session.get_entry(&delegated_id).await?;
-    assert!(session.verify_entry_signature(&delegated_id).await?);
-    let auth = session.get_settings().await?.auth_snapshot().await?;
+    let auth = f.local.get_settings().await?.auth_snapshot().await?;
+    let owner = f.local.instance()?;
     let candidates = AuthValidator::new()
         .resolve_sig_key(&entry.auth().key, &auth, Some(&owner))
         .await?;
     assert_eq!(candidates.len(), 2);
     let signer = candidates
         .iter()
-        .find(|candidate| verify_entry_signature(&entry, &candidate.public_key).is_ok())
+        .find(|key| verify_entry_signature(&entry, &key.public_key).is_ok())
         .unwrap();
-    assert_eq!(signer.public_key, delegated.public_key());
+    assert_eq!(signer.public_key, f.delegated.public_key());
     assert_eq!(signer.effective_permission, Permission::Write(10));
+    let error = AuthValidator::new()
+        .resolve_sig_key(&entry.auth().key, &auth, Some(&client))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, eidetica::Error::Instance(ref error)
+        if matches!(error.as_ref(), eidetica::instance::InstanceError::OperationNotSupported { .. })),
+        "{error}"
+    );
+    Ok(())
+    }).await
+}
 
-    // Freshly signed malformed/unauthorized claims cannot borrow the original
-    // Entry's valid signature or its historical authority.
-    let outsider = PrivateKey::generate();
-    let direct_entry = session.get_entry(&direct_id).await?;
-    let attenuated_settings = resign(
-        session.get_entry(&settings_id).await?,
-        entry.auth().key.clone(),
-        &delegated,
-    )?;
-    assert!(verify_entry_signature(&attenuated_settings, &delegated.public_key()).is_ok());
-    let mut invalid = vec![
-        attenuated_settings,
-        entry
-            .clone()
-            .with_auth(|auth| auth.signature = Some(sign_entry(&entry, &outsider).unwrap())),
-        resign(
-            direct_entry.clone(),
-            SigKey::from_pubkey(&outsider.public_key()),
-            &outsider,
-        )?,
-        resign(
-            direct_entry.clone(),
-            SigKey::from_pubkey(&reader.public_key()),
-            &reader,
-        )?,
-        resign(
-            entry.clone(),
-            SigKey::Delegation {
-                path: vec![],
-                hint: KeyHint::from_pubkey(&delegated.public_key()),
-            },
-            &delegated,
-        )?,
-    ];
-    for tips in [
-        vec![],
-        vec![session.root_id().clone()],
-        vec![provider.root_id().clone()],
-        vec![provider_tips[0].clone(); 65],
-    ] {
+#[tokio::test]
+async fn test_historical_signature_read_and_session_gates() -> eidetica::Result<()> {
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        let direct = publish(&f.local, f.direct.clone()).await?;
+        let delegated = f.delegated_entry().await?;
+        let anonymous = Instance::connect(format!("unix://{}", f.socket.display())).await?;
+        let identity = SigKey::from_pubkey(&f.reader.public_key());
+        assert!(
+            anonymous
+                .remote_connection()
+                .unwrap()
+                .verify_entry_signature(
+                    f.local.root_id().clone(),
+                    identity.clone(),
+                    delegated.clone()
+                )
+                .await
+                .is_err()
+        );
+        let client = f.remote.instance()?;
+        let conn = client.remote_connection().unwrap();
+        assert!(
+            conn.verify_entry_signature(
+                f.local.root_id().clone(),
+                SigKey::from_pubkey(&PrivateKey::generate().public_key()),
+                delegated.clone()
+            )
+            .await
+            .is_err(),
+            "unregistered identity"
+        );
+        assert!(
+            conn.verify_entry_signature(
+                f.local.root_id().clone(),
+                identity,
+                f.authority.root_id().clone()
+            )
+            .await
+            .is_err(),
+            "foreign entry ID"
+        );
+
+        let target_only = PrivateKey::generate();
+        let tx = f.local.new_transaction().await?;
+        grant(&tx.get_settings()?, &[(&target_only, Permission::Read)]).await?;
+        tx.commit().await?;
+        Database::create(&client, target_only.clone(), Doc::new()).await?;
+        let target = open_as(&client, &f.local, &target_only).await?;
+        assert!(target.verify_entry_signature(&direct).await?);
+        assert!(
+            target.verify_entry_signature(&delegated).await.is_err(),
+            "target Read does not grant delegated-proof Read"
+        );
+        assert!(open_as(&client, &f.authority, &target_only).await.is_err());
+        assert!(
+            publish(&f.remote, f.reader.clone()).await.is_err(),
+            "Read is not Write"
+        );
+        assert!(
+            f.remote
+                .clone()
+                .with_key(PrivateKey::generate())
+                .verify_entry_signature(&delegated)
+                .await?,
+            "attached signing key must not replace the bound reader"
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn test_historical_signature_invalid_and_incomplete_claims() -> eidetica::Result<()> {
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        let id = f.delegated_entry().await?;
+        let entry = f.local.get_entry(&id).await?;
+        let outsider = PrivateKey::generate();
+        let tx = f.local.new_transaction().await?;
+        tx.get_settings()?.set_name("settings operation").await?;
+        let settings = f.local.get_entry(tx.commit().await?).await?;
+        let attenuated = resign(settings, f.identity.clone(), &f.delegated)?;
+        assert!(verify_entry_signature(&attenuated, &f.delegated.public_key()).is_ok());
+        let mut invalid = vec![
+            attenuated,
+            entry
+                .clone()
+                .with_auth(|auth| auth.signature = Some(sign_entry(&entry, &outsider).unwrap())),
+        ];
+        for key in [&outsider, &f.reader] {
+            invalid.push(resign(
+                entry.clone(),
+                SigKey::from_pubkey(&key.public_key()),
+                key,
+            )?);
+        }
+        let SigKey::Delegation { path, .. } = &f.identity else {
+            unreachable!()
+        };
+        let step = &path[0];
+        let mut paths = vec![vec![], vec![step.clone(); 11]];
+        for tips in [
+            vec![],
+            vec![f.local.root_id().clone()],
+            vec![f.authority.root_id().clone()],
+            vec![step.tips[0].clone(); 65],
+        ] {
+            paths.push(vec![DelegationStep {
+                tree: step.tree.clone(),
+                tips,
+            }]);
+        }
+        for path in paths {
+            invalid.push(resign(
+                entry.clone(),
+                SigKey::Delegation {
+                    path,
+                    hint: KeyHint::from_pubkey(&f.delegated.public_key()),
+                },
+                &f.delegated,
+            )?);
+        }
         invalid.push(resign(
             entry.clone(),
             SigKey::Delegation {
-                path: vec![DelegationStep {
-                    tree: provider.root_id().clone(),
-                    tips,
-                }],
-                hint: KeyHint::from_pubkey(&delegated.public_key()),
+                path: path.clone(),
+                hint: KeyHint::from_pubkey(&f.forger.public_key()),
             },
-            &delegated,
+            &f.delegated,
         )?);
-    }
-    invalid.push(resign(
-        entry.clone(),
-        SigKey::Delegation {
-            path: vec![
-                DelegationStep {
-                    tree: provider.root_id().clone(),
-                    tips: provider_tips.clone()
-                };
-                11
-            ],
-            hint: KeyHint::from_pubkey(&delegated.public_key()),
-        },
-        &delegated,
-    )?);
-    invalid.push(resign(
-        entry.clone(),
-        SigKey::Delegation {
-            path: vec![DelegationStep {
-                tree: provider.root_id().clone(),
-                tips: provider_tips.clone(),
-            }],
-            hint: KeyHint::from_pubkey(&forger.public_key()),
-        },
-        &delegated,
-    )?);
-    for bad in invalid {
-        let id = bad.id();
-        owner.backend().put(bad).await?;
-        assert!(
-            !session.verify_entry_signature(&id).await?,
-            "local invalid {id}"
+        for bad in invalid {
+            f.verdict(&f.put(bad).await?, false).await?;
+        }
+        let incomplete = resign(
+            entry,
+            SigKey::Delegation {
+                path: vec![DelegationStep {
+                    tree: step.tree.clone(),
+                    tips: vec![ID::from_bytes("missing-delegated-tip")],
+                }],
+                hint: KeyHint::from_pubkey(&f.delegated.public_key()),
+            },
+            &f.delegated,
+        )?;
+        let id = f.put(incomplete).await?;
+        for db in [&f.local, &f.remote] {
+            assert!(
+                db.verify_entry_signature(&id).await.is_err(),
+                "incomplete is not a valid or invalid verdict"
+            );
+        }
+        assert_eq!(
+            f.local
+                .backend()?
+                .local_engine()
+                .unwrap()
+                .get_verification_status(&id)
+                .await?,
+            VerificationStatus::Unverified
         );
-        assert!(
-            !remote_session.verify_entry_signature(&id).await?,
-            "service invalid {id}"
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn test_historical_signature_rejects_inherited_floor_regression() -> eidetica::Result<()> {
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        let original = f.delegated_entry().await?;
+        let tx = f.authority.new_transaction().await?;
+        tx.get_settings()?.set_name("advanced").await?;
+        tx.commit().await?;
+        let key = DatabaseKey::with_identity(
+            f.delegated.clone(),
+            SigKey::Delegation {
+                path: vec![step(&f.authority).await?],
+                hint: KeyHint::from_pubkey(&f.delegated.public_key()),
+            },
         );
-    }
-    let incomplete = resign(
-        entry.clone(),
-        SigKey::Delegation {
-            path: vec![DelegationStep {
-                tree: provider.root_id().clone(),
-                tips: vec![ID::from_bytes("missing-delegated-tip")],
-            }],
-            hint: KeyHint::from_pubkey(&delegated.public_key()),
-        },
-        &delegated,
-    )?;
-    let incomplete_id = incomplete.id();
-    owner.backend().put(incomplete).await?;
-    assert!(
-        session
-            .verify_entry_signature(&incomplete_id)
-            .await
-            .is_err()
-    );
-    assert!(
-        remote_session
-            .verify_entry_signature(&incomplete_id)
-            .await
-            .is_err()
-    );
+        publish(&f.local, key.clone()).await?;
+        let child = publish(&f.local, key).await?;
+        f.verdict(&original, true).await?;
+        f.verdict(&child, true).await?;
+        let regressed = resign(
+            f.local.get_entry(&child).await?,
+            f.identity.clone(),
+            &f.delegated,
+        )?;
+        f.verdict(&f.put(regressed).await?, false).await?;
+        Ok(())
+    })
+    .await
+}
 
-    assert_eq!(
-        owner
-            .backend()
-            .local_engine()
-            .unwrap()
-            .get_verification_status(&incomplete_id)
-            .await?,
-        eidetica::backend::VerificationStatus::Unverified
-    );
-    let error = AuthValidator::new()
-        .resolve_sig_key(&entry.auth().key, &auth, Some(&remote))
-        .await
-        .expect_err("low-level resolver requires local evidence");
-    assert!(
-        matches!(error, eidetica::Error::Instance(ref error)
-            if matches!(error.as_ref(), eidetica::instance::InstanceError::OperationNotSupported { .. })),
-        "expected local-engine-required error, got {error}"
-    );
-
-    // An observed newer delegated snapshot is a floor, even though the
-    // configured pointer and key remain valid at the older snapshot.
-    let tx = provider.new_transaction().await?;
-    tx.get_settings()?.set_name("advanced").await?;
-    tx.commit().await?;
-    let newer = provider.snapshot().await?.into_tips();
-    let advanced_identity = SigKey::Delegation {
-        path: vec![DelegationStep {
-            tree: provider.root_id().clone(),
-            tips: newer,
-        }],
-        hint: KeyHint::from_pubkey(&delegated.public_key()),
-    };
-    let advanced = DatabaseKey::with_identity(delegated.clone(), advanced_identity);
-    publish(&session, advanced.clone(), provider.root_id()).await?;
-    let child_id = publish(&session, advanced, provider.root_id()).await?;
-    let regressed = resign(
-        session.get_entry(&child_id).await?,
-        entry.auth().key.clone(),
-        &delegated,
-    )?;
-    let regressed_id = regressed.id();
-    owner.backend().put(regressed).await?;
-    assert!(!session.verify_entry_signature(&regressed_id).await?);
-    assert!(!remote_session.verify_entry_signature(&regressed_id).await?);
-
-    // Later revocation is current policy, not retroactive signature invalidity.
-    for authority in [&provider, &session] {
-        let tx = authority.new_transaction().await?;
-        for key in [&direct, &delegated] {
+#[tokio::test]
+async fn test_historical_signature_revocation_and_each_hops_current_read() -> eidetica::Result<()> {
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        let direct = publish(&f.local, f.direct.clone()).await?;
+        let delegated = f.delegated_entry().await?;
+        let nested = f.nested_entry().await?;
+        // Revoking writers is not retroactive signature invalidation.
+        for (db, keys) in [
+            (&f.authority, vec![&f.direct, &f.delegated]),
+            (&f.local, vec![&f.direct]),
+        ] {
+            let tx = db.new_transaction().await?;
+            for key in keys {
+                tx.get_settings()?
+                    .revoke_auth_key(&key.public_key())
+                    .await?;
+            }
+            tx.commit().await?;
+        }
+        for id in [&direct, &delegated, &nested] {
+            f.verdict(id, true).await?;
+        }
+        assert!(publish(&f.local, f.direct.clone()).await.is_err());
+        let client = f.remote.instance()?;
+        let authority = open_as(&client, &f.authority, &f.reader).await?;
+        assert!(
+            !authority
+                .get_settings()
+                .await?
+                .auth_snapshot()
+                .await?
+                .get_key_by_pubkey(&f.delegated.public_key())?
+                .is_active()
+        );
+        // Recheck Read on already-open handles, including the second delegated hop.
+        for (db, denied, readable) in [
+            (&f.nested, vec![&nested], vec![&direct, &delegated]),
+            (&f.authority, vec![&nested, &delegated], vec![&direct]),
+            (&f.local, vec![&nested, &delegated, &direct], vec![]),
+        ] {
+            let tx = db.new_transaction().await?;
             tx.get_settings()?
-                .set_auth_key(
-                    &key.public_key(),
-                    AuthKey::new(None, Permission::Write(10), KeyStatus::Revoked),
-                )
+                .revoke_auth_key(&f.reader.public_key())
                 .await?;
+            tx.commit().await?;
+            for id in denied {
+                assert!(f.local.verify_entry_signature(id).await?);
+                assert!(
+                    f.remote.verify_entry_signature(id).await.is_err(),
+                    "Read revoked on {} for {id}",
+                    db.root_id()
+                );
+            }
+            for id in readable {
+                assert!(f.remote.verify_entry_signature(id).await?);
+            }
         }
-        tx.commit().await?;
-    }
-    let current = remote_provider
-        .get_settings()
-        .await?
-        .auth_snapshot()
-        .await?;
-    assert!(
-        !current
-            .get_key_by_pubkey(&delegated.public_key())?
-            .is_active()
-    );
-    for db in [&session, &remote_session] {
-        assert!(db.verify_entry_signature(&direct_id).await?);
-        assert!(db.verify_entry_signature(&delegated_id).await?);
-    }
-    assert!(
-        remote_session
-            .clone()
-            .with_key(outsider)
-            .verify_entry_signature(&delegated_id)
-            .await?,
-        "verification retains the bound read identity, not an attached signing key"
-    );
-    assert!(
-        publish(&session, DatabaseKey::new(direct), provider.root_id())
-            .await
-            .is_err()
-    );
-    assert!(
-        publish(
-            &remote_session,
-            DatabaseKey::new(reader.clone()),
-            provider.root_id()
-        )
-        .await
-        .is_err(),
-        "Read is not Write"
-    );
-    // Current Read grants are rechecked even on an already-open handle.
-    // Revoking only the second hop must not affect one-hop/direct verdicts.
-    for (authority, denied_ids, still_readable) in [
-        (
-            &nested_authority,
-            vec![&nested_id],
-            vec![&direct_id, &delegated_id],
-        ),
-        (&provider, vec![&nested_id, &delegated_id], vec![&direct_id]),
-        (
-            &session,
-            vec![&nested_id, &delegated_id, &direct_id],
-            vec![],
-        ),
-    ] {
-        let tx = authority.new_transaction().await?;
-        tx.get_settings()?
-            .set_auth_key(
-                &reader.public_key(),
-                AuthKey::new(None, Permission::Read, KeyStatus::Revoked),
-            )
-            .await?;
-        tx.commit().await?;
-        for id in denied_ids {
-            assert!(
-                session.verify_entry_signature(id).await?,
-                "historical validity survives reader revocation"
-            );
-            assert!(
-                remote_session.verify_entry_signature(id).await.is_err(),
-                "Read revoked on {} for {id}",
-                authority.root_id()
-            );
-        }
-        for id in still_readable {
-            assert!(
-                remote_session.verify_entry_signature(id).await?,
-                "unaffected Read grant for {id}"
-            );
-        }
-    }
-    drop(shutdown);
-    running.await??;
-    Ok(())
+        Ok(())
+    })
+    .await
 }
