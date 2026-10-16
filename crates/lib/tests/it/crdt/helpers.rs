@@ -13,8 +13,8 @@ use eidetica::{
 };
 
 pub use crate::helpers::{
-    assert_nested_value, assert_path_deleted, assert_text_value, build_complex_merge_data,
-    create_complex_nested_structure,
+    assert_map_contains, assert_nested_value, assert_path_deleted, assert_text_value,
+    build_complex_merge_data, create_complex_nested_structure,
 };
 
 // Type alias for local usage
@@ -210,22 +210,6 @@ pub fn create_merge_test_values() -> (Value, Value) {
 }
 
 // ===== ASSERTION HELPERS =====
-
-/// Assert that a Map contains expected key-value pairs
-pub fn assert_map_contains(map: &Map, expected: &[(&str, &str)]) {
-    for (key, expected_value) in expected {
-        match map.get(key) {
-            Some(Value::Text(actual_value)) => {
-                assert_eq!(
-                    actual_value, *expected_value,
-                    "Value mismatch for key '{key}'"
-                );
-            }
-            Some(other) => panic!("Expected text value for key '{key}', got: {other:?}"),
-            None => panic!("Key '{key}' not found in map"),
-        }
-    }
-}
 
 /// Assert that a Value is of expected type and content
 pub fn assert_value_content(value: &Value, expected_type: &str, test_equality: Option<&Value>) {

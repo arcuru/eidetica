@@ -125,7 +125,7 @@ async fn test_concurrent_tree_creation() {
     let (_db, mut user) = test_instance_with_user("concurrent_user").await;
 
     // Use helper to test concurrent operations
-    let concurrent_trees = create_concurrent_databases(&mut user).await;
+    let concurrent_trees = create_databases_with_profiles(&mut user).await;
 
     assert_databases_count(&concurrent_trees, 5);
 

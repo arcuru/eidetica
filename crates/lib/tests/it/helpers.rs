@@ -679,7 +679,23 @@ impl LocalBackendTestExt for Arc<dyn Backend> {
     }
 }
 
-// Shared Doc fixtures and assertions for data and CRDT tests.
+// Shared Doc fixtures and assertions.
+
+/// Assert that a Doc contains the expected text values
+pub fn assert_map_contains(map: &Doc, expected: &[(&str, &str)]) {
+    for (key, expected_value) in expected {
+        match map.get(key) {
+            Some(Value::Text(actual_value)) => {
+                assert_eq!(
+                    actual_value, *expected_value,
+                    "Value mismatch for key '{key}'"
+                );
+            }
+            Some(other) => panic!("Expected text value for key '{key}', got: {other:?}"),
+            None => panic!("Key '{key}' not found in map"),
+        }
+    }
+}
 
 /// Assert that a string value matches expected content
 pub fn assert_text_value(value: &Value, expected: &str) {
@@ -693,16 +709,14 @@ pub fn assert_text_value(value: &Value, expected: &str) {
 pub fn assert_nested_value(map: &Doc, path: &[&str], expected: &str) {
     let mut current = map;
 
-    // Navigate to the parent of the final key
-    for &key in &path[..path.len() - 1] {
+    let (final_key, parents) = path.split_last().expect("Path should not be empty");
+    for &key in parents {
         match current.get(key) {
             Some(Value::Doc(inner)) => current = inner,
             _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
         }
     }
 
-    // Check the final value
-    let final_key = path.last().expect("Path should not be empty");
     match current.get(final_key) {
         Some(Value::Text(s)) => assert_eq!(s, expected, "Value mismatch at path {path:?}"),
         Some(other) => panic!("Expected text value at path {path:?}, got {other:?}"),
@@ -712,43 +726,30 @@ pub fn assert_nested_value(map: &Doc, path: &[&str], expected: &str) {
 
 /// Assert that a path is deleted (tombstone exists)
 pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
-    if path.len() == 1 {
-        // Simple case: check directly in this map using is_tombstone
-        assert!(
-            map.is_tombstone(path[0]),
-            "Expected tombstone at '{path:?}'"
-        );
-    } else {
-        // Navigate to parent and check final key
-        let mut current = map;
-        for &key in &path[..path.len() - 1] {
-            match current.get(key) {
-                Some(Value::Doc(inner)) => current = inner,
-                _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
-            }
+    let (final_key, parents) = path.split_last().expect("Path should not be empty");
+    let mut current = map;
+    for &key in parents {
+        match current.get(key) {
+            Some(Value::Doc(inner)) => current = inner,
+            _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
         }
-
-        let final_key = path.last().expect("Path should not be empty");
-        assert!(
-            current.is_tombstone(*final_key),
-            "Expected tombstone at '{path:?}'"
-        );
     }
+    assert!(
+        current.is_tombstone(*final_key),
+        "Expected tombstone at '{path:?}'"
+    );
 }
 
 /// Create a complex nested structure for testing
 pub fn create_complex_nested_structure() -> Doc {
     let mut root = Doc::new();
 
-    // Level 1
     root.set("top_key", "top_value");
 
-    // Level 2
     let mut level2 = Doc::new();
     level2.set("level2_key1", "level2_value1");
     level2.set("shared_key", "original_value");
 
-    // Level 3
     let mut level3 = Doc::new();
     level3.set("level3_key1", "level3_value1");
     level2.set("level3", level3);

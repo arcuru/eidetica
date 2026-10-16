@@ -48,9 +48,7 @@ pub async fn setup_complete_test_env(
     Ok((db, tree, txn, dict))
 }
 
-// ===== MAP CREATION HELPERS =====
-
-// ===== ASSERTION HELPERS =====
+// ===== DOC CREATION HELPERS =====
 
 /// Create a Map with mixed value types
 pub fn create_mixed_map() -> Node {
@@ -102,8 +100,6 @@ pub fn assert_doc_value_has_keys(value: &Value, expected_keys: &[&str]) {
     }
 }
 
-// ===== MERGE TESTING HELPERS =====
-
 // ===== VALUE EDITOR HELPERS =====
 
 /// Setup a Doc for path operation tests
@@ -153,8 +149,6 @@ pub async fn assert_path_set_get(dict: &DocStore, path: &[&str], value: Value) -
     Ok(())
 }
 
-// ===== SERIALIZATION HELPERS =====
-
 // ===== ERROR TESTING HELPERS =====
 
 /// Test that an operation fails with a specific error type
@@ -177,35 +171,4 @@ pub fn assert_not_found_error<T>(result: Result<T>) {
 /// Test that a type error occurs
 pub fn assert_type_error<T>(result: Result<T>) {
     assert_error_type(result, |e| e.is_type_error(), "Type error");
-}
-
-// ===== TEST DATA BUILDERS =====
-
-// ===== MACROS =====
-
-/// Macro for creating test value assertions
-#[macro_export]
-macro_rules! assert_value_eq {
-    ($actual:expr, text: $expected:expr) => {
-        match $actual {
-            Value::Text(s) => assert_eq!(s, $expected),
-            other => panic!("Expected text value '{}', got {:?}", $expected, other),
-        }
-    };
-    ($actual:expr, map: $expected_keys:expr) => {
-        match $actual {
-            Value::Map(map) => {
-                for key in $expected_keys {
-                    assert!(map.contains_key(key), "Map should contain key '{}'", key);
-                }
-            }
-            other => panic!("Expected map value, got {:?}", other),
-        }
-    };
-    ($actual:expr, deleted) => {
-        match $actual {
-            Value::Deleted => (),
-            other => panic!("Expected deleted value, got {:?}", other),
-        }
-    };
 }
