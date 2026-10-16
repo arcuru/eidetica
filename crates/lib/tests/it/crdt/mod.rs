@@ -12,5 +12,6 @@ mod integration;
 mod list_tests;
 mod lww_tests;
 mod map_tests;
+mod row_lifecycle_tests;
 mod serialization_tests;
 mod value_tests;

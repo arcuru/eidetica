@@ -12,9 +12,10 @@
 //! - [`doc::list::Position`] - Rational number-based positions for stable list ordering
 //! - [`Map`] - Per-key composition of arbitrary CRDT operations
 //! - [`Lww`] - Ordered register operations with an explicit identity and tombstone
+//! - [`RowLifecycle`] - Row updates, fresh resets and retained whole-row deletion
 //!
-//! `Map` and `Lww` provide standalone merge algebra, without built-in encoding
-//! or Store integration.
+//! `Map`, `Lww` and `RowLifecycle` provide standalone merge algebra, without
+//! built-in encoding or Store integration.
 //!
 //! # Traits
 //!
@@ -26,6 +27,7 @@ pub mod doc;
 pub mod errors;
 pub mod lww;
 pub mod map;
+pub mod row_lifecycle;
 pub mod traits;
 
 // Re-export core types
@@ -33,4 +35,5 @@ pub use doc::Doc;
 pub use errors::CRDTError;
 pub use lww::Lww;
 pub use map::Map;
+pub use row_lifecycle::RowLifecycle;
 pub use traits::{CRDT, Codec};
