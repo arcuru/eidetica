@@ -1,6 +1,7 @@
 use std::cmp::{max, min};
 
 use eidetica::auth::{
+    AuthError,
     crypto::{PrivateKey, generate_keypair},
     settings::AuthSettings,
     types::{
@@ -340,11 +341,21 @@ fn test_permission_string_conversion_comprehensive() {
     }
 
     // Test error cases
-    assert!(Permission::try_from("invalid".to_string()).is_err());
-    assert!(Permission::try_from("write".to_string()).is_err()); // Missing priority
-    assert!(Permission::try_from("admin".to_string()).is_err()); // Missing priority
-    assert!(Permission::try_from("write:invalid".to_string()).is_err()); // Invalid priority
-    assert!(Permission::try_from("admin:not_a_number".to_string()).is_err()); // Invalid priority
+    assert!(
+        matches!(Permission::try_from("invalid".to_string()).unwrap_err(), AuthError::InvalidPermissionString { value } if value == "invalid")
+    );
+    assert!(
+        matches!(Permission::try_from("write".to_string()).unwrap_err(), AuthError::PermissionRequiresPriority { permission_type } if permission_type == "Write")
+    );
+    assert!(
+        matches!(Permission::try_from("admin".to_string()).unwrap_err(), AuthError::PermissionRequiresPriority { permission_type } if permission_type == "Admin")
+    );
+    assert!(
+        matches!(Permission::try_from("write:invalid".to_string()).unwrap_err(), AuthError::InvalidPriorityValue { value } if value == "invalid")
+    );
+    assert!(
+        matches!(Permission::try_from("admin:not_a_number".to_string()).unwrap_err(), AuthError::InvalidPriorityValue { value } if value == "not_a_number")
+    );
 }
 
 #[test]

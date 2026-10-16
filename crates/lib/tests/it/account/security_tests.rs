@@ -7,7 +7,7 @@
 //! - Session security
 
 use super::helpers::*;
-use eidetica::auth::crypto::generate_keypair;
+use eidetica::{Error, account::AccountError, auth::crypto::generate_keypair};
 
 // ===== PASSWORD EDGE CASES =====
 
@@ -21,9 +21,11 @@ async fn test_empty_password_different_from_no_password() {
         .await
         .expect("Create with empty password");
 
-    // Should require empty password to login
+    // Missing credentials are PasswordRequired locally, InvalidPassword over service.
     let result = instance.login_account(username, None).await;
-    assert!(result.is_err(), "Empty password is not same as no password");
+    assert!(
+        matches!(result.expect_err("Missing password must fail"), Error::Account(e) if matches!(e.as_ref(), AccountError::PasswordRequired { .. } | AccountError::InvalidPassword))
+    );
 
     // Should succeed with empty password
     let _user = instance
@@ -40,10 +42,14 @@ async fn test_case_sensitive_passwords() {
 
     // Wrong case should fail
     let result = instance.login_account(username, Some("mypassword")).await;
-    assert!(result.is_err(), "Passwords should be case-sensitive");
+    assert!(
+        matches!(result.expect_err("Wrong-case password must fail"), Error::Account(e) if matches!(e.as_ref(), AccountError::DecryptionFailed { .. }))
+    );
 
     let result = instance.login_account(username, Some("MYPASSWORD")).await;
-    assert!(result.is_err(), "Passwords should be case-sensitive");
+    assert!(
+        matches!(result.expect_err("Wrong-case password must fail"), Error::Account(e) if matches!(e.as_ref(), AccountError::DecryptionFailed { .. }))
+    );
 }
 
 #[tokio::test]
@@ -182,7 +188,9 @@ async fn test_invalid_key_id_fails() {
 
     let (_, fake_key) = generate_keypair();
     let result = user.get_signing_key(&fake_key);
-    assert!(result.is_err(), "Getting invalid key should fail");
+    assert!(
+        matches!(result.expect_err("Unknown key must fail"), Error::Account(e) if matches!(e.as_ref(), AccountError::KeyNotFound { key_id } if *key_id == fake_key.to_string()))
+    );
 }
 
 #[tokio::test]
@@ -216,8 +224,7 @@ async fn test_database_access_requires_key() {
 
     // Bob should not be able to load without proper bootstrap
     assert!(
-        result.is_err(),
-        "AccountSession without key should not load database"
+        matches!(result.expect_err("AccountSession without key must not load database"), Error::Account(e) if matches!(e.as_ref(), AccountError::NoKeyForDatabase { database_id } if database_id == db_id))
     );
 }
 
