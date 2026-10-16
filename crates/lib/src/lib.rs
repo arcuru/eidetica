@@ -36,7 +36,7 @@ pub mod sync;
 pub mod testing;
 pub mod transaction;
 
-pub use account::AccountSession;
+pub use account::{Account, AccountSession};
 pub use auth::crypto::{PrivateKey, PublicKey};
 pub use clock::{Clock, SystemClock};
 #[cfg(any(test, feature = "testing"))]

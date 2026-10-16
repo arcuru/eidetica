@@ -53,10 +53,7 @@ async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, Acco
             let mut settings = Doc::new();
             settings.set("name", "todo");
             let todos = session.create_database(settings, &key).await?;
-            let tx = session.account().new_transaction().await?;
-            tx.get_store::<Table<ID>>("todo_roots").await?
-                .set("todos", todos.root_id().clone()).await?;
-            tx.commit().await?;
+            session.set_reference(TODO_APP, TODO_LIST, todos.root_id()).await?;
             println!("✓ Initialised new instance and bootstrapped {username} as admin");
             session
         }
@@ -75,13 +72,20 @@ async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, Acco
 
 A `Database` is a primary organizational unit within an `Instance`. Think of it somewhat like a schema or a logical database within a larger instance. It acts as a container for related data, managed through `Stores`. Databases provide versioning and history tracking for the data they contain.
 
-The Todo example keeps the todo database ID in its Account root, independent of the target's display name:
+The Todo example keeps a reference to its todo database in its Account, independent of the target's display name, and opens it through the session:
 
 ```rust,ignore
 async fn open_todo_database(session: &AccountSession) -> Result<Database> {
-    let roots = session.account().get_store_viewer::<Table<ID>>("todo_roots").await?;
-    let id = roots.get("todos").await?;
-    session.open_database(&id).await
+    session
+        .open_reference(TODO_APP, TODO_LIST)
+        .await?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "todo list reference is missing; this data file needs explicit repair",
+            )
+            .into()
+        })
 }
 ```
 

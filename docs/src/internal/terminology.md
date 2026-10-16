@@ -14,7 +14,7 @@ Use these when discussing Entry internals, Merkle-DAG structure, or serialized d
 
 ## User-Facing Abstractions
 
-- **Account**: Private root database for a person, group, or application; identified by its root ID, not a login name. It uses the ordinary Database API.
+- **Account**: Private root database for a person, group, or application; identified by its root ID, not a login name. Exposed as the typed `Account`; its backing database is encapsulated, and applications use AccountSession reference operations for discovery.
 - **AccountSession**: Unlocked instance-local access to an Account, returned by login; distinct from the Account and its local login record.
 - **Identity**: Key-declaration/delegation database, distinct from the private Account root; links alone do not confer authority.
 - **Database**: Collection of entries with shared authentication and history

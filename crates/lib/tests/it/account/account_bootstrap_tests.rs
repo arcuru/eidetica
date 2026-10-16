@@ -83,7 +83,7 @@ async fn setup_user_with_database()
         .expect("Failed to add database to user preferences");
 
     // Sync the user database to update combined settings
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .expect("Failed to sync user database");
 
@@ -554,10 +554,10 @@ async fn test_multiple_users() {
         .expect("Failed to create sync object");
 
     // Sync both users to propagate combined settings
-    sync.sync_account(alice.login_id(), alice.account().root_id())
+    sync.sync_account(alice.login_id(), alice.account().id())
         .await
         .expect("Failed to sync Alice's user data");
-    sync.sync_account(bob.login_id(), bob.account().root_id())
+    sync.sync_account(bob.login_id(), bob.account().id())
         .await
         .expect("Failed to sync Bob's user data");
 
@@ -759,7 +759,7 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to create sync");
 
     // Sync Alice's user data to propagate combined settings
-    sync.sync_account(alice.login_id(), alice.account().root_id())
+    sync.sync_account(alice.login_id(), alice.account().id())
         .await
         .expect("Failed to sync Alice's user data");
 

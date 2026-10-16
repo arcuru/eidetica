@@ -552,7 +552,7 @@ pub async fn setup_server_with_bootstrap_database(
         .unwrap();
 
     // Sync the user database to update combined settings
-    sync.sync_account(server_user.login_id(), server_user.account().root_id())
+    sync.sync_account(server_user.login_id(), server_user.account().id())
         .await
         .unwrap();
 
@@ -744,7 +744,7 @@ pub async fn setup_sync_enabled_server(
         .unwrap();
 
     // Sync the user database to update combined settings
-    sync.sync_account(server_user.login_id(), server_user.account().root_id())
+    sync.sync_account(server_user.login_id(), server_user.account().id())
         .await
         .unwrap();
 
@@ -1025,7 +1025,7 @@ pub async fn setup_public_sync_enabled_server(
         .unwrap();
 
     // Sync the user database to update combined settings
-    sync.sync_account(server_user.login_id(), server_user.account().root_id())
+    sync.sync_account(server_user.login_id(), server_user.account().id())
         .await
         .unwrap();
 

@@ -37,7 +37,7 @@ impl Sync {
     /// ```rust,ignore
     /// // After creating or logging in a user
     /// let user = instance.login_account("alice", Some("password"))?;
-    /// sync.sync_account(user.login_id(), user.account().root_id())?;
+    /// sync.sync_account(user.login_id(), user.account().id())?;
     /// ```
     pub async fn sync_account(
         &self,

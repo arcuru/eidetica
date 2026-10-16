@@ -3,10 +3,11 @@
 //! Provides AccountSession access with per-account key storage, database tracking,
 //! and sync preferences.
 //!
-//! An Account is an ordinary private [`Database`](crate::Database), reached through
-//! [`AccountSession::account`]. Its root ID is distinct from the instance-local
-//! login UUID. It can represent a person, group or app. No extra Database wrapper
-//! or mandatory application catalog is needed.
+//! An [`Account`] is the private root database of a person, group or app, reached
+//! through [`AccountSession::account`]. Its root ID is distinct from the
+//! instance-local login UUID. Applications store and open direct database
+//! references through the session ([`AccountSession::set_reference`],
+//! [`AccountSession::open_reference`]); there is no mandatory catalog.
 //!
 //! This API retains the current key/tracking layout. It does not implement
 //! portable secret-free state, cross-instance account enrollment or new Auth.
@@ -44,6 +45,7 @@ pub mod admin;
 pub mod crypto;
 pub mod errors;
 pub mod key_manager;
+mod root;
 pub mod session;
 mod sharing;
 pub mod system_databases;
@@ -52,6 +54,7 @@ pub mod types;
 pub use admin::InstanceAdmin;
 pub use errors::AccountError;
 pub use key_manager::AccountKeyManager;
+pub use root::Account;
 pub use session::{AccountSession, DatabaseBuilder};
 pub(crate) use sharing::ticket_locator;
 pub use types::*;

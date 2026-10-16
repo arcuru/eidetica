@@ -62,7 +62,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
 
     // Update sync configuration
     server_sync
-        .sync_account(server_user.login_id(), server_user.account().root_id())
+        .sync_account(server_user.login_id(), server_user.account().id())
         .await
         .unwrap();
 

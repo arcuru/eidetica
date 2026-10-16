@@ -41,7 +41,7 @@ async fn test_commits_work_with_sync_enabled() {
 
     // Register user with sync
     let sync = instance.sync().expect("Sync should exist");
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .expect("Register user");
 

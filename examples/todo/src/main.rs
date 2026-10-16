@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::{
-    Database, ID, Instance, Result,
+    Database, Instance, Result,
     account::AccountSession,
     crdt::Doc,
     store::{StoreError, Table, YDoc},
@@ -88,6 +88,10 @@ impl Todo {
     }
 }
 
+/// Reference namespace and name this app stores in its Account.
+const TODO_APP: &str = "todo";
+const TODO_LIST: &str = "list";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -169,12 +173,9 @@ async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, Acco
             let mut settings = Doc::new();
             settings.set("name", "todo");
             let todos = session.create_database(settings, &key).await?;
-            let tx = session.account().new_transaction().await?;
-            tx.get_store::<Table<ID>>("todo_roots")
-                .await?
-                .set("todos", todos.root_id().clone())
+            session
+                .set_reference(TODO_APP, TODO_LIST, todos.root_id())
                 .await?;
-            tx.commit().await?;
             println!("✓ Initialised new instance and bootstrapped {username} as admin");
             session
         }
@@ -188,17 +189,21 @@ async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, Acco
     Ok((instance, user))
 }
 
-/// Read the app-owned reference and open exactly that database.
-/// Missing metadata, corrupt IDs, unavailable targets and denied access remain
-/// errors. A display-name change does not change this reference. Initialization
-/// failure requires explicit repair, not a name scan or a replacement database.
+/// Open the database named by the app's reference, and nothing else.
+/// A missing reference, unavailable target or denied access is an error. A
+/// display-name change does not affect the reference. Initialization failure
+/// requires explicit repair, not a name scan or a replacement database.
 async fn open_todo_database(session: &AccountSession) -> Result<Database> {
-    let roots = session
-        .account()
-        .get_store_viewer::<Table<ID>>("todo_roots")
-        .await?;
-    let id = roots.get("todos").await?;
-    session.open_database(&id).await
+    session
+        .open_reference(TODO_APP, TODO_LIST)
+        .await?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "todo list reference is missing; this data file needs explicit repair",
+            )
+            .into()
+        })
 }
 
 async fn add_todo(database: &Database, title: String) -> Result<()> {

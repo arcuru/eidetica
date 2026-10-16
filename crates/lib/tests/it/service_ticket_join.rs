@@ -253,7 +253,7 @@ async fn connected_join_pending_then_approved_retry_opens_database() {
     let mut metadata = Doc::new();
     metadata.set("device", "laptop");
     let settings = SyncSettings::on_commit().with_interval(29);
-    let user_before = user.account().snapshot().await.unwrap();
+    let user_before = user.account().database().snapshot().await.unwrap();
 
     let error = user
         .join(
@@ -271,7 +271,10 @@ async fn connected_join_pending_then_approved_retry_opens_database() {
     );
     assert!(user.database(&tree).await.is_err());
     assert_eq!(user.key_mapping(&key, &tree).unwrap(), None);
-    assert_eq!(user_before, user.account().snapshot().await.unwrap());
+    assert_eq!(
+        user_before,
+        user.account().database().snapshot().await.unwrap()
+    );
     assert!(user.open_database(&tree).await.is_err());
 
     // Retrying while still pending resumes the same request.
@@ -283,7 +286,10 @@ async fn connected_join_pending_then_approved_retry_opens_database() {
         is_pending(&retry),
         "expected BootstrapPending, got {retry:?}"
     );
-    assert_eq!(user_before, user.account().snapshot().await.unwrap());
+    assert_eq!(
+        user_before,
+        user.account().database().snapshot().await.unwrap()
+    );
     let pending = peer.sync.pending_bootstrap_requests().await.unwrap();
     assert_eq!(pending.len(), 1, "a retry must not duplicate the request");
     let (request_id, request) = &pending[0];
@@ -966,7 +972,7 @@ async fn identical_completed_join_preserves_user_and_routing_history() {
     )
     .await
     .unwrap();
-    let user_before = user.account().snapshot().await.unwrap();
+    let user_before = user.account().database().snapshot().await.unwrap();
     let local_routes = daemon
         .instance
         .sync()
@@ -989,7 +995,7 @@ async fn identical_completed_join_preserves_user_and_routing_history() {
     }
     assert_eq!(
         user_before,
-        user.account().snapshot().await.unwrap(),
+        user.account().database().snapshot().await.unwrap(),
         "identical Account settings appended history"
     );
     assert_eq!(
@@ -1038,7 +1044,7 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
     let mut user = service.login_account("alice", None).await?;
     let key = user.get_default_key()?;
-    let before = user.account().snapshot().await?;
+    let before = user.account().database().snapshot().await?;
     assert!(is_pending(
         &user
             .join(
@@ -1053,7 +1059,7 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
     ));
     let pending = peer.sync.pending_bootstrap_requests().await?;
     assert_eq!(pending.len(), 1);
-    assert_eq!(before, user.account().snapshot().await?);
+    assert_eq!(before, user.account().database().snapshot().await?);
     drop(user);
     drop(service);
     drop(shutdown);
@@ -1076,7 +1082,7 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
     let running = tokio::spawn(server.run(rx));
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
     let mut user = service.login_account("alice", None).await?;
-    assert_eq!(before, user.account().snapshot().await?);
+    assert_eq!(before, user.account().database().snapshot().await?);
     assert_eq!(user.key_mapping(&key, &peer.tree())?, None);
     assert!(is_pending(
         &user
@@ -1107,7 +1113,7 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
         )
         .await?;
     assert_eq!(db.root_id(), &peer.tree());
-    let after = user.account().snapshot().await?;
+    let after = user.account().database().snapshot().await?;
     user.join(
         &peer.ticket,
         &key,
@@ -1116,7 +1122,7 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
         None,
     )
     .await?;
-    assert_eq!(after, user.account().snapshot().await?);
+    assert_eq!(after, user.account().database().snapshot().await?);
     drop(db);
     drop(user);
     drop(service);

@@ -318,7 +318,7 @@ async fn handle_login_submit(
             // Enable background sync for this user's databases
             if let Some(sync) = instance.sync() {
                 let login_id = user.login_id();
-                let user_db_id = user.account().root_id().clone();
+                let user_db_id = user.account().id().clone();
                 if let Err(e) = sync.sync_account(login_id, &user_db_id).await {
                     tracing::warn!(
                         "Failed to enable background sync for user {}: {}",

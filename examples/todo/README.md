@@ -153,7 +153,7 @@ The test script provides a complete demonstration of both Table and YDoc functio
 
 ## Account root reference
 
-The app initializes `todo_roots["todos"]` in its Account database only on first embedded-instance creation.
+The app stores its todo database ID as the `todo`/`list` reference in its Account only on first embedded-instance creation.
 Returning sessions open that ID directly: display-name changes do not affect discovery and unrelated databases are not scanned.
 Missing or invalid metadata, missing keys, unavailable targets and permission failures are errors, not permission to create another database.
 Setup uses the embedded backend's exclusive ownership; this is not a distributed uniqueness protocol.
