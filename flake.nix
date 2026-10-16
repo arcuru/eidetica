@@ -84,6 +84,9 @@
           releaseCargoExtraArgs
           benchArgs
           debugArgs
+          minimalDebugArgs
+          binDebugArgs
+          docApiArgs
           debugArgsNightly
           asanArgs
           lsanArgs
@@ -96,12 +99,12 @@
         };
 
         # Import package groups
-        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs releaseCargoExtraArgs debugArgs;};
+        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs releaseCargoExtraArgs binDebugArgs;};
 
-        testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
+        testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs minimalDebugArgs baseArgs pkgs lib;};
         coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLibNightly baseArgsNightly fenixNightly toolChainNightly eidLib pkgs lib;};
         sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLibNightly debugArgsNightly asanArgs lsanArgs fenixNightly pkgs lib;};
-        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs pkgs lib;};
+        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs docApiArgs pkgs lib;};
         lintPkgs = import ./nix/packages/lint.nix {
           inherit craneLib craneLibNightly baseArgs baseArgsNightly debugArgs releaseCargoExtraArgs eidLib pkgs lib;
           treefmtWrapper = config.treefmt.build.wrapper;

@@ -2,6 +2,7 @@
 {
   craneLib,
   debugArgs,
+  minimalDebugArgs,
   baseArgs,
   pkgs,
   lib,
@@ -164,10 +165,10 @@
       cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
 
-  test-check-minimal = craneLib.cargoNextest (debugArgs
+  test-check-minimal = craneLib.cargoNextest (minimalDebugArgs
     // {
       pname = "test-check-minimal";
-      cargoNextestExtraArgs = "-p eidetica --no-default-features --features testing ${nextestCheckArgs}";
+      cargoNextestExtraArgs = nextestCheckArgs;
     });
 
   # Service backend check (Linux only, requires Unix sockets)
