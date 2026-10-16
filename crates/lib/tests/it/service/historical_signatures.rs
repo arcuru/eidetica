@@ -52,6 +52,7 @@ async fn proof() -> Result<(), Box<dyn std::error::Error>> {
     let admin = user.get_default_key()?;
     let provider = user.create_database(Doc::new(), &admin).await?;
     let session = user.create_database(Doc::new(), &admin).await?;
+    let nested_authority = user.create_database(Doc::new(), &admin).await?;
     let direct = PrivateKey::generate();
     let delegated = PrivateKey::generate();
     let forger = PrivateKey::generate();
@@ -62,7 +63,31 @@ async fn proof() -> Result<(), Box<dyn std::error::Error>> {
         .create_user(NewUser::passwordless("reader"))
         .await?;
 
+    let tx = nested_authority.new_transaction().await?;
+    for (key, permission) in [
+        (&delegated, Permission::Admin(10)),
+        (&reader, Permission::Read),
+    ] {
+        tx.get_settings()?
+            .set_auth_key(&key.public_key(), AuthKey::active(None, permission))
+            .await?;
+    }
+    tx.commit().await?;
+    let nested_tips = nested_authority.snapshot().await?.into_tips();
+
     let tx = provider.new_transaction().await?;
+    tx.get_settings()?
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Admin(10),
+                min: None,
+            },
+            tree: TreeReference {
+                root: nested_authority.root_id().clone(),
+                tips: nested_tips.clone(),
+            },
+        })
+        .await?;
     for (key, permission) in [
         (&direct, Permission::Write(10)),
         (&delegated, Permission::Admin(10)),
@@ -139,6 +164,28 @@ async fn proof() -> Result<(), Box<dyn std::error::Error>> {
     let delegated_id = publish(
         &session,
         DatabaseKey::with_identity(delegated.clone(), identity),
+        provider.root_id(),
+    )
+    .await?;
+
+    let nested_id = publish(
+        &session,
+        DatabaseKey::with_identity(
+            delegated.clone(),
+            SigKey::Delegation {
+                path: vec![
+                    DelegationStep {
+                        tree: provider.root_id().clone(),
+                        tips: provider_tips.clone(),
+                    },
+                    DelegationStep {
+                        tree: nested_authority.root_id().clone(),
+                        tips: nested_tips,
+                    },
+                ],
+                hint: KeyHint::from_pubkey(&delegated.public_key()),
+            },
+        ),
         provider.root_id(),
     )
     .await?;
@@ -245,7 +292,7 @@ async fn proof() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::to_value(&local_records)?,
         serde_json::to_value(&remote_records)?
     );
-    assert_eq!(local_records.len(), 3);
+    assert_eq!(local_records.len(), 4);
     for (db, authority) in [(&session, &provider), (&remote_session, &remote_provider)] {
         let direct_entry = db.get_entry(&direct_id).await?;
         assert!(db.verify_entry_signature(&direct_id).await?);
@@ -264,6 +311,11 @@ async fn proof() -> Result<(), Box<dyn std::error::Error>> {
         );
         assert!(verify_entry_signature(&forged, &direct.public_key()).is_err());
         assert!(verify_entry_signature(&forged, &delegated.public_key()).is_err());
+        assert!(db.verify_entry_signature(&nested_id).await?);
+        assert!(
+            verify_entry_signature(&db.get_entry(&nested_id).await?, &delegated.public_key())
+                .is_ok()
+        );
         assert!(db.verify_entry_signature(&delegated_id).await?);
         let delegated_entry = db.get_entry(&delegated_id).await?;
         // Native historical validation establishes authorization. Separately
@@ -282,9 +334,6 @@ async fn proof() -> Result<(), Box<dyn std::error::Error>> {
             .collect::<Vec<_>>();
         assert_eq!(signers, vec![delegated.public_key()]);
     }
-    println!(
-        "PROVED: verified-frontier direct/service entry parity, direct-key Provider association, valid-writer forged-label rejection"
-    );
 
     // Native delegation resolves to an actual operating key, not a trusted hint.
     let entry = session.get_entry(&delegated_id).await?;
@@ -300,22 +349,6 @@ async fn proof() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
     assert_eq!(signer.public_key, delegated.public_key());
     assert_eq!(signer.effective_permission, Permission::Write(10));
-    println!(
-        "PROVED: direct native delegated identity resolves and authenticates the Provider operating key"
-    );
-
-    // Keep the original panic regression isolated in a joined task.
-    println!("CHECK: Database::verify_entry_signature on the same delegated Entry via service");
-    let verification = tokio::spawn({
-        let db = remote_session.clone();
-        let id = delegated_id.clone();
-        async move { db.verify_entry_signature(id).await }
-    })
-    .await;
-    assert!(
-        verification??,
-        "delegated signature must verify over the service"
-    );
 
     // Freshly signed malformed/unauthorized claims cannot borrow the original
     // Entry's valid signature or its historical authority.
@@ -441,12 +474,14 @@ async fn proof() -> Result<(), Box<dyn std::error::Error>> {
             .await?,
         eidetica::backend::VerificationStatus::Unverified
     );
+    let error = AuthValidator::new()
+        .resolve_sig_key(&entry.auth().key, &auth, Some(&remote))
+        .await
+        .expect_err("low-level resolver requires local evidence");
     assert!(
-        AuthValidator::new()
-            .resolve_sig_key(&entry.auth().key, &auth, Some(&remote))
-            .await
-            .is_err(),
-        "low-level local-evidence resolver refuses a remote instance without panicking"
+        matches!(error, eidetica::Error::Instance(ref error)
+            if matches!(error.as_ref(), eidetica::instance::InstanceError::OperationNotSupported { .. })),
+        "expected local-engine-required error, got {error}"
     );
 
     // An observed newer delegated snapshot is a floor, even though the
@@ -518,13 +553,54 @@ async fn proof() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         publish(
             &remote_session,
-            DatabaseKey::new(reader),
+            DatabaseKey::new(reader.clone()),
             provider.root_id()
         )
         .await
         .is_err(),
         "Read is not Write"
     );
+    // Current Read grants are rechecked even on an already-open handle.
+    // Revoking only the second hop must not affect one-hop/direct verdicts.
+    for (authority, denied_ids, still_readable) in [
+        (
+            &nested_authority,
+            vec![&nested_id],
+            vec![&direct_id, &delegated_id],
+        ),
+        (&provider, vec![&nested_id, &delegated_id], vec![&direct_id]),
+        (
+            &session,
+            vec![&nested_id, &delegated_id, &direct_id],
+            vec![],
+        ),
+    ] {
+        let tx = authority.new_transaction().await?;
+        tx.get_settings()?
+            .set_auth_key(
+                &reader.public_key(),
+                AuthKey::new(None, Permission::Read, KeyStatus::Revoked),
+            )
+            .await?;
+        tx.commit().await?;
+        for id in denied_ids {
+            assert!(
+                session.verify_entry_signature(id).await?,
+                "historical validity survives reader revocation"
+            );
+            assert!(
+                remote_session.verify_entry_signature(id).await.is_err(),
+                "Read revoked on {} for {id}",
+                authority.root_id()
+            );
+        }
+        for id in still_readable {
+            assert!(
+                remote_session.verify_entry_signature(id).await?,
+                "unaffected Read grant for {id}"
+            );
+        }
+    }
     drop(shutdown);
     running.await??;
     Ok(())
