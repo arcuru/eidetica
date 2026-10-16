@@ -8,14 +8,14 @@ use std::{
 
 use chrono::{TimeZone, Utc};
 use eidetica::{
-    Database, Error, Instance, NewUser, Result,
+    AccountSession, Database, Error, ID, Instance, NewAccount, Result,
+    account::SyncSettings,
     auth::{AuthKey, Permission},
     backend::database::InMemory,
     crdt::Doc,
     service::ServiceServer,
     store::Table,
     sync::{DatabaseTicket, SyncError, transports::http::HttpTransport},
-    user::{SyncSettings, User},
 };
 use shistory::{
     COMMAND_DISPLAY_LIMIT, CWD_DISPLAY_LIMIT, DEFAULT_LIMIT, HOST_DISPLAY_LIMIT, HistoryEntry,
@@ -37,12 +37,23 @@ struct Daemon {
 
 impl Daemon {
     async fn start(user: &str) -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        Self::start_backend(
+            user,
+            Box::new(InMemory::new()),
+            tempfile::tempdir().unwrap(),
+        )
+        .await
+    }
+
+    async fn start_backend(
+        user: &str,
+        backend: Box<dyn eidetica::backend::BackendImpl>,
+        dir: TempDir,
+    ) -> Self {
         let socket = dir.path().join("service.sock");
-        let (instance, _) =
-            Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless(user))
-                .await
-                .unwrap();
+        let (instance, _) = Instance::create_backend(backend, NewAccount::passwordless(user))
+            .await
+            .unwrap();
         instance.enable_sync().await.unwrap();
         let sync = instance.sync().unwrap();
         sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
@@ -91,7 +102,7 @@ async fn run_cli_at_socket(
     let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
     let stdin = stdin.to_vec();
     tokio::task::spawn_blocking(move || {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_shistory"))
+        let mut child = Command::new(shistory_bin())
             .env("EIDETICA_SOCKET", socket)
             .args(args)
             .stdin(std::process::Stdio::piped())
@@ -104,6 +115,12 @@ async fn run_cli_at_socket(
     })
     .await
     .unwrap()
+}
+
+fn shistory_bin() -> String {
+    // Nextest archives relocate binaries; keep Cargo's path for ordinary cargo test.
+    std::env::var("NEXTEST_BIN_EXE_shistory")
+        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_shistory").to_owned())
 }
 
 fn time(second: u32) -> chrono::DateTime<Utc> {
@@ -219,7 +236,7 @@ async fn ticket_is_sufficient_to_setup_a_second_host() -> Result<()> {
 }
 
 // An operator-configured private peer, not Shistory's default global-Write database.
-async fn private_history(daemon: &Daemon) -> Result<(User, Database, DatabaseTicket)> {
+async fn private_history(daemon: &Daemon) -> Result<(AccountSession, Database, DatabaseTicket)> {
     let (_client, mut owner) = connect_to(&daemon.socket_url, "alice").await?;
     let key = owner.get_default_key()?;
     let mut settings = Doc::new();
@@ -244,7 +261,7 @@ async fn cli_pending_setup_requires_explicit_retry_after_approval() -> Result<()
     let (owner, _database, ticket) = private_history(&first).await?;
     let second = Daemon::start("bob").await;
     let (_client, user) = connect_to(&second.socket_url, "bob").await?;
-    let user_before = user.user_database().snapshot().await?;
+    let user_before = user.account().database().snapshot().await?;
     let ticket_text = ticket.to_string();
     let args = ["--user", "bob", "setup", &ticket_text, "--name", "server"];
 
@@ -259,7 +276,7 @@ async fn cli_pending_setup_requires_explicit_retry_after_approval() -> Result<()
         assert!(error.contains("join pending approval"), "{error}");
         assert!(error.contains("same ticket and --name"));
         assert!(error.contains("no automatic completion"));
-        assert_eq!(user.user_database().snapshot().await?, user_before);
+        assert_eq!(user.account().database().snapshot().await?, user_before);
         assert!(user.database(ticket.database_id()).await.is_err());
     }
 
@@ -278,7 +295,7 @@ async fn cli_pending_setup_requires_explicit_retry_after_approval() -> Result<()
         open_database(&user).await.is_err(),
         "approval is not completion"
     );
-    assert_eq!(user.user_database().snapshot().await?, user_before);
+    assert_eq!(user.account().database().snapshot().await?, user_before);
 
     let joined = run_cli(&second, &args).await;
     assert!(
@@ -324,21 +341,21 @@ async fn setup_rejection_and_held_database_access_failure_record_no_host() -> Re
     owner
         .admin()
         .await?
-        .create_user(NewUser::passwordless("outsider"))
+        .create_account(NewAccount::passwordless("outsider"))
         .await?;
     let (_client, mut outsider) = connect_to(&first.socket_url, "outsider").await?;
-    let before = outsider.user_database().snapshot().await?;
+    let before = outsider.account().database().snapshot().await?;
     let error = setup(&mut outsider, Some(&ticket), "outsider")
         .await
         .unwrap_err();
     assert!(error.to_string().contains("not permitted"), "{error}");
-    assert_eq!(outsider.user_database().snapshot().await?, before);
+    assert_eq!(outsider.account().database().snapshot().await?, before);
     let sync = first.instance.sync().unwrap();
     assert!(sync.pending_bootstrap_requests().await?.is_empty());
 
     let second = Daemon::start("bob").await;
     let (_client, mut user) = connect_to(&second.socket_url, "bob").await?;
-    let before = user.user_database().snapshot().await?;
+    let before = user.account().database().snapshot().await?;
     let error = setup(&mut user, Some(&ticket), "server").await.unwrap_err();
     assert!(matches!(error, Error::Sync(e) if matches!(*e, SyncError::BootstrapPending { .. })));
     let pending = sync.pending_bootstrap_requests().await?;
@@ -347,7 +364,7 @@ async fn setup_rejection_and_held_database_access_failure_record_no_host() -> Re
         .await?;
     let error = setup(&mut user, Some(&ticket), "server").await.unwrap_err();
     assert!(matches!(error, Error::Sync(e) if matches!(*e, SyncError::BootstrapRejected { .. })));
-    assert_eq!(user.user_database().snapshot().await?, before);
+    assert_eq!(user.account().database().snapshot().await?, before);
     assert!(user.database(ticket.database_id()).await.is_err());
     assert!(
         database
@@ -569,7 +586,7 @@ async fn cli_status_reports_read_only_recording_prerequisites() -> Result<()> {
     .await?;
     let database = open_database(&user).await?;
     let host_id = configured.id.to_string();
-    let user_before = user.user_database().snapshot().await?;
+    let user_before = user.account().database().snapshot().await?;
     let history_before = database.snapshot().await?;
 
     let healthy = run_cli(
@@ -594,7 +611,7 @@ async fn cli_status_reports_read_only_recording_prerequisites() -> Result<()> {
     assert!(healthy.contains("shell hooks: not checked"));
     assert!(healthy.contains("remote synchronization: not checked"));
     assert!(healthy.contains("write readiness: not checked"));
-    assert_eq!(user.user_database().snapshot().await?, user_before);
+    assert_eq!(user.account().database().snapshot().await?, user_before);
     assert_eq!(database.snapshot().await?, history_before);
     assert_eq!(
         summarize(&database, None).await?.total,
@@ -1203,7 +1220,7 @@ fn cli_command_text_is_not_exposed_in_argv() {
     });
 
     let secret = "echo synthetic-secret-argv";
-    let mut child = Command::new(env!("CARGO_BIN_EXE_shistory"))
+    let mut child = Command::new(shistory_bin())
         .env("EIDETICA_SOCKET", &socket)
         .args([
             "--user",
@@ -1267,4 +1284,759 @@ fn displayed_entries_escape_control_characters_into_one_row() {
         String::from_utf8(output).unwrap(),
         "start time\thost\texit status\tduration (ms)\tworking directory\tcommand\n2026-09-14T12:00:00+00:00\tfixture\\thost\\nname\t0\t1\t/tmp/with\\ttab\\nand-newline\tprint 'one\\ttwo'\\nprint \\u{1b}[31mthree\\r\n"
     );
+}
+
+async fn remembered(session: &AccountSession) -> Result<Option<ID>> {
+    session
+        .reference(shistory::REFERENCE_NAMESPACE, shistory::REFERENCE_NAME)
+        .await
+}
+
+/// Raw Account writes simulate older or damaged installations; Shistory itself
+/// reaches its reference only through session operations.
+async fn write_raw_reference(session: &AccountSession, value: Option<eidetica::crdt::doc::Value>) {
+    let tx = session
+        .account()
+        .database()
+        .new_transaction()
+        .await
+        .unwrap();
+    // Load past the store-type check, as raw corruption would.
+    let store = <eidetica::store::DocStore as eidetica::Store>::load(
+        &tx,
+        format!("refs:{}", shistory::REFERENCE_NAMESPACE),
+    )
+    .await
+    .unwrap();
+    match value {
+        Some(value) => {
+            store.set(shistory::REFERENCE_NAME, value).await.unwrap();
+        }
+        None => {
+            store.delete(shistory::REFERENCE_NAME).await.unwrap();
+        }
+    }
+    tx.commit().await.unwrap();
+}
+
+/// A history database as created by Shistory releases before Account references.
+async fn legacy_history(session: &mut AccountSession, name: &str) -> Result<(Database, Host)> {
+    let key = session.get_default_key()?;
+    let mut settings = Doc::new();
+    settings.set("name", "shistory");
+    let database = session.create_database(settings, &key).await?;
+    let transaction = database.new_transaction().await?;
+    transaction
+        .get_settings()?
+        .set_global_auth_key(AuthKey::active(None, Permission::Write(10)))
+        .await?;
+    transaction.commit().await?;
+    session
+        .track_database(database.root_id().clone(), &key, SyncSettings::on_commit())
+        .await?;
+    let host = Host {
+        id: Uuid::new_v4(),
+        name: name.to_owned(),
+    };
+    let transaction = database.new_transaction().await?;
+    transaction
+        .get_store::<Table<Host>>("hosts")
+        .await?
+        .set(&host.id.to_string(), host.clone())
+        .await?;
+    transaction.commit().await?;
+    Ok((database, host))
+}
+
+async fn unrelated_databases(session: &mut AccountSession, count: usize) -> Result<Vec<ID>> {
+    let key = session.get_default_key()?;
+    let mut ids = Vec::new();
+    for index in 0..count {
+        let mut settings = Doc::new();
+        settings.set("name", format!("unrelated-{index}"));
+        ids.push(
+            session
+                .create_database(settings, &key)
+                .await?
+                .root_id()
+                .clone(),
+        );
+    }
+    Ok(ids)
+}
+
+fn capture_args<'a>(user: &'a str, host_id: &'a str, operation: &'a [&'a str]) -> Vec<&'a str> {
+    let mut args = vec!["--user", user, "--host-id", host_id];
+    args.extend_from_slice(operation);
+    args
+}
+
+const START: &[&str] = &[
+    "start",
+    "--session",
+    "reference",
+    "--cwd",
+    "/",
+    "--started-at",
+    "2026-09-14T12:00:00Z",
+];
+
+fn finish_args(id: &str) -> Vec<&str> {
+    vec!["finish", id, "--duration-ms", "2", "--exit-status", "0"]
+}
+
+#[tokio::test]
+async fn setup_remembers_root_across_reconnect_and_database_rename() -> Result<()> {
+    let first = Daemon::start("alice").await;
+    let second = Daemon::start("bob").await;
+    let (client, mut alice) = connect_to(&first.socket_url, "alice").await?;
+    let local = setup(&mut alice, None, "local").await?;
+    let database = open_database(&alice).await?;
+    assert_eq!(remembered(&alice).await?.as_ref(), Some(database.root_id()));
+
+    let ticket = shistory::ticket(&alice).await?;
+    let (_bob_client, mut bob) = connect_to(&second.socket_url, "bob").await?;
+    assert_eq!(remembered(&bob).await?, None);
+    setup(&mut bob, Some(&ticket), "server").await?;
+    assert_eq!(remembered(&bob).await?.as_ref(), Some(database.root_id()));
+
+    let tx = database.new_transaction().await?;
+    tx.get_settings()?.set_name("renamed history").await?;
+    tx.commit().await?;
+    drop(alice);
+    drop(client);
+    let (_client, mut alice) = connect_to(&first.socket_url, "alice").await?;
+    let database = open_database(&alice).await?;
+    assert_eq!(remembered(&alice).await?.as_ref(), Some(database.root_id()));
+    assert_eq!(database.get_name().await?, "renamed history");
+    let replacement = setup(&mut alice, None, "replacement").await.unwrap_err();
+    assert!(
+        replacement
+            .to_string()
+            .contains(&database.root_id().to_string()),
+        "{replacement}"
+    );
+    let tracked = alice.databases().await?.len();
+    let host_id = local.id.to_string();
+    let output = run_cli_with_stdin(&first, &capture_args("alice", &host_id, START), b"true").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let id = String::from_utf8(output.stdout).unwrap();
+    let output = run_cli(
+        &first,
+        &capture_args("alice", &host_id, &finish_args(id.trim())),
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(alice.databases().await?.len(), tracked);
+    assert_eq!(
+        query(&database, Some(local.id), None, 10, true).await?[0].exit_status,
+        Some(0)
+    );
+
+    first.stop().await;
+    second.stop().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_capture_migrates_but_read_only_commands_do_not() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut alice) = connect_to(&daemon.socket_url, "alice").await?;
+    let (database, local) = legacy_history(&mut alice, "local").await?;
+    let account_before = alice.account().database().snapshot().await?;
+    let host_id = local.id.to_string();
+
+    assert_eq!(open_database(&alice).await?.root_id(), database.root_id());
+    for read_only in [
+        vec!["--user", "alice", "--host-id", &host_id, "list"],
+        vec!["--user", "alice", "--host-id", &host_id, "search", "x"],
+        vec!["--user", "alice", "summary"],
+        vec!["--user", "alice", "--host-id", &host_id, "status"],
+    ] {
+        let output = run_cli(&daemon, &read_only).await;
+        assert!(
+            output.status.success(),
+            "{read_only:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(remembered(&alice).await?, None);
+    assert_eq!(alice.account().database().snapshot().await?, account_before);
+
+    // An unknown host must not migrate the legacy selection.
+    let unknown = Uuid::new_v4().to_string();
+    let output =
+        run_cli_with_stdin(&daemon, &capture_args("alice", &unknown, START), b"true").await;
+    assert!(!output.status.success());
+    assert_eq!(remembered(&alice).await?, None);
+
+    let output =
+        run_cli_with_stdin(&daemon, &capture_args("alice", &host_id, START), b"true").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(remembered(&alice).await?.as_ref(), Some(database.root_id()));
+
+    // Upgrading between start and finish also migrates.
+    write_raw_reference(&alice, None).await;
+    assert_eq!(remembered(&alice).await?, None);
+    let id = String::from_utf8(output.stdout).unwrap();
+    let output = run_cli(
+        &daemon,
+        &capture_args("alice", &host_id, &finish_args(id.trim())),
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(remembered(&alice).await?.as_ref(), Some(database.root_id()));
+    let entries = query(&database, Some(local.id), None, 10, true).await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].exit_status, Some(0));
+    assert_eq!(host(&database, local.id).await?, local);
+
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_ambiguous_or_missing_selection_does_not_migrate_or_create() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut alice) = connect_to(&daemon.socket_url, "alice").await?;
+    let missing = shistory::open_capture_database(&alice, Uuid::new_v4())
+        .await
+        .unwrap_err();
+    assert!(missing.is_not_found(), "{missing}");
+    assert!(alice.databases().await?.is_empty());
+
+    let (history, local) = legacy_history(&mut alice, "local").await?;
+    let (_duplicate, _) = legacy_history(&mut alice, "other").await?;
+    let before = history.snapshot().await?;
+    let error = shistory::open_capture_database(&alice, local.id)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("found 2 tracked databases"),
+        "{error}"
+    );
+    assert_eq!(remembered(&alice).await?, None);
+    assert_eq!(history.snapshot().await?, before);
+    let error = setup(&mut alice, None, "new").await.unwrap_err();
+    assert!(
+        error.to_string().contains(&history.root_id().to_string()),
+        "{error}"
+    );
+    assert_eq!(alice.databases().await?.len(), 2);
+
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn bad_reference_fails_closed_without_capture_name_scan_or_replacement() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut alice) = connect_to(&daemon.socket_url, "alice").await?;
+    let local = setup(&mut alice, None, "local").await?;
+    let history = open_database(&alice).await?;
+    let history_before = history.snapshot().await?;
+    let key = alice.get_default_key()?;
+    let mut settings = Doc::new();
+    settings.set("name", "other");
+    let other = alice.create_database(settings, &key).await?;
+    let host_id = local.id.to_string();
+
+    let capture_fails = |label: &'static str| {
+        let daemon = &daemon;
+        let host_id = host_id.clone();
+        async move {
+            let output = run_cli_with_stdin(
+                daemon,
+                &capture_args("alice", &host_id, START),
+                b"synthetic private command",
+            )
+            .await;
+            assert!(!output.status.success(), "{label}: start must fail");
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("synthetic private command"));
+            let output = run_cli(
+                daemon,
+                &capture_args("alice", &host_id, &finish_args("missing")),
+            )
+            .await;
+            assert!(!output.status.success(), "{label}: finish must fail");
+        }
+    };
+
+    // Wrong target: tracked and openable, but without this host.
+    alice
+        .set_reference(
+            shistory::REFERENCE_NAMESPACE,
+            shistory::REFERENCE_NAME,
+            other.root_id(),
+        )
+        .await?;
+    let other_before = other.snapshot().await?;
+    capture_fails("wrong target").await;
+    assert_eq!(other.snapshot().await?, other_before);
+
+    // Untracked target.
+    alice.untrack_database(other.root_id()).await?;
+    assert!(open_database(&alice).await.is_err());
+    capture_fails("untracked").await;
+
+    // Stale root that this daemon does not hold.
+    let stale = ID::from_bytes("nonexistent shistory root");
+    alice
+        .set_reference(
+            shistory::REFERENCE_NAMESPACE,
+            shistory::REFERENCE_NAME,
+            &stale,
+        )
+        .await?;
+    assert!(open_database(&alice).await.is_err());
+    capture_fails("stale").await;
+
+    // Malformed reference data is an error, never absence.
+    for value in [
+        eidetica::crdt::doc::Value::Text("not a database id".to_owned()),
+        eidetica::crdt::doc::Value::Int(42),
+    ] {
+        write_raw_reference(&alice, Some(value)).await;
+        assert!(remembered(&alice).await.is_err());
+        assert!(open_database(&alice).await.is_err());
+        assert!(shistory::ticket(&alice).await.is_err());
+        capture_fails("malformed").await;
+        assert!(setup(&mut alice, None, "replacement").await.is_err());
+    }
+
+    // Nothing fell back to the real history tree by name, or created another.
+    assert_eq!(history.snapshot().await?, history_before);
+    assert_eq!(alice.databases().await?.len(), 1);
+    assert!(
+        query(&history, Some(local.id), None, 10, true)
+            .await?
+            .is_empty()
+    );
+
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupted_or_legacy_setup_is_repaired_with_existing_root() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut alice) = connect_to(&daemon.socket_url, "alice").await?;
+    // Created and tracked, but neither remembered nor given a host.
+    let (database, _) = legacy_history(&mut alice, "unused").await?;
+    let root = database.root_id().to_string();
+    let error = setup(&mut alice, None, "local").await.unwrap_err();
+    assert!(error.to_string().contains(&root), "{error}");
+
+    let output = run_cli(
+        &daemon,
+        &[
+            "--user",
+            "alice",
+            "setup",
+            "--database",
+            &root,
+            "--name",
+            "local",
+        ],
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.contains(&format!("history database: {root}")),
+        "{output}"
+    );
+    let host_id = output
+        .lines()
+        .find_map(|line| line.strip_prefix("host id: "))
+        .unwrap();
+    assert_eq!(remembered(&alice).await?.as_ref(), Some(database.root_id()));
+    assert_eq!(
+        host(&database, Uuid::parse_str(host_id).unwrap())
+            .await?
+            .name,
+        "local"
+    );
+    assert_eq!(alice.databases().await?.len(), 1);
+
+    // Remembered but a host write was interrupted: retry the same root.
+    let again = shistory::setup_existing(&alice, database.root_id(), "second").await?;
+    assert_eq!(host(&database, again.id).await?.name, "second");
+
+    // A different root is never selected over the remembered one.
+    let key = alice.get_default_key()?;
+    let other = alice.create_database(Doc::new(), &key).await?;
+    alice
+        .track_database(other.root_id().clone(), &key, SyncSettings::on_commit())
+        .await?;
+    assert!(
+        shistory::setup_existing(&alice, other.root_id(), "x")
+            .await
+            .is_err()
+    );
+    assert_eq!(remembered(&alice).await?.as_ref(), Some(database.root_id()));
+
+    let conflict = run_cli(
+        &daemon,
+        &[
+            "--user",
+            "alice",
+            "setup",
+            "ticket-text",
+            "--database",
+            &root,
+            "--name",
+            "x",
+        ],
+    )
+    .await;
+    assert!(!conflict.status.success());
+
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ticket_join_retry_repairs_missing_reference_without_new_root() -> Result<()> {
+    let first = Daemon::start("alice").await;
+    let second = Daemon::start("bob").await;
+    let (_client, mut alice) = connect_to(&first.socket_url, "alice").await?;
+    setup(&mut alice, None, "local").await?;
+    let ticket = shistory::ticket(&alice).await?;
+    let (_client, mut bob) = connect_to(&second.socket_url, "bob").await?;
+    setup(&mut bob, Some(&ticket), "server").await?;
+    // Simulate a join whose reference write was lost.
+    write_raw_reference(&bob, None).await;
+    let retry = setup(&mut bob, Some(&ticket), "server").await?;
+    assert_eq!(remembered(&bob).await?.as_ref(), Some(ticket.database_id()));
+    let database = open_database(&bob).await?;
+    assert_eq!(host(&database, retry.id).await?.name, "server");
+    assert_eq!(bob.databases().await?.len(), 1);
+
+    // A ticket for another root never replaces the remembered one.
+    let key = alice.get_default_key()?;
+    let other = alice.create_database(Doc::new(), &key).await?;
+    let tx = other.new_transaction().await?;
+    tx.get_settings()?
+        .set_global_auth_key(AuthKey::active(None, Permission::Write(10)))
+        .await?;
+    tx.commit().await?;
+    other.share().await?;
+    let other_ticket = other.ticket().await?;
+    assert!(setup(&mut bob, Some(&other_ticket), "x").await.is_err());
+    assert_eq!(remembered(&bob).await?.as_ref(), Some(ticket.database_id()));
+    assert!(bob.database(other.root_id()).await.is_err());
+
+    first.stop().await;
+    second.stop().await;
+    Ok(())
+}
+
+/// Storage requests one CLI process sent before its first history write.
+struct CaptureTrace {
+    output: std::process::Output,
+    roots: Vec<ID>,
+    pre_submit: Option<Duration>,
+    total: Duration,
+}
+
+impl CaptureTrace {
+    fn touched(&self, ids: &[ID]) -> usize {
+        self.roots.iter().filter(|root| ids.contains(root)).count()
+    }
+}
+
+/// Run `bin` through a recording proxy. Records request roots, never payloads.
+async fn traced_cli(
+    daemon: &Daemon,
+    bin: &str,
+    args: &[&str],
+    stdin: &[u8],
+    history: &ID,
+) -> CaptureTrace {
+    use eidetica::service::protocol::{
+        DatabaseOp, Handshake, ServiceRequest, read_frame, write_frame,
+    };
+    use tokio::{
+        io::AsyncWriteExt,
+        net::{UnixListener, UnixStream},
+    };
+
+    let path = daemon
+        ._dir
+        .path()
+        .join(format!("trace-{}.sock", Uuid::new_v4().simple()));
+    let listener = UnixListener::bind(&path).unwrap();
+    let target = daemon.socket.clone();
+    let history = history.clone();
+    let proxy = tokio::spawn(async move {
+        let (client, _) = listener.accept().await.unwrap();
+        let began = Instant::now();
+        let server = UnixStream::connect(target).await.unwrap();
+        let (mut client_read, mut client_write) = client.into_split();
+        let (mut server_read, mut server_write) = server.into_split();
+        let mut roots = Vec::new();
+        let mut pre_submit = None;
+        let requests = async {
+            let handshake: Handshake = read_frame(&mut client_read).await.unwrap().unwrap();
+            write_frame(&mut server_write, &handshake).await.unwrap();
+            while let Ok(Some(request)) = read_frame::<_, ServiceRequest>(&mut client_read).await {
+                if let ServiceRequest::AuthenticatedDb(db) = &request
+                    && pre_submit.is_none()
+                {
+                    if db.root_id == history
+                        && matches!(db.op, DatabaseOp::SubmitSignedEntry { .. })
+                    {
+                        pre_submit = Some(began.elapsed());
+                    } else {
+                        roots.push(db.root_id.clone());
+                    }
+                }
+                write_frame(&mut server_write, &request).await.unwrap();
+            }
+            let _ = server_write.shutdown().await;
+        };
+        let responses = tokio::io::copy(&mut server_read, &mut client_write);
+        tokio::select! { () = requests => {}, _ = responses => {} }
+        (roots, pre_submit)
+    });
+    let bin = bin.to_owned();
+    let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+    let stdin = stdin.to_vec();
+    let socket = path.clone();
+    let began = Instant::now();
+    let output = tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let mut child = Command::new(bin)
+            .env("EIDETICA_SOCKET", socket)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&stdin).unwrap();
+        child.wait_with_output().unwrap()
+    })
+    .await
+    .unwrap();
+    let total = began.elapsed();
+    let (roots, pre_submit) = proxy.await.unwrap();
+    std::fs::remove_file(path).unwrap();
+    CaptureTrace {
+        output,
+        roots,
+        pre_submit,
+        total,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remembered_capture_opens_no_unrelated_databases_as_they_grow() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let admin = daemon.instance.login_account("alice", None).await?;
+    admin
+        .admin()
+        .await?
+        .create_account(NewAccount::passwordless("legacy"))
+        .await?;
+    let (_client, mut alice) = connect_to(&daemon.socket_url, "alice").await?;
+    let (_client, mut legacy) = connect_to(&daemon.socket_url, "legacy").await?;
+    let local = setup(&mut alice, None, "local").await?;
+    let history = open_database(&alice).await?;
+    let (legacy_db, legacy_host) = legacy_history(&mut legacy, "legacy").await?;
+    let bin = shistory_bin();
+    let bin = bin.as_str();
+    let alice_host = local.id.to_string();
+    let legacy_host = legacy_host.id.to_string();
+    let bin_start = |user: &'static str, host: String, history: ID| {
+        let daemon = &daemon;
+        async move {
+            let trace = traced_cli(
+                daemon,
+                bin,
+                &capture_args(user, &host, START),
+                b"true",
+                &history,
+            )
+            .await;
+            assert!(
+                trace.output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&trace.output.stderr)
+            );
+            assert!(
+                trace.pre_submit.is_some(),
+                "capture must submit to the selected history"
+            );
+            trace
+        }
+    };
+
+    let small = bin_start("alice", alice_host.clone(), history.root_id().clone()).await;
+    let alice_unrelated = unrelated_databases(&mut alice, 20).await?;
+    let large = bin_start("alice", alice_host.clone(), history.root_id().clone()).await;
+    // Only the Account, the selected history and instance-level requests are
+    // visited. Request counts follow Account/history tip state, so compare the
+    // set of databases, not an exact count.
+    let allowed = [
+        ID::default(),
+        alice.account().id().clone(),
+        history.root_id().clone(),
+    ];
+    for trace in [&small, &large] {
+        assert_eq!(
+            trace.touched(&alice_unrelated),
+            0,
+            "reference lookup opened unrelated databases"
+        );
+        assert_eq!(
+            trace.touched(&allowed),
+            trace.roots.len(),
+            "{:?}",
+            trace.roots
+        );
+    }
+
+    // Negative control: before migration, the legacy name lookup opens every tracked database.
+    let legacy_unrelated = unrelated_databases(&mut legacy, 20).await?;
+    let scan = bin_start("legacy", legacy_host.clone(), legacy_db.root_id().clone()).await;
+    assert_eq!(
+        scan.touched(&legacy_unrelated),
+        20 * scan.touched(&legacy_unrelated[..1])
+    );
+    assert!(
+        scan.touched(&legacy_unrelated[..1]) > 0,
+        "legacy lookup must visibly scan"
+    );
+    // The same capture is migrated, so the next one reads only its reference.
+    assert_eq!(
+        remembered(&legacy).await?.as_ref(),
+        Some(legacy_db.root_id())
+    );
+    let migrated = bin_start("legacy", legacy_host, legacy_db.root_id().clone()).await;
+    let allowed = [
+        ID::default(),
+        legacy.account().id().clone(),
+        legacy_db.root_id().clone(),
+    ];
+    assert_eq!(migrated.touched(&legacy_unrelated), 0);
+    assert_eq!(migrated.touched(&allowed), migrated.roots.len());
+    println!(
+        "TRACE pre_submit_requests remembered_small={} remembered_large={} legacy_scan={} migrated={}",
+        small.roots.len(),
+        large.roots.len(),
+        scan.roots.len(),
+        migrated.roots.len()
+    );
+
+    daemon.stop().await;
+    Ok(())
+}
+
+/// Compare capture latency against a baseline binary on a populated SQLite daemon.
+///
+/// Run explicitly with SHISTORY_BASELINE_BIN naming a binary built with the same
+/// Cargo profile from the baseline commit. Reports storage requests and time
+/// before the history write is submitted; never logs command text.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a separately built baseline binary"]
+async fn populated_sql_capture_profile() -> Result<()> {
+    let baseline = std::env::var("SHISTORY_BASELINE_BIN").expect("set SHISTORY_BASELINE_BIN");
+    let dir = tempfile::tempdir()?;
+    let backend =
+        eidetica::backend::database::Sqlite::open(dir.path().join("profile.sqlite")).await?;
+    let daemon = Daemon::start_backend("alice", Box::new(backend), dir).await;
+    let (_client, mut alice) = connect_to(&daemon.socket_url, "alice").await?;
+    // Place history among unrelated tracked databases, as on a populated Account.
+    unrelated_databases(&mut alice, 10).await?;
+    let local = setup(&mut alice, None, "profile-host").await?;
+    let database = open_database(&alice).await?;
+    unrelated_databases(&mut alice, 10).await?;
+    for _ in 0..100 {
+        let id = start(&database, local.id, "seed", "/", "true", time(0))
+            .await?
+            .unwrap();
+        finish(&database, local.id, &id, 1, 0).await?;
+    }
+    let host_id = local.id.to_string();
+    let root = database.root_id().clone();
+    let candidate = shistory_bin();
+    for pair in 0..21 {
+        // Alternate order to reduce drift; pair 0 warms both binaries.
+        let legs = if pair % 2 == 0 {
+            ["baseline", "candidate"]
+        } else {
+            ["candidate", "baseline"]
+        };
+        for leg in legs {
+            let bin = if leg == "baseline" {
+                baseline.as_str()
+            } else {
+                candidate.as_str()
+            };
+            let start = traced_cli(
+                &daemon,
+                bin,
+                &capture_args("alice", &host_id, START),
+                b"true",
+                &root,
+            )
+            .await;
+            let mut traces = vec![("start", start)];
+            if traces[0].1.output.status.success() {
+                let id = String::from_utf8(traces[0].1.output.stdout.clone()).unwrap();
+                let finish = traced_cli(
+                    &daemon,
+                    bin,
+                    &capture_args("alice", &host_id, &finish_args(id.trim())),
+                    b"",
+                    &root,
+                )
+                .await;
+                traces.push(("finish", finish));
+            }
+            for (operation, trace) in &traces {
+                let ok = trace.output.status.success();
+                // The baseline may exceed the capture deadline; after warm-up the
+                // candidate must not.
+                assert!(
+                    ok || leg == "baseline" || pair == 0,
+                    "{}",
+                    String::from_utf8_lossy(&trace.output.stderr)
+                );
+                println!(
+                    "PROFILE pair={pair} leg={leg} operation={operation} ok={ok} pre_submit_rpcs={} pre_submit_ms={} total_ms={:.3}",
+                    trace.roots.len(),
+                    trace.pre_submit.map_or_else(
+                        || "-".to_owned(),
+                        |t| format!("{:.3}", t.as_secs_f64() * 1000.)
+                    ),
+                    trace.total.as_secs_f64() * 1000.
+                );
+            }
+        }
+    }
+    daemon.stop().await;
+    Ok(())
 }

@@ -3,14 +3,15 @@ use std::{future::Future, io::Read, process::ExitCode, str::FromStr, time::Durat
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::{
-    Instance, Result,
+    ID, Instance, Result,
     service::{default_socket_path, default_socket_url},
     store::StoreError,
     sync::{DatabaseTicket, SyncError},
 };
 use shistory::{
-    DEFAULT_LIMIT, HOST_DISPLAY_LIMIT, bounded_escaped, connect, finish, host, open_database,
-    print_entries, print_summary, query, rename, setup, start, summarize, ticket,
+    DEFAULT_LIMIT, HOST_DISPLAY_LIMIT, bounded_escaped, connect, finish, host,
+    open_capture_database, open_database, print_entries, print_summary, query, rename, setup,
+    setup_existing, start, summarize, ticket,
 };
 use uuid::Uuid;
 
@@ -38,7 +39,12 @@ enum Command {
     /// Create the first history database or join one using an Eidetica ticket.
     Setup {
         /// Eidetica ticket from the first host; omit only when creating it.
+        #[arg(conflicts_with = "database")]
         ticket: Option<DatabaseTicket>,
+        /// Add this host to an existing history database root this account can open,
+        /// to adopt an older installation or repair an interrupted setup.
+        #[arg(long, value_parser = parse_id)]
+        database: Option<ID>,
         /// Mutable display name for this host.
         #[arg(long, env = "SHISTORY_HOST_NAME")]
         name: String,
@@ -117,9 +123,16 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Setup { ticket, name } => {
+        Command::Setup {
+            ticket,
+            database,
+            name,
+        } => {
             let (_instance, mut user) = connect(&cli.user).await?;
-            let host = setup(&mut user, ticket.as_ref(), &name).await?;
+            let host = match database {
+                Some(id) => setup_existing(&user, &id, &name).await?,
+                None => setup(&mut user, ticket.as_ref(), &name).await?,
+            };
             println!(
                 "history database: {}",
                 open_database(&user).await?.root_id()
@@ -148,7 +161,7 @@ async fn run(cli: Cli) -> Result<()> {
             let id = capture_with_deadline(async {
                 let (_instance, user) = connect(&cli.user).await?;
                 start(
-                    &open_database(&user).await?,
+                    &open_capture_database(&user, host_id).await?,
                     host_id,
                     &session,
                     &cwd,
@@ -171,7 +184,7 @@ async fn run(cli: Cli) -> Result<()> {
             capture_with_deadline(async {
                 let (_instance, user) = connect(&cli.user).await?;
                 finish(
-                    &open_database(&user).await?,
+                    &open_capture_database(&user, host_id).await?,
                     host_id,
                     &id,
                     duration_ms,
@@ -287,7 +300,7 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
 
     let user = match status_with_deadline(
         "passwordless user login",
-        instance.login_user(username, None),
+        instance.login_account(username, None),
     )
     .await
     {
@@ -424,4 +437,8 @@ fn parse_time(value: &str) -> Result<DateTime<Utc>> {
         }
         .into()
     })
+}
+
+fn parse_id(value: &str) -> std::result::Result<ID, String> {
+    ID::parse(value).map_err(|error| error.to_string())
 }
