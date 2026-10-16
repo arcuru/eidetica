@@ -1732,6 +1732,11 @@ impl Database {
     ///
     /// The method uses the entry's metadata to determine which authentication settings were active when the entry was signed,
     /// ensuring that entries remain valid even if keys are later revoked or settings change.
+    /// On a service connection the daemon runs the same native validator, including
+    /// complete delegated ancestry and inherited floors. The handle's acting identity
+    /// needs current Read permission on this database and each claimed delegated tree.
+    /// This is a historical authentication verdict, not current signing authority or
+    /// a substitute for verifying the Entry with a concrete operating public key.
     ///
     /// # Arguments
     /// * `entry_id` - The ID of the entry to verify (accepts anything that converts to ID/String)
@@ -1746,6 +1751,15 @@ impl Database {
     /// - The entry's metadata cannot be parsed
     /// - The historical authentication settings cannot be retrieved
     pub async fn verify_entry_signature<I: Into<ID>>(&self, entry_id: I) -> Result<bool> {
+        let entry_id = entry_id.into();
+        // The daemon owns local verification evidence and derived floors.
+        // Use this handle's acting identity, never the instance's login key.
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.ops().remote_connection() {
+            return conn
+                .verify_entry_signature(self.root.clone(), self.ops().remote_identity(), entry_id)
+                .await;
+        }
         let entry = self.get_entry(entry_id).await?;
 
         // Validate against the `_settings` the entry pins, not current

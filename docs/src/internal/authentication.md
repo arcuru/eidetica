@@ -47,7 +47,9 @@ Priority authorizes administrative actions; it does not change Doc merge orderin
 - `auth/validation/delegation.rs`: declaration lookup at historical snapshots,
   coverage of configured/inherited floors, bounds and key resolution.
 - `service/server.rs`: store submitted entries Unverified and verify server-side;
-  clients cannot assert a verification label.
+  clients cannot assert a verification label. Historical signature queries also
+  run the native validator server-side, gated by the handle's acting identity
+  and Read permission on the target and claimed delegated trees.
 - `backend/database/{in_memory,sql}/traversal.rs`: anchored store boundaries;
   SQL reads both current tip sets in one statement, InMemory uses its lock.
 

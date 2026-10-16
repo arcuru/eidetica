@@ -1305,6 +1305,23 @@ impl RemoteConnection {
         }
     }
 
+    /// Re-run historical authentication on the daemon, under the caller's
+    /// per-database identity. No client-supplied status is accepted.
+    pub async fn verify_entry_signature(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        id: ID,
+    ) -> crate::Result<bool> {
+        let resp = self
+            .db_request(root_id, identity, DatabaseOp::VerifyEntrySignature { id })
+            .await?;
+        match resp {
+            ServiceResponse::EntrySignatureValid(valid) => Ok(valid),
+            other => Err(unexpected_response("EntrySignatureValid", &other)),
+        }
+    }
+
     /// Subtree tips reachable from given main-tree entries.
     pub async fn store_snapshot_at(
         &self,

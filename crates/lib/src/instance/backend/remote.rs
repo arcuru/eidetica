@@ -348,6 +348,10 @@ impl Backend for RemoteBackend {
         self.conn.set_instance_metadata(metadata).await
     }
 
+    fn remote_identity(&self) -> SigKey {
+        self.identity()
+    }
+
     fn remote_connection(&self) -> Option<RemoteConnection> {
         Some(self.conn.clone())
     }

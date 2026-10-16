@@ -211,6 +211,10 @@ pub enum DatabaseOp {
     /// Read.
     GetEntry { id: ID },
 
+    /// Re-run native historical authentication for an entry in this database.
+    /// Read-gated; never accepts client-supplied verification status.
+    VerifyEntrySignature { id: ID },
+
     /// Rewrite the daemon's instance metadata (system-DB pointers). Gated by
     /// `Admin` on `_databases` (a daemon-global system tree, resolved
     /// server-side — *not* the request's `root_id`), so the per-tree gate is
@@ -282,6 +286,7 @@ impl DatabaseOp {
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
             | DatabaseOp::ComputeMergeState { .. }
             | DatabaseOp::GetEntry { .. }
+            | DatabaseOp::VerifyEntrySignature { .. }
             | DatabaseOp::ResolveStoreState { .. }
             | DatabaseOp::StoreStateRecordGet { .. }
             | DatabaseOp::StoreStateRecordScan { .. }
@@ -519,6 +524,8 @@ pub enum ServiceResponse {
     Ok,
     /// The requested operation is not supported; no operation was performed.
     Unsupported,
+    /// Native historical signature/permission verdict, not a stored status.
+    EntrySignatureValid(bool),
     /// One optional opaque record.
     Record(Option<Vec<u8>>),
     /// One bounded, ordered record page.
@@ -607,6 +614,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "GetStoreTipsUpToEntries",
     "ComputeMergeState",
     "GetEntry",
+    "VerifyEntrySignature",
     "SetInstanceMetadata",
     "SubscribeWrites",
     "UnsubscribeWrites",
@@ -618,6 +626,7 @@ const RESPONSE_VARIANTS: &[&str] = &[
     "Ids",
     "Ok",
     "Unsupported",
+    "EntrySignatureValid",
     "Record",
     "RecordPage",
     "RecordView",
