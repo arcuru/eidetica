@@ -448,7 +448,7 @@ async fn test_codec_staged_json_errors_unchanged() {
 async fn subtree_update_without_handle_uses_transaction_parents() {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -504,7 +504,7 @@ async fn get_store_propagates_registry_read_not_found() {
 
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
