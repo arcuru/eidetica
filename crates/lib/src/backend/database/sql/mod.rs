@@ -865,6 +865,42 @@ impl SqlxBackend {
     pub async fn test_connect_postgres_schema(url: &str, schema: String) -> Result<Self> {
         Self::connect_postgres_with_schema(url, Some(schema)).await
     }
+
+    /// Wait until no PostgreSQL session holds `schema`'s namespace ownership lock.
+    ///
+    /// Dropping a backend cannot await its sessions' exit, and the server releases their
+    /// locks only once they end. This waits on the server for the exclusive namespace lock,
+    /// bounded by `timeout`, and releases it when the statement completes.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub async fn test_await_postgres_namespace_release(
+        url: &str,
+        schema: &str,
+        timeout: Duration,
+    ) -> Result<()> {
+        sqlx::any::install_default_drivers();
+        let mut connection = AnyConnection::connect(url)
+            .await
+            .sql_context("Failed to connect to PostgreSQL")?;
+        let schema = format!("\"{}\"", schema.replace('"', "\"\""));
+        // SAFETY: the schema is a quoted, escaped identifier and the timeout is an integer.
+        connection
+            .execute(sqlx::AssertSqlSafe(format!(
+                "SET search_path TO {schema}; SET lock_timeout = {}",
+                timeout.as_millis().max(1)
+            )))
+            .await
+            .sql_context("Failed to prepare PostgreSQL ownership wait")?;
+        // SAFETY: the lock expression is a compile-time constant.
+        let released = connection
+            .execute(sqlx::AssertSqlSafe(format!(
+                "SELECT pg_advisory_xact_lock({POSTGRES_NAMESPACE_LOCK})"
+            )))
+            .await
+            .sql_context("PostgreSQL storage ownership was not released");
+        let _ = connection.close().await;
+        released.map(|_| ())
+    }
 }
 
 #[async_trait]
