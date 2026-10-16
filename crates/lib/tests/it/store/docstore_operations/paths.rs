@@ -133,19 +133,19 @@ async fn test_docstore_path_based_access() {
 
     // Non-existent top-level path
     let missing_result = dict.get_path(path!("missing_key")).await;
-    assert!(missing_result.is_err());
+    assert!(missing_result.unwrap_err().is_not_found());
 
     // Non-existent nested path
     let missing_nested = dict.get_path(path!("user.missing")).await;
-    assert!(missing_nested.is_err());
+    assert!(missing_nested.unwrap_err().is_not_found());
 
     // Non-existent deep path
     let missing_deep = dict.get_path(path!("user.profile.missing")).await;
-    assert!(missing_deep.is_err());
+    assert!(missing_deep.unwrap_err().is_not_found());
 
     // Type mismatch with get_path_as
     let type_mismatch: Result<i64, _> = dict.get_path_as(path!("user.name")).await; // String as i64
-    assert!(type_mismatch.is_err());
+    assert!(type_mismatch.unwrap_err().is_crdt_type_error());
 
     // Commit and verify persistence
     txn.commit().await.expect("Failed to commit transaction");
@@ -283,10 +283,10 @@ async fn test_docstore_path_mixed_with_staging() {
 
     // New staged data shouldn't be visible to viewer
     let viewer_env = viewer.get_path(path!("config.environment")).await;
-    assert!(viewer_env.is_err()); // Should not exist in committed data
+    assert!(viewer_env.unwrap_err().is_not_found()); // Should not exist in committed data
 
     let viewer_new = viewer.get_path(path!("new_key")).await;
-    assert!(viewer_new.is_err()); // Should not exist in committed data
+    assert!(viewer_new.unwrap_err().is_not_found()); // Should not exist in committed data
 }
 
 #[tokio::test]
@@ -380,7 +380,7 @@ async fn test_docstore_set_path() {
 
     // Verify that previous nested values under user.profile are now inaccessible
     let email_result = dict.get_path(path!("user.profile.email")).await;
-    assert!(email_result.is_err());
+    assert!(email_result.unwrap_err().is_not_found());
 
     // Commit and verify persistence
     txn.commit().await.expect("Failed to commit transaction");
@@ -473,13 +473,13 @@ async fn test_docstore_modify_path() {
     let result = dict
         .modify_path::<i64, _>(path!("nonexistent.path"), |_| {})
         .await;
-    assert!(result.is_err());
+    assert!(result.unwrap_err().is_not_found());
 
     // Test error case - type mismatch
     let result = dict
         .modify_path::<i64, _>(path!("user.name"), |_| {}) // name is string, not int
         .await;
-    assert!(result.is_err());
+    assert!(result.unwrap_err().is_crdt_type_error());
 
     // Commit and verify persistence
     txn.commit().await.expect("Failed to commit transaction");
@@ -793,7 +793,7 @@ async fn test_docstore_path_mutation_interoperability() {
 
     // Setting a nested path when level1 is not a map should replace level1 with a node
     let result = dict.set_path(path!("level1.nested"), "path_based").await;
-    assert!(result.is_ok()); // Should succeed by replacing level1 with a node
+    result.expect("Nested path should replace the scalar with a node");
 
     // Verify that level1 is now a node containing "nested" = "path_based"
     assert_eq!(
@@ -831,7 +831,7 @@ async fn test_docstore_path_mutation_interoperability() {
         .await
         .expect("Failed to set count");
     let direct_count_result: Result<i64, _> = dict.get_as("data").await; // Should fail - data is a map
-    assert!(direct_count_result.is_err());
+    assert!(direct_count_result.unwrap_err().is_crdt_type_error());
     let path_count: i64 = dict.get_path_as(path!("data.count")).await.unwrap();
     assert_eq!(path_count, 42);
 

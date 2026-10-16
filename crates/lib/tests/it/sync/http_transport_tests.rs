@@ -1,7 +1,7 @@
 use eidetica::{
-    Entry,
+    Entry, Error,
     sync::{
-        Address,
+        Address, SyncError,
         protocol::{SyncRequest, SyncResponse},
         transports::{SyncTransport, http::HttpTransport},
     },
@@ -41,7 +41,9 @@ async fn test_http_transport_double_start_error() {
     // Attempting to start again should fail
     let (_instance2, handler) = super::helpers::setup_test_handler().await;
     let result = transport.start_server(handler).await;
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerAlreadyRunning { .. }))
+    );
 
     // Clean up
     transport.stop_server().await.unwrap();
@@ -61,10 +63,12 @@ async fn test_http_transport_concurrent_start_error() {
         transport.start_server(handler2)
     );
 
-    assert_ne!(
-        first.is_ok(),
-        second.is_ok(),
-        "exactly one concurrent start must succeed"
+    let error = match (first, second) {
+        (Ok(()), Err(error)) | (Err(error), Ok(())) => error,
+        results => panic!("Expected exactly one successful start, got {results:?}"),
+    };
+    assert!(
+        matches!(error, Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerAlreadyRunning { .. }))
     );
     transport.stop_server().await.unwrap();
 }
@@ -79,7 +83,9 @@ async fn test_http_transport_failed_start_can_retry() {
         .unwrap();
 
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;
-    assert!(transport.start_server(handler1).await.is_err());
+    assert!(
+        matches!(transport.start_server(handler1).await.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerBind { .. }))
+    );
 
     drop(blocker);
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
@@ -96,7 +102,9 @@ async fn test_http_transport_stop_without_start() {
 
     // Attempting to stop when not running should fail
     let result = transport.stop_server().await;
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
 }
 
 #[tokio::test]
@@ -174,7 +182,9 @@ async fn test_http_transport_connection_refused() {
     let request = SyncRequest::SendEntries(vec![entry]);
     let result = transport.send_request(&unreachable_address, &request).await;
 
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ConnectionFailed { .. }))
+    );
 }
 
 #[tokio::test]
@@ -186,7 +196,9 @@ async fn test_http_transport_get_server_address() {
 
     // Should return error when no server is running
     let result = transport.get_server_address();
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
 
     // Start server on port 0
     let (_instance, handler) = super::helpers::setup_test_handler().await;
@@ -202,5 +214,7 @@ async fn test_http_transport_get_server_address() {
 
     // Should return error again after stopping
     let result = transport.get_server_address();
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
 }

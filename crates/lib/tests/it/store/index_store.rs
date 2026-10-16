@@ -589,7 +589,7 @@ async fn test_index_survives_database_reload() {
 
     // Check that persistent_data is registered
     let data_info = viewer.get("persistent_data").await;
-    assert!(data_info.is_ok(), "persistent_data should be in _index");
+    data_info.expect("persistent_data should be in _index");
 }
 
 // ============================================================================
@@ -610,7 +610,7 @@ async fn test_get_nonexistent_subtree_info() {
 
     // Try to get info for non-existent subtree
     let result = index.get_entry("nonexistent").await;
-    assert!(result.is_err());
+    assert!(result.unwrap_err().is_not_found());
 }
 
 #[tokio::test]
@@ -871,15 +871,8 @@ async fn test_type_mismatch_docstore_as_table() {
     let tx = database.new_transaction().await.unwrap();
     let result = tx.get_store::<Table<TestRecord>>("my_data").await;
 
-    assert!(
-        result.is_err(),
-        "Should fail when accessing DocStore as Table"
-    );
-    let err = result.err().unwrap();
-    assert!(
-        err.to_string().contains("Type mismatch"),
-        "Error should mention type mismatch: {err}"
-    );
+    let err = result.err().expect("Accessing DocStore as Table must fail");
+    assert!(err.is_type_error(), "Expected type mismatch, got {err:?}");
     assert!(
         err.to_string().contains(DocStore::type_id()),
         "Error should mention actual type: {err}"
@@ -916,15 +909,8 @@ async fn test_type_mismatch_table_as_docstore() {
     let tx = database.new_transaction().await.unwrap();
     let result = tx.get_store::<DocStore>("records").await;
 
-    assert!(
-        result.is_err(),
-        "Should fail when accessing Table as DocStore"
-    );
-    let err = result.err().unwrap();
-    assert!(
-        err.to_string().contains("Type mismatch"),
-        "Error should mention type mismatch: {err}"
-    );
+    let err = result.err().expect("Accessing Table as DocStore must fail");
+    assert!(err.is_type_error(), "Expected type mismatch, got {err:?}");
 }
 
 #[tokio::test]
@@ -954,8 +940,8 @@ async fn test_correct_type_access_succeeds() {
     // Access with correct types - should succeed
     let tx = database.new_transaction().await.unwrap();
     let doc_result = tx.get_store::<DocStore>("documents").await;
-    assert!(doc_result.is_ok(), "DocStore access should succeed");
+    doc_result.expect("DocStore access should succeed");
 
     let table_result = tx.get_store::<Table<TestRecord>>("records").await;
-    assert!(table_result.is_ok(), "Table access should succeed");
+    table_result.expect("Table access should succeed");
 }
