@@ -39,6 +39,7 @@ Applications store direct database IDs in their Account under a namespace and na
 - `AccountSession::open_reference(namespace, name)` reads it and opens the target with `open_database`.
 
 The namespace separates applications that share one Account; the name is an application alias.
+Reference names must be nonempty and contain no dots; invalid names are rejected before reading or writing.
 Each namespace is kept in its own store inside the Account, apart from the Account's key and tracking stores, so a namespace cannot overwrite them.
 There is no mandatory account-wide catalog, alias index, tags schema, or recursive activation.
 Reading an ID does not download, activate, or authorize the referenced database.
