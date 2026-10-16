@@ -124,6 +124,8 @@
     // {
       pname = "test-check-artifacts";
       outputs = ["out" "archive"];
+      # The archive must not retain Cargo targets through an unused $out/lib RPATH.
+      NIX_NO_SELF_RPATH = 1;
       buildPhaseCargoCommand = "cargo nextest archive --archive-file archive.tar.zst --workspace --all-features";
       nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.cargo-nextest];
       doInstallCargoArtifacts = true;
