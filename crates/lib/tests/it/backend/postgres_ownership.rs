@@ -43,6 +43,12 @@ async fn terminate(pool: &AnyPool, pid: i32) {
     assert!(terminated, "PostgreSQL session {pid} must be terminated");
 }
 
+async fn await_release(url: &str, schema: &str) {
+    SqlxBackend::test_await_postgres_namespace_release(url, schema, Duration::from_secs(5))
+        .await
+        .expect("old sessions must release PostgreSQL ownership when they exit");
+}
+
 fn assert_owned(error: Error) {
     assert!(
         matches!(
@@ -101,11 +107,24 @@ async fn postgres_namespace_is_owned_for_backend_lifetime() {
         Err(error) => error,
     };
     assert_owned(error);
+    assert!(
+        SqlxBackend::test_await_postgres_namespace_release(
+            &url,
+            &schema,
+            Duration::from_millis(200)
+        )
+        .await
+        .is_err(),
+        "a live backend's namespace must not be released"
+    );
 
+    // Drop only begins closing the backend's sessions; PostgreSQL releases their locks
+    // when they exit, so an immediate reopen can race that release.
     drop(first);
+    await_release(&url, &schema).await;
     SqlxBackend::test_connect_postgres_schema(&url, schema)
         .await
-        .expect("dropping the backend must release PostgreSQL ownership");
+        .expect("the namespace must be claimable once its sessions exit");
 }
 
 #[tokio::test]
@@ -210,19 +229,22 @@ async fn postgres_testing_checkout_blocks_takeover_until_released() {
         .await
         .unwrap();
     assert_eq!(value, 1);
+    assert!(
+        SqlxBackend::test_await_postgres_namespace_release(
+            &url,
+            &schema,
+            Duration::from_millis(200)
+        )
+        .await
+        .is_err(),
+        "a lingering old session must keep the namespace owned"
+    );
     drop(connection);
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Ok(owner) = SqlxBackend::test_connect_postgres_schema(&url, schema.clone()).await
-            {
-                break owner;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("takeover must succeed after the checked-out session closes");
+    await_release(&url, &schema).await;
+    SqlxBackend::test_connect_postgres_schema(&url, schema)
+        .await
+        .expect("takeover must succeed after the checked-out session closes");
 }
 
 #[tokio::test]
