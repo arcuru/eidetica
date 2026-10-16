@@ -1,12 +1,12 @@
 //! Application references are stored and opened through the AccountSession,
 //! not through a mandatory account catalog or raw Account stores.
 use eidetica::{
-    AccountSession, Database, Error, ID, Instance, NewAccount,
+    AccountSession, Database, Error, ID, Instance, NewAccount, Store,
     account::AccountError,
     auth::SigKey,
     backend::database::InMemory,
-    crdt::Doc,
-    store::{StoreError, Table},
+    crdt::{Doc, doc::Value},
+    store::{DocStore, StoreError, Table},
 };
 
 use super::helpers::setup_instance_with_user;
@@ -134,6 +134,95 @@ async fn test_account_root_reference_absence_is_not_failure_or_creation() {
     assert!(matches!(session.open_reference(APP, "unavailable").await,
         Err(Error::Account(e)) if matches!(e.as_ref(), AccountError::DatabaseAccessPending { .. })));
     assert_eq!(session.databases().await.unwrap().len(), tracked_before);
+}
+
+#[tokio::test]
+async fn test_account_root_reference_rejects_path_names_without_mutation() {
+    let (instance, _) = setup_instance_with_user("application", None).await;
+    let session = instance.login_account("application", None).await.unwrap();
+    let original = ID::from_bytes("original");
+    let replacement = ID::from_bytes("replacement");
+    session
+        .set_reference(APP, "group", &original)
+        .await
+        .unwrap();
+    let before = session.account().database().snapshot().await.unwrap();
+
+    for name in [
+        "",
+        ".group",
+        "group.",
+        "group.archive",
+        "group..archive",
+        "...",
+    ] {
+        for result in [
+            session.set_reference(APP, name, &replacement).await,
+            session.reference(APP, name).await.map(|_| ()),
+            session.open_reference(APP, name).await.map(|_| ()),
+        ] {
+            assert!(
+                matches!(result, Err(Error::Store(e)) if matches!(e.as_ref(), StoreError::InvalidOperation { .. })),
+                "invalid reference name {name:?} must be rejected"
+            );
+        }
+        assert_eq!(
+            session.reference(APP, "group").await.unwrap(),
+            Some(original.clone())
+        );
+        assert_eq!(
+            session.account().database().snapshot().await.unwrap(),
+            before
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_account_root_reference_rejects_nontext_metadata() {
+    let (instance, _) = setup_instance_with_user("application", None).await;
+    let session = instance.login_account("application", None).await.unwrap();
+    let target = ID::from_bytes("target");
+    for value in [Value::Int(42), Value::Bool(true), Value::Doc(Doc::new())] {
+        // Warm the typed projection first: malformed data must not leave a stale ID.
+        session.set_reference(APP, "root", &target).await.unwrap();
+        assert_eq!(
+            session.reference(APP, "root").await.unwrap(),
+            Some(target.clone())
+        );
+        let tx = session
+            .account()
+            .database()
+            .new_transaction()
+            .await
+            .unwrap();
+        DocStore::load(&tx, "refs:app".into())
+            .await
+            .unwrap()
+            .set("root", value)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            matches!(session.reference(APP, "root").await, Err(Error::Store(e)) if matches!(e.as_ref(), StoreError::TypeMismatch { .. }))
+        );
+        assert!(
+            matches!(session.open_reference(APP, "root").await, Err(Error::Store(e)) if matches!(e.as_ref(), StoreError::TypeMismatch { .. }))
+        );
+    }
+    let tx = session
+        .account()
+        .database()
+        .new_transaction()
+        .await
+        .unwrap();
+    DocStore::load(&tx, "refs:app".into())
+        .await
+        .unwrap()
+        .delete("root")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(session.reference(APP, "root").await.unwrap(), None);
 }
 
 #[tokio::test]

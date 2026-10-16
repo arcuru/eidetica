@@ -58,7 +58,7 @@ use crate::{
     database::DatabaseKey,
     entry::ID,
     instance::{InstanceError, backend::Backend},
-    store::{StoreError, Table},
+    store::{DocStore, StoreError, Table},
     sync::{BootstrapRequest, DatabaseTicket, Sync, SyncError},
 };
 
@@ -760,16 +760,31 @@ impl AccountSession {
         format!("refs:{namespace}")
     }
 
+    fn validate_reference_name(store: &str, name: &str) -> Result<()> {
+        if name.is_empty() || name.contains('.') {
+            return Err(StoreError::InvalidOperation {
+                store: store.to_string(),
+                operation: "reference".to_string(),
+                reason: "reference names must be nonempty and contain no dots".to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// Store a direct reference to a database in this Account.
     ///
+    /// Names must be nonempty and contain no dots; they are aliases, not paths.
     /// Overwrites any existing reference with the same namespace and name.
     /// This is a plain CRDT write, not a compare-and-set: two initializers that
     /// both saw no reference can both create a target and both write. Serialize
     /// first-time initialization through one writer. To repair a partial
     /// initialization, write the ID of the target that was already created.
     pub async fn set_reference(&self, namespace: &str, name: &str, database_id: &ID) -> Result<()> {
+        let store = Self::reference_store(namespace);
+        Self::validate_reference_name(&store, name)?;
         let tx = self.account.database().new_transaction().await?;
-        tx.get_store::<Table<ID>>(Self::reference_store(namespace))
+        tx.get_store::<Table<ID>>(store)
             .await?
             .set(name, database_id.clone())
             .await?;
@@ -779,19 +794,29 @@ impl AccountSession {
 
     /// Read a reference stored with [`Self::set_reference`].
     ///
+    /// Names must be nonempty and contain no dots.
     /// Returns `Ok(None)` only when the Account has no such reference. Every
     /// other failure, including unreadable or malformed reference data, is an
     /// error and must not be treated as permission to create a replacement.
     /// Reads only this reference; no other database is opened.
     pub async fn reference(&self, namespace: &str, name: &str) -> Result<Option<ID>> {
         let store = Self::reference_store(namespace);
+        Self::validate_reference_name(&store, name)?;
+        // Table's projection omits non-text values; read raw data so corruption
+        // cannot masquerade as an absent reference or a stale projected ID.
         let references = self
             .account
             .database()
-            .get_store_viewer::<Table<ID>>(store.as_str())
+            .get_store_viewer::<DocStore>(store.as_str())
             .await?;
-        match references.get(name).await {
-            Ok(id) => Ok(Some(id)),
+        match references.get_string(name).await {
+            Ok(value) => serde_json::from_str(&value).map(Some).map_err(|e| {
+                StoreError::DeserializationFailed {
+                    store: store.clone(),
+                    reason: format!("Invalid database reference '{name}': {e}"),
+                }
+                .into()
+            }),
             Err(Error::Store(e))
                 if matches!(e.as_ref(), StoreError::KeyNotFound { store: s, key }
                     if *s == store && key == name) =>
