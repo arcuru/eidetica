@@ -216,7 +216,7 @@ async fn test_unproven_bootstrap_does_not_track_tree_peer_relationship() {
         .unwrap();
 
     let sync = instance.sync().unwrap();
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .unwrap();
 
@@ -292,7 +292,7 @@ async fn test_unproven_incremental_does_not_track_tree_peer_relationship() {
         .unwrap();
 
     let sync = instance.sync().unwrap();
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .unwrap();
 
@@ -367,7 +367,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
         .unwrap();
 
     let sync = instance.sync().unwrap();
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .unwrap();
 
@@ -461,7 +461,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         .unwrap();
 
     let sync = instance.sync().unwrap();
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .unwrap();
 
@@ -614,7 +614,7 @@ async fn test_sync_without_peer_identifier_works() {
         .unwrap();
 
     let sync = instance.sync().unwrap();
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .unwrap();
 
@@ -668,7 +668,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
         .unwrap();
 
     let sync = instance.sync().unwrap();
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .unwrap();
 
@@ -741,7 +741,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
         .unwrap();
 
     let sync = instance.sync().unwrap();
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .unwrap();
 
@@ -825,7 +825,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
         .unwrap();
 
     let sync = instance.sync().unwrap();
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .unwrap();
 
@@ -924,7 +924,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
         .unwrap();
 
     let sync = instance.sync().unwrap();
-    sync.sync_account(user.login_id(), user.account().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .unwrap();
 

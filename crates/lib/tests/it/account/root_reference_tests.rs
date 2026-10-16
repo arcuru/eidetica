@@ -1,6 +1,7 @@
-//! App-owned references use ordinary stores, not a mandatory account catalog.
+//! Application references are stored and opened through the AccountSession,
+//! not through a mandatory account catalog or raw Account stores.
 use eidetica::{
-    AccountSession, Database, Error, ID, Instance, NewAccount, Result,
+    AccountSession, Database, Error, ID, Instance, NewAccount,
     account::AccountError,
     auth::SigKey,
     backend::database::InMemory,
@@ -10,28 +11,7 @@ use eidetica::{
 
 use super::helpers::setup_instance_with_user;
 
-// Only a missing row in the application's own root store means absent metadata.
-// In particular, an unavailable target is NOT an absent reference.
-async fn open_reference(session: &AccountSession, name: &str) -> Result<Option<Database>> {
-    let roots = session
-        .account()
-        .get_store_viewer::<Table<ID>>("app_roots")
-        .await?;
-    let id = match roots.get(name).await {
-        Ok(id) => id,
-        Err(Error::Store(e)) => {
-            if let StoreError::KeyNotFound { store, key } = e.as_ref()
-                && store == "app_roots"
-                && key == name
-            {
-                return Ok(None);
-            }
-            return Err(Error::Store(e));
-        }
-        Err(e) => return Err(e),
-    };
-    session.open_database(&id).await.map(Some)
-}
+const APP: &str = "app";
 
 async fn create_target(session: &mut AccountSession, name: &str) -> Database {
     let key = session.get_default_key().unwrap();
@@ -40,28 +20,20 @@ async fn create_target(session: &mut AccountSession, name: &str) -> Database {
     session.create_database(settings, &key).await.unwrap()
 }
 
-async fn save_reference(session: &AccountSession, name: &str, id: &ID) {
-    let tx = session.account().new_transaction().await.unwrap();
-    tx.get_store::<Table<ID>>("app_roots")
-        .await
-        .unwrap()
-        .set(name, id.clone())
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-}
-
 #[tokio::test]
 async fn test_account_root_reference_roundtrip_and_rename() {
     // This helper uses a genuine connected client under TEST_BACKEND=service.
     let (instance, _) = setup_instance_with_user("application", None).await;
     let mut session = instance.login_account("application", None).await.unwrap();
-    let root = session.account_id().clone();
+    let root = session.account().id().clone();
     let login = session.login_id().to_string();
     assert_eq!(&root, &session.account_info().account_id);
     assert_ne!(login, root.to_string());
     let target = create_target(&mut session, "display-name").await;
-    save_reference(&session, "group", target.root_id()).await;
+    session
+        .set_reference(APP, "group", target.root_id())
+        .await
+        .unwrap();
     let tx = target.new_transaction().await.unwrap();
     tx.get_settings()
         .unwrap()
@@ -71,9 +43,9 @@ async fn test_account_root_reference_roundtrip_and_rename() {
     tx.commit().await.unwrap();
     session.logout().unwrap();
     let session = instance.login_account("application", None).await.unwrap();
-    assert_eq!(session.account_id(), &root);
+    assert_eq!(session.account().id(), &root);
     assert_eq!(session.login_id(), login);
-    let reopened = open_reference(&session, "group").await.unwrap().unwrap();
+    let reopened = session.open_reference(APP, "group").await.unwrap().unwrap();
     assert_eq!(reopened.root_id(), target.root_id());
     assert_eq!(reopened.get_name().await.unwrap(), "renamed");
     let tx = reopened.new_transaction().await.unwrap();
@@ -101,13 +73,36 @@ async fn test_account_root_reference_absence_is_not_failure_or_creation() {
     let (instance, _) = setup_instance_with_user("application", None).await;
     let mut session = instance.login_account("application", None).await.unwrap();
     let target = create_target(&mut session, "target").await;
-    save_reference(&session, "target", target.root_id()).await;
+    session
+        .set_reference(APP, "target", target.root_id())
+        .await
+        .unwrap();
     let tracked_before = session.databases().await.unwrap().len();
-    assert!(open_reference(&session, "missing").await.unwrap().is_none());
+    // Absent names and namespaces are absent references, not errors.
+    assert!(
+        session
+            .open_reference(APP, "missing")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        session
+            .reference("other", "target")
+            .await
+            .unwrap()
+            .is_none()
+    );
 
-    // Corrupt metadata is a decoding error, not absence.
-    let tx = session.account().new_transaction().await.unwrap();
-    tx.get_store::<Table<String>>("app_roots")
+    // Corrupt reference data is a decoding error, not absence. Writing it needs
+    // the test-only raw Account handle; applications have no such path.
+    let tx = session
+        .account()
+        .database()
+        .new_transaction()
+        .await
+        .unwrap();
+    tx.get_store::<Table<String>>("refs:app")
         .await
         .unwrap()
         .set("corrupt", "not-an-id".into())
@@ -115,13 +110,16 @@ async fn test_account_root_reference_absence_is_not_failure_or_creation() {
         .unwrap();
     tx.commit().await.unwrap();
     assert!(
-        matches!(open_reference(&session, "corrupt").await, Err(Error::Store(e)) if matches!(e.as_ref(), StoreError::DeserializationFailed { .. }))
+        matches!(session.open_reference(APP, "corrupt").await, Err(Error::Store(e)) if matches!(e.as_ref(), StoreError::DeserializationFailed { .. }))
     );
 
     // A known reference without a usable key does not authorize replacement.
-    save_reference(&session, "unavailable", &ID::from_bytes("not-present")).await;
+    session
+        .set_reference(APP, "unavailable", &ID::from_bytes("not-present"))
+        .await
+        .unwrap();
     assert!(
-        matches!(open_reference(&session, "unavailable").await, Err(Error::Account(e)) if matches!(e.as_ref(), AccountError::NoKeyForDatabase { .. }))
+        matches!(session.open_reference(APP, "unavailable").await, Err(Error::Account(e)) if matches!(e.as_ref(), AccountError::NoKeyForDatabase { .. }))
     );
     // Even a held mapping does not make absent target data an absent reference.
     let key = session.get_default_key().unwrap();
@@ -133,7 +131,7 @@ async fn test_account_root_reference_absence_is_not_failure_or_creation() {
         )
         .await
         .unwrap();
-    assert!(matches!(open_reference(&session, "unavailable").await,
+    assert!(matches!(session.open_reference(APP, "unavailable").await,
         Err(Error::Account(e)) if matches!(e.as_ref(), AccountError::DatabaseAccessPending { .. })));
     assert_eq!(session.databases().await.unwrap().len(), tracked_before);
 }
@@ -152,9 +150,12 @@ async fn test_account_root_reference_does_not_grant_authority() {
     let target_id = target.root_id().clone();
     owner.logout().unwrap();
     let reader = instance.login_account("reader", None).await.unwrap();
-    save_reference(&reader, "foreign", &target_id).await;
+    reader
+        .set_reference(APP, "foreign", &target_id)
+        .await
+        .unwrap();
     assert!(
-        matches!(open_reference(&reader, "foreign").await, Err(Error::Account(e)) if matches!(e.as_ref(), AccountError::NoKeyForDatabase { .. }))
+        matches!(reader.open_reference(APP, "foreign").await, Err(Error::Account(e)) if matches!(e.as_ref(), AccountError::NoKeyForDatabase { .. }))
     );
 }
 
@@ -166,7 +167,10 @@ async fn test_account_root_reference_lookup_reads_are_constant() {
             .await
             .unwrap();
     let target = create_target(&mut session, "target").await;
-    save_reference(&session, "group", target.root_id()).await;
+    session
+        .set_reference(APP, "group", target.root_id())
+        .await
+        .unwrap();
     let engine = instance.backend().local_engine().unwrap();
     let memory = engine.as_any().downcast_ref::<InMemory>().unwrap();
     let mut baseline = None;
@@ -174,10 +178,11 @@ async fn test_account_root_reference_lookup_reads_are_constant() {
         while session.databases().await.unwrap().len() < total {
             create_target(&mut session, "unrelated").await;
         }
-        open_reference(&session, "group").await.unwrap();
+        session.open_reference(APP, "group").await.unwrap();
         let before = memory.store_state_read_counts();
         assert_eq!(
-            open_reference(&session, "group")
+            session
+                .open_reference(APP, "group")
                 .await
                 .unwrap()
                 .unwrap()
@@ -196,4 +201,38 @@ async fn test_account_root_reference_lookup_reads_are_constant() {
         );
         assert_eq!(*baseline.get_or_insert(reads), reads);
     }
+}
+
+#[tokio::test]
+async fn test_account_reference_namespaces_are_separate_from_account_stores() {
+    let (instance, _) = setup_instance_with_user("application", None).await;
+    let mut session = instance.login_account("application", None).await.unwrap();
+    let first = create_target(&mut session, "first").await;
+    let second = create_target(&mut session, "second").await;
+    let tracked = session.databases().await.unwrap();
+
+    // Namespaces named like the Account's own stores cannot reach them.
+    for namespace in ["keys", "databases", "_settings"] {
+        session
+            .set_reference(namespace, "root", first.root_id())
+            .await
+            .unwrap();
+    }
+    session
+        .set_reference(APP, "root", second.root_id())
+        .await
+        .unwrap();
+    session.logout().unwrap();
+
+    let session = instance.login_account("application", None).await.unwrap();
+    assert_eq!(session.databases().await.unwrap(), tracked);
+    session.get_default_key().unwrap();
+    assert_eq!(
+        session.reference("keys", "root").await.unwrap().as_ref(),
+        Some(first.root_id())
+    );
+    assert_eq!(
+        session.reference(APP, "root").await.unwrap().as_ref(),
+        Some(second.root_id())
+    );
 }

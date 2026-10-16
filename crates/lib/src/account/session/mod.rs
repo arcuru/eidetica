@@ -14,6 +14,12 @@
 //! - **`join()`** - Join a database from a ticket and open it
 //! - **`find_database()`** - Search for databases by name
 //!
+//! ## Application References
+//!
+//! - **`set_reference()`** - Store a direct database reference in the Account
+//! - **`reference()`** - Read a reference (`None` only when absent)
+//! - **`open_reference()`** - Read a reference and open its database
+//!
 //! ## Tracked Databases
 //!
 //! Manage your personal list of tracked databases:
@@ -40,7 +46,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{
-    AccountKeyManager,
+    Account, AccountKeyManager,
     admin::InstanceAdmin,
     types::{AccountInfo, AccountKey},
 };
@@ -74,8 +80,9 @@ pub struct AccountSession {
     /// Username (login identifier)
     username: String,
 
-    /// Account's private database (contains encrypted keys and tracked databases)
-    account_database: Database,
+    /// The Account, encapsulating its private database (encrypted keys,
+    /// tracked databases and application references)
+    account: Account,
 
     /// Instance reference for database operations
     instance: Instance,
@@ -92,7 +99,7 @@ impl std::fmt::Debug for AccountSession {
         f.debug_struct("AccountSession")
             .field("login_id", &self.login_id)
             .field("username", &self.username)
-            .field("account_database", &self.account_database)
+            .field("account", &self.account)
             .field("instance", &self.instance)
             .field("key_manager", &"<KeyManager [sensitive]>")
             .field("account_info", &self.account_info)
@@ -123,7 +130,7 @@ impl AccountSession {
         Self {
             login_id,
             username: account_info.username.clone(),
-            account_database,
+            account: Account::new(account_database),
             instance,
             key_manager,
             account_info,
@@ -133,7 +140,7 @@ impl AccountSession {
     // === Basic Session Methods ===
 
     /// Instance-local login record UUID, not the Account's portable identity.
-    /// Use [`Self::account_id`] for references to the Account database.
+    /// Use [`Account::id`] (via [`Self::account`]) for the Account's identity.
     pub fn login_id(&self) -> &str {
         &self.login_id
     }
@@ -143,19 +150,12 @@ impl AccountSession {
         &self.username
     }
 
-    /// The Account's ordinary private root database, bound to this session's key.
+    /// The Account this session unlocks.
     ///
-    /// Applications may store direct database IDs in their own stores here. A
-    /// reference grants no authority and does not activate or download its target.
-    /// The current root also retains legacy key and sync bookkeeping; this API
-    /// does not yet separate private-key custody from portable application data.
-    pub fn account(&self) -> &Database {
-        &self.account_database
-    }
-
-    /// Stable Account identity: the root ID, independent of login and display names.
-    pub fn account_id(&self) -> &ID {
-        self.account_database.root_id()
+    /// Its root ID is the Account's stable identity. Read and open application
+    /// references with [`Self::reference`] and [`Self::open_reference`].
+    pub fn account(&self) -> &Account {
+        &self.account
     }
 
     /// Get a reference to the backend seam.
@@ -360,7 +360,7 @@ impl AccountSession {
             Database::create_with_init(&self.instance, signing_key, settings, init).await?;
 
         // Store the mapping in AccountKey and track the database
-        let tx = self.account_database.new_transaction().await?;
+        let tx = self.account.database().new_transaction().await?;
         let keys_table = tx.get_store::<Table<AccountKey>>("keys").await?;
 
         // Find the key metadata in the database
@@ -397,7 +397,7 @@ impl AccountSession {
         // Update the in-memory key manager with the updated metadata
         self.key_manager.add_key(metadata)?;
 
-        Ok(database.with_account_database(self.account_database.clone()))
+        Ok(database.with_account_database(self.account.database().clone()))
     }
 
     /// Open an existing database by its root ID using this account's keys.
@@ -498,7 +498,7 @@ impl AccountSession {
             return match Database::open_remote(&self.instance, conn, root_id, sigkey).await {
                 Ok(database) => Ok(database
                     .with_key(key)
-                    .with_account_database(self.account_database.clone())),
+                    .with_account_database(self.account.database().clone())),
                 Err(e) if e.is_not_found() => {
                     Err(super::errors::AccountError::DatabaseAccessPending {
                         database_id: root_id.clone(),
@@ -511,7 +511,7 @@ impl AccountSession {
         match Database::open(&self.instance, root_id).await {
             Ok(database) => Ok(database
                 .with_key(key)
-                .with_account_database(self.account_database.clone())),
+                .with_account_database(self.account.database().clone())),
             Err(e) if e.is_not_found() => Err(super::errors::AccountError::DatabaseAccessPending {
                 database_id: root_id.clone(),
             }
@@ -709,7 +709,8 @@ impl AccountSession {
 
     async fn refresh_key_metadata(&mut self, key_id: &PublicKey) -> Result<()> {
         let keys = self
-            .account_database
+            .account
+            .database()
             .get_store_viewer::<Table<AccountKey>>("keys")
             .await?;
         let (_, metadata) = keys
@@ -727,21 +728,90 @@ impl AccountSession {
         &self,
     ) -> Result<(Transaction, tokio::sync::OwnedMutexGuard<()>)> {
         // Resolve reusable committed-but-unacknowledged entries before locking.
-        self.account_database.snapshot().await?;
+        self.account.database().snapshot().await?;
         let guard = self
             .instance
-            .tree_lock(self.account_database.root_id())
+            .tree_lock(self.account.database().root_id())
             .lock_owned()
             .await;
         let snapshot = if self.instance.backend().local_engine().is_some() {
-            Snapshot::from(self.account_database.verified_frontier().await?)
+            Snapshot::from(self.account.database().verified_frontier().await?)
         } else {
-            self.account_database.snapshot().await?
+            self.account.database().snapshot().await?
         };
         Ok((
-            self.account_database.new_transaction_at(&snapshot).await?,
+            self.account
+                .database()
+                .new_transaction_at(&snapshot)
+                .await?,
             guard,
         ))
+    }
+
+    // === Application References ===
+    //
+    // Applications keep direct database IDs in their Account under names they
+    // choose. `namespace` separates applications sharing one Account; `name` is
+    // an application alias, independent of the target's display name. Each
+    // namespace lives in its own store, apart from the Account's key and
+    // tracking stores. A reference grants no access and activates nothing.
+
+    fn reference_store(namespace: &str) -> String {
+        format!("refs:{namespace}")
+    }
+
+    /// Store a direct reference to a database in this Account.
+    ///
+    /// Overwrites any existing reference with the same namespace and name.
+    /// This is a plain CRDT write, not a compare-and-set: two initializers that
+    /// both saw no reference can both create a target and both write. Serialize
+    /// first-time initialization through one writer. To repair a partial
+    /// initialization, write the ID of the target that was already created.
+    pub async fn set_reference(&self, namespace: &str, name: &str, database_id: &ID) -> Result<()> {
+        let tx = self.account.database().new_transaction().await?;
+        tx.get_store::<Table<ID>>(Self::reference_store(namespace))
+            .await?
+            .set(name, database_id.clone())
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Read a reference stored with [`Self::set_reference`].
+    ///
+    /// Returns `Ok(None)` only when the Account has no such reference. Every
+    /// other failure, including unreadable or malformed reference data, is an
+    /// error and must not be treated as permission to create a replacement.
+    /// Reads only this reference; no other database is opened.
+    pub async fn reference(&self, namespace: &str, name: &str) -> Result<Option<ID>> {
+        let store = Self::reference_store(namespace);
+        let references = self
+            .account
+            .database()
+            .get_store_viewer::<Table<ID>>(store.as_str())
+            .await?;
+        match references.get(name).await {
+            Ok(id) => Ok(Some(id)),
+            Err(Error::Store(e))
+                if matches!(e.as_ref(), StoreError::KeyNotFound { store: s, key }
+                    if *s == store && key == name) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Open the database named by a reference.
+    ///
+    /// Returns `Ok(None)` only when the reference is absent. A present
+    /// reference opens through [`Self::open_database`], so a missing key,
+    /// pending access or unavailable target is an error, never `None`.
+    pub async fn open_reference(&self, namespace: &str, name: &str) -> Result<Option<Database>> {
+        match self.reference(namespace, name).await? {
+            Some(id) => self.open_database(&id).await.map(Some),
+            None => Ok(None),
+        }
     }
 
     // === Key Management (AccountSession Context) ===
@@ -800,7 +870,7 @@ impl AccountSession {
         };
 
         // Store in account database
-        let tx = self.account_database.new_transaction().await?;
+        let tx = self.account.database().new_transaction().await?;
         let keys_table = tx.get_store::<Table<AccountKey>>("keys").await?;
         keys_table.insert(user_key.clone()).await?;
         tx.commit().await?;
@@ -1281,7 +1351,8 @@ impl AccountSession {
         database_id: &ID,
     ) -> Result<Option<TrackedDatabase>> {
         let table = self
-            .account_database
+            .account
+            .database()
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?;
         match table.get(&database_id.to_string()).await {
@@ -1392,7 +1463,7 @@ impl AccountSession {
         if let Some(sync) = self.instance.sync() {
             // Auto-sync account tracking if not already synced
             // This is idempotent - safe to call multiple times
-            sync.sync_account(&self.login_id, self.account_database.root_id())
+            sync.sync_account(&self.login_id, self.account.database().root_id())
                 .await?;
         }
 
@@ -1407,7 +1478,8 @@ impl AccountSession {
     /// Vector of TrackedDatabase entries
     pub async fn databases(&self) -> Result<Vec<TrackedDatabase>> {
         let databases_table = self
-            .account_database
+            .account
+            .database()
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?;
 
@@ -1432,7 +1504,8 @@ impl AccountSession {
     /// Returns `DatabaseNotTracked` if the database is not in the account's list
     pub async fn database(&self, database_id: &ID) -> Result<TrackedDatabase> {
         let databases_table = self
-            .account()
+            .account
+            .database()
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?;
 
@@ -1455,7 +1528,8 @@ impl AccountSession {
     /// Returns `Ok(false)` for databases not tracked by this account.
     pub async fn is_sync_enabled(&self, database_id: &ID) -> Result<bool> {
         let databases_table = self
-            .account()
+            .account
+            .database()
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?;
         let db_id_key = database_id.to_string();
@@ -1476,7 +1550,7 @@ impl AccountSession {
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the account's list
     pub async fn untrack_database(&mut self, database_id: &ID) -> Result<()> {
-        let tx = self.account_database.new_transaction().await?;
+        let tx = self.account.database().new_transaction().await?;
         let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
 
         // Direct O(1) delete using database ID as key

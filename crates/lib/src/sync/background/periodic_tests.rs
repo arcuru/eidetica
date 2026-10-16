@@ -59,7 +59,7 @@ impl LocalPeer {
             .track_database(database.root_id().clone(), &key, SyncSettings::enabled())
             .await?;
         self.sync
-            .sync_account(owner.login_id(), owner.account().root_id())
+            .sync_account(owner.login_id(), owner.account().id())
             .await?;
         Ok(database)
     }

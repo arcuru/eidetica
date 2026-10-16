@@ -516,7 +516,7 @@ async fn join_user_pending_and_rejected_leave_user_history_unchanged() -> Result
     .await?;
     let key = user.get_default_key()?;
     let tree = ID::from_bytes("not-yet-replicated");
-    let before = user.account().snapshot().await?;
+    let before = user.account().database().snapshot().await?;
     for rejected in [false, false, true, true] {
         let error = if rejected {
             super::SyncError::BootstrapRejected {
@@ -536,7 +536,7 @@ async fn join_user_pending_and_rejected_leave_user_history_unchanged() -> Result
         );
         assert_eq!(
             before,
-            user.account().snapshot().await?,
+            user.account().database().snapshot().await?,
             "non-success appended Account history"
         );
         assert_eq!(user.key_mapping(&key, &tree)?, None);
@@ -566,7 +566,7 @@ async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result
         let mut user = instance.login_account("client", None).await?;
         let key = user.get_default_key()?;
         let db = wildcard_database(&instance).await?;
-        *fault.lock().unwrap() = Some((op, user.account().root_id().clone()));
+        *fault.lock().unwrap() = Some((op, user.account().id().clone()));
         assert!(
             user.track_database(db.root_id(), &key, SyncSettings::disabled())
                 .await
@@ -592,12 +592,12 @@ async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result
             user.key_mapping(&key, db.root_id())?,
             Some(crate::auth::SigKey::global(&key))
         );
-        let before = user.account().snapshot().await?;
+        let before = user.account().database().snapshot().await?;
         user.track_database(db.root_id(), &key, SyncSettings::disabled())
             .await?;
         assert_eq!(
             before,
-            user.account().snapshot().await?,
+            user.account().database().snapshot().await?,
             "identical retry appended Account history"
         );
         let fresh = instance.login_account("client", None).await?;
@@ -937,7 +937,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
         let key = user.get_default_key()?;
         let target = wildcard_database(&instance).await?;
         let target_id = target.root_id().clone();
-        *fault.lock().unwrap() = Some((op, user.account().root_id().clone()));
+        *fault.lock().unwrap() = Some((op, user.account().id().clone()));
         assert!(
             user.track_database(&target_id, &key, SyncSettings::disabled())
                 .await
@@ -952,10 +952,10 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
         let mut user = instance.login_account("client", None).await?;
         user.track_database(&target_id, &key, SyncSettings::disabled())
             .await?;
-        let tips = user.account().snapshot().await?;
+        let tips = user.account().database().snapshot().await?;
         user.track_database(&target_id, &key, SyncSettings::disabled())
             .await?;
-        assert_eq!(tips, user.account().snapshot().await?);
+        assert_eq!(tips, user.account().database().snapshot().await?);
         assert_eq!(
             user.key_mapping(&key, &target_id)?,
             Some(crate::auth::SigKey::global(&key))

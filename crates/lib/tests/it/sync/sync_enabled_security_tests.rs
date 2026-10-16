@@ -58,7 +58,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
     // Update sync configuration to reflect disabled state
     let server_sync = server_instance.sync().unwrap();
     server_sync
-        .sync_account(server_user.login_id(), server_user.account().root_id())
+        .sync_account(server_user.login_id(), server_user.account().id())
         .await
         .unwrap();
 
@@ -143,7 +143,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     let server_sync = server_instance.sync().unwrap();
     server_sync
-        .sync_account(server_user.login_id(), server_user.account().root_id())
+        .sync_account(server_user.login_id(), server_user.account().id())
         .await
         .unwrap();
 
@@ -196,7 +196,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .unwrap();
 
     server_sync
-        .sync_account(server_user.login_id(), server_user.account().root_id())
+        .sync_account(server_user.login_id(), server_user.account().id())
         .await
         .unwrap();
 
@@ -288,7 +288,7 @@ async fn test_sync_succeeds_when_enabled() {
 
     let server_sync = server_instance.sync().unwrap();
     server_sync
-        .sync_account(server_user.login_id(), server_user.account().root_id())
+        .sync_account(server_user.login_id(), server_user.account().id())
         .await
         .unwrap();
 

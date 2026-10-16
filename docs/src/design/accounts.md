@@ -2,8 +2,9 @@
 
 An **Account** is a private root database for a person, group, or application.
 Its stable identity is its database root ID, not its display name or an instance's login record UUID.
-It is an ordinary `Database`, exposed by `AccountSession::account()`; there is no additional wrapper with identical database operations.
-`AccountSession::account_id()` returns that root ID directly.
+`AccountSession::account()` returns the typed `Account`, and `Account::id()` returns that root ID.
+The backing database is encapsulated: `Account` does not re-export the `Database` API, and applications do not read or write its stores directly.
+Routine discovery goes through the session's reference operations below.
 
 An **AccountSession** is an authenticated, unlocked handle on one Instance, with decrypted keys and the existing database access, key management, sharing, and sync-preference operations.
 `Instance::login_account` returns a session; `NewAccount` supplies initial account creation settings, and `InstanceAdmin::create_account` creates subsequent accounts.
@@ -31,36 +32,45 @@ Do not infer those guarantees from the Account name.
 
 ## Application-owned root references
 
-Applications store direct database IDs in ordinary root stores with their own schema.
+Applications store direct database IDs in their Account under a namespace and name they choose, through the session:
+
+- `AccountSession::set_reference(namespace, name, id)` writes a reference.
+- `AccountSession::reference(namespace, name)` reads it as `Option<ID>`.
+- `AccountSession::open_reference(namespace, name)` reads it and opens the target with `open_database`.
+
+The namespace separates applications that share one Account; the name is an application alias.
+Each namespace is kept in its own store inside the Account, apart from the Account's key and tracking stores, so a namespace cannot overwrite them.
 There is no mandatory account-wide catalog, alias index, tags schema, or recursive activation.
 Reading an ID does not download, activate, or authorize the referenced database.
-Use `AccountSession::open_database(id)` (or explicit-key opening) to obtain the target through the existing key and Auth path.
+Opening goes through the existing key and Auth path, exactly as `AccountSession::open_database(id)` does.
 The retained `databases` tracking store still supports key/sync bookkeeping; it is not the required discovery interface.
 `find_database` remains an optional linear display-name search, not the root-reference path.
 
 ```rust,no_run
-use eidetica::{AccountSession, Database, ID, Result, store::Table};
+use eidetica::{AccountSession, Database, ID, Result};
 
-async fn open_group(session: &AccountSession) -> Result<Database> {
-    let roots = session.account()
-        .get_store_viewer::<Table<ID>>("my_app_roots").await?;
-    let id = roots.get("group").await?;
-    session.open_database(&id).await
+async fn remember_group(session: &AccountSession, group: &ID) -> Result<()> {
+    session.set_reference("my_app", "group", group).await
+}
+
+async fn open_group(session: &AccountSession) -> Result<Option<Database>> {
+    session.open_reference("my_app", "group").await
 }
 ```
 
-The application defines `my_app_roots` and `group`; these are not library-reserved schema names.
+The application chooses `my_app` and `group`; the library reserves neither.
 A display-name change on the target does not change its ID or break this reference.
-Lookup reads only the selected root record and opens the selected target, without opening unrelated tracked databases.
+Lookup reads only the selected reference and opens the selected target, without opening unrelated tracked databases.
 Existing key selection may still search the session's keys; this is not a claim that every operation is constant time.
 
 ### Absence and failures
 
-Only `StoreError::KeyNotFound` for the requested row, after a successful authorized root-store read, means the application has no reference in that snapshot.
-This is distinct from unavailable root data, malformed metadata, transport failure, or denied access.
+`reference` and `open_reference` return `Ok(None)` only when the Account has no reference under that namespace and name in the current snapshot.
+Unavailable Account data, malformed reference data, transport failure, and denied access are errors, distinct from absence.
 A present reference whose target cannot be opened is still a present reference.
 An unheld key, pending bootstrap, missing target data, or failed authorization must not trigger creation of a replacement.
-Do not use a broad `is_not_found()` guard around both reference reading and target opening.
+`open_reference` reports a present reference whose target cannot be opened as an error, never as `None`.
+Do not use a broad `is_not_found()` guard around the result to decide whether to create a target.
 
 Known missing root metadata is also **not** permission to create: initialization is an explicit application operation.
 No getter performs backfill, scans names, creates databases, or rewrites references.
@@ -75,7 +85,7 @@ If they cannot establish that precondition, they must refuse automatic initializ
 This slice adds no lock service or second job engine.
 
 The todo example initializes its reference only when `connect_or_create` creates a new embedded instance, under that backend's exclusive storage ownership.
-Returning login reads `todo_roots["todos"]` and fails on missing or broken metadata rather than creating another database.
+Returning login opens the `todo`/`list` reference and fails on missing or broken metadata rather than creating another database.
 This is not a distributed initialization recipe or a migration for older example files.
 Concurrent local login creation retains the existing behavior: duplicate usernames are detected by login and reported as `AccountError::DuplicateAccountsDetected`, not silently selected.
 

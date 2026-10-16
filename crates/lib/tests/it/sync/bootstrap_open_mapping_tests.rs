@@ -23,7 +23,7 @@ async fn record_access_pending_retries_leave_user_state_unchanged() {
     let (_client_instance, mut client_user, client_key_id, _client_sync) =
         setup_sync_enabled_client("client_user", "client_key").await;
     let pending_settings = SyncSettings::on_commit().with_interval(31);
-    let before = client_user.account().snapshot().await.unwrap();
+    let before = client_user.account().database().snapshot().await.unwrap();
 
     let result = client_user
         .record_database_access(
@@ -63,7 +63,10 @@ async fn record_access_pending_retries_leave_user_state_unchanged() {
         .await;
     assert!(result.is_err());
     assert!(client_user.database(&database_id).await.is_err());
-    assert_eq!(before, client_user.account().snapshot().await.unwrap());
+    assert_eq!(
+        before,
+        client_user.account().database().snapshot().await.unwrap()
+    );
 }
 
 /// Auto-approve server -> client `request_database_access` -> the database is
@@ -152,7 +155,7 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
 
     let ticket = DatabaseTicket::with_addresses(tree_id.clone(), vec![server_addr.clone()]);
     let sync_settings = SyncSettings::on_commit().with_interval(23);
-    let before = client_user.account().snapshot().await.unwrap();
+    let before = client_user.account().database().snapshot().await.unwrap();
 
     // Only the peer's request is stored; the caller supplies settings on retry.
     let result = client_user
@@ -170,7 +173,10 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
         "request against a manual-approval server should be pending"
     );
     assert!(client_user.database(&tree_id).await.is_err());
-    assert_eq!(before, client_user.account().snapshot().await.unwrap());
+    assert_eq!(
+        before,
+        client_user.account().database().snapshot().await.unwrap()
+    );
     client_user
         .open_database(&tree_id)
         .await

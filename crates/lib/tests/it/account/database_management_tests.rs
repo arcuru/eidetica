@@ -164,10 +164,10 @@ async fn repeated_preference_write_is_idempotent() -> Result<()> {
     let (_instance, user, database) = setup_full().await?;
 
     database.share().await?;
-    let tips = user.account().snapshot().await?;
+    let tips = user.account().database().snapshot().await?;
     database.share().await?;
 
-    assert_eq!(user.account().snapshot().await?, tips);
+    assert_eq!(user.account().database().snapshot().await?, tips);
     Ok(())
 }
 

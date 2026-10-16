@@ -28,7 +28,7 @@ async fn test_user_getters() {
     assert_eq!(user.username(), "test_user");
     assert!(!user.login_id().is_empty());
     assert_eq!(user.account_info().username, "test_user");
-    assert!(!user.account().root_id().to_string().is_empty());
+    assert!(!user.account().id().to_string().is_empty());
 }
 
 #[tokio::test]
@@ -63,8 +63,8 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
     .await?;
     let key = user.get_default_key()?;
     let tree = ID::from_bytes("staged-only");
-    let before = user.account_database.snapshot().await?;
-    let tx = user.account_database.new_transaction().await?;
+    let before = user.account.database().snapshot().await?;
+    let tx = user.account.database().new_transaction().await?;
     user.map_key_in_txn(&tx, &key, &tree, SigKey::from_pubkey(&key))
         .await?;
     assert_eq!(
@@ -73,7 +73,7 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
         "mapping staging published cache"
     );
     drop(tx); // Failure/cancellation before staging preferences or putting AccountSession Entry.
-    assert_eq!(before, user.account_database.snapshot().await?);
+    assert_eq!(before, user.account.database().snapshot().await?);
 
     let (owner, _) = crate::auth::crypto::generate_keypair();
     let db = Database::create(&instance, owner, Doc::new()).await?;
@@ -86,7 +86,8 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
     let reached = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Notify::new());
     let callback = user
-        .account_database
+        .account
+        .database()
         .on_write({
             let reached = reached.clone();
             let resume = resume.clone();
@@ -115,11 +116,11 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
     );
     resume.notify_one();
     drop(callback);
-    let persisted = user.account_database.snapshot().await?;
+    let persisted = user.account.database().snapshot().await?;
     // Retry reads the actual committed state without registry repair or duplicate history.
     user.track_database(db.root_id(), &key, SyncSettings::disabled())
         .await?;
-    assert_eq!(persisted, user.account_database.snapshot().await?);
+    assert_eq!(persisted, user.account.database().snapshot().await?);
     assert_eq!(
         user.key_mapping(&key, db.root_id())?,
         Some(SigKey::global(&key))
@@ -199,7 +200,7 @@ async fn join_final_open_checks_requested_permission_and_retains_committed_state
     .await?;
     user.track_database(db.root_id(), &key, SyncSettings::disabled())
         .await?;
-    let before = user.account_database.snapshot().await?;
+    let before = user.account.database().snapshot().await?;
     for rejected in [false, true] {
         let error = if rejected {
             SyncError::BootstrapRejected {
@@ -222,7 +223,7 @@ async fn join_final_open_checks_requested_permission_and_retains_committed_state
             .await
             .is_err()
         );
-        assert_eq!(before, user.account_database.snapshot().await?);
+        assert_eq!(before, user.account.database().snapshot().await?);
         assert_eq!(
             user.key_mapping(&key, db.root_id())?,
             Some(SigKey::global(&key))
@@ -242,7 +243,7 @@ async fn join_final_open_checks_requested_permission_and_retains_committed_state
     );
     assert_eq!(
         before,
-        user.account_database.snapshot().await?,
+        user.account.database().snapshot().await?,
         "open failure rewrote Account state"
     );
     db.with_transaction(|tx| async move {
@@ -258,7 +259,7 @@ async fn join_final_open_checks_requested_permission_and_retains_committed_state
             .await
             .is_ok()
     );
-    assert_eq!(before, user.account_database.snapshot().await?);
+    assert_eq!(before, user.account.database().snapshot().await?);
     Ok(())
 }
 
@@ -285,7 +286,7 @@ async fn join_concurrent_local_bookkeeping_writes_one_equivalent_entry() -> Resu
     .await?;
     let count = instance
         .require_local_engine()?
-        .get_tree(first.account_database.root_id())
+        .get_tree(first.account.id())
         .await?
         .len();
     let (a, b) = tokio::join!(
@@ -298,7 +299,7 @@ async fn join_concurrent_local_bookkeeping_writes_one_equivalent_entry() -> Resu
         count + 1,
         instance
             .require_local_engine()?
-            .get_tree(first.account_database.root_id())
+            .get_tree(first.account.id())
             .await?
             .len()
     );

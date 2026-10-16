@@ -477,7 +477,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     // Sync the user database to update combined settings
     let alice_sync = alice_instance.sync().expect("Alice should have sync");
     alice_sync
-        .sync_account(alice.login_id(), alice.account().root_id())
+        .sync_account(alice.login_id(), alice.account().id())
         .await
         .expect("Failed to sync Alice's user database");
 
