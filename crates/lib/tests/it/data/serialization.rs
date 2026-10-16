@@ -25,7 +25,8 @@ async fn test_doc_serialization() {
     map.remove("deleted_key");
 
     // Test serialization roundtrip
-    let deserialized = test_serialization_roundtrip(&map).expect("Serialization roundtrip failed");
+    let deserialized =
+        assert_serialization_roundtrip(&map).expect("Serialization roundtrip failed");
 
     // Verify string survived
     assert_text_value(deserialized.get("string_key").unwrap(), "string_value");
@@ -47,7 +48,7 @@ async fn test_serialization_complex_nested_structure() {
 
     // Test roundtrip on complex structure
     let deserialized =
-        test_serialization_roundtrip(&complex_map).expect("Complex serialization failed");
+        assert_serialization_roundtrip(&complex_map).expect("Complex serialization failed");
 
     // Verify nested structure preserved
     assert_nested_value(
@@ -64,7 +65,7 @@ async fn test_serialization_mixed_doc() {
 
     // Test roundtrip
     let deserialized =
-        test_serialization_roundtrip(&mixed_map).expect("Mixed doc serialization failed");
+        assert_serialization_roundtrip(&mixed_map).expect("Mixed doc serialization failed");
 
     // Check string value
     assert_text_value(deserialized.get("string_val").unwrap(), "test_string");
@@ -84,7 +85,7 @@ async fn test_serialization_empty_doc() {
     let empty_map = Doc::new();
 
     let deserialized =
-        test_serialization_roundtrip(&empty_map).expect("Empty doc serialization failed");
+        assert_serialization_roundtrip(&empty_map).expect("Empty doc serialization failed");
 
     assert_eq!(deserialized.len(), 0, "Empty map should remain empty");
 }
@@ -96,7 +97,7 @@ async fn test_serialization_tombstone_only_doc() {
     tombstone_map.remove("tombstone2");
     tombstone_map.set("direct_tombstone", Value::Deleted);
 
-    let deserialized = test_serialization_roundtrip(&tombstone_map)
+    let deserialized = assert_serialization_roundtrip(&tombstone_map)
         .expect("Tombstone-only doc serialization failed");
 
     // Verify all tombstones preserved

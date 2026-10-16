@@ -32,7 +32,7 @@ async fn test_ydoc_incremental_updates_save_diffs_only() {
 
     // Use helper to test incremental updates
     let (first_diff_size, second_diff_size) =
-        test_ydoc_incremental_updates(ctx.database(), "yrs_diff_test").await;
+        assert_ydoc_incremental_updates(ctx.database(), "yrs_diff_test").await;
 
     // Print the actual diff sizes for verification
     println!("First diff size: {first_diff_size}, Second diff size: {second_diff_size}");

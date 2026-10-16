@@ -205,7 +205,7 @@ fn test_crdt_merge_properties_comprehensive() {
     let map2 = create_mixed_value_map();
     let map3 = setup_test_map();
 
-    test_merge_associativity(&map1, &map2, &map3).expect("Maps should be associative");
+    assert_merge_associativity(&map1, &map2, &map3).expect("Maps should be associative");
 }
 
 #[test]

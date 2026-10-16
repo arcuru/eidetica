@@ -15,7 +15,7 @@ async fn test_table_complex_data_merging() {
 
     // Use helper to test concurrent modifications
     let (key1, merged_record) =
-        test_table_concurrent_modifications(ctx.database(), "merge_test").await;
+        assert_table_concurrent_modifications(ctx.database(), "merge_test").await;
 
     // With KVOverWrite semantics, one of the concurrent updates should win
     // The exact result depends on the deterministic merge order of the underlying CRDT

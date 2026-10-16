@@ -191,7 +191,7 @@ async fn test_dict_get_all_via_viewer() {
     let ctx = TestContext::new().with_database().await;
 
     // Test dict persistence helper
-    test_dict_persistence(ctx.database(), "my_kv").await;
+    assert_dict_persistence(ctx.database(), "my_kv").await;
 
     // Verify get_all using a viewer
     let viewer = ctx

@@ -4,13 +4,14 @@
 //! and end-to-end scenarios combining multiple features.
 
 use super::helpers::*;
+use crate::helpers::build_complex_merge_data;
 use eidetica::Result;
 use eidetica::crdt::CRDT;
 use eidetica::crdt::doc::Value;
 
 #[tokio::test]
 async fn test_end_to_end_data_workflow() -> Result<()> {
-    let (db, tree, txn, dict) = setup_complete_test_env("integration_test").await?;
+    let (_instance, tree, txn, dict) = setup_complete_test_env("integration_test").await?;
 
     // Test 1: Create nested data using path operations
     dict.set_at_path(
@@ -46,8 +47,8 @@ async fn test_end_to_end_data_workflow() -> Result<()> {
     // Test 5: Create a map for serialization testing
     let user_data = dict.get("user").await?;
     match user_data {
-        Value::Map(user_map) => {
-            test_serialization_roundtrip(&user_map)?;
+        Value::Doc(user_map) => {
+            assert_serialization_roundtrip(&user_map)?;
         }
         _ => panic!("Expected user to be a map"),
     }
@@ -85,7 +86,7 @@ async fn test_end_to_end_data_workflow() -> Result<()> {
 
 #[tokio::test]
 async fn test_mixed_operations_consistency() -> Result<()> {
-    let (_, _, txn, dict) = setup_complete_test_env("consistency_test").await?;
+    let (_instance, _tree, _txn, dict) = setup_complete_test_env("consistency_test").await?;
 
     // Mix path operations and value editor operations
 
@@ -127,20 +128,20 @@ async fn test_mixed_operations_consistency() -> Result<()> {
         &dict.get_at_path(&["app", "config"]).await?,
         "simple_config",
     );
-    assert_not_found_error(dict.get_at_path(&["app", "config", "version"]).await);
+    assert_type_error(dict.get_at_path(["app", "config", "version"]).await);
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_merge_operations_with_editors() -> Result<()> {
-    let (_, _, txn, dict) = setup_complete_test_env("merge_test").await?;
+    let (_instance, _tree, _txn, dict) = setup_complete_test_env("merge_test").await?;
 
     // Create initial structure using helpers
     let (map1, map2) = build_complex_merge_data();
 
     // Set the initial state using value editor
-    dict.get_root_mut().set(Value::Map(map1)).await?;
+    dict.get_root_mut().set(Value::Doc(map1)).await?;
 
     // Verify initial state through path operations
     assert_text_value(&dict.get_at_path(&["level1", "key1"]).await?, "value1");
@@ -148,14 +149,14 @@ async fn test_merge_operations_with_editors() -> Result<()> {
 
     // Get the current state and merge with map2
     let current_map = match dict.get_root_mut().get().await? {
-        Value::Map(m) => m,
+        Value::Doc(m) => m,
         _ => panic!("Expected root to be a map"),
     };
 
     let merged = current_map.merge(&map2)?;
 
     // Set the merged result back
-    dict.get_root_mut().set(Value::Map(merged)).await?;
+    dict.get_root_mut().set(Value::Doc(merged)).await?;
 
     // Verify merge results using path operations
     assert_text_value(&dict.get_at_path(&["level1", "key1"]).await?, "value1"); // preserved
@@ -173,7 +174,7 @@ async fn test_merge_operations_with_editors() -> Result<()> {
 
 #[tokio::test]
 async fn test_error_handling_across_apis() -> Result<()> {
-    let (_, _, txn, dict) = setup_complete_test_env("error_test").await?;
+    let (_instance, _tree, _txn, dict) = setup_complete_test_env("error_test").await?;
 
     // Test 1: Path operations error handling
     assert_not_found_error(dict.get_at_path(&["nonexistent", "path"]).await);
@@ -197,7 +198,7 @@ async fn test_error_handling_across_apis() -> Result<()> {
     assert_type_error(root_editor.set(Value::Text("not_a_map".to_string())).await);
 
     assert_type_error(
-        dict.set_at_path(&[], Value::Text("not_a_map".to_string()))
+        dict.set_at_path([] as [&str; 0], Value::Text("not_a_map".to_string()))
             .await,
     );
 
@@ -205,8 +206,8 @@ async fn test_error_handling_across_apis() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_performance_with_deep_nesting() -> Result<()> {
-    let (_, _, txn, dict) = setup_complete_test_env("performance_test").await?;
+async fn test_path_and_editor_operations_with_deep_nesting() -> Result<()> {
+    let (_instance, _tree, _txn, dict) = setup_complete_test_env("performance_test").await?;
 
     // Create a deeply nested structure (10 levels deep)
     let mut path = Vec::new();
@@ -223,14 +224,14 @@ async fn test_performance_with_deep_nesting() -> Result<()> {
     assert_text_value(&dict.get_at_path(&path_refs).await?, "deep_data");
 
     // Test value editor operations with deep nesting
-    let mut editor = dict.get_value_mut(&path_refs[0]);
+    let mut editor = dict.get_value_mut(path_refs[0]);
     for path_segment in &path_refs[1..path_refs.len() - 1] {
-        editor = editor.get_value_mut(path_segment);
+        editor = editor.get_value_mut(*path_segment);
     }
 
     // Modify the final value using editor
     editor
-        .get_value_mut(&path_refs[path_refs.len() - 1])
+        .get_value_mut(path_refs[path_refs.len() - 1])
         .set(Value::Text("modified_deep_data".to_string()))
         .await?;
 

@@ -237,7 +237,7 @@ async fn test_complete_lifecycle_passwordless() {
     let username = "jack";
     let db_name = "test_database";
 
-    let (_instance, user, database) = test_complete_user_lifecycle(username, None, db_name).await;
+    let (_instance, user, database) = create_database_and_relogin(username, None, db_name).await;
 
     // Verify user can access the database
     assert_user_can_access_database(&user, database.root_id());
@@ -253,7 +253,7 @@ async fn test_complete_lifecycle_password_protected() {
     let db_name = "secure_database";
 
     let (_instance, user, database) =
-        test_complete_user_lifecycle(username, Some(password), db_name).await;
+        create_database_and_relogin(username, Some(password), db_name).await;
 
     // Verify user can access the database
     assert_user_can_access_database(&user, database.root_id());
