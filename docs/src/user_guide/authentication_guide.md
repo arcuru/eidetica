@@ -251,6 +251,32 @@ transaction.commit().await?;
 
 Note: Historical entries created by revoked keys remain valid.
 
+### Historical Signatures and Operating Keys
+
+`Database::verify_entry_signature(id)` checks native historical authentication,
+including the causal settings pin, delegated ancestry, inherited floors and
+permission bounds.
+On a service client, the daemon performs this check under the handle's acting
+identity; that identity needs current Read permission on the target database
+and every claimed delegated database.
+A Read-only user can verify signatures without obtaining Write or Admin.
+Missing evidence is not success, and an unavailable/unsupported query is not a
+reason to trust a key hint or a stored record label.
+
+The boolean does not identify an application actor or grant current authority.
+To attribute an operating key, fetch the Entry through the authorized Database,
+require its historical authentication check to succeed, then use
+`auth::crypto::verify_entry_signature(&entry, &public_key)` with concrete keys
+from the application's authorized native identity database.
+If names collide, test each candidate's signature rather than choosing a name
+match.
+Read that identity database through its own authorized handle; a target-database
+grant is not a host-wide read grant.
+Evaluate current identity membership and application policy separately before
+acting: a valid historical signature remains valid after later revocation.
+The service integration regression in `service/historical_signatures.rs`
+exercises this sequence for direct and delegated signatures.
+
 ## Multi-Account Setup Example
 
 ```rust

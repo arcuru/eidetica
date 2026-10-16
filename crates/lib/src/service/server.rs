@@ -1195,6 +1195,41 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Entry(entry))
         }
 
+        DatabaseOp::VerifyEntrySignature { id } => {
+            let db = Database::open(instance, &root_id).await?;
+            // Membership is checked before inspecting any signature dependencies;
+            // an authorized envelope must not query a foreign entry's verdict.
+            let entry = db.get_entry(&id).await?;
+            if let SigKey::Delegation { path, .. } = &entry.auth().key {
+                use crate::auth::validation::delegation::{
+                    MAX_DELEGATION_STEPS, MAX_DELEGATION_TIPS,
+                };
+                // Match the native limits before amplifying a supplied path
+                // into permission queries, which can themselves traverse DAGs.
+                if path.len() > MAX_DELEGATION_STEPS
+                    || path
+                        .iter()
+                        .any(|step| step.tips.len() > MAX_DELEGATION_TIPS)
+                {
+                    return Ok(ServiceResponse::EntrySignatureValid(false));
+                }
+                for step in path {
+                    gate_tree_permission(
+                        instance,
+                        acting_pubkey,
+                        identity,
+                        &step.tree,
+                        Permission::Read,
+                        false,
+                    )
+                    .await?;
+                }
+            }
+            Ok(ServiceResponse::EntrySignatureValid(
+                db.verify_entry_signature(id).await?,
+            ))
+        }
+
         DatabaseOp::GetVerifiedTips => {
             // The server runs the Database layer, so `snapshot()` returns the
             // Verified frontier by construction — no client-side verify, no

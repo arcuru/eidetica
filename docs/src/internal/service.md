@@ -170,9 +170,19 @@ Every storage operation rides a single `DatabaseOp` enum carried in `Authenticat
 | `GetStoreTipsUpToEntries { store, .. }`         | Store tips reachable from given main-tree entry IDs. Read.                                                                                                                       |
 | `ComputeMergeState { store, .. }`               | Lowest common ancestor + path to tip entries in a store DAG, fused into one RPC. Read.                                                                                           |
 | `GetEntry { id }`                               | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                  |
+| `VerifyEntrySignature { id }`                   | Re-run native historical authentication for one Entry; target and delegated-proof Read gates apply.                                                                              |
 | `CreateTicket`                                  | Build a point-in-time database locator after the request is gated for Read on the target database.                                                                               |
 | Store-state resolve / staging / record get/scan | Resolve, build, and lazily read cached state through opaque server-issued views onto published record sets. Read for reads, Write for staging.                                   |
 | `SetInstanceMetadata { metadata }`              | Rewrite daemon-level pointers to its own system DBs. Special-cased server-side to gate `Admin` on `_databases` (a daemon-global system tree) instead of the request's `root_id`. |
+
+`VerifyEntrySignature { id }` re-runs `Database::verify_entry_signature` on the daemon rather than attempting local-only proof traversal on a connected instance.
+It requires Read on the envelope database, verifies that `id` belongs to that database, and checks Read on every claimed delegated tree under the same session-keyset-validated acting identity before native validation.
+The 10-step/64-tip limits are checked before those additional permission queries.
+The result is `EntrySignatureValid(bool)`, not a caller-assertable verification label or a raw-backend API.
+Pinned settings, inherited floors, complete locally Verified delegated ancestry, permission attenuation and incomplete-proof errors use the existing native validator unchanged.
+As with other reads, the access gates can trigger normal opportunistic verification; the query itself does not promote an Entry.
+There is no privileged client fallback, dependency acquisition or retry on an unsupported operation.
+Updated v0 peers recognize these variants; older peers follow the compatibility limits above.
 
 Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
 
@@ -187,6 +197,7 @@ Published views and private builds use opaque random tokens stored only in the c
 | Variant                                                       | Payload                                                            |
 | ------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `Entry(Entry)` / `Entries(Vec<Entry>)`                        | One or many entries                                                |
+| `EntrySignatureValid(bool)` | Native historical signature/permission verdict, not verification status |
 | `Ids(Vec<ID>)`                                                | One or many IDs                                                    |
 | `Ok`                                                          | Success with no data                                               |
 | `Unsupported`                                                 | Unknown operation; no action performed                             |
@@ -433,11 +444,15 @@ just test service
 nix build .#test.service
 ```
 
-The full suite passes 1:1 against the service backend. Tests that exercise _process-local_ subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), client-side delegation validation that reads delegated trees via `backend.get_tree`, the CRDT merge cache, and multi-`AccountSession`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
+The full suite passes 1:1 against the service backend. Tests that exercise _process-local_ subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), low-level delegation resolution that needs local verification evidence, the CRDT merge cache, and multi-`AccountSession`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
 
 - `test_local_instance()` — like `test_instance()` but always builds an in-memory local `Instance`.
 - `test_local_instance_with_user(username)` and `test_local_instance_with_user_and_key(username, key_name)` — counterparts to the wire-aware versions.
 - `setup_tree_with_user_key_local()` and `TestContext::with_local_database()` — for tests that poke at local-only backend state.
+
+`service::historical_signatures::native_provider_service_parity` exercises the high-level historical signature query through the real socket with a non-admin login and a separate Read-only acting key.
+It checks operating-key attribution with native Entry signature verification, forged and unauthorized claims, incomplete proof, inherited-floor regression, attenuation, and historical validity after current revocation.
+A reader authorized only on the target cannot query delegated proof, and unregistered identities and foreign Entry IDs are refused.
 
 The architectural seam — wire-path tests vs. subsystem tests — is explicit at the helper level. The test harness bootstraps the server-side Instance with a passwordless `admin` user via `Instance::create_backend(..., NewAccount::passwordless("admin"))`, then logs in over the wire as that user. (The old `admin`/`admin` auto-bootstrap is gone; production deployments now run `eidetica daemon init --username <NAME>` with explicit credentials, and the test harness mirrors that shape.)
 
