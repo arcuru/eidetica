@@ -339,8 +339,8 @@ pub async fn assert_database_error_conditions(user: &AccountSession) {
 
 // ===== INTEGRATION HELPERS =====
 
-/// Complete workflow: create DB with user, add trees, perform operations, verify results
-pub async fn create_databases_and_verify_access(
+/// Create two databases with settings and profile data for a new user
+pub async fn create_databases_with_data(
     username: &str,
 ) -> (Instance, AccountSession, Vec<Database>) {
     let (instance, mut user) = test_instance_with_user(username).await;
@@ -361,8 +361,8 @@ pub async fn create_databases_and_verify_access(
     (instance, user, trees)
 }
 
-/// Test concurrent tree operations
-pub async fn create_concurrent_databases(user: &mut AccountSession) -> Vec<Database> {
+/// Create five databases with user profiles, one at a time
+pub async fn create_databases_with_profiles(user: &mut AccountSession) -> Vec<Database> {
     let mut trees = Vec::new();
 
     // Create multiple trees rapidly

@@ -103,7 +103,7 @@ async fn test_tree_creation_with_data() {
 
 #[tokio::test]
 async fn test_database_operations_using_helpers() {
-    let (_instance, _user, trees) = create_databases_and_verify_access("workflow_user").await;
+    let (_instance, _user, trees) = create_databases_with_data("workflow_user").await;
 
     // Verify we created the expected trees
     assert_databases_count(&trees, 2);

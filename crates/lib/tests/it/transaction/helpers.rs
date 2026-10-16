@@ -13,6 +13,7 @@ use eidetica::{
 // Type alias for local usage
 type Map = Doc;
 
+pub use crate::helpers::assert_map_contains as assert_map_data;
 use crate::helpers::*;
 
 // ===== BASIC OPERATION HELPERS =====
@@ -134,25 +135,9 @@ pub async fn get_dict_data(dict: &DocStore) -> Map {
     dict.get_all().await.unwrap()
 }
 
-/// Verify that all expected data exists in a Doc's Map
-pub fn assert_map_data(map: &Map, expected_data: &[(&str, &str)]) {
-    for (key, expected_value) in expected_data {
-        match map.get(key) {
-            Some(Value::Text(actual_value)) => {
-                assert_eq!(
-                    actual_value, *expected_value,
-                    "Value mismatch for key '{key}'"
-                );
-            }
-            Some(other) => panic!("Expected text value for key '{key}', got: {other:?}"),
-            None => panic!("Key '{key}' not found in map"),
-        }
-    }
-}
-
 // ===== TOMBSTONE AND DELETE HELPERS =====
 
-/// Create operation that deletes a key and verify tombstone behavior
+/// Commit a key deletion and return its entry ID
 pub async fn commit_key_deletion(tree: &Database, subtree_name: &str, key_to_delete: &str) -> ID {
     let txn = tree.new_transaction().await.unwrap();
     let dict = txn.get_store::<DocStore>(subtree_name).await.unwrap();
@@ -183,7 +168,7 @@ pub fn assert_tombstone_hidden(map: &Map, key: &str) {
 
 // ===== NESTED VALUE HELPERS =====
 
-/// Create a nested Map value for testing complex data structures
+/// Wrap string key-value pairs in a Doc value
 pub fn create_doc_value(data: &[(&str, &str)]) -> Value {
     let mut map = Doc::new();
     for (key, value) in data {
