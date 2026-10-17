@@ -32,7 +32,7 @@ pub use errors::TransactionError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Database, Result, Snapshot, Store,
+    Database, Error, Result, Snapshot, Store,
     auth::{
         AuthSettings,
         crypto::{PrivateKey, sign_entry},
@@ -1055,24 +1055,28 @@ impl Transaction {
 
         // Check _index to determine if this is a new or existing subtree
         let index_store = self.get_index().await?;
-        if index_store.contains(&subtree_name).await {
-            // Type validation for existing subtree
-            let subtree_info = index_store.get_entry(&subtree_name).await?;
-
-            if !T::supports_type_id(&subtree_info.type_id) {
-                return Err(StoreError::TypeMismatch {
-                    store: subtree_name,
-                    expected: T::type_id().to_string(),
-                    actual: subtree_info.type_id,
+        match index_store.get_entry(&subtree_name).await {
+            Ok(subtree_info) => {
+                if !T::supports_type_id(&subtree_info.type_id) {
+                    return Err(StoreError::TypeMismatch {
+                        store: subtree_name,
+                        expected: T::type_id().to_string(),
+                        actual: subtree_info.type_id,
+                    }
+                    .into());
                 }
-                .into());
-            }
 
-            // Type supported - create the Store
-            T::load(self, subtree_name).await
-        } else {
-            // New subtree - register adds it to _index
-            T::register(self, subtree_name).await
+                T::load(self, subtree_name).await
+            }
+            // Only a missing named registration permits creation, not malformed
+            // metadata or a missing resource encountered while reading history.
+            Err(Error::Store(error))
+                if matches!(error.as_ref(), StoreError::KeyNotFound { store, key }
+                    if store == INDEX && key == &subtree_name) =>
+            {
+                T::register(self, subtree_name).await
+            }
+            Err(error) => Err(error),
         }
     }
 
