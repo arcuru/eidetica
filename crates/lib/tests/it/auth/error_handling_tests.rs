@@ -284,7 +284,7 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: delegated_tree_root.clone(),
-            tips: fake_tips, // Using fake tips instead of real ones
+            tips: fake_tips.clone(), // Using fake tips instead of real ones
         }],
         hint: KeyHint::from_pubkey(&user_key_id),
     };
@@ -296,9 +296,16 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
         .await;
 
     // Missing claimed tips are a replication dependency, not a forgery verdict.
-    assert!(
-        matches!(result.unwrap_err(), Error::Auth(e) if matches!(e.as_ref(), AuthError::DelegatedTreeUnsynced { tree_id, missing } if tree_id == &delegated_tree_root && missing == &vec![ID::from_bytes("fake_tip_1"), ID::from_bytes("fake_tip_2")]))
-    );
+    match result.expect_err("Unknown claimed tips must prevent resolution") {
+        Error::Auth(error) => match *error {
+            AuthError::DelegatedTreeUnsynced { tree_id, missing } => {
+                assert_eq!(tree_id, delegated_tree_root);
+                assert_eq!(missing, fake_tips);
+            }
+            other => panic!("Expected unsynced delegation, got {other:?}"),
+        },
+        other => panic!("Expected authentication error, got {other:?}"),
+    }
 
     Ok(())
 }
