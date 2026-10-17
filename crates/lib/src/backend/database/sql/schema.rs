@@ -24,6 +24,9 @@ use crate::backend::errors::BackendError;
 
 use super::{SqlxBackend, SqlxResultExt};
 
+#[cfg(test)]
+mod tests;
+
 /// Current schema version.
 ///
 /// Increment this when making schema changes that require migration.
@@ -149,9 +152,40 @@ pub const CREATE_INDEXES: &[&str] = &[
 /// Initialize the database schema.
 ///
 /// Creates tables and indexes if they don't exist, and handles migrations
-/// if the schema version has changed.
+/// if the schema version has changed. Refuses newer schemas before initialization DDL.
 pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
     let pool = backend.pool();
+
+    // A fresh database has no version table. Inspect existing markers before any
+    // schema DDL so an unsupported database is not modified by initialization.
+    let exists_query = if backend.is_sqlite() {
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+    } else {
+        "SELECT COUNT(*) FROM pg_catalog.pg_class WHERE oid = to_regclass('schema_version')"
+    };
+    let (exists,): (i64,) = sqlx::query_as(exists_query)
+        .fetch_one(pool)
+        .await
+        .sql_context("Failed to check schema version table")?;
+    let row: Option<(i64,)> = if exists > 0 {
+        sqlx::query_as("SELECT version FROM schema_version")
+            .fetch_optional(pool)
+            .await
+            .sql_context("Failed to check schema version")?
+    } else {
+        None
+    };
+    if let Some((stored_version,)) = row
+        && stored_version > SCHEMA_VERSION
+    {
+        return Err(BackendError::SqlxError {
+            reason: format!(
+                "Unsupported SQL schema version {stored_version}; supported version is {SCHEMA_VERSION}"
+            ),
+            source: None,
+        }
+        .into());
+    }
 
     // Create tables, adapting dialect-specific types
     let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
@@ -164,12 +198,6 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             .await
             .sql_context("Schema creation failed")?;
     }
-
-    // Check current schema version
-    let row: Option<(i64,)> = sqlx::query_as("SELECT version FROM schema_version")
-        .fetch_optional(pool)
-        .await
-        .sql_context("Failed to check schema version")?;
 
     initialize_store_state_tables(backend).await?;
 
