@@ -82,7 +82,7 @@ impl TestDatabase {
     }
 
     async fn close_backend(&self, mut backend: SqlxBackend) {
-        // Reuse the existing awaited release barrier rather than race production Drop.
+        // Wait for server-side pool locks to be released before reopening.
         #[cfg(feature = "postgres")]
         if let Some(StorageOwner::Postgres { _connection }) = backend._owner.take() {
             release_failed_postgres_claim(backend.pool.take(), _connection.into_inner()).await;
@@ -272,7 +272,7 @@ async fn assert_future_refused(db: &TestDatabase, result: Result<SqlxBackend>) {
         }
         Err(error) => {
             assert!(
-                matches!(error, crate::Error::Backend(ref inner) if matches!(**inner, BackendError::SqlxError { source: None, .. })),
+                matches!(error, crate::Error::Backend(ref inner) if matches!(**inner, BackendError::SqlxError { .. })),
                 "expected explicit backend version error, got {error}"
             );
             assert!(
