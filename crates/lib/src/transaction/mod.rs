@@ -1031,6 +1031,12 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the `Store` handle.
+    ///
+    /// For non-system Stores, only a missing named `_index` entry triggers
+    /// registration. Malformed metadata and registry read errors are returned
+    /// without loading or registering the Store. Existing registrations must
+    /// pass [`Registered::supports_type_id`](crate::Registered::supports_type_id)
+    /// before loading.
     pub async fn get_store<T>(&self, subtree_name: impl Into<String> + Send) -> Result<T>
     where
         T: Store + Send,
