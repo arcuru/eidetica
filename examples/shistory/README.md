@@ -94,6 +94,12 @@ root by ID. Setup errors in that state print the root ID to use:
 
 A failed ticket setup can also be retried with the same ticket.
 
+One window is not repairable this way. Eidetica commits a new database before
+the Account records it, so if first setup fails between those two writes (for
+example, the daemon connection drops), the new root is untracked, the error
+cannot name it, and rerunning setup creates another database. The abandoned
+root holds no history and is not shared.
+
 For an isolated populated SQLite comparison of capture latency, build a
 baseline `shistory` binary with the same Cargo profile, then run:
 
