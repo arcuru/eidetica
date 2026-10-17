@@ -44,6 +44,11 @@ SQLite uses a cooperative advisory lock on a stable `.eidetica-owner` sidecar ne
 
 PostgreSQL stores an ownership token in the active schema: every pooled session holds a shared namespace lock and validates that token, while takeover requires the exclusive namespace lock. A surviving old session therefore blocks takeover, and a stale pool cannot reconnect after ownership changes. The operating system or database server releases the locks when their sessions exit or crash.
 
+Both SQL backends reject a stored schema version newer than the supported version before creating schema tables or indexes or running migrations.
+Refusal leaves the version marker, Entries, instance metadata and Store-state records unchanged.
+The error names both versions.
+This is not a read-only open: SQLite may still set WAL mode and open its ownership sidecar, and PostgreSQL still performs ownership bookkeeping before checking the schema version.
+
 <!-- Code block ignored: Requires async runtime context -->
 
 ```rust,ignore
