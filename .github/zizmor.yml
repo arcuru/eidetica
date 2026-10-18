@@ -6,19 +6,17 @@
 rules:
   dangerous-triggers:
     ignore:
-      # publish.yml and deploy-docs.yml are workflow_run by design. zizmor flags
-      # the trigger regardless of job guards; both jobs gate on
-      # `head_repository.full_name == github.repository`, so fork code cannot
-      # reach them — see the `if:` comments in those workflows.
-      - publish.yml:22
+      # Docs follows the complete CI/dev-publish pipeline to use its warm cache.
+      # The job requires successful same-repository main push/manual CI before
+      # checking out its SHA; a PR (including a fork branch named main) is refused.
       - deploy-docs.yml:14
   template-injection:
     ignore:
       # `steps.nix.outputs.push-args` is a first-party output of our setup-nix
       # composite (pre-quoted Nix store paths), not attacker-controllable input
       # — see the comment at that step in publish.yml.
-      - publish.yml:119
-      - publish.yml:130
+      - publish.yml:135
+      - publish.yml:146
   secrets-inherit:
     ignore:
       # PAT_TOKEN reaches the reusable workflow through its own

@@ -1,7 +1,7 @@
 # Deploys the mdbook + rustdoc site to GitHub Pages.
 #
-# Runs after Publish rather than directly on push: Publish warms the Nix binary
-# cache with the full check set, which includes doc.api. Building on push instead
+# Runs after the complete CI -> dev Publish pipeline, which warms the Nix binary
+# cache with the full check set, including doc.api. Building on push instead
 # means every flake-input bump hits a cold cache and rebuilds the whole toolchain
 # and dependency graph on a standard-2 runner, which runs it out of disk. Waiting
 # for the warm cache leaves only mdbook and the site assembly to build here.
@@ -13,7 +13,7 @@ name: Deploy Docs
 
 on:
   workflow_run:
-    workflows: ["Publish"]
+    workflows: ["CI"]
     types: [completed]
     branches: ["main"]
   workflow_dispatch:
@@ -32,14 +32,15 @@ jobs:
   build:
     runs-on: ubicloud-standard-2
     timeout-minutes: 15
-    # Only the CI-triggered Publish warms the cache (its warm step is itself gated
-    # on workflow_run), so a release- or dispatch-triggered Publish would send this
-    # job into a cold build on a small runner. Deploy from the main-push path only.
+    # CI includes the cache publisher. Require a successful same-repository
+    # main push/manual pipeline, never a PR or an independent release Publish.
     if: |
       github.repository_owner == 'arcuru' &&
       (github.event_name != 'workflow_run' ||
        (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'workflow_run' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        (github.event.workflow_run.event == 'push' ||
+         github.event.workflow_run.event == 'workflow_dispatch') &&
         github.event.workflow_run.head_repository.full_name == github.repository))
     permissions:
       contents: read

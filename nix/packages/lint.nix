@@ -162,6 +162,13 @@
       command = ''find .github/workflows -name "*.yml" -exec actionlint -config-file .github/actionlint.yaml {} +'';
     };
 
+    publish-workflow = mkSimpleLinter {
+      name = "publish-workflow";
+      packages = [(pkgs.python3.withPackages (ps: [ps.pyyaml]))];
+      src = sourceWithExts ["py" "yml" "yaml"];
+      command = "python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'";
+    };
+
     zizmor = mkSimpleLinter {
       name = "zizmor";
       packages = [pkgs.zizmor];
