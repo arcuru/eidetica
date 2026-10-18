@@ -6,8 +6,8 @@
 # and dependency graph on a standard-2 runner, which runs it out of disk. Waiting
 # for the warm cache leaves only mdbook and the site assembly to build here.
 #
-# workflow_run carries no path filter, so this redeploys on every main push. That
-# is a cache hit plus mdbook — cheap enough not to be worth path-gating.
+# workflow_run carries no path filter, so every successful main CI pipeline
+# redeploys. That is a cache hit plus mdbook — cheap enough not to path-gate.
 
 name: Deploy Docs
 
