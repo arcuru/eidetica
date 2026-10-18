@@ -137,8 +137,8 @@ jobs:
             -f ".#legacyPackages.${SYSTEM}.eidetica.release"
 
       # Warm the cache with all remaining flake check outputs so subsequent CI
-      # runs are faster. Only needed on the dev path (every push to main) —
-      # release runs only build the release artifacts.
+      # runs are faster. Only needed on the dev path after successful main CI —
+      # independent release runs only build the release artifacts.
       - name: Warm CI cache
         if: inputs.dev
         run: |
