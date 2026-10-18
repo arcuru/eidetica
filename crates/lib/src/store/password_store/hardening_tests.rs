@@ -221,7 +221,6 @@ pub(super) mod observer {
     }
 
     /// Register a PasswordStore-owned plaintext allocation if this thread is watching.
-    #[allow(dead_code)]
     pub(crate) fn register_owned(bytes: &mut Vec<u8>) {
         let owner = ARMED.with(Cell::get);
         if owner != 0 && bytes.capacity() > 0 {
@@ -384,42 +383,54 @@ fn completed_password_clones_wipe_independently() {
 
 #[tokio::test]
 async fn open_failures_wipe_converted_password() {
-    let cases: Vec<(&str, Doc, &str)> = vec![
+    // Registrations: the caller's password, the temporary key, and any decrypted JSON.
+    let cases: Vec<(&str, Doc, &str, usize)> = vec![
         (
             "wrong password",
             crafted_config(&valid_wrapped("docstore:v0"), SALT, vec![7; 12]),
             "wrong-synthetic-password",
+            2,
         ),
         (
             "invalid salt",
             crafted_config(&valid_wrapped("docstore:v0"), "!", vec![7; 12]),
             PASSWORD,
+            2,
         ),
         (
             "invalid nonce",
             crafted_config(&valid_wrapped("docstore:v0"), SALT, vec![7; 11]),
             PASSWORD,
+            2,
         ),
         (
             "malformed metadata",
             crafted_config(b"not json", SALT, vec![7; 12]),
             PASSWORD,
+            3,
         ),
         (
             "type mismatch",
             crafted_config(&valid_wrapped("other:v0"), SALT, vec![7; 12]),
             PASSWORD,
+            3,
         ),
     ];
-    for (case, config, password) in cases {
+    for (case, config, password, registrations) in cases {
         let (_instance, db) = database().await;
         write_config(&db, config).await;
         let watch = Watch::start();
         let result = open_with::<DocStore>(&db, watched_password(&watch, password)).await;
         assert!(result.is_err(), "{case} must fail");
         let observations = watch.finish();
+        assert_eq!(
+            observations.len(),
+            registrations,
+            "{case}: {observations:?}"
+        );
+        assert_eq!(observations[1].size, 32, "{case}: temporary key guarded");
         assert!(
-            !observations.is_empty() && observations.iter().all(Observation::wiped),
+            observations.iter().all(Observation::wiped),
             "{case}: {observations:?}"
         );
     }
@@ -743,13 +754,13 @@ async fn initialize_at_gate(mode: u8) -> (Option<Result<()>>, Vec<Observation>) 
     .await;
     let tx = db.new_transaction().await.unwrap();
     // A handle built directly leaves `_index` unread by this transaction, so persistence
-    // performs a genuine backend read that the gate can hold.
+    // performs a genuine backend read that the gate can hold. The exhaustive literal also
+    // pins that the handle retains no decrypted wrapped metadata.
     let mut store = PasswordStore::<DocStore> {
         name: "secrets".to_string(),
         transaction: tx.clone(),
         config: None,
         cached_password: None,
-        wrapped_info: None,
         _phantom: PhantomData,
     };
     let watch = Watch::start();
@@ -909,13 +920,16 @@ fn record_encryptor_for_fixture() -> PasswordEncryptor {
     )
 }
 
+/// Base64 salt text of the config fixture, hex-encoded so the spell checker leaves it intact.
+const CONFIG_FIXTURE_SALT_HEX: &str = "734d5533664476307a43775a53653162766535704641";
+
 #[tokio::test]
 async fn existing_initialized_config_fixture_still_opens() {
     let config: Doc = PasswordStoreConfig {
         encryption: EncryptionInfo {
             algorithm: "aes-256-gcm".to_string(),
             kdf: "argon2id".to_string(),
-            salt: "sMU3fDv0zCwZSe1bve5pFA".to_string(),
+            salt: String::from_utf8(hex::decode(CONFIG_FIXTURE_SALT_HEX).unwrap()).unwrap(),
             version: "v0".to_string(),
             argon2_m_cost: Some(DEFAULT_ARGON2_M_COST),
             argon2_t_cost: Some(DEFAULT_ARGON2_T_COST),
@@ -941,4 +955,253 @@ async fn existing_initialized_config_fixture_still_opens() {
     let inner = store.inner().await.unwrap();
     inner.set("usable", "yes").await.unwrap();
     assert_eq!(inner.get_string("usable").await.unwrap(), "yes");
+}
+
+// ---------------------------------------------------------------------------
+// S2: guarded local JSON, crypto output and completed row fields
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lazy_key_derivation_guards_and_moves_its_buffer() {
+    let watch = Watch::start();
+    let encryptor = record_encryptor();
+    encryptor.with_key(|key| Ok(key.len())).unwrap();
+    encryptor.with_key(|key| Ok(key.len())).unwrap();
+    let live = watch_snapshot_is_live(&encryptor);
+    drop(encryptor);
+    let observations = watch.finish();
+    assert!(live, "derived key stays cached while its encryptor lives");
+    assert_all_wiped(&observations, 1);
+    assert_eq!(observations[0].size, 32);
+
+    let watch = Watch::start();
+    let mut invalid_salt = record_encryptor();
+    invalid_salt.password.salt = "!".to_string();
+    assert!(invalid_salt.with_key(|key| Ok(key.len())).is_err());
+    drop(invalid_salt);
+    assert_all_wiped(&watch.finish(), 1);
+}
+
+/// The cached key is the moved derivation buffer, not a copy.
+fn watch_snapshot_is_live(encryptor: &PasswordEncryptor) -> bool {
+    encryptor.derived_key.lock().unwrap().get().is_some()
+}
+
+#[test]
+fn secret_bytes_transfer_is_zero_copy_and_unwiped() {
+    let watch = Watch::start();
+    let owner = SecretBytes::from_vec(b"synthetic".to_vec());
+    let ptr = owner.as_bytes().as_ptr();
+    let transferred = owner.into_vec();
+    assert_eq!(transferred.as_ptr(), ptr, "transfer must not copy");
+    assert_eq!(transferred, b"synthetic");
+    let observations = watch.finish();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(
+        observations[0].nonzero, None,
+        "transferred bytes are not wiped"
+    );
+}
+
+/// Serializes successfully on the measuring pass and fails part-way on the next.
+struct FailsOnSecondPass(std::cell::Cell<usize>);
+
+impl Serialize for FailsOnSecondPass {
+    fn serialize<Z: serde::Serializer>(
+        &self,
+        serializer: Z,
+    ) -> std::result::Result<Z::Ok, Z::Error> {
+        use serde::ser::SerializeStruct;
+        let pass = self.0.get();
+        self.0.set(pass + 1);
+        let mut state = serializer.serialize_struct("Synthetic", 2)?;
+        state.serialize_field("token", SENTINEL)?;
+        if pass > 0 {
+            return Err(serde::ser::Error::custom("synthetic serializer failure"));
+        }
+        state.serialize_field("tail", "x")?;
+        state.end()
+    }
+}
+
+#[test]
+fn guarded_json_writer_wipes_partial_output_on_serialization_error() {
+    let watch = Watch::start();
+    let value = FailsOnSecondPass(std::cell::Cell::new(0));
+    assert!(SecretBytes::json(&value).is_err());
+    assert_eq!(value.0.get(), 2, "the guarded pass must run and fail");
+    assert_all_wiped(&watch.finish(), 1);
+}
+
+#[test]
+fn guarded_json_is_allocated_once_at_its_final_size() {
+    let mut config = Doc::new();
+    config.set("title", "Test");
+    let watch = Watch::start();
+    let json = SecretBytes::json(&WrappedStoreInfoRef {
+        type_id: "docstore:v0",
+        config: &config,
+    })
+    .unwrap();
+    assert_eq!(json.0.capacity(), json.as_bytes().len());
+    drop(json);
+    assert_all_wiped(&watch.finish(), 1);
+}
+
+#[test]
+fn record_encryption_wipes_its_envelope_json() {
+    let encryptor = record_encryptor();
+    // Derive the cached key first, so only the envelope is registered.
+    encryptor.with_key(|key| Ok(key.len())).unwrap();
+    let watch = Watch::start();
+    encryptor.encrypt_record(b"logical", b"plaintext").unwrap();
+    assert_all_wiped(&watch.finish(), 1);
+}
+
+#[test]
+fn record_decryption_transfers_accepted_fields_and_wipes_json() {
+    let encryptor = record_encryptor();
+    let physical_key = encryptor.physical_record_key(b"logical").unwrap();
+    let record = encryptor.encrypt_record(b"logical", b"plaintext").unwrap();
+    let watch = Watch::start();
+    let (key, value) = encryptor.decrypt_record(&physical_key, &record).unwrap();
+    let observations = watch.finish();
+    // JSON, then the two completed fields.
+    assert_eq!(observations.len(), 3, "{observations:?}");
+    assert!(observations[0].wiped(), "envelope JSON: {observations:?}");
+    assert_eq!(
+        (observations[1].nonzero, observations[2].nonzero),
+        (None, None),
+        "accepted fields are transferred, not wiped or copied"
+    );
+    assert_eq!(
+        (key.as_slice(), value.as_slice()),
+        (&b"logical"[..], &b"plaintext"[..])
+    );
+}
+
+#[test]
+fn record_key_mismatch_wipes_completed_fields() {
+    let encryptor = record_encryptor();
+    let physical_key = encryptor.physical_record_key(b"logical").unwrap();
+    let envelope = SecretBytes::json(&EncryptedRecordEnvelope {
+        key: b"other",
+        value: b"plaintext",
+    })
+    .unwrap();
+    let record = crafted_record(&encryptor, &physical_key, envelope.as_bytes());
+    let watch = Watch::start();
+    let error = encryptor
+        .decrypt_record(&physical_key, &record)
+        .unwrap_err();
+    assert!(
+        matches!(&error, crate::Error::Store(store) if store.is_integrity_error()),
+        "{error}"
+    );
+    assert_all_wiped(&watch.finish(), 3);
+}
+
+#[test]
+fn malformed_record_wipes_completed_fields_but_not_partial_ones() {
+    let encryptor = record_encryptor();
+    let physical_key = encryptor.physical_record_key(b"logical").unwrap();
+    // `key` completes; `value` fails part-way through its array.
+    let record = crafted_record(
+        &encryptor,
+        &physical_key,
+        br#"{"key":[108,111],"value":[1,2,"x"]}"#,
+    );
+    let watch = Watch::start();
+    assert!(encryptor.decrypt_record(&physical_key, &record).is_err());
+    // Registered: the JSON and the completed `key`. The partially built `value` vector is
+    // serde's ordinary allocation and is outside the cleanup claim.
+    assert_all_wiped(&watch.finish(), 2);
+}
+
+#[test]
+fn record_envelope_json_bytes_are_unchanged() {
+    let json = SecretBytes::json(&EncryptedRecordEnvelope {
+        key: b"logical",
+        value: b"plaintext",
+    })
+    .unwrap();
+    assert_eq!(
+        json.as_bytes(),
+        br#"{"key":[108,111,103,105,99,97,108],"value":[112,108,97,105,110,116,101,120,116]}"#
+    );
+}
+
+#[test]
+fn wrapped_metadata_json_bytes_are_unchanged() {
+    let mut config = Doc::new();
+    config.set("title", "Test");
+    let json = SecretBytes::json(&WrappedStoreInfoRef {
+        type_id: "docstore:v0",
+        config: &config,
+    })
+    .unwrap();
+    assert_eq!(
+        json.as_bytes(),
+        br#"{"type":"docstore:v0","config":{"children":{"title":{"Text":"Test"}}}}"#
+    );
+}
+
+#[test]
+fn fixed_nonce_record_encryption_matches_existing_fixture() {
+    let fixture = hex::decode(RECORD_FIXTURE).unwrap();
+    let encryptor = record_encryptor_for_fixture();
+    let ciphertext = encryptor
+        .encrypt_record_with_nonce(b"logical", b"plaintext", &fixture[..AES_GCM_NONCE_SIZE])
+        .unwrap();
+    assert_eq!(ciphertext, fixture);
+}
+
+// ---------------------------------------------------------------------------
+// Output-trait guards: these fail to compile if a secret owner gains an output trait
+// ---------------------------------------------------------------------------
+
+macro_rules! assert_not_impl {
+    ($ty:ty, $($trait:path),+ $(,)?) => {
+        $(
+            const _: fn() = || {
+                trait AmbiguousIfImpl<A> {
+                    fn some_item() {}
+                }
+                impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+                #[allow(dead_code)]
+                struct Invalid;
+                impl<T: ?Sized + $trait> AmbiguousIfImpl<Invalid> for T {}
+                let _ = <$ty as AmbiguousIfImpl<_>>::some_item;
+            };
+        )+
+    };
+}
+
+assert_not_impl!(
+    SecretBytes,
+    std::fmt::Debug,
+    std::fmt::Display,
+    Clone,
+    Serialize,
+    serde::de::DeserializeOwned,
+);
+assert_not_impl!(Password, std::fmt::Debug, std::fmt::Display, Serialize);
+assert_not_impl!(DerivedKey, std::fmt::Debug, Clone, Serialize);
+assert_not_impl!(DecryptedRecordEnvelope, std::fmt::Debug, Clone, Serialize);
+assert_not_impl!(WrappedStoreInfo, std::fmt::Debug, Clone, Serialize);
+
+#[test]
+fn secret_owners_still_allow_local_borrowing() {
+    let mut owner = SecretBytes::zeroed(4);
+    owner.as_mut_bytes().copy_from_slice(b"abcd");
+    let borrowed: &[u8] = owner.as_bytes();
+    assert_eq!(borrowed, b"abcd");
+    let password = Password {
+        salt: SALT.to_string(),
+        password: PASSWORD.to_string(),
+        argon2_m_cost: 8,
+        argon2_t_cost: 1,
+        argon2_p_cost: 1,
+    };
+    assert_eq!(password.password.as_str(), PASSWORD);
 }
