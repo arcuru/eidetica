@@ -811,31 +811,48 @@ async fn initialize_persistence_failure_wipes_password() {
 // Redacted decrypted diagnostics
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn malformed_decrypted_metadata_errors_omit_plaintext() {
-    let malformed = format!(r#"{{"type":"docstore:v0","config":"{SENTINEL}"}}"#).into_bytes();
+/// Malformed decrypted metadata is reported generically, whatever the wrapped Store type.
+async fn assert_malformed_metadata_redacted<S: Store>() {
+    let malformed = format!(r#"{{"type":"{}","config":"{SENTINEL}"}}"#, S::type_id()).into_bytes();
     let (_instance, db) = database().await;
     write_config(&db, crafted_config(&malformed, SALT, vec![7; 12])).await;
-    let error = open_with::<DocStore>(&db, PASSWORD.to_string())
-        .await
-        .unwrap_err();
+    let error = open_with::<S>(&db, PASSWORD.to_string()).await.unwrap_err();
     assert!(error.is_store_serialization_error(), "{error}");
     assert!(!formatted_chain(&error).contains(SENTINEL));
 }
 
-#[tokio::test]
-async fn decrypted_type_mismatch_errors_omit_plaintext_type() {
+/// A decrypted wrapped type that does not match `S` is not echoed in the error.
+async fn assert_type_mismatch_redacted<S: Store>() {
     let (_instance, db) = database().await;
     write_config(
         &db,
         crafted_config(&valid_wrapped(SENTINEL), SALT, vec![7; 12]),
     )
     .await;
-    let error = open_with::<DocStore>(&db, PASSWORD.to_string())
-        .await
-        .unwrap_err();
+    let error = open_with::<S>(&db, PASSWORD.to_string()).await.unwrap_err();
     assert!(error.is_store_type_error(), "{error}");
-    assert!(!formatted_chain(&error).contains(SENTINEL));
+    let chain = formatted_chain(&error);
+    assert!(!chain.contains(SENTINEL), "{chain}");
+    assert!(
+        chain.contains(S::type_id()),
+        "expected type stays visible: {chain}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_decrypted_metadata_errors_omit_plaintext() {
+    assert_malformed_metadata_redacted::<DocStore>().await;
+    assert_malformed_metadata_redacted::<crate::store::Table<String>>().await;
+    #[cfg(feature = "y-crdt")]
+    assert_malformed_metadata_redacted::<crate::store::YDoc>().await;
+}
+
+#[tokio::test]
+async fn decrypted_type_mismatch_errors_omit_plaintext_type() {
+    assert_type_mismatch_redacted::<DocStore>().await;
+    assert_type_mismatch_redacted::<crate::store::Table<String>>().await;
+    #[cfg(feature = "y-crdt")]
+    assert_type_mismatch_redacted::<crate::store::YDoc>().await;
 }
 
 fn record_encryptor() -> PasswordEncryptor {
