@@ -1165,6 +1165,10 @@ impl<S: Store> PasswordStore<S> {
         S::load(&self.transaction, self.name.clone()).await
     }
 }
+
+#[cfg(test)]
+mod hardening_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
