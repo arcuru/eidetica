@@ -10,10 +10,15 @@ on:
 permissions:
   contents: read
 
-# A new PR revision supersedes older checks; main pushes must each complete
-# independently because Publish follows a successful main CI run.
+# Main CI and its dependent dev publisher share one native queue: finish the
+# active pipeline and keep one replaceable pending pipeline. PRs only supersede
+# their own checks; other branches cannot displace main.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: >-
+    ${{ github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+        'ci-dev-main' ||
+        format('ci-{0}-{1}', github.event_name, github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -30,8 +35,8 @@ jobs:
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
 
-      # On PRs: keep all non-backend checks and minimal-feature tests, but
-      # run only SQLite in the backend matrix. Integration is push/dispatch-only.
+      # PRs use the existing lean SQLite-only test target. Integration and the
+      # full backend/documentation checks remain push/dispatch-only.
       - name: Checks
         if: github.event_name == 'pull_request'
         run: |
@@ -67,3 +72,25 @@ jobs:
       - name: Checks
         run: |
           nix-fast-build --skip-cached --no-nom --no-link
+
+  publish:
+    name: Publish
+    needs: [ci, ci-arm]
+    if: |
+      github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/publish.yml
+    with:
+      dev: true
+    permissions:
+      contents: read
+      packages: write
+    # Naming environment secrets is required for reusable workflows; their
+    # values are resolved inside the callee's protected publish/release jobs.
+    secrets:
+      BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+      NIX_CACHE_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_ACCESS_KEY_ID }}
+      NIX_CACHE_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_SECRET_ACCESS_KEY }}
+      NIX_CACHE_SIGNING_KEY: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
