@@ -43,6 +43,26 @@ async fn terminate(pool: &AnyPool, pid: i32) {
     assert!(terminated, "PostgreSQL session {pid} must be terminated");
 }
 
+async fn assert_release_blocked(url: &str, schema: &str) {
+    let error =
+        SqlxBackend::test_await_postgres_namespace_release(url, schema, Duration::from_millis(200))
+            .await
+            .expect_err("an owned namespace must not be released");
+    assert!(
+        matches!(
+            error,
+            Error::Backend(ref error)
+                if matches!(
+                    error.as_ref(),
+                    BackendError::SqlxError {
+                        source: Some(sqlx::Error::Database(error)), ..
+                    } if error.code().as_deref() == Some("55P03")
+                )
+        ),
+        "expected PostgreSQL lock timeout, got {error:?}"
+    );
+}
+
 async fn await_release(url: &str, schema: &str) {
     SqlxBackend::test_await_postgres_namespace_release(url, schema, Duration::from_secs(5))
         .await
@@ -92,6 +112,9 @@ async fn postgres_testing_schema_name_is_one_identifier() {
         initialized,
         "tables must be created in the exact schema name"
     );
+    assert_release_blocked(&postgres_url(), &schema).await;
+    drop(backend);
+    await_release(&postgres_url(), &schema).await;
 }
 
 #[tokio::test]
@@ -107,16 +130,7 @@ async fn postgres_namespace_is_owned_for_backend_lifetime() {
         Err(error) => error,
     };
     assert_owned(error);
-    assert!(
-        SqlxBackend::test_await_postgres_namespace_release(
-            &url,
-            &schema,
-            Duration::from_millis(200)
-        )
-        .await
-        .is_err(),
-        "a live backend's namespace must not be released"
-    );
+    assert_release_blocked(&url, &schema).await;
 
     // Drop only begins closing the backend's sessions; PostgreSQL releases their locks
     // when they exit, so an immediate reopen can race that release.
@@ -148,17 +162,10 @@ async fn surviving_pool_session_blocks_takeover_after_keeper_loss() {
         terminate(&admin, pid).await;
     }
     drop(first);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Ok(owner) = SqlxBackend::test_connect_postgres_schema(&url, schema.clone()).await
-            {
-                break owner;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("takeover must succeed after all old sessions exit");
+    await_release(&url, &schema).await;
+    SqlxBackend::test_connect_postgres_schema(&url, schema)
+        .await
+        .expect("takeover must succeed after all old sessions exit");
 }
 
 #[tokio::test]
@@ -176,17 +183,10 @@ async fn stale_backend_reconnect_is_fenced_after_takeover() {
         terminate(&admin, pid).await;
     }
 
-    let second = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Ok(owner) = SqlxBackend::test_connect_postgres_schema(&url, schema.clone()).await
-            {
-                break owner;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("takeover must succeed after every old session exits");
+    await_release(&url, &schema).await;
+    let second = SqlxBackend::test_connect_postgres_schema(&url, schema)
+        .await
+        .expect("takeover must succeed after every old session exits");
     assert_ne!(old_token, second.test_postgres_token());
 
     // SQLx retries connections rejected by after_connect until the pool's acquire
@@ -229,16 +229,7 @@ async fn postgres_testing_checkout_blocks_takeover_until_released() {
         .await
         .unwrap();
     assert_eq!(value, 1);
-    assert!(
-        SqlxBackend::test_await_postgres_namespace_release(
-            &url,
-            &schema,
-            Duration::from_millis(200)
-        )
-        .await
-        .is_err(),
-        "a lingering old session must keep the namespace owned"
-    );
+    assert_release_blocked(&url, &schema).await;
     drop(connection);
 
     await_release(&url, &schema).await;
