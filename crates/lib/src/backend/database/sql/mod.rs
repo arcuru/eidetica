@@ -869,8 +869,8 @@ impl SqlxBackend {
     /// Wait until no PostgreSQL session holds `schema`'s namespace ownership lock.
     ///
     /// Dropping a backend cannot await its sessions' exit, and the server releases their
-    /// locks only once they end. This waits on the server for the exclusive namespace lock,
-    /// bounded by `timeout`, and releases it when the statement completes.
+    /// locks only once they end. Lock acquisition waits on the server for at most `timeout`;
+    /// the transaction-level lock is released when the statement completes.
     #[cfg(feature = "testing")]
     #[doc(hidden)]
     pub async fn test_await_postgres_namespace_release(
