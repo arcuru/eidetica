@@ -345,3 +345,6 @@ async fn insert_prefix_row(
         .sql_context("Failed to insert verified prefix row")?;
     Ok(())
 }
+
+#[cfg(all(test, feature = "postgres"))]
+mod tests;
