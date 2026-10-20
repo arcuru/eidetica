@@ -34,6 +34,28 @@ async fn begin_write_tx(backend: &SqlxBackend) -> Result<sqlx::Transaction<'_, s
     Ok(tx)
 }
 
+/// Serialize status/prefix decisions within one tree on PostgreSQL. SQLite
+/// already holds its write lock from `BEGIN IMMEDIATE`. Include the schema in
+/// the advisory key so independent backend namespaces do not share tree locks.
+/// The lock is released on commit or rollback, including error paths.
+async fn lock_tree(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tree: &ID,
+) -> Result<()> {
+    if !backend.is_sqlite() {
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended(\
+             format('eidetica-verified-v1:%s:%s', current_schema(), $1::text), 0))",
+        )
+        .bind(tree.to_string())
+        .execute(&mut **tx)
+        .await
+        .sql_context("Failed to lock verified tree")?;
+    }
+    Ok(())
+}
+
 /// Read the retained verified frontier without scanning history.
 pub async fn verified_snapshot(backend: &SqlxBackend, tree: &ID) -> Result<Snapshot> {
     let pool = backend.pool();
@@ -67,8 +89,15 @@ pub async fn update_verification_status(
 ) -> Result<()> {
     let mut tx = begin_write_tx(backend).await?;
 
-    let (tree_id, current) = entry_tree_and_status(&mut tx, id).await?;
-    let Some((tree_id, current)) = tree_id.zip(current) else {
+    // The owning tree is immutable; use it to route the lock, then re-read
+    // mutable status under that lock before deciding whether to admit/rebuild.
+    let (tree_id, _) = entry_tree_and_status(&mut tx, id).await?;
+    let Some(tree_id) = tree_id else {
+        return Err(BackendError::EntryNotFound { id: id.clone() }.into());
+    };
+    lock_tree(backend, &mut tx, &tree_id).await?;
+    let (_, current) = entry_tree_and_status(&mut tx, id).await?;
+    let Some(current) = current else {
         return Err(BackendError::EntryNotFound { id: id.clone() }.into());
     };
     if current == verification_status {
@@ -105,6 +134,7 @@ pub async fn update_verification_status(
 /// oracle, which this must equal after every insertion/promotion order.
 pub async fn rebuild_verified_state(backend: &SqlxBackend, tree: &ID) -> Result<Snapshot> {
     let mut tx = begin_write_tx(backend).await?;
+    lock_tree(backend, &mut tx, tree).await?;
     let snapshot = rebuild_in_tx(&mut tx, tree).await?;
     tx.commit()
         .await
@@ -113,6 +143,7 @@ pub async fn rebuild_verified_state(backend: &SqlxBackend, tree: &ID) -> Result<
 }
 
 /// Rebuild `tree` inside an open transaction: delete, recompute, insert.
+/// Callers must hold the tree lock, or exclusive backend access (migration).
 pub(crate) async fn rebuild_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     tree: &ID,
