@@ -148,10 +148,17 @@ where
     if chunk.is_empty() {
         return Ok(());
     }
-    let mut sql =
-        String::from("UPDATE store_state_namespaces SET last_access_tick = CASE namespace_id ");
+    // Drained batches can finish out of order. Compare in the UPDATE itself
+    // so an older in-flight flush cannot lower a newer durable tick. CASE
+    // works on both SQLite and PostgreSQL (unlike scalar MAX/GREATEST).
+    let mut sql = String::from("UPDATE store_state_namespaces SET last_access_tick = CASE ");
     for i in 0..chunk.len() {
-        sql.push_str(&format!("WHEN ${} THEN ${} ", 2 * i + 1, 2 * i + 2));
+        sql.push_str(&format!(
+            "WHEN namespace_id = ${} AND last_access_tick < ${} THEN ${} ",
+            2 * i + 1,
+            2 * i + 2,
+            2 * i + 2
+        ));
     }
     sql.push_str("ELSE last_access_tick END WHERE namespace_id IN (");
     for i in 0..chunk.len() {
@@ -302,4 +309,175 @@ pub(crate) async fn evict_derived(backend: &SqlxBackend, protect: Option<&str>) 
         .await
         .sql_context("Failed to commit Store-state eviction")?;
     Ok(())
+}
+
+#[cfg(all(test, feature = "testing"))]
+mod tests {
+    use super::*;
+    use crate::backend::{
+        BackendImpl, CacheScope, DerivedCachePolicy, ProjectionDescriptor, RecordView,
+        StoreStateRequest,
+    };
+    use crate::entry::ID;
+
+    async fn backend() -> Option<SqlxBackend> {
+        #[cfg(feature = "postgres")]
+        if std::env::var("TEST_BACKEND").as_deref() == Ok("postgres") {
+            let url = std::env::var("TEST_POSTGRES_URL")
+                .unwrap_or_else(|_| "postgres://localhost/eidetica_test".to_string());
+            return Some(SqlxBackend::connect_postgres_isolated(&url).await.unwrap());
+        }
+        #[cfg(feature = "sqlite")]
+        if std::env::var("TEST_BACKEND").as_deref() == Ok("sqlite") {
+            return Some(
+                SqlxBackend::connect_sqlite("sqlite::memory:")
+                    .await
+                    .unwrap(),
+            );
+        }
+        None
+    }
+
+    async fn publish(backend: &SqlxBackend, store: &str) -> RecordView {
+        let request = StoreStateRequest {
+            database: ID::from_bytes("recency-db"),
+            store: store.to_string(),
+            lifecycle: StoreStateLifecycle::Derived,
+            scope: CacheScope::Shared,
+            projection: ProjectionDescriptor {
+                name: "test/recency".to_string(),
+                version: 1,
+            },
+            source_key: vec![1],
+        };
+        let token = backend.begin_store_state_staging(request).await.unwrap();
+        backend.publish_store_state(token).await.unwrap()
+    }
+
+    async fn persisted_tick(backend: &SqlxBackend, view: &RecordView) -> u64 {
+        let (tick,): (i64,) = sqlx::query_as(
+            "SELECT last_access_tick FROM store_state_namespaces WHERE namespace_id = $1",
+        )
+        .bind(&view.namespace_id)
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        tick as u64
+    }
+
+    async fn assert_hot_survives(backend: &SqlxBackend, hot: &RecordView, cold: &RecordView) {
+        backend.testing_set_derived_cache_policy(DerivedCachePolicy {
+            max_namespaces: 1,
+            max_bytes: u64::MAX,
+        });
+        evict_derived(backend, None).await.unwrap();
+        // Query statuses directly: probing the cache API would itself touch recency.
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT namespace_id, status FROM store_state_namespaces ORDER BY namespace_id",
+        )
+        .fetch_all(backend.pool())
+        .await
+        .unwrap();
+        assert!(
+            rows.contains(&(hot.namespace_id.clone(), 1)),
+            "hot entry evicted: {rows:?}"
+        );
+        assert!(
+            rows.contains(&(cold.namespace_id.clone(), 3)),
+            "cold entry retained: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_publication_hit_reaches_durable_recency() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let view = publish(&backend, "published").await;
+        let publish_tick = persisted_tick(&backend, &view).await;
+        touch(&backend, &view.namespace_id).await.unwrap();
+        let hit = backend
+            .cache_recency
+            .lock()
+            .unwrap()
+            .live_tick(&view.namespace_id)
+            .unwrap();
+        assert!(hit > publish_tick);
+        // Replay the committed publisher's bookkeeping after a hit. Its first
+        // recording is immaterial: this is the same state as a delayed resume.
+        record_published(&backend, &view.namespace_id, publish_tick);
+        flush_dirty(&backend).await.unwrap();
+        assert_eq!(persisted_tick(&backend, &view).await, hit);
+    }
+
+    #[tokio::test]
+    async fn delayed_publication_preserves_eviction_order() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let hot = publish(&backend, "hot").await;
+        let publish_tick = persisted_tick(&backend, &hot).await;
+        let cold = publish(&backend, "cold").await;
+        touch(&backend, &hot.namespace_id).await.unwrap();
+        record_published(&backend, &hot.namespace_id, publish_tick);
+        assert_hot_survives(&backend, &hot, &cold).await;
+    }
+
+    async fn flush_out_of_order(backend: &SqlxBackend, hot: &RecordView, cold: &RecordView) -> u64 {
+        touch(backend, &hot.namespace_id).await.unwrap();
+        touch(backend, &cold.namespace_id).await.unwrap();
+        // A flush drains under the mutex, then can yield before its SQL write.
+        let older = backend.cache_recency.lock().unwrap().drain_dirty();
+        touch(backend, &cold.namespace_id).await.unwrap();
+        touch(backend, &hot.namespace_id).await.unwrap();
+        let newest = backend
+            .cache_recency
+            .lock()
+            .unwrap()
+            .live_tick(&hot.namespace_id)
+            .unwrap();
+        flush_dirty(backend).await.unwrap();
+        assert_eq!(persisted_tick(backend, hot).await, newest);
+        // Resume the old batch through the same SQL helper used by both flush
+        // paths. Test transactional execution too, not just the pool executor.
+        let mut tx = backend.pool().begin().await.unwrap();
+        flush_chunk(&mut *tx, &older).await.unwrap();
+        tx.commit().await.unwrap();
+        newest
+    }
+
+    #[tokio::test]
+    async fn stale_flush_cannot_lower_durable_recency() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let hot = publish(&backend, "hot").await;
+        let cold = publish(&backend, "cold").await;
+        let newest = flush_out_of_order(&backend, &hot, &cold).await;
+        assert_eq!(persisted_tick(&backend, &hot).await, newest);
+        assert_eq!(persisted_tick(&backend, &cold).await, newest - 1);
+        // Equal/repeated batches and missing rows are harmless as well.
+        flush_chunk(
+            backend.pool(),
+            &[
+                (hot.namespace_id.clone(), newest),
+                ("missing".to_string(), newest + 1),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(persisted_tick(&backend, &hot).await, newest);
+        flush_chunk(backend.pool(), &[]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_flush_preserves_eviction_order() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let hot = publish(&backend, "hot").await;
+        let cold = publish(&backend, "cold").await;
+        flush_out_of_order(&backend, &hot, &cold).await;
+        assert_hot_survives(&backend, &hot, &cold).await;
+    }
 }
