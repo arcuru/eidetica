@@ -1,0 +1,2 @@
+# build.rs selects the std/no_std paths through OUT_DIR-generated private.rs.
+buildscript.run = true

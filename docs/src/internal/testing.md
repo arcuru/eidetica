@@ -15,7 +15,7 @@ The module structure in `tests/it/` mirrors `src/`. Each module has:
 ## Running Tests
 
 ```bash
-just test                              # Run all tests with nextest
+just test                              # Run workspace tests on SQLite with nextest
 cargo test --all-features --test it    # Run integration tests
 cargo test --all-features auth::       # Run specific module tests
 ```
@@ -30,6 +30,8 @@ The `testing` feature is not in `default` or `full` and must never be taken as a
 normal dependency by a workspace member: that would compile the hooks into every
 release binary built with `--workspace`. The `release-features` lint fails the
 build if `eidetica-bin`'s feature graph ever enables it.
+
+Buck's `just buck test` is a separate native shortcut covering unit tests, integration tests, and library and book doctests. Unlike `just test`, it uses the InMemory backend by default; see [Buck2 build](buck2.md#build-and-test-coverage) for its exact targets and limits.
 
 ## Backend Matrix Testing
 

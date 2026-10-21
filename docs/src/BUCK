@@ -1,0 +1,2 @@
+# Build-script input: changing a book page must regenerate its rustdoc test module.
+filegroup(name = "markdown", srcs = glob(["**/*.md"]), visibility = ["//crates/book-tests:"])
