@@ -1181,9 +1181,9 @@ impl RemoteConnection {
     /// Acquire a [`TransactionContext`] for the given stores and scope.
     ///
     /// The returned context includes main-tree parents with heights,
-    /// per-store subtree parents, `_settings` tips, and the merged
-    /// `_settings` value — everything needed to build and sign an entry
-    /// locally without further round-trips.
+    /// registered/requested store parents, `_settings` tips, and merged
+    /// `_settings`/`_index` values. Store payload reads, unregistered store
+    /// discovery, and delegated authority validation remain separate queries.
     pub async fn begin_transaction(
         &self,
         root_id: ID,

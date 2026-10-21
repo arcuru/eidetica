@@ -11,9 +11,14 @@ use rand::{Rng, RngCore, distributions::Alphanumeric};
 use serde_json;
 
 #[cfg(all(unix, feature = "service"))]
+use crate::constants::INDEX;
+#[cfg(all(unix, feature = "service"))]
 use crate::instance::backend::RemoteBackend;
 #[cfg(all(unix, feature = "service"))]
-use crate::service::client::RemoteConnection;
+use crate::service::{
+    client::RemoteConnection,
+    protocol::{ReadScope, TransactionContext},
+};
 use crate::{
     Error, Instance, Result, Snapshot, Transaction, WeakInstance,
     account::{AccountError, SyncSettings, TrackedDatabase},
@@ -32,6 +37,8 @@ use crate::{
     store::{SettingsStore, Store, Table},
     sync::DatabaseTicket,
 };
+#[cfg(all(unix, feature = "service"))]
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
 mod tests;
@@ -340,7 +347,9 @@ impl Database {
         };
 
         // Create the transaction - it will use the provided key automatically
-        let txn = temp_database_for_bootstrap.new_transaction().await?;
+        let txn = temp_database_for_bootstrap
+            .new_transaction_at(&Snapshot::EMPTY)
+            .await?;
 
         // IMPORTANT: For the root entry, we need to set the database root to empty/default
         // so that is_root() returns true and all_roots() can find it
@@ -1191,6 +1200,35 @@ impl Database {
     /// # Returns
     /// A `Result<Transaction>` containing the new atomic transaction
     pub async fn new_transaction(&self) -> Result<Transaction> {
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.ops().remote_connection() {
+            let scope = if self.allow_unverified {
+                ReadScope::AllowUnverified
+            } else {
+                ReadScope::Verified
+            };
+            match conn
+                .begin_transaction(
+                    self.root_id().clone(),
+                    self.ops().remote_identity(),
+                    vec![INDEX.to_string()],
+                    scope,
+                )
+                .await
+            {
+                Ok(context) => {
+                    let mut txn = Transaction::from_context(self, context)?;
+                    if let Some(key) = &self.key {
+                        txn.set_provided_key(*key.signing_key.clone(), key.identity.clone());
+                    }
+                    return Ok(txn);
+                }
+                // A v0 peer may not implement BeginTransaction. Only that
+                // explicit refusal permits the original parent-bound path.
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::Unsupported => {}
+                Err(e) => return Err(e),
+            }
+        }
         let snapshot = self.snapshot().await?;
         self.new_transaction_at(&snapshot).await
     }
@@ -1221,10 +1259,10 @@ impl Database {
     /// locally for the given stores, with parents drawn from `scope`'s
     /// projection.
     ///
-    /// This is **single-sourced**: both the server's `BeginTransaction`
-    /// handler and the Phase-3 remote seam call it, so
-    /// `Transaction::commit`'s build-sign path has one source of truth for
-    /// context gathering.
+    /// Captures the main snapshot once, then derives every response field
+    /// from that immutable boundary. Includes registry state and parents for
+    /// registered stores so clients need not know their write set in advance.
+    /// Explicit historical transactions retain the parent-bound Backend path.
     ///
     /// `scope=AllowUnverified` opens against the raw DAG (only `Failed`
     /// dropped); the default `Verified` scope uses the Verified frontier.
@@ -1236,10 +1274,8 @@ impl Database {
     pub async fn transaction_context(
         &self,
         stores: &[String],
-        scope: crate::service::protocol::ReadScope,
-    ) -> Result<crate::service::protocol::TransactionContext> {
-        use crate::service::protocol::{ReadScope, TransactionContext};
-
+        scope: ReadScope,
+    ) -> Result<TransactionContext> {
         // -- scope-sensitive main tips --------------------------------
         let db_for_tips = Database {
             allow_unverified: matches!(scope, ReadScope::AllowUnverified),
@@ -1255,9 +1291,20 @@ impl Database {
             main_parents.push((tip.clone(), entry.height()));
         }
 
-        // -- per-store subtree parents: (tip, subtree_height) ---------
-        let mut subtree_parents = std::collections::BTreeMap::new();
-        for store in stores {
+        let txn = Transaction::new_at(self, &main_snapshot).await?;
+        let settings_doc: Doc = txn.get_full_state(SETTINGS).await?;
+        let index_doc: Doc = txn.get_full_state(INDEX).await?;
+
+        // Include all registered stores, plus requested/unregistered stores and
+        // the system stores. No user payloads (including ciphertext) are merged.
+        let names = stores
+            .iter()
+            .map(String::as_str)
+            .chain(index_doc.keys().map(String::as_str))
+            .chain([SETTINGS, INDEX, ROOT])
+            .collect::<BTreeSet<_>>();
+        let mut subtree_parents = BTreeMap::new();
+        for store in names {
             let child_snap = self
                 .ops()
                 .store_snapshot_at(self.root_id(), store, &main_snapshot)
@@ -1265,29 +1312,23 @@ impl Database {
             let mut pairs = Vec::with_capacity(child_snap.len());
             for tip in child_snap.tips() {
                 let entry = self.ops().get(tip).await?;
-                let height = entry.subtree_height(store).unwrap_or(0);
-                pairs.push((tip.clone(), height));
+                pairs.push((tip.clone(), entry.subtree_height(store)?));
             }
-            subtree_parents.insert(store.clone(), pairs);
+            subtree_parents.insert(store.to_string(), pairs);
         }
-
-        // -- settings tips (pinned in entry metadata) -----------------
-        let settings_tips = self
-            .ops()
-            .store_snapshot_at(self.root_id(), SETTINGS, &main_snapshot)
-            .await?
-            .into_tips();
-
-        // -- merged _settings state as serde_json::Value --------------
-        let txn = Transaction::new_at(self, &main_snapshot).await?;
-        let settings_doc: Doc = txn.get_full_state(SETTINGS).await?;
+        let settings_tips = subtree_parents[SETTINGS]
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
         let settings_value = serde_json::to_value(&settings_doc)?;
+        let index_value = Some(serde_json::to_value(&index_doc)?);
 
         Ok(TransactionContext {
             main_parents,
             subtree_parents,
             settings_tips,
             settings_value,
+            index_value,
         })
     }
 

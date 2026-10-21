@@ -393,6 +393,24 @@ Encrypted stores (wrapped in `PasswordStore`) are opaque to the daemon — the d
 
 The encrypted-store-over-service tests cover both paths: `test_database_encrypted_store_roundtrip` checks opaque Entry retrieval, while `test_warm_encrypted_table_service_point_read_is_lazy` proves a warm Table point read stays on record gets and does not reconstruct Store history. Decryption, local merge, and encrypted row-envelope verification are client-only.
 
+### Remote transaction builds
+
+`Database::new_transaction` on a connected handle uses `BeginTransaction` under that handle's acting identity and read scope.
+The daemon captures the main parents once, then derives parent heights, registered-store parents/heights, the settings pin, and merged `_settings` and `_index` from that boundary.
+The client retains this context only for that transaction, including its clones.
+It uses the existing registry type checks and staged overlays, calculates heights, signs locally, and submits through the unchanged verification gate.
+Neither keys nor client-asserted verification status travel in the context.
+
+User-store payloads are not bundled or decrypted by the daemon.
+Table/Doc reads, encrypted-store materialization, host lookups and delegated-authority reads still use their normal gated operations.
+Stores absent from the context are discovered against its fixed main parents, not the live head.
+Explicit `new_transaction_at` and genesis retain the existing Backend build path; local transactions do not use the wire context.
+
+The v0 request shape is unchanged.
+The additive `index_value` response field is optional: an older server's context still supplies settings and heights, while missing registry/store inputs use parent-bound reads.
+An explicit `Unsupported` response falls back to the original transaction path; access, I/O and malformed-response failures do not.
+The existing frame cap remains in force.
+
 ### Read scope
 
 `ReadScope` controls the DAG snapshot exposed over the wire:

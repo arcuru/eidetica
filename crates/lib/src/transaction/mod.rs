@@ -48,6 +48,9 @@ use crate::{
     store::{ProjectionDescriptor, RecordProjection, Registry, SettingsStore, StoreError, state},
 };
 
+#[cfg(all(unix, feature = "service"))]
+use crate::service::protocol::TransactionContext;
+
 #[cfg(test)]
 type SnapshotPause = (
     tokio::sync::oneshot::Sender<()>,
@@ -203,6 +206,10 @@ pub struct Transaction {
     record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     logical_record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     record_views: Arc<Mutex<HashMap<String, RecordView>>>,
+    /// Immutable inputs from this transaction's gated BeginTransaction request;
+    /// never shared between transactions or used as a permission cache.
+    #[cfg(all(unix, feature = "service"))]
+    context: Option<Arc<TransactionContext>>,
     #[cfg(test)]
     snapshot_pause: Arc<Mutex<Option<SnapshotPause>>>,
 }
@@ -256,6 +263,11 @@ impl Transaction {
             }
         }
 
+        Ok(Self::from_snapshot(database, snapshot))
+    }
+
+    fn from_snapshot(database: &Database, snapshot: &Snapshot) -> Self {
+        let tips = snapshot.tips();
         // Start with a basic entry linked to the database's root.
         // Data and parents will be filled based on the transaction type.
         let mut builder = Entry::builder(database.root_id().clone());
@@ -265,7 +277,7 @@ impl Transaction {
             builder.set_parents_mut(tips.to_vec());
         }
 
-        Ok(Self {
+        Self {
             entry_builder: Arc::new(Mutex::new(Some(builder))),
             db: database.clone(),
             provided_signing_key: None,
@@ -274,9 +286,28 @@ impl Transaction {
             record_mutations: Arc::new(Mutex::new(HashMap::new())),
             logical_record_mutations: Arc::new(Mutex::new(HashMap::new())),
             record_views: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(all(unix, feature = "service"))]
+            context: None,
             #[cfg(test)]
             snapshot_pause: Arc::new(Mutex::new(None)),
-        })
+        }
+    }
+
+    #[cfg(all(unix, feature = "service"))]
+    pub(crate) fn from_context(database: &Database, context: TransactionContext) -> Result<Self> {
+        let snapshot = Snapshot::from(
+            context
+                .main_parents
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
+        );
+        if snapshot.is_empty() {
+            return Err(TransactionError::EmptyTipsNotAllowed.into());
+        }
+        let mut txn = Self::from_snapshot(database, &snapshot);
+        txn.context = Some(Arc::new(context));
+        Ok(txn)
     }
 
     /// Lock the system subtrees (`_settings`, `_root`, `_index`) for the
@@ -1070,6 +1101,14 @@ impl Transaction {
 
     /// Get the subtree tips reachable from the given main tree entries.
     async fn get_subtree_tips(&self, subtree_name: &str, main_parents: &[ID]) -> Result<Vec<ID>> {
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(parents) = self
+            .context
+            .as_ref()
+            .and_then(|ctx| ctx.subtree_parents.get(subtree_name))
+        {
+            return Ok(parents.iter().map(|(id, _)| id.clone()).collect());
+        }
         let boundary = Snapshot::from(main_parents.to_vec());
         self.db
             .ops()
@@ -1215,6 +1254,20 @@ impl Transaction {
         let subtree_name = subtree_name.as_ref();
 
         self.init_subtree_parents(subtree_name).await?;
+
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(ctx) = &self.context
+            && !self.encryptors.lock().unwrap().contains_key(subtree_name)
+        {
+            let value = match subtree_name {
+                SETTINGS => Some(&ctx.settings_value),
+                INDEX => ctx.index_value.as_ref(),
+                _ => None,
+            };
+            if let Some(value) = value {
+                return T::decode(&serde_json::to_vec(value)?);
+            }
+        }
 
         // Get the parent pointers for this subtree
         let parents = {
@@ -1601,11 +1654,22 @@ impl Transaction {
         // Pin the builder's pre-write main-parent settings, not the live database head.
         // Resolve before borrowing the builder across the async backend call.
         let parents_snapshot = Snapshot::from(main_parents);
-        let settings_snapshot = self
-            .db
-            .ops()
-            .store_snapshot_at(self.db.root_id(), SETTINGS, &parents_snapshot)
-            .await?;
+        #[cfg(all(unix, feature = "service"))]
+        let context_settings = self
+            .context
+            .as_ref()
+            .map(|ctx| Snapshot::from(ctx.settings_tips.clone()));
+        #[cfg(not(all(unix, feature = "service")))]
+        let context_settings: Option<Snapshot> = None;
+        let settings_snapshot = match context_settings {
+            Some(snapshot) => snapshot,
+            None => {
+                self.db
+                    .ops()
+                    .store_snapshot_at(self.db.root_id(), SETTINGS, &parents_snapshot)
+                    .await?
+            }
+        };
 
         // Clone the builder from RefCell (limit borrow scope to avoid holding across await)
         let mut builder = {
@@ -1689,7 +1753,16 @@ impl Transaction {
 
             // Compute main tree height using the height strategy
             let main_parents = builder.parents().unwrap_or_default();
-            let max_parent_height = if main_parents.is_empty() {
+            #[cfg(all(unix, feature = "service"))]
+            let context_height = self
+                .context
+                .as_ref()
+                .map(|ctx| ctx.main_parents.iter().map(|(_, height)| *height).max());
+            #[cfg(not(all(unix, feature = "service")))]
+            let context_height: Option<Option<u64>> = None;
+            let max_parent_height = if let Some(height) = context_height {
+                height
+            } else if main_parents.is_empty() {
                 None
             } else {
                 let mut max_height = 0u64;
@@ -1737,7 +1810,17 @@ impl Transaction {
                         let subtree_calculator = strategy.into_calculator(instance.clock_arc());
                         let subtree_parents =
                             builder.subtree_parents(&subtree_name).unwrap_or_default();
-                        let max_subtree_parent_height = if subtree_parents.is_empty() {
+                        #[cfg(all(unix, feature = "service"))]
+                        let context_height = self
+                            .context
+                            .as_ref()
+                            .and_then(|ctx| ctx.subtree_parents.get(&subtree_name))
+                            .map(|parents| parents.iter().map(|(_, height)| *height).max());
+                        #[cfg(not(all(unix, feature = "service")))]
+                        let context_height: Option<Option<u64>> = None;
+                        let max_subtree_parent_height = if let Some(height) = context_height {
+                            height
+                        } else if subtree_parents.is_empty() {
                             None
                         } else {
                             let mut max_height = 0u64;

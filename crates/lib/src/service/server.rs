@@ -1272,9 +1272,7 @@ async fn dispatch_database_op(
         }
 
         DatabaseOp::BeginTransaction { stores, scope } => {
-            // Single-sourced: both this handler and the Phase-3 remote seam
-            // call `Database::transaction_context`, so `Transaction::commit`'s
-            // build-sign path has one source of truth.
+            // The client signs locally from this single parent-bound context.
             let db = Database::open(instance, &root_id).await?;
             let ctx = db.transaction_context(&stores, scope).await?;
             Ok(ServiceResponse::TransactionContext(ctx))
