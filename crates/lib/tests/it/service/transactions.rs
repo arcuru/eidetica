@@ -5,11 +5,14 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tokio::{net::UnixListener, task::JoinSet};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Peer {
     Current,
     LegacyContext,
     Unsupported,
+    UnexpectedReply,
+    MalformedContext,
+    Disconnect,
 }
 
 /// A framed relay lets tests observe the production path and exercise v0
@@ -17,6 +20,7 @@ enum Peer {
 async fn relay(
     daemon: PathBuf,
     path: PathBuf,
+    target: ID,
     peer: Peer,
     ops: Arc<Mutex<Vec<String>>>,
     tasks: &mut JoinSet<()>,
@@ -34,9 +38,17 @@ async fn relay(
             if let Some(name) = name {
                 ops.lock().unwrap().push(name.to_string());
             }
-            let is_begin = name == Some("BeginTransaction");
+            let is_begin = name == Some("BeginTransaction")
+                && request["AuthenticatedDb"]["root_id"] == json!(target);
+            if is_begin && peer == Peer::Disconnect {
+                break;
+            }
             let response = if is_begin && peer == Peer::Unsupported {
                 json!({"Response": "Unsupported"})
+            } else if is_begin && peer == Peer::UnexpectedReply {
+                json!({"Response": "Ok"})
+            } else if is_begin && peer == Peer::MalformedContext {
+                json!({"Response": {"TransactionContext": {"main_parents": "invalid"}}})
             } else {
                 write_frame(&mut server, &request).await.unwrap();
                 let mut response: Value = read_frame(&mut server).await.unwrap().unwrap();
@@ -76,7 +88,15 @@ async fn test_remote_transaction_context_build_and_v0_fallback() {
         let proxy = dir.path().join("relay.sock");
         let ops = Arc::new(Mutex::new(Vec::new()));
         let mut tasks = JoinSet::new();
-        relay(socket, proxy.clone(), peer, ops.clone(), &mut tasks).await;
+        relay(
+            socket,
+            proxy.clone(),
+            db.root_id().clone(),
+            peer,
+            ops.clone(),
+            &mut tasks,
+        )
+        .await;
         let client = Instance::connect(format!("unix://{}", proxy.display()))
             .await
             .unwrap();
@@ -152,6 +172,61 @@ async fn test_remote_transaction_context_build_and_v0_fallback() {
             assert_eq!(*ops.lock().unwrap(), ["BeginTransaction"]);
         }
         drop(client);
+        tasks.abort_all();
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result {
+                assert!(error.is_cancelled(), "relay failed: {error}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_remote_transaction_context_errors_do_not_fall_back() {
+    use std::io::ErrorKind;
+
+    for (peer, kind) in [
+        (Peer::UnexpectedReply, ErrorKind::InvalidData),
+        (Peer::MalformedContext, ErrorKind::ConnectionAborted),
+        (Peer::Disconnect, ErrorKind::ConnectionAborted),
+    ] {
+        let (socket, _shutdown, server, dir) = start_test_server().await;
+        let mut owner = server.login_account("admin", None).await.unwrap();
+        let pubkey = owner.get_default_key().unwrap();
+        let db = owner.create_database(Doc::new(), &pubkey).await.unwrap();
+        let proxy = dir.path().join("relay.sock");
+        let ops = Arc::new(Mutex::new(Vec::new()));
+        let mut tasks = JoinSet::new();
+        relay(
+            socket,
+            proxy.clone(),
+            db.root_id().clone(),
+            peer,
+            ops.clone(),
+            &mut tasks,
+        )
+        .await;
+        let client = Instance::connect(format!("unix://{}", proxy.display()))
+            .await
+            .unwrap();
+        let _session = client.login_account("admin", None).await.unwrap();
+        let remote = Database::open_remote(
+            &client,
+            remote_conn(&client),
+            db.root_id(),
+            SigKey::from_pubkey(&pubkey),
+        )
+        .await
+        .unwrap();
+        ops.lock().unwrap().clear();
+        let result = tokio::time::timeout(Duration::from_secs(2), remote.new_transaction())
+            .await
+            .expect("failed BeginTransaction must resolve its caller");
+        assert!(
+            matches!(result, Err(Error::Io(ref error)) if error.kind() == kind),
+            "{peer:?}"
+        );
+        assert_eq!(*ops.lock().unwrap(), ["BeginTransaction"], "{peer:?}");
         tasks.abort_all();
         while let Some(result) = tasks.join_next().await {
             if let Err(error) = result {

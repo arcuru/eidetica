@@ -1255,9 +1255,8 @@ impl Database {
         Ok(txn)
     }
 
-    /// Gather everything a client needs to build and sign a transaction
-    /// locally for the given stores, with parents drawn from `scope`'s
-    /// projection.
+    /// Gather snapshot-bound metadata for building and signing a transaction
+    /// locally, with parents drawn from `scope`'s projection.
     ///
     /// Captures the main snapshot once, then derives every response field
     /// from that immutable boundary. Includes registry state and parents for
@@ -1266,10 +1265,9 @@ impl Database {
     ///
     /// `scope=AllowUnverified` opens against the raw DAG (only `Failed`
     /// dropped); the default `Verified` scope uses the Verified frontier.
-    /// The returned [`TransactionContext`] carries everything needed for
-    /// one round-trip transaction build: main parents + heights, per-store
-    /// subtree parents + heights, settings tips, and the merged `_settings`
-    /// CRDT state this entry is authored against.
+    /// The returned [`TransactionContext`] includes main/store parents and
+    /// heights, settings tips, and merged `_settings` and `_index` state.
+    /// Payload reads and delegated-authority validation remain separate queries.
     #[cfg(all(unix, feature = "service"))]
     pub async fn transaction_context(
         &self,
