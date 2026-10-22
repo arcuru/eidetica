@@ -1,13 +1,15 @@
 //! Tests for AccountSession database tracking functionality
 
 use eidetica::{
-    Database, Result,
+    Database, Error, ID, Instance, NewAccount, Result, Store,
     account::types::SyncSettings,
     auth::{
         crypto::generate_keypair,
         types::{AuthKey, Permission},
     },
+    backend::database::InMemory,
     crdt::Doc,
+    store::{DocStore, StoreError},
 };
 
 use super::helpers::{login_account, setup_instance};
@@ -521,6 +523,117 @@ async fn split_access_bookkeeping_preserves_intervening_tracked_row() -> Result<
             .current_permission()
             .await?,
         Permission::Write(5)
+    );
+    Ok(())
+}
+
+/// The checked lookup never substitutes an absent row for invalid data.
+#[tokio::test]
+async fn test_checked_tracking_lookup_preserves_absence_and_decode_failure() -> Result<()> {
+    // Uses a genuine connected AccountSession under TEST_BACKEND=service.
+    let instance = setup_instance().await;
+    crate::helpers::create_account(&instance, "reader", None).await?;
+    let mut user = login_account(&instance, "reader", None).await;
+    let key = user.get_default_key()?;
+    let missing = ID::from_bytes("not-tracked");
+    let before = user.account().database().snapshot().await?;
+    assert_eq!(user.tracked_database(&missing).await?, None);
+    assert_eq!(user.find_key(&missing)?, None);
+    assert_eq!(user.account().database().snapshot().await?, before);
+
+    let db = user.create_database(Doc::new(), &key).await?;
+    for settings in [
+        SyncSettings::disabled(),
+        SyncSettings::on_commit().with_interval(37),
+    ] {
+        user.track_database(db.root_id(), &key, settings.clone())
+            .await?;
+        let before = user.account().database().snapshot().await?;
+        let mapping = user.key_mapping(&key, db.root_id())?;
+        let row = user.tracked_database(db.root_id()).await?.unwrap();
+        assert_eq!(row.database_id, *db.root_id());
+        assert_eq!(row.key_id, key);
+        assert_eq!(row.sync_settings, settings);
+        assert_eq!(user.key_mapping(&key, db.root_id())?, mapping);
+        assert_eq!(user.account().database().snapshot().await?, before);
+    }
+
+    // Test-only raw access: corrupt an unrelated row first. A point lookup must
+    // not decode that row, unlike account-wide enumeration.
+    let tx = user.account().database().new_transaction().await?;
+    let raw = DocStore::load(&tx, "databases".into()).await?;
+    raw.set("unrelated", "not-json").await?;
+    tx.commit().await?;
+    assert!(user.tracked_database(db.root_id()).await?.is_some());
+    assert_eq!(user.tracked_database(&missing).await?, None);
+    assert!(
+        user.databases().await.is_err(),
+        "positive control: corrupt row is detectable"
+    );
+
+    let tx = user.account().database().new_transaction().await?;
+    DocStore::load(&tx, "databases".into())
+        .await?
+        .set(db.root_id().to_string(), "not-json")
+        .await?;
+    tx.commit().await?;
+    let before = user.account().database().snapshot().await?;
+    assert!(matches!(user.tracked_database(db.root_id()).await,
+        Err(Error::Store(e)) if matches!(e.as_ref(), StoreError::DeserializationFailed { .. })));
+    assert_eq!(user.account().database().snapshot().await?, before);
+
+    let tx = user.account().database().new_transaction().await?;
+    DocStore::load(&tx, "databases".into())
+        .await?
+        .delete(db.root_id().to_string())
+        .await?;
+    tx.commit().await?;
+    assert_eq!(user.tracked_database(db.root_id()).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_checked_tracking_lookup_uses_constant_point_reads() -> Result<()> {
+    // Embedded instrumentation is independent of wire timing.
+    let (instance, mut user) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewAccount::passwordless("reader"),
+    )
+    .await?;
+    let key = user.get_default_key()?;
+    let selected = user.create_database(Doc::new(), &key).await?;
+    let missing = ID::from_bytes("not-tracked");
+    let engine = instance.backend().local_engine().unwrap();
+    let memory = engine.as_any().downcast_ref::<InMemory>().unwrap();
+    let mut baseline = None;
+    for total in [1, 8, 32] {
+        while user.databases().await?.len() < total {
+            user.create_database(Doc::new(), &key).await?;
+        }
+        // Warm the projection; cold reads may materialize historical Store state.
+        user.tracked_database(selected.root_id()).await?;
+        let before = memory.store_state_read_counts();
+        let history = memory.store_history_read_count();
+        let snapshot = user.account().database().snapshot().await?;
+        assert!(user.tracked_database(selected.root_id()).await?.is_some());
+        assert_eq!(user.tracked_database(&missing).await?, None);
+        assert_eq!(user.account().database().snapshot().await?, snapshot);
+        let after = memory.store_state_read_counts();
+        let reads = (after.0 - before.0, after.1 - before.1);
+        assert!(reads.0 > 0, "positive control: selected rows were read");
+        assert_eq!(reads.1, 0, "lookup must not enumerate tracked rows");
+        assert_eq!(*baseline.get_or_insert(reads), reads);
+        assert_eq!(memory.store_history_read_count(), history);
+        println!(
+            "checked tracking: tracked={total}, point_reads={}, scan_pages={}",
+            reads.0, reads.1
+        );
+    }
+    let before = memory.store_state_read_counts();
+    assert_eq!(user.databases().await?.len(), 32);
+    assert!(
+        memory.store_state_read_counts().1 > before.1,
+        "negative control: enumeration must be visible to the scan counter"
     );
     Ok(())
 }

@@ -137,7 +137,7 @@ async fn join_bookkeeping_preserves_settings_changed_during_network_wait() -> Re
     .await?;
     let key = user.get_default_key()?;
     let db = user.create_database(Doc::new(), &key).await?;
-    let original = user.tracked_database_before_join(db.root_id()).await?;
+    let original = user.tracked_database(db.root_id()).await?;
     let mut another = instance.login_account("client", None).await?;
     another
         .track_database(
@@ -161,7 +161,7 @@ async fn join_bookkeeping_preserves_settings_changed_during_network_wait() -> Re
             .interval_seconds,
         Some(47)
     );
-    let original = user.tracked_database_before_join(db.root_id()).await?;
+    let original = user.tracked_database(db.root_id()).await?;
     another.untrack_database(db.root_id()).await?;
     user.record_database_access_with_expected(
         db.root_id(),

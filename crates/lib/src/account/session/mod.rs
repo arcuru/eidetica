@@ -26,6 +26,7 @@
 //!
 //! - **`databases()`** - List all tracked databases
 //! - **`database()`** - Get a specific tracked database
+//! - **`tracked_database()`** - Read one tracking row, distinguishing absence from failure
 //! - **`track_database()`** - Add or update a tracked database (upsert)
 //! - **`set_sync_preferences()`** - Update preferences without changing tracking or key mappings
 //! - **`untrack_database()`** - Remove a database from your tracked list
@@ -1173,7 +1174,7 @@ impl AccountSession {
 
         let key_name = key_id.to_string();
         let database_id = ticket.database_id().clone();
-        let original = self.tracked_database_before_join(&database_id).await?;
+        let original = self.tracked_database(&database_id).await?;
 
         let result = sync
             .bootstrap_with_ticket(
@@ -1265,7 +1266,7 @@ impl AccountSession {
 
         #[cfg(all(unix, feature = "service"))]
         if let Some(connection) = self.instance.remote_connection() {
-            let original = self.tracked_database_before_join(&database_id).await?;
+            let original = self.tracked_database(&database_id).await?;
             let signing_key = self
                 .key_manager
                 .get_signing_key(key_id)
@@ -1401,10 +1402,19 @@ impl AccountSession {
             .await
     }
 
-    async fn tracked_database_before_join(
-        &self,
-        database_id: &ID,
-    ) -> Result<Option<TrackedDatabase>> {
+    // === Tracked Databases ===
+
+    /// Read this account's tracked state for one database.
+    ///
+    /// Returns `Ok(None)` only when the tracking row is absent. Authorization,
+    /// storage read and decoding failures are returned unchanged, not treated as
+    /// an untracked database or a disabled sync preference.
+    ///
+    /// Reads only the selected row; does not open the target database, enumerate
+    /// tracked databases, track/join a database, or change keys or sync settings.
+    /// The returned sync settings are this account's local preference, not the
+    /// instance's combined sync state or proof of access to the target database.
+    pub async fn tracked_database(&self, database_id: &ID) -> Result<Option<TrackedDatabase>> {
         let table = self
             .account
             .database()
@@ -1416,8 +1426,6 @@ impl AccountSession {
             Err(e) => Err(e),
         }
     }
-
-    // === Tracked Databases ===
 
     /// Track a database, adding it to this account's list with auto-discovery of SigKeys.
     ///
