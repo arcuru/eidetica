@@ -277,6 +277,15 @@ pub enum VerificationStatus {
     Failed,
 }
 
+/// Result of a conservative local verification repair (not re-verification).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationRepair {
+    /// Number of inconsistent Verified entries changed to Unverified.
+    pub demoted: usize,
+    /// Reconstructed ancestor-closed verified frontier.
+    pub snapshot: Snapshot,
+}
+
 impl VerificationStatus {
     /// Canonical persistence encoding. The single source of truth for the
     /// integer stored in the `verification_status` column; all backends use
@@ -465,6 +474,13 @@ pub trait BackendImpl: Send + Sync + Any {
     /// re-verification pass). It is local-only — never reachable over the
     /// service wire — so a peer can never assert verification for us.
     ///
+    /// Promotion requires every direct parent to exist in the same tree and be
+    /// Verified, checked atomically with status/tip publication. Invalid promotion
+    /// returns an error without changes. Failed is terminal until an offline reset.
+    /// Demotion cascades to dependent Verified descendants and rebuilds tips once,
+    /// atomically for the affected tree. Existing historical snapshots are unchanged.
+    /// This parent guard does not replace the validator's cryptographic checks.
+    ///
     /// # Arguments
     /// * `id` - The ID of the entry to update
     /// * `verification_status` - The new verification status
@@ -502,6 +518,112 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Arguments
     /// * `tree` - The root ID of the tree to snapshot.
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot>;
+
+    /// Returns the retained verified [`Snapshot`] of `tree` — the tips of the
+    /// maximal ancestor-closed, all-`Verified` prefix of the DAG — without
+    /// scanning history.
+    ///
+    /// Backends maintain this frontier incrementally at the
+    /// [`update_verification_status`](Self::update_verification_status)
+    /// boundary, atomically with the status mutation that moves it. A
+    /// still-`Unverified` tip is replaced by its nearest `Verified`
+    /// ancestors; anything reachable only through an `Unverified` entry is
+    /// excluded. Empty when the root itself is not `Verified`.
+    ///
+    /// The default implementation reconstructs the frontier from history (a
+    /// full-tree load plus one status read per entry). It is a
+    /// read-only reconstruction oracle, not a repair path: concrete backends
+    /// override it with their retained state. Custom backends inherit correct
+    /// behavior automatically.
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the tree to snapshot.
+    async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        use std::collections::{BTreeSet, HashMap, HashSet};
+
+        // `get_tree` order is height-then-ID, but stored heights are not
+        // trusted here: entries built or received without heights order
+        // arbitrarily, so membership runs in Kahn's topological order
+        // (ready set deterministic in height-then-ID) instead of trusting
+        // the load order. In-degree counts only edges inside the held set;
+        // parents outside it are never prefix members, so entries with
+        // missing parents are visited but never admitted.
+        let entries = self.get_tree(tree).await?;
+        let held: HashSet<ID> = entries.iter().map(|e| e.id()).collect();
+        let mut parents_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(entries.len());
+        let mut children_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(entries.len());
+        let mut in_degree: HashMap<ID, usize> = HashMap::with_capacity(entries.len());
+        let mut height_of: HashMap<ID, u64> = HashMap::with_capacity(entries.len());
+        for e in &entries {
+            e.validate()?;
+            let id = e.id();
+            height_of.insert(id.clone(), e.height());
+            let parents = e.parents()?;
+            let mut degree = 0usize;
+            for p in &parents {
+                children_of.entry(p.clone()).or_default().push(id.clone());
+                if held.contains(p) {
+                    degree += 1;
+                }
+            }
+            parents_of.insert(id.clone(), parents);
+            in_degree.insert(id, degree);
+        }
+        let mut ready: BTreeSet<(u64, ID)> = in_degree
+            .iter()
+            .filter(|&(_, &d)| d == 0)
+            .map(|(id, _)| (height_of[id], id.clone()))
+            .collect();
+
+        let mut in_prefix: HashSet<ID> = HashSet::new();
+        let mut covered: HashSet<ID> = HashSet::new();
+        while let Some((_, id)) = ready.pop_first() {
+            if let Some(kids) = children_of.get(&id) {
+                for kid in kids.clone() {
+                    let d = in_degree.get_mut(&kid).expect("in_degree entry exists");
+                    *d -= 1;
+                    if *d == 0 {
+                        ready.insert((height_of[&kid], kid));
+                    }
+                }
+            }
+            if self.get_verification_status(&id).await? != VerificationStatus::Verified {
+                continue;
+            }
+            let empty = Vec::new();
+            let parents = parents_of.get(&id).unwrap_or(&empty);
+            if parents.iter().all(|p| in_prefix.contains(p)) {
+                in_prefix.insert(id.clone());
+                // Every parent now has a verified child, so it is interior to
+                // the prefix and cannot itself be a frontier tip.
+                for p in parents {
+                    covered.insert(p.clone());
+                }
+            }
+        }
+
+        Ok(Snapshot::new(
+            in_prefix
+                .into_iter()
+                .filter(|id| !covered.contains(id))
+                .collect(),
+        ))
+    }
+
+    /// Conservatively repair one tree under a single backend serialization boundary.
+    /// Demotes inconsistent Verified entries to Unverified, never promotes or clears
+    /// Failed decisions, and replaces retained tips atomically. Immutable Entries and
+    /// Store state are unchanged. Structural/storage errors roll back the operation.
+    /// Custom backends must implement this explicitly; no non-atomic default is safe.
+    async fn repair_verification(&self, _tree: &ID) -> Result<VerificationRepair> {
+        Err(BackendError::VerificationRepairUnsupported.into())
+    }
+
+    /// Compatibility entry point for conservative repair and frontier reconstruction.
+    /// Unlike a read-only reconstruction oracle, this may demote inconsistent labels.
+    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
+        Ok(self.repair_verification(tree).await?.snapshot)
+    }
 
     /// Returns the snapshot of a specific store within a given tree.
     ///

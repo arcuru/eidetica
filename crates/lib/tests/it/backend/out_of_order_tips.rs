@@ -25,7 +25,7 @@ async fn test_tree_tips_out_of_order_arrival() {
         .build()
         .expect("Root entry should build");
     let id_a = entry_a.id();
-    backend.put_verified(entry_a).await.unwrap();
+    backend.put(entry_a).await.unwrap();
 
     // Verify A is the only tip
     let tips = backend.snapshot(&id_a).await.unwrap().into_tips();
@@ -45,7 +45,7 @@ async fn test_tree_tips_out_of_order_arrival() {
         .build()
         .expect("Entry C should build");
     let id_c = entry_c.id();
-    backend.put_verified(entry_c).await.unwrap();
+    backend.put(entry_c).await.unwrap();
 
     // At this point, C is stored but its parent B is not
     // C should be a tip
@@ -53,7 +53,7 @@ async fn test_tree_tips_out_of_order_arrival() {
     assert!(tips.contains(&id_c), "C should be a tip");
 
     // Now store B (the parent of C)
-    backend.put_verified(entry_b).await.unwrap();
+    backend.put(entry_b).await.unwrap();
 
     // After storing B, only C should be a tip
     // B should NOT be a tip because C already references it as a parent
@@ -76,7 +76,7 @@ async fn test_store_tips_out_of_order_arrival() {
         .build()
         .expect("Root entry should build");
     let id_a = entry_a.id();
-    backend.put_verified(entry_a).await.unwrap();
+    backend.put(entry_a).await.unwrap();
 
     // Verify A is the only store tip
     let tips = backend
@@ -104,7 +104,7 @@ async fn test_store_tips_out_of_order_arrival() {
         .build()
         .expect("Entry C should build");
     let id_c = entry_c.id();
-    backend.put_verified(entry_c).await.unwrap();
+    backend.put(entry_c).await.unwrap();
 
     // C should be a store tip
     let tips = backend
@@ -115,7 +115,7 @@ async fn test_store_tips_out_of_order_arrival() {
     assert!(tips.contains(&id_c), "C should be a store tip");
 
     // Now store B
-    backend.put_verified(entry_b).await.unwrap();
+    backend.put(entry_b).await.unwrap();
 
     // After storing B, only C should be a store tip
     let tips = backend
@@ -147,7 +147,7 @@ async fn test_diamond_tips_out_of_order_arrival() {
         .build()
         .expect("Root entry should build");
     let id_a = entry_a.id();
-    backend.put_verified(entry_a).await.unwrap();
+    backend.put(entry_a).await.unwrap();
 
     // Build B and C (but don't store yet)
     let entry_b = Entry::builder(id_a.clone())
@@ -169,14 +169,14 @@ async fn test_diamond_tips_out_of_order_arrival() {
         .build()
         .expect("Entry D should build");
     let id_d = entry_d.id();
-    backend.put_verified(entry_d).await.unwrap();
+    backend.put(entry_d).await.unwrap();
 
     // D should be a tip (its parents don't exist yet)
     let tips = backend.snapshot(&id_a).await.unwrap().into_tips();
     assert!(tips.contains(&id_d), "D should be a tip");
 
     // Store B
-    backend.put_verified(entry_b).await.unwrap();
+    backend.put(entry_b).await.unwrap();
 
     // B should NOT be a tip (D references it)
     let tips = backend.snapshot(&id_a).await.unwrap().into_tips();
@@ -187,7 +187,7 @@ async fn test_diamond_tips_out_of_order_arrival() {
     assert!(tips.contains(&id_d), "D should still be a tip");
 
     // Store C
-    backend.put_verified(entry_c).await.unwrap();
+    backend.put(entry_c).await.unwrap();
 
     // C should NOT be a tip (D references it)
     // Only D should be a tip
@@ -249,14 +249,14 @@ async fn test_partial_sync_with_gaps() {
     let id_e = entry_e.id();
 
     // Store in order: B, E, D
-    backend.put_verified(entry_b).await.unwrap();
+    backend.put(entry_b).await.unwrap();
 
     // After storing B: B is the only entry, so B is a tip
     let tips = backend.snapshot(&id_a).await.unwrap().into_tips();
     assert_eq!(tips.len(), 1, "After storing B: only B should be a tip");
     assert!(tips.contains(&id_b));
 
-    backend.put_verified(entry_e).await.unwrap();
+    backend.put(entry_e).await.unwrap();
 
     // After storing E: B and E are both tips
     // B has no children (C is not stored)
@@ -266,7 +266,7 @@ async fn test_partial_sync_with_gaps() {
     assert!(tips.contains(&id_b), "B should be a tip (C is missing)");
     assert!(tips.contains(&id_e), "E should be a tip (no children)");
 
-    backend.put_verified(entry_d).await.unwrap();
+    backend.put(entry_d).await.unwrap();
 
     // After storing D: B and E are still the tips
     // D is NOT a tip because E references it as parent
@@ -289,4 +289,3 @@ async fn test_partial_sync_with_gaps() {
 }
 
 // Test-only: store-and-promote helper (production `put` is Unverified-only).
-use crate::helpers::TestVerify;

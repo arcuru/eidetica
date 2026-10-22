@@ -378,7 +378,7 @@ pub async fn clear_derived_store_state(backend: &SqlxBackend) -> Result<()> {
         .sql_context("Failed to commit derived Store-state clear")
 }
 
-/// Offline trust reset: status and cache invalidation commit together.
+/// Offline trust reset: status, retained verified frontier and cache invalidation commit together.
 /// Unlike the online two-generation derived clear, there must be no live readers.
 pub async fn reset_local_verification(backend: &SqlxBackend) -> Result<()> {
     let mut tx = backend
@@ -403,6 +403,13 @@ pub async fn reset_local_verification(backend: &SqlxBackend) -> Result<()> {
         .execute(&mut *tx)
         .await
         .sql_context("Failed to reset verification statuses")?;
+    // With every status Unverified the retained verified frontier is empty in
+    // every tree; clearing it here publishes the reset atomically with the
+    // status write, so no reader observes a stale retained frontier.
+    sqlx::query("DELETE FROM verified_tips")
+        .execute(&mut *tx)
+        .await
+        .sql_context("Failed to clear retained verified frontier")?;
     tx.commit()
         .await
         .sql_context("Failed to commit trust reset")
@@ -754,30 +761,6 @@ async fn update_tips_for_entry(
                 .sql_context("Failed to delete store tip")?;
             }
         }
-    }
-
-    Ok(())
-}
-
-/// Update the verification status of an entry.
-pub async fn update_verification_status(
-    backend: &SqlxBackend,
-    id: &ID,
-    verification_status: VerificationStatus,
-) -> Result<()> {
-    let pool = backend.pool();
-
-    let status_int: i64 = verification_status.as_db_int();
-
-    let result = sqlx::query("UPDATE entries SET verification_status = $1 WHERE id = $2")
-        .bind(status_int)
-        .bind(id.to_string())
-        .execute(pool)
-        .await
-        .sql_context("Failed to update verification status")?;
-
-    if result.rows_affected() == 0 {
-        return Err(BackendError::EntryNotFound { id: id.clone() }.into());
     }
 
     Ok(())

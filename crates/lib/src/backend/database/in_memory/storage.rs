@@ -2,11 +2,12 @@
 
 use std::collections::HashMap;
 
-use super::InMemoryInner;
+use super::{InMemoryInner, VerifiedState};
 use crate::{
     Result,
     backend::{VerificationStatus, errors::BackendError},
     entry::{Entry, ID},
+    snapshot::Snapshot,
 };
 
 use crate::backend::database::sorting;
@@ -130,6 +131,134 @@ pub(crate) fn put(inner: &mut InMemoryInner, entry: Entry) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Status and frontier publication share the caller's write lock.
+pub(crate) fn update_verification_status(
+    inner: &mut InMemoryInner,
+    id: &ID,
+    status: VerificationStatus,
+) -> Result<()> {
+    let entry = inner
+        .entries
+        .get(id)
+        .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?;
+    let tree = entry.root().unwrap_or_else(|| id.clone());
+    let current = inner
+        .verification_status
+        .get(id)
+        .copied()
+        .unwrap_or(VerificationStatus::Unverified);
+    if current == status {
+        return Ok(());
+    }
+    if current == VerificationStatus::Failed {
+        return Err(BackendError::EntryValidationFailed {
+            entry_id: id.clone(),
+            reason: "Failed verification is terminal; use an offline trust reset".into(),
+        }
+        .into());
+    }
+    if status == VerificationStatus::Verified {
+        entry.validate()?;
+        let parents = entry.parents()?;
+        for parent in &parents {
+            if !inner
+                .entries
+                .get(parent)
+                .is_some_and(|entry| entry.in_tree(&tree))
+                || inner.verification_status.get(parent) != Some(&VerificationStatus::Verified)
+            {
+                return Err(BackendError::EntryValidationFailed {
+                    entry_id: id.clone(),
+                    reason: format!("parent {parent} must exist in the same tree and be Verified"),
+                }
+                .into());
+            }
+        }
+        inner.verification_status.insert(id.clone(), status);
+        let state = inner.verified.entry(tree).or_default();
+        for parent in parents {
+            state.frontier.remove(&parent);
+        }
+        state.frontier.insert(id.clone());
+    } else if current == VerificationStatus::Verified {
+        // Build the entire repair plan before modifying the live maps, so a
+        // structural error cannot publish a partial demotion.
+        let mut entries = tree_entries(inner, &tree);
+        for (entry, held_status) in &mut entries {
+            if entry.id() == *id {
+                *held_status = status;
+            }
+        }
+        let plan = super::super::verification::repair_plan(&tree, &entries)?;
+        inner.verification_status.insert(id.clone(), status);
+        apply_repair(inner, &tree, plan);
+    } else {
+        inner.verification_status.insert(id.clone(), status);
+    }
+    Ok(())
+}
+
+fn tree_entries(inner: &InMemoryInner, tree: &ID) -> Vec<(Entry, VerificationStatus)> {
+    inner
+        .entries
+        .values()
+        .filter(|entry| entry.in_tree(tree))
+        .map(|entry| {
+            (
+                entry.clone(),
+                inner
+                    .verification_status
+                    .get(&entry.id())
+                    .copied()
+                    .unwrap_or(VerificationStatus::Unverified),
+            )
+        })
+        .collect()
+}
+
+fn apply_repair(
+    inner: &mut InMemoryInner,
+    tree: &ID,
+    plan: super::super::verification::RepairPlan,
+) -> crate::backend::VerificationRepair {
+    for id in &plan.demoted {
+        inner
+            .verification_status
+            .insert(id.clone(), VerificationStatus::Unverified);
+    }
+    inner.verified.insert(
+        tree.clone(),
+        VerifiedState {
+            frontier: plan.snapshot.tips().iter().cloned().collect(),
+        },
+    );
+    crate::backend::VerificationRepair {
+        demoted: plan.demoted.len(),
+        snapshot: plan.snapshot,
+    }
+}
+
+/// Read retained tips; no ancestry scan or repair on reads.
+pub(crate) fn verified_snapshot(inner: &InMemoryInner, tree: &ID) -> Snapshot {
+    inner
+        .verified
+        .get(tree)
+        .map(|state| Snapshot::new(state.frontier.iter().cloned().collect()))
+        .unwrap_or(Snapshot::EMPTY)
+}
+
+pub(crate) fn repair_verification(
+    inner: &mut InMemoryInner,
+    tree: &ID,
+) -> Result<crate::backend::VerificationRepair> {
+    let plan = super::super::verification::repair_plan(tree, &tree_entries(inner, tree))?;
+    Ok(apply_repair(inner, tree, plan))
+}
+
+pub(crate) fn rebuild_verified_state(inner: &mut InMemoryInner, tree: &ID) -> Result<Snapshot> {
+    Ok(repair_verification(inner, tree)?.snapshot)
 }
 
 /// Helper function to update tips for a given tree ID.

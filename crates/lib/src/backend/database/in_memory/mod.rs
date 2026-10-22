@@ -41,6 +41,13 @@ pub(crate) struct TreeTipsCache {
     pub(crate) subtree_tips: HashMap<String, HashSet<ID>>,
 }
 
+/// Retained verified frontier only. Authoritative per-entry statuses prove ancestry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct VerifiedState {
+    pub(crate) frontier: HashSet<ID>,
+}
+
 /// Core data protected by a single lock.
 ///
 /// All fields that participate in entry storage and tip tracking are grouped
@@ -64,6 +71,8 @@ pub(crate) struct InMemoryInner {
     pub(crate) instance_secrets: Option<InstanceSecrets>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
+    /// Retained verified frontier per tree, maintained under this same lock.
+    pub(crate) verified: HashMap<ID, VerifiedState>,
 }
 
 #[derive(Debug)]
@@ -166,6 +175,7 @@ impl InMemory {
                 instance_metadata: None,
                 instance_secrets: None,
                 tips: HashMap::new(),
+                verified: HashMap::new(),
             }),
             store_state_point_reads: AtomicUsize::new(0),
             store_state_scan_reads: AtomicUsize::new(0),
@@ -453,6 +463,10 @@ impl BackendImpl for InMemory {
         for status in inner.verification_status.values_mut() {
             *status = VerificationStatus::Unverified;
         }
+        // With every status Unverified the retained verified frontier is empty
+        // in every tree. Clearing it under the same write lock publishes the
+        // reset atomically, so no reader observes a stale retained frontier.
+        inner.verified.clear();
         // The ordinary clear unlinks a generation for active readers. A reset
         // instead requires exclusive offline ownership and drops all disposable
         // namespaces, including incomplete builds from a prior run.
@@ -536,14 +550,7 @@ impl BackendImpl for InMemory {
         verification_status: VerificationStatus,
     ) -> Result<()> {
         let mut inner = self.inner.write().unwrap();
-        if inner.verification_status.contains_key(id) {
-            inner
-                .verification_status
-                .insert(id.clone(), verification_status);
-            Ok(())
-        } else {
-            Err(BackendError::EntryNotFound { id: id.clone() }.into())
-        }
+        storage::update_verification_status(&mut inner, id, verification_status)
     }
 
     /// Gets all entries with a specific verification status.
@@ -581,6 +588,20 @@ impl BackendImpl for InMemory {
         // Slow path: compute and cache with write lock
         let mut inner = self.inner.write().unwrap();
         traversal::snapshot(&mut inner, tree).map(Snapshot::new)
+    }
+
+    async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::verified_snapshot(&inner, tree))
+    }
+
+    async fn repair_verification(&self, tree: &ID) -> Result<crate::backend::VerificationRepair> {
+        let mut inner = self.inner.write().unwrap();
+        storage::repair_verification(&mut inner, tree)
+    }
+
+    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
+        Ok(self.repair_verification(tree).await?.snapshot)
     }
 
     async fn store_snapshot(&self, tree: &ID, subtree: &str) -> Result<Snapshot> {

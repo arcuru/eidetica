@@ -21,8 +21,8 @@ use super::helpers;
 use iroh::endpoint::PortmapperConfig;
 
 /// Helper to create a test entry with specific parents
-fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
-    let mut builder = Entry::builder(ID::from_bytes(tree_id));
+fn create_entry_with_parents(tree_id: &ID, parents: Vec<ID>) -> Entry {
+    let mut builder = Entry::builder(tree_id.clone());
 
     if !parents.is_empty() {
         builder = builder.set_parents(parents);
@@ -35,7 +35,7 @@ fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
 }
 
 /// Helper to create a linear chain of entries: root -> child1 -> child2 -> ...
-fn create_linear_chain(tree_id: &str, count: usize) -> Vec<Entry> {
+fn create_linear_chain(_tree_id: &str, count: usize) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
 
     for i in 0..count {
@@ -48,7 +48,7 @@ fn create_linear_chain(tree_id: &str, count: usize) -> Vec<Entry> {
         } else {
             // Create child entry with parent
             let parents = vec![entries[i - 1].id().clone()];
-            create_entry_with_parents(tree_id, parents)
+            create_entry_with_parents(&entries[0].id(), parents)
         };
 
         entries.push(entry);
@@ -58,7 +58,7 @@ fn create_linear_chain(tree_id: &str, count: usize) -> Vec<Entry> {
 }
 
 /// Helper to create a DAG: root -> branch1, branch2 -> merge
-fn create_dag_structure(tree_id: &str) -> Vec<Entry> {
+fn create_dag_structure(_tree_id: &str) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
 
     // Root entry
@@ -69,14 +69,14 @@ fn create_dag_structure(tree_id: &str) -> Vec<Entry> {
     entries.push(root.clone());
 
     // Two branches from root
-    let branch1 = create_entry_with_parents(tree_id, vec![root.id().clone()]);
-    let branch2 = create_entry_with_parents(tree_id, vec![root.id().clone()]);
+    let branch1 = create_entry_with_parents(&root.id(), vec![root.id().clone()]);
+    let branch2 = create_entry_with_parents(&root.id(), vec![root.id().clone()]);
     entries.push(branch1.clone());
     entries.push(branch2.clone());
 
     // Merge entry with both branches as parents
     let merge =
-        create_entry_with_parents(tree_id, vec![branch1.id().clone(), branch2.id().clone()]);
+        create_entry_with_parents(&root.id(), vec![branch1.id().clone(), branch2.id().clone()]);
     entries.push(merge);
 
     entries
@@ -254,10 +254,10 @@ async fn test_dag_sync_entry_ordering() {
 
     // Store entries in random order
     let backend = base_db.backend();
-    backend.put_verified(chain[2].clone()).await.unwrap(); // Child first
-    backend.put_verified(chain[0].clone()).await.unwrap(); // Root
-    backend.put_verified(chain[3].clone()).await.unwrap(); // Grandchild
-    backend.put_verified(chain[1].clone()).await.unwrap(); // Parent
+    backend.put(chain[2].clone()).await.unwrap(); // Child first
+    backend.put(chain[0].clone()).await.unwrap(); // Root
+    backend.put(chain[3].clone()).await.unwrap(); // Grandchild
+    backend.put(chain[1].clone()).await.unwrap(); // Parent
 
     // Retrieve and verify parent-child relationships
     for i in 1..chain.len() {
@@ -375,7 +375,7 @@ async fn test_bidirectional_sync_flow() {
         // Add different entries building from the same root
         for i in 1..3 {
             let parent_id = branch[i - 1].id().clone();
-            let entry = create_entry_with_parents(tree_id, vec![parent_id]);
+            let entry = create_entry_with_parents(&root.id(), vec![parent_id]);
             branch.push(entry);
         }
         branch
