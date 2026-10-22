@@ -61,6 +61,31 @@ reachability.
 A ticket is a locator with address hints, not an access grant. The receiver
 still needs database authorization or the bootstrap and approval flow.
 
+## Inspect a Tracking Preference
+
+Use `AccountSession::tracked_database(&database_id).await` to inspect one
+tracking row without opening or tracking the target database. `Ok(Some(row))`
+contains this account's preferences, including `row.sync_settings.sync_enabled`;
+`Ok(None)` means the row is absent. Authorization, storage read and decoding
+failures remain errors, not an absent row or a disabled preference.
+
+This read works in embedded and service mode through the session's existing
+Account access. It does not enumerate tracked databases, change keys or settings,
+or grant access to the target database. A cold read may populate disposable
+Store-state caches. As with other service reads, daemon authorization failures
+use the existing service error representation.
+
+```rust
+# use eidetica::{AccountSession, ID};
+async fn local_sync_preference(
+    session: &AccountSession,
+    database_id: &ID,
+) -> eidetica::Result<Option<bool>> {
+    Ok(session.tracked_database(database_id).await?
+        .map(|row| row.sync_settings.sync_enabled))
+}
+```
+
 ## Stop Sharing
 
 `database.stop_sharing()` withdraws only this caller's preference and preserves

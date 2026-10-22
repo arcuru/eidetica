@@ -2309,3 +2309,124 @@ async fn zero_budget_daemon_keeps_client_history_reads_available() {
         .unwrap()
         .unwrap();
 }
+
+/// AccountSession's checked lookup uses the authenticated service path, not a
+/// host-wide tracking scan or a default-filled client cache.
+#[tokio::test]
+async fn test_checked_tracking_lookup_service_read_scope_and_denial() {
+    let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let mut owner = server.login_account("alice", None).await.unwrap();
+    let key = owner.get_default_key().unwrap();
+    let selected = owner.create_database(Doc::new(), &key).await.unwrap();
+    for _ in 0..8 {
+        owner.create_database(Doc::new(), &key).await.unwrap();
+    }
+    let missing = eidetica::ID::from_bytes("not-tracked");
+    let client = login_client(&socket_path, "alice").await;
+    let user = client.login_account("alice", None).await.unwrap();
+    assert!(
+        user.tracked_database(selected.root_id())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let snapshot = owner.account().database().snapshot().await.unwrap();
+    let engine = server.backend().local_engine().unwrap();
+    let memory = engine.as_any().downcast_ref::<InMemory>().unwrap();
+    let before = memory.store_state_read_counts();
+    let history = memory.store_history_read_count();
+    let row = user
+        .tracked_database(selected.root_id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.database_id, *selected.root_id());
+    assert_eq!(user.tracked_database(&missing).await.unwrap(), None);
+    let after = memory.store_state_read_counts();
+    assert!(
+        after.0 > before.0,
+        "positive control: service fetched records"
+    );
+    assert_eq!(after.1, before.1, "selected lookup must not scan rows");
+    assert_eq!(memory.store_history_read_count(), history);
+    assert_eq!(
+        owner.account().database().snapshot().await.unwrap(),
+        snapshot
+    );
+
+    // Revoke the Account handle's actual signing identity in this synthetic
+    // fixture. Being logged in must not bypass the daemon's per-tree gate.
+    let root_key = owner
+        .account()
+        .database()
+        .auth_identity()
+        .unwrap()
+        .hint()
+        .pubkey
+        .clone()
+        .unwrap();
+    let tx = owner.account().database().new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &root_key,
+            eidetica::auth::AuthKey::new(
+                None,
+                Permission::Admin(0),
+                eidetica::auth::KeyStatus::Revoked,
+            ),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let snapshot = owner.account().database().snapshot().await.unwrap();
+    for id in [selected.root_id(), &missing] {
+        let err = user
+            .tracked_database(id)
+            .await
+            .expect_err("denial is not absence");
+        // Existing service errors preserve auth failures as an IO error with
+        // their module/kind prefix; this API does not redesign that contract.
+        assert!(
+            matches!(err, eidetica::Error::Io(ref e)
+            if e.to_string().starts_with("[auth::PermissionDenied]")),
+            "{err:?}"
+        );
+    }
+    assert_eq!(
+        owner.account().database().snapshot().await.unwrap(),
+        snapshot
+    );
+}
+
+#[tokio::test]
+async fn test_checked_tracking_lookup_service_connection_failure_is_not_absence() {
+    let (socket_path, shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let client = login_client(&socket_path, "alice").await;
+    let mut user = client.login_account("alice", None).await.unwrap();
+    let key = user.get_default_key().unwrap();
+    let selected = user.create_database(Doc::new(), &key).await.unwrap();
+    assert!(
+        user.tracked_database(selected.root_id())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let conn = remote_conn(&client);
+    drop(shutdown);
+    tokio::time::timeout(Duration::from_secs(2), conn.wait_closed_for_test())
+        .await
+        .unwrap();
+    for id in [selected.root_id(), &eidetica::ID::from_bytes("not-tracked")] {
+        let result = tokio::time::timeout(Duration::from_secs(2), user.tracked_database(id))
+            .await
+            .expect("closed connection must not hang");
+        assert!(
+            matches!(result, Err(eidetica::Error::Io(ref e))
+            if e.kind() == std::io::ErrorKind::ConnectionAborted),
+            "{result:?}"
+        );
+    }
+}
