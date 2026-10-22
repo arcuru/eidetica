@@ -176,6 +176,8 @@ pub enum DbCommands {
     List(DbListArgs),
     /// Offline operator-triggered reset of local verification and derived state
     ResetLocalVerification(DbResetArgs),
+    /// Offline conservative repair of one tree's verification labels and tips
+    RepairVerification(DbRepairArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -192,4 +194,17 @@ pub struct DbResetArgs {
 pub struct DbListArgs {
     #[command(flatten)]
     pub backend_config: BackendConfig,
+}
+
+/// Offline verification repair requires an explicit database and tree.
+#[derive(clap::Args, Debug)]
+pub struct DbRepairArgs {
+    #[command(flatten)]
+    pub backend_config: BackendConfig,
+    /// Root ID of the tree to repair
+    #[arg(long)]
+    pub tree: String,
+    /// Acknowledge that inconsistent Verified entries will become Unverified
+    #[arg(long, required = true)]
+    pub confirm: bool,
 }

@@ -3,21 +3,9 @@
 //! This module contains the database schema used by SQL backends.
 //! The schema is designed to be portable between SQLite and Postgres.
 //!
-//! # Migration System
-//!
-//! The migration system uses code-based migrations rather than SQL files to handle
-//! dialect differences between SQLite and PostgreSQL. Each migration is a function
-//! that receives the backend and can execute database-specific SQL as needed.
-//!
-//! ## Adding a New Migration
-//!
-//! 1. Increment `SCHEMA_VERSION`
-//! 2. Add a new `migrate_vN_to_vM` async function
-//! 3. Have that function update `schema_version` to its target version inside
-//!    the same transaction as its schema changes, so the version write and the
-//!    schema change commit or roll back together
-//! 4. Add the migration to the match statement in `run_migration`
-//! 5. Document what the migration does
+//! Mainline v0 migrates directly to tips-only v2 in one transaction. Version 1
+//! belonged to an unsupported prefix-tracking candidate and is refused before
+//! schema writes. Ordinary v2 opens do not reconstruct verification history.
 
 use crate::Result;
 use crate::backend::errors::BackendError;
@@ -31,7 +19,7 @@ mod tests;
 ///
 /// Increment this when making schema changes that require migration.
 /// Version 0 is fully unstable and should not be used in production.
-pub const SCHEMA_VERSION: i64 = 0;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const CREATE_STORE_STATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
@@ -45,6 +33,16 @@ const CREATE_STORE_STATE_TABLES: &[&str] = &[
         projection_version BIGINT NOT NULL,
         source_key BYTEA NOT NULL,
         created_revision BIGINT,
+        -- Total record bytes (key plus value) of the published namespace.
+        -- Computed atomically in the publish transaction; bounds the cache
+        -- by bytes without scanning records on every eviction check.
+        size_bytes BIGINT NOT NULL DEFAULT 0,
+        -- Last-access tick for durable approximate LRU. Assigned from a
+        -- per-backend monotonic clock, touched in memory on every hit and
+        -- flushed in batches (never one write per hit). A crash loses only
+        -- recent recency metadata, never cached values. Rows predating this
+        -- column read as 0 and sort as coldest.
+        last_access_tick BIGINT NOT NULL DEFAULT 0,
         UNIQUE (database_id, store_name, lifecycle, status, scope_user_uuid,
                 projection_name, projection_version, source_key)
     )",
@@ -114,6 +112,12 @@ pub const CREATE_TABLES: &[&str] = &[
         tree_id TEXT NOT NULL,
         store_name TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (entry_id, tree_id, store_name)
+    )",
+    // Only frontier-width verification state; statuses prove interior membership.
+    "CREATE TABLE IF NOT EXISTS verified_tips (
+        tree_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        PRIMARY KEY (tree_id, entry_id)
     )",
     // Instance metadata (singleton row pattern)
     // Contains device key and system database IDs.
@@ -187,119 +191,345 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
         .into());
     }
 
-    // Create tables, adapting dialect-specific types
-    let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
-    for statement in CREATE_TABLES {
-        // SAFETY: both the source statement and replacement type are compile-time
-        // constants; no external data is interpolated into schema SQL.
-        let statement = statement.replace("BLOB", blob_type);
-        sqlx::query(sqlx::AssertSqlSafe(statement))
-            .execute(pool)
-            .await
-            .sql_context("Schema creation failed")?;
+    // Version 1 was an unreleased prefix-tracking candidate, not mainline.
+    // Never reinterpret it or silently erase its data. A trust reset is not a migration.
+    let prefix_query = if backend.is_sqlite() {
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'verified_prefix'"
+    } else {
+        "SELECT COUNT(*) FROM pg_catalog.pg_class WHERE oid = to_regclass('verified_prefix')"
+    };
+    let (prefix_tables,): (i64,) = sqlx::query_as(prefix_query)
+        .fetch_one(pool)
+        .await
+        .sql_context("Failed to inspect legacy verification storage")?;
+    if row == Some((1,)) || prefix_tables != 0 {
+        return Err(BackendError::SqlxError {
+            reason: "Unsupported prefix-tracking candidate format; back up and recreate with a supported format (trust reset does not convert schemas)".into(),
+            source: None,
+        }.into());
     }
-
-    initialize_store_state_tables(backend).await?;
-
-    if row.is_none() {
-        sqlx::query("INSERT INTO schema_version (version) VALUES ($1)")
-            .bind(SCHEMA_VERSION)
-            .execute(pool)
-            .await
-            .sql_context("Failed to initialize schema version")?;
-    } else if let Some((current_version,)) = row
-        && current_version < SCHEMA_VERSION
+    if let Some((version,)) = row
+        && version < 0
     {
-        // Run migrations
-        migrate(backend, current_version, SCHEMA_VERSION).await?;
+        return Err(BackendError::SqlxError {
+            reason: format!("Unknown migration path: v{version} to v{}", version + 1),
+            source: None,
+        }
+        .into());
     }
 
-    // Create indexes
-    for statement in CREATE_INDEXES {
-        sqlx::query(*statement)
-            .execute(pool)
-            .await
-            .sql_context("Index creation failed")?;
-    }
-
-    Ok(())
-}
-
-async fn initialize_store_state_tables(backend: &SqlxBackend) -> Result<()> {
-    let mut tx = backend
-        .pool()
+    // Schema, repair, cache-column backfill, and version publication roll back
+    // together. Backend ownership excludes other instances during open.
+    let mut tx = pool
         .begin()
         .await
         .sql_context("Failed to begin schema initialization")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to lock schema initialization")?;
+    }
     let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
-    for statement in CREATE_STORE_STATE_TABLES {
-        // SAFETY: both the source statement and replacement type are compile-time
-        // constants; no external data is interpolated into schema SQL.
-        let statement = statement.replace("BYTEA", blob_type);
+    for statement in CREATE_TABLES.iter().chain(CREATE_STORE_STATE_TABLES) {
+        // SAFETY: schema statements and dialect replacements are constants.
+        let statement = statement
+            .replace("BYTEA", blob_type)
+            .replace("BLOB", blob_type);
         sqlx::query(sqlx::AssertSqlSafe(statement))
             .execute(&mut *tx)
             .await
-            .sql_context("Failed to create Store-state tables")?;
+            .sql_context("Schema creation failed")?;
+    }
+    ensure_store_state_cache_columns(backend, &mut tx).await?;
+    for statement in CREATE_INDEXES {
+        sqlx::query(*statement)
+            .execute(&mut *tx)
+            .await
+            .sql_context("Index creation failed")?;
+    }
+    if row == Some((0,)) {
+        let trees: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT tree_id FROM entries")
+            .fetch_all(&mut *tx)
+            .await
+            .sql_context("Failed to list migration trees")?;
+        for (tree,) in trees {
+            super::verified::repair_in_tx(&mut tx, &crate::entry::ID::parse(&tree)?).await?;
+        }
+        sqlx::query("UPDATE schema_version SET version = $1")
+            .bind(SCHEMA_VERSION)
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to publish schema migration")?;
+    } else if row.is_none() {
+        sqlx::query("INSERT INTO schema_version (version) VALUES ($1)")
+            .bind(SCHEMA_VERSION)
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to initialize schema version")?;
     }
     tx.commit()
         .await
-        .sql_context("Failed to commit Store-state table initialization")
+        .sql_context("Failed to commit schema initialization")
 }
 
-/// Run migrations sequentially from one schema version to another.
+/// Bring pre-existing `store_state_namespaces` tables up to the cache-bound
+/// columns without touching their rows.
 ///
-/// Migrations are run one step at a time, each advancing the schema by a single
-/// version. This function only tracks the step it is on; persisting the new
-/// `schema_version` is the responsibility of each migration function, which
-/// writes it in the same transaction as its schema changes. A failed step
-/// therefore leaves the recorded version at the last successfully committed
-/// migration.
-async fn migrate(backend: &SqlxBackend, from: i64, to: i64) -> Result<()> {
-    tracing::info!(from, to, "Starting SQL schema migration");
-
-    let mut current = from;
-    while current < to {
-        let next = current + 1;
-        tracing::info!(from = current, to = next, "Running migration");
-
-        run_migration(backend, current, next).await?;
-
-        tracing::info!(version = next, "Migration completed");
-        current = next;
+/// Fresh databases already have the columns from `CREATE_STORE_STATE_TABLES`,
+/// so this is a no-op for them. Databases created before the bounded-cache
+/// work keep every derived row (warm entries stay warm); missing columns are
+/// added and `size_bytes` is backfilled from the records themselves, while
+/// `last_access_tick` starts at 0 (coldest) for those rows. Deliberately not
+/// a `schema_version` bump: the versioned chain rebuilds verified state,
+/// which this change has no reason to redo.
+async fn ensure_store_state_cache_columns(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+) -> Result<()> {
+    let existing: Vec<(String,)> = if backend.is_sqlite() {
+        sqlx::query_as("SELECT name FROM pragma_table_info('store_state_namespaces')")
+            .fetch_all(&mut **tx)
+            .await
+            .sql_context("Failed to inspect Store-state columns")?
+    } else {
+        sqlx::query_as(
+            "SELECT column_name::text FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'store_state_namespaces'",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .sql_context("Failed to inspect Store-state columns")?
+    };
+    for (column, ddl) in [
+        (
+            "size_bytes",
+            "ALTER TABLE store_state_namespaces ADD COLUMN size_bytes BIGINT NOT NULL DEFAULT 0",
+        ),
+        (
+            "last_access_tick",
+            "ALTER TABLE store_state_namespaces ADD COLUMN last_access_tick BIGINT NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !existing.iter().any(|(name,)| name == column) {
+            sqlx::query(ddl)
+                .execute(&mut **tx)
+                .await
+                .sql_context("Failed to add Store-state cache column")?;
+        }
     }
-
-    tracing::info!(from, to, "All migrations completed successfully");
+    // Backfill sizes for ready rows that predate the column. Staging rows
+    // get their true size in the publish transaction; recomputing them here
+    // would only be overwritten.
+    let key_len = if backend.is_sqlite() {
+        "length(r.record_key)"
+    } else {
+        "octet_length(r.record_key)"
+    };
+    let value_len = if backend.is_sqlite() {
+        "length(r.record_value)"
+    } else {
+        "octet_length(r.record_value)"
+    };
+    // SAFETY: both length expressions are dialect constants; no external
+    // data is interpolated into the backfill statement.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE store_state_namespaces AS n SET size_bytes = COALESCE(
+             (SELECT SUM({key_len} + {value_len}) FROM store_state_records AS r
+              WHERE r.namespace_id = n.namespace_id), 0)
+         WHERE n.size_bytes = 0 AND n.status IN (1, 2, 3)"
+    )))
+    .execute(&mut **tx)
+    .await
+    .sql_context("Failed to backfill Store-state sizes")?;
     Ok(())
 }
 
-/// Execute a single migration step.
-///
-/// Each migration is a separate async function that handles the schema change.
-/// Add new migrations here as match arms.
-///
-/// # Adding a New Migration
-///
-/// When incrementing `SCHEMA_VERSION`, add a match arm here:
-///
-/// ```ignore
-/// match (from, to) {
-///     (1, 2) => migrate_v1_to_v2(backend).await,
-///     // ... existing migrations ...
-///     _ => { /* error handling */ }
-/// }
-/// ```
-///
-/// The migration function is responsible for persisting the new
-/// `schema_version` itself, inside the same transaction as its schema changes.
-async fn run_migration(backend: &SqlxBackend, from: i64, to: i64) -> Result<()> {
-    let _ = backend;
+#[cfg(all(test, feature = "sqlite"))]
+mod migration_tests {
+    use super::*;
+    use crate::entry::Entry;
 
-    Err(BackendError::SqlxError {
-        reason: format!(
-            "Unknown migration path: v{from} to v{to}. \
-             This likely means SCHEMA_VERSION was incremented without adding a migration."
-        ),
-        source: None,
+    fn test_chain() -> Vec<Entry> {
+        let root = Entry::root_builder().build().expect("root builds");
+        let root_id = root.id();
+        let a = Entry::builder(root_id.clone())
+            .set_height(1)
+            .add_parent(root_id.clone())
+            .set_subtree_data("test", b"a")
+            .build()
+            .expect("child a builds");
+        let b = Entry::builder(root_id.clone())
+            .set_height(2)
+            .add_parent(a.id())
+            .set_subtree_data("test", b"b")
+            .build()
+            .expect("child b builds");
+        vec![root, a, b]
     }
-    .into())
+
+    /// v0 databases gain the retained verified state on open: the migration
+    /// rebuilds every tree's frontier from entries, edges, and statuses, and
+    /// records version 2 atomically with the schema change.
+    #[tokio::test]
+    async fn v0_to_v2_rebuilds_verified_frontier() {
+        use crate::backend::VerificationStatus;
+
+        let backend = super::super::Sqlite::in_memory()
+            .await
+            .expect("sqlite backend");
+        let entries = test_chain();
+        let tree = entries[0].id();
+        for entry in &entries {
+            super::super::storage::put(&backend, entry.clone())
+                .await
+                .unwrap();
+        }
+        for entry in &entries {
+            super::super::verified::update_verification_status(
+                &backend,
+                &entry.id(),
+                VerificationStatus::Verified,
+            )
+            .await
+            .unwrap();
+        }
+        let before = super::super::verified::verified_snapshot(&backend, &tree)
+            .await
+            .unwrap();
+        assert_eq!(before.tips(), &[entries[2].id()]);
+
+        // Simulate a v0 database: drop the new table, reset the version.
+        sqlx::query("DROP TABLE verified_tips")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE schema_version SET version = 0")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+
+        // Re-open runs the migration.
+        initialize(&backend).await.unwrap();
+
+        let version: (i64,) = sqlx::query_as("SELECT version FROM schema_version")
+            .fetch_one(backend.pool())
+            .await
+            .unwrap();
+        assert_eq!(version.0, 2);
+        let after = super::super::verified::verified_snapshot(&backend, &tree)
+            .await
+            .unwrap();
+        assert_eq!(before, after);
+    }
+
+    /// Reopening a v2 database reads the persisted frontier without
+    /// rebuilding: wiping the table without resetting the version leaves the
+    /// (now empty) retained state in place rather than resurrecting it.
+    #[tokio::test]
+    async fn v2_reopen_reads_persisted_state_without_rebuilding() {
+        use crate::backend::VerificationStatus;
+
+        let backend = super::super::Sqlite::in_memory()
+            .await
+            .expect("sqlite backend");
+        let entries = test_chain();
+        let tree = entries[0].id();
+        for entry in &entries {
+            super::super::storage::put(&backend, entry.clone())
+                .await
+                .unwrap();
+            super::super::verified::update_verification_status(
+                &backend,
+                &entry.id(),
+                VerificationStatus::Verified,
+            )
+            .await
+            .unwrap();
+        }
+        // Wipe retained rows but keep version 2: a plain open must not
+        // rescan history to fill them back in.
+        sqlx::query("DELETE FROM verified_tips")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+        initialize(&backend).await.unwrap();
+        let snapshot = super::super::verified::verified_snapshot(&backend, &tree)
+            .await
+            .unwrap();
+        assert!(snapshot.is_empty());
+        // Repair restores the same frontier the migration would compute.
+        let repaired = super::super::verified::rebuild_verified_state(&backend, &tree)
+            .await
+            .unwrap();
+        assert_eq!(repaired.tips(), &[entries[2].id()]);
+    }
+
+    /// A table predating the cache-bound columns gains them on open without
+    /// losing rows: derived entries stay warm and sizes are backfilled.
+    #[tokio::test]
+    async fn legacy_store_state_table_gains_cache_columns_and_keeps_rows() {
+        use std::collections::BTreeMap;
+
+        use crate::backend::{
+            CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest,
+        };
+
+        let backend = super::super::Sqlite::in_memory()
+            .await
+            .expect("sqlite backend");
+        let request = StoreStateRequest {
+            database: crate::entry::ID::from_bytes("legacy-db"),
+            store: "legacy-store".to_string(),
+            lifecycle: StoreStateLifecycle::Derived,
+            scope: CacheScope::Shared,
+            projection: ProjectionDescriptor {
+                name: "test/legacy".to_string(),
+                version: 1,
+            },
+            source_key: b"legacy-snapshot".to_vec(),
+        };
+        let token = super::super::storage::begin_store_state_staging(&backend, request.clone())
+            .await
+            .unwrap();
+        super::super::storage::stage_store_state_records(
+            &backend,
+            &token,
+            BTreeMap::from([(b"v".to_vec(), Some(b"legacy".to_vec()))]),
+        )
+        .await
+        .unwrap();
+        super::super::storage::publish_store_state(&backend, token)
+            .await
+            .unwrap();
+
+        // Simulate a pre-bound database: drop the new columns.
+        sqlx::query("ALTER TABLE store_state_namespaces DROP COLUMN size_bytes")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE store_state_namespaces DROP COLUMN last_access_tick")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+
+        // Re-open brings the columns back; the row survives with its value.
+        initialize(&backend).await.unwrap();
+        let view = super::super::storage::resolve_store_state(&backend, &request)
+            .await
+            .unwrap()
+            .expect("legacy derived row must stay warm");
+        let value = super::super::storage::store_state_record_get(&backend, &view, b"v")
+            .await
+            .unwrap();
+        assert_eq!(value, Some(b"legacy".to_vec()));
+        let size: (i64,) =
+            sqlx::query_as("SELECT size_bytes FROM store_state_namespaces WHERE namespace_id = $1")
+                .bind(&view.namespace_id)
+                .fetch_one(backend.pool())
+                .await
+                .unwrap();
+        assert_eq!(size.0, 1 + 6, "size must be backfilled from the records");
+    }
 }

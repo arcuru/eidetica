@@ -96,8 +96,12 @@ Verification is **prefix-closed**: an entry is promoted to `Verified` only
 once its entire ancestor history is `Verified`. A `Failed` ancestor taints
 descendants to `Failed`; an `Unverified`/not-yet-held ancestor leaves the
 entry `Unverified` for a later pass. Supported validation therefore maintains an ancestor-closed `Verified` set.
-This assumes validator-owned labels: manual low-level promotion or legacy labels
-retained without the required trust reset are not proof of that invariant.
+The validator remains responsible for signatures, causal settings and delegated proofs.
+The backend additionally rejects promotion unless every direct parent exists in the
+same tree and is already Verified, under the same lock/transaction as status and tip
+publication. Rejection changes neither labels nor tips; it never creates a waiting
+Verified label. Validators retry Unverified children after their parents settle.
+Failed decisions remain terminal except during an explicit offline trust reset.
 
 By default a `Database` read exposes only the **Verified frontier** — the
 maximal ancestor-closed all-`Verified` prefix. `Failed` entries are dropped
@@ -107,7 +111,7 @@ pre-verification view (including `Unverified` tips) opts in with
 
 This is the **disclosure model**: the DAG stays complete and trust is a
 query-time projection over it (the same posture as git signatures or DKIM —
-nothing is hidden from storage; the _trust label_ is computed on read).
+nothing is hidden from storage; the read selects locally validated history).
 Only `Failed` is ever hard-dropped; `Unverified` data is retained, just not
 surfaced by the safe-default getter.
 
@@ -115,12 +119,16 @@ surfaced by the safe-default getter.
 
 These are deliberate consequences of the model, not defects:
 
-- **Verified-frontier computation cost.** Resolving the Verified frontier on
-  a default read walks verification status across the relevant DAG region
-  rather than returning raw tips directly. This is the price of a
-  safe-by-default read; it is a known performance characteristic of the
-  disclosure posture, optimisable behind the same API without changing
-  semantics.
+- **Verified-frontier maintenance cost.** The backend retains only Verified
+  tips beside raw tips, not another membership set for the full history.
+  Authoritative per-entry statuses prove interior membership. Promotion removes
+  direct parents from tips and adds the child; forks and joins need no history
+  scan. A settled default snapshot is a retained lookup. Demotion and repair may
+  load the entire affected tree temporarily, cascade loss of Verified ancestry,
+  and rebuild its frontier once. These changes publish atomically under an
+  InMemory write lock, SQLite writer transaction, or PostgreSQL per-tree
+  transaction lock. Already-acquired historical snapshots may retain the old
+  boundary; this adds no retroactive or cross-tree revocation policy.
 - **Sync no longer makes data visible by default.** Before this model, a
   synced entry was immediately readable. Now freshly synced or freshly
   bootstrapped data is **invisible to default reads until verified** — a

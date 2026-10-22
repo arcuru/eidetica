@@ -202,7 +202,8 @@ eidetica db reset-local-verification --backend sqlite --data-dir /var/lib/eideti
 
 The command does not run during startup or schema migration. **Skipping it can
 leave old `Verified` labels trusted under the new rules.** It resets _all_
-local statuses (`Verified` and `Failed` included) to `Unverified`, discards
+local statuses (`Verified` and `Failed` included) to `Unverified`, clears the
+retained Verified frontier in the same step, discards
 derived and incomplete Store-state namespaces, and keeps every immutable Entry
 and authoritative Store state. It does not verify entries itself. Start the new
 version only after the command succeeds, and follow the
@@ -224,6 +225,56 @@ readers, whereas the trust reset deliberately drops it. The in-memory JSON
 persistence path has no cross-process ownership lock. On platforms without
 atomic replacement rename, take an offline backup and verify the reopened
 file before starting the service.
+
+### `db repair-verification` (offline conservative repair)
+
+Stop all users of the backend and make an offline backup first, just as for reset.
+Select an existing database and one tree explicitly:
+
+```bash
+eidetica db repair-verification --backend sqlite --data-dir /var/lib/eidetica --tree <ROOT_ID> --confirm
+# Or: --backend inmemory --data-dir <directory containing eidetica.json>
+# Or: --backend postgres --postgres-url <instance connection URL>
+```
+
+Repair preserves valid Verified history and existing Failed decisions, demotes only
+inconsistent Verified entries and their dependent region to Unverified, and rebuilds
+the tree's tips atomically. Missing or foreign parents cannot establish trust;
+malformed immutable data and storage errors abort without partial status/tip changes.
+The printed demotion count is not a count of successfully verified entries.
+Repeat repair is idempotent. Entries, authoritative Store records, and the independent
+materialization cache are not cleared. Use the SDK re-verification procedure below
+when missing ancestors arrive; repair never promotes entries.
+
+`BackendImpl::repair_verification` exposes the same maintenance operation locally;
+`rebuild_verified_state` delegates to it and may now demote inconsistent labels.
+Custom backends must implement atomic repair or return an explicit unsupported error.
+There is no service-wire repair endpoint. Unlike repair, reset clears **all** local
+trust decisions and disposable state. Neither command creates a missing persistence
+file or treats corrupt JSON as an empty instance.
+
+#### Storage compatibility and older candidate data
+
+Mainline SQL schema 0 and unversioned InMemory files migrate to tips-only version 2.
+Migration reuses conservative repair; SQL schema, version, and label/tip changes
+commit together. Clean version-2 opens load persisted tips without a history scan.
+The unreleased version-1 prefix-tracking format is **unsupported** and refused before
+SQL schema initialization; InMemory version-1 files are also refused.
+A trust reset does **not** convert that schema or file format.
+
+For an old candidate instance, keep it stopped and retain an untouched offline
+backup (including SQLite WAL/SHM files when present, or a consistent PostgreSQL
+backup). Do not edit its version marker, drop tables, or overwrite the original.
+A supported recovery path is to restore a known mainline-format backup into a
+**separate** location and let the new version migrate that copy, then reverify and
+compare required Entries and authoritative records before changing application paths.
+Alternatively create a separate empty version-2 instance and repopulate it through
+normal ingest/replication from a complete trusted source, followed by verification.
+That is recreation, not conversion: instance-local credentials and authoritative
+Store records are not guaranteed to replicate. If either is irreplaceable and no
+mainline backup exists, keep the old copy and stop for an explicit recovery plan.
+The migration fixtures verify mainline-copy repair and old-format refusal; no
+in-place version-1 conversion or automatic deletion is provided.
 
 ### Re-verification after reset or incomplete proof
 
