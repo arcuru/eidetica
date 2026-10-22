@@ -42,17 +42,10 @@ pub(crate) struct TreeTipsCache {
     pub(crate) subtree_tips: HashMap<String, HashSet<ID>>,
 }
 
-/// Retained verified state of one tree: the ancestor-closed all-`Verified`
-/// prefix plus its maximal frontier.
-///
-/// `frontier` is the set served as the tree's verified [`Snapshot`];
-/// `prefix` membership is what makes out-of-order promotion cheap (a newly
-/// promoted entry is eligible exactly when every parent is in `prefix`).
-/// Both are derived operational state, rebuilt from entries and statuses on
-/// migration, repair, and demotion.
+/// Retained verified frontier only. Authoritative per-entry statuses prove ancestry.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct VerifiedState {
-    pub(crate) prefix: HashSet<ID>,
     pub(crate) frontier: HashSet<ID>,
 }
 
@@ -79,7 +72,7 @@ pub(crate) struct InMemoryInner {
     pub(crate) instance_secrets: Option<InstanceSecrets>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
-    /// Retained verified prefix/frontier per tree, maintained incrementally
+    /// Retained verified frontier per tree, maintained incrementally
     /// at the `update_verification_status` boundary under this same lock.
     pub(crate) verified: HashMap<ID, VerifiedState>,
 }
@@ -628,7 +621,7 @@ impl BackendImpl for InMemory {
         for status in inner.verification_status.values_mut() {
             *status = VerificationStatus::Unverified;
         }
-        // With every status Unverified the retained verified prefix is empty
+        // With every status Unverified the retained verified frontier is empty
         // in every tree. Clearing it under the same write lock publishes the
         // reset atomically, so no reader observes a stale retained frontier.
         inner.verified.clear();
@@ -771,9 +764,13 @@ impl BackendImpl for InMemory {
         Ok(storage::verified_snapshot(&inner, tree))
     }
 
-    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
+    async fn repair_verification(&self, tree: &ID) -> Result<crate::backend::VerificationRepair> {
         let mut inner = self.inner.write().unwrap();
-        storage::rebuild_verified_state(&mut inner, tree)
+        storage::repair_verification(&mut inner, tree)
+    }
+
+    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
+        Ok(self.repair_verification(tree).await?.snapshot)
     }
 
     async fn store_snapshot(&self, tree: &ID, subtree: &str) -> Result<Snapshot> {

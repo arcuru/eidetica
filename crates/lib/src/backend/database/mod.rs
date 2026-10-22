@@ -7,6 +7,7 @@ pub(crate) mod recency;
 mod sorting;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub mod sql;
+mod verification;
 
 pub use in_memory::InMemory;
 #[cfg(feature = "postgres")]

@@ -308,6 +308,15 @@ pub enum VerificationStatus {
     Failed,
 }
 
+/// Result of a conservative local verification repair (not re-verification).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationRepair {
+    /// Number of inconsistent Verified entries changed to Unverified.
+    pub demoted: usize,
+    /// Reconstructed ancestor-closed verified frontier.
+    pub snapshot: Snapshot,
+}
+
 impl VerificationStatus {
     /// Canonical persistence encoding. The single source of truth for the
     /// integer stored in the `verification_status` column; all backends use
@@ -496,6 +505,13 @@ pub trait BackendImpl: Send + Sync + Any {
     /// re-verification pass). It is local-only — never reachable over the
     /// service wire — so a peer can never assert verification for us.
     ///
+    /// Promotion requires every direct parent to exist in the same tree and be
+    /// Verified, checked atomically with status/tip publication. Invalid promotion
+    /// returns an error without changes. Failed is terminal until an offline reset.
+    /// Demotion cascades to dependent Verified descendants and rebuilds tips once,
+    /// atomically for the affected tree. Existing historical snapshots are unchanged.
+    /// This parent guard does not replace the validator's cryptographic checks.
+    ///
     /// # Arguments
     /// * `id` - The ID of the entry to update
     /// * `verification_status` - The new verification status
@@ -546,8 +562,8 @@ pub trait BackendImpl: Send + Sync + Any {
     /// excluded. Empty when the root itself is not `Verified`.
     ///
     /// The default implementation reconstructs the frontier from history (a
-    /// full-tree load plus one status read per entry). It is the
-    /// migration/repair/test oracle, not a read path: concrete backends
+    /// full-tree load plus one status read per entry). It is a
+    /// read-only reconstruction oracle, not a repair path: concrete backends
     /// override it with their retained state. Custom backends inherit correct
     /// behavior automatically.
     ///
@@ -570,9 +586,10 @@ pub trait BackendImpl: Send + Sync + Any {
         let mut in_degree: HashMap<ID, usize> = HashMap::with_capacity(entries.len());
         let mut height_of: HashMap<ID, u64> = HashMap::with_capacity(entries.len());
         for e in &entries {
+            e.validate()?;
             let id = e.id();
             height_of.insert(id.clone(), e.height());
-            let parents = e.parents().unwrap_or_default();
+            let parents = e.parents()?;
             let mut degree = 0usize;
             for p in &parents {
                 children_of.entry(p.clone()).or_default().push(id.clone());
@@ -624,24 +641,19 @@ pub trait BackendImpl: Send + Sync + Any {
         ))
     }
 
-    /// Rebuild one tree's retained verified state from entries and statuses,
-    /// replacing whatever is currently retained, and return the rebuilt
-    /// verified [`Snapshot`].
-    ///
-    /// This is the migration/repair path: cold opens load persisted state and
-    /// never call this. Demotion funnels through here because removing a
-    /// prefix member can re-expose an arbitrarily large subgraph, which the
-    /// incremental promotion path cannot cheaply recompute.
-    ///
-    /// Backends without retained verified state inherit a correct default:
-    /// recomputing the frontier from history is identical to rebuilding it.
-    /// Backends that retain the frontier must override this to replace the
-    /// retained rows/set, not just return them.
-    ///
-    /// # Arguments
-    /// * `tree` - The root ID of the tree to rebuild.
+    /// Conservatively repair one tree under a single backend serialization boundary.
+    /// Demotes inconsistent Verified entries to Unverified, never promotes or clears
+    /// Failed decisions, and replaces retained tips atomically. Immutable Entries and
+    /// Store state are unchanged. Structural/storage errors roll back the operation.
+    /// Custom backends must implement this explicitly; no non-atomic default is safe.
+    async fn repair_verification(&self, _tree: &ID) -> Result<VerificationRepair> {
+        Err(BackendError::VerificationRepairUnsupported.into())
+    }
+
+    /// Compatibility entry point for conservative repair and frontier reconstruction.
+    /// Unlike a read-only reconstruction oracle, this may demote inconsistent labels.
     async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
-        self.verified_snapshot(tree).await
+        Ok(self.repair_verification(tree).await?.snapshot)
     }
 
     /// Returns the snapshot of a specific store within a given tree.

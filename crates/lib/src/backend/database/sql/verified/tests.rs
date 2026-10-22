@@ -1,4 +1,4 @@
-//! Real PostgreSQL interleavings at the status/prefix transaction boundary.
+//! Real PostgreSQL interleavings at the status/frontier transaction boundary.
 //!
 //! SQL triggers park admission after eligibility reads, without changing the
 //! production Rust path. Each test uses an isolated schema in the test fixture.
@@ -120,7 +120,7 @@ async fn admission_race(competitor: Competitor) {
     .await
     .unwrap();
     sqlx::query(AssertSqlSafe(format!(
-        "CREATE TRIGGER pause_admission BEFORE INSERT ON verified_prefix \
+        "CREATE TRIGGER pause_admission BEFORE INSERT ON verified_tips \
          FOR EACH ROW WHEN (NEW.entry_id = '{child_id}') \
          EXECUTE FUNCTION pause_admission()"
     )))
@@ -167,18 +167,25 @@ async fn admission_race(competitor: Competitor) {
             .expect("operation must not panic")
             .unwrap();
     }
-    sqlx::query("DROP TRIGGER pause_admission ON verified_prefix")
+    sqlx::query("DROP TRIGGER pause_admission ON verified_tips")
         .execute(backend.pool())
         .await
         .unwrap();
 
-    // Inspect retained state before the repair oracle can mask a stale prefix.
+    // Inspect committed labels and retained tips without invoking a repairing oracle.
     let retained = backend.verified_snapshot(&root_id).await.unwrap();
-    let rebuilt = backend.rebuild_verified_state(&root_id).await.unwrap();
-    assert_eq!(
-        retained, rebuilt,
-        "concurrent status/prefix decisions must equal cold reconstruction"
-    );
+    for entry in backend.get_tree(&root_id).await.unwrap() {
+        if backend.get_verification_status(&entry.id()).await.unwrap()
+            == VerificationStatus::Verified
+        {
+            for parent in entry.parents().unwrap() {
+                assert_eq!(
+                    backend.get_verification_status(&parent).await.unwrap(),
+                    VerificationStatus::Verified
+                );
+            }
+        }
+    }
     let expected = match competitor {
         Competitor::DemoteAncestor => {
             assert_eq!(

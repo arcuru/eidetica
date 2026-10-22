@@ -243,13 +243,11 @@ async fn delegated_present_unverified_tip_is_retryable() {
 /// from delegated validation (normal demotion cascades to descendants).
 #[tokio::test]
 async fn delegated_verified_tip_requires_every_ancestor_verified() {
-    let fx = fixture().await;
-    let latest = advance(&fx.identity, "identity-v2").await;
-    let claim = fx.via_identity(&fx.tips().await, &latest).await;
-    // i1 is neither the claim tip (i2) nor the configured pointer (i0).
-    // Checking just those directly named tips would miss this interior node.
-    let ancestor = &fx.i1[0];
     for status in [VerificationStatus::Unverified, VerificationStatus::Failed] {
+        let fx = fixture().await;
+        let latest = advance(&fx.identity, "identity-v2").await;
+        let claim = fx.via_identity(&fx.tips().await, &latest).await;
+        let ancestor = &fx.i1[0];
         fx.engine()
             .update_verification_status(ancestor, status)
             .await
@@ -259,27 +257,27 @@ async fn delegated_verified_tip_requires_every_ancestor_verified() {
                 .get_verification_status(&latest[0])
                 .await
                 .unwrap(),
-            VerificationStatus::Verified,
-            "negative control must hide an unsettled ancestor behind a Verified tip"
+            VerificationStatus::Unverified,
+            "demotion must invalidate dependent labels"
         );
-        match fx.validate(&claim).await {
-            Err(Error::Auth(e)) if e.is_delegated_tree_unsynced() => {
-                assert_eq!(status, VerificationStatus::Unverified);
-                assert!(
-                    matches!(*e, AuthError::DelegatedTreeUnsynced { ref missing, .. }
-                    if missing.contains(ancestor))
-                );
-            }
-            Ok(false) => assert_eq!(status, VerificationStatus::Failed),
-            result => panic!("unexpected verdict for {status:?}: {result:?}"),
+        // A missing Verified proof is never accepted, even if a cached projection exists.
+        assert!(!matches!(fx.validate(&claim).await, Ok(true)));
+        if status == VerificationStatus::Unverified {
+            fx.identity.verify().await.unwrap();
+            fx.accept(&claim, "reverification restores complete ancestry")
+                .await;
+        } else {
+            fx.identity.verify().await.unwrap();
+            assert_eq!(
+                fx.engine()
+                    .get_verification_status(&latest[0])
+                    .await
+                    .unwrap(),
+                VerificationStatus::Failed
+            );
+            fx.reject(&claim, "Failed ancestor remains terminal").await;
         }
     }
-    fx.engine()
-        .update_verification_status(ancestor, VerificationStatus::Verified)
-        .await
-        .unwrap();
-    fx.accept(&claim, "restored complete Verified ancestry permits retry")
-        .await;
 }
 
 /// Clearing a disposable projection must reconstruct a Verified parent's

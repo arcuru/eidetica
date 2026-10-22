@@ -563,8 +563,8 @@ async fn test_verified_frontier_prefix_cut_and_allow_unverified() {
     assert_eq!(tips, vec![a.clone()], "frontier must cut back to `a`");
     assert!(!tips.contains(&b) && !tips.contains(&c));
 
-    // allow_unverified view: raw tip `c` is visible (only `Failed` `b` is
-    // dropped from the set; `c` itself is still a Verified tip).
+    // The default read verified the demoted suffix and propagated Failed.
+    // allow_unverified still filters Failed raw tips; it is not a trust bypass.
     let loose_tips = tree
         .clone()
         .allow_unverified()
@@ -572,7 +572,10 @@ async fn test_verified_frontier_prefix_cut_and_allow_unverified() {
         .await
         .unwrap()
         .into_tips();
-    assert_eq!(loose_tips, vec![c.clone()], "loose view keeps raw tip `c`");
+    assert!(
+        loose_tips.is_empty(),
+        "loose view must filter the now-Failed raw tip"
+    );
 
     // The setting is per-handle and composes with the original handle being
     // unchanged.
@@ -822,42 +825,25 @@ async fn test_diamond_dag_taint_propagation() {
 async fn test_allow_unverified_composes_with_key_for_writes() {
     let (instance, tree, _key) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
-
-    let a = add_data_to_subtree(&tree, "data", &[("s", "a")]).await;
-    let b = add_data_to_subtree(&tree, "data", &[("s", "b")]).await;
-
-    // Taint the interior entry `a`. Default frontier now cuts back before
-    // `a`; `b` (still Verified, but reachable only through Failed `a`) is
-    // hidden from the default view.
+    let loose = tree.clone().allow_unverified();
+    let a = add_data_to_subtree(&loose, "data", &[("s", "a")]).await;
+    let b = add_data_to_subtree(&loose, "data", &[("s", "b")]).await;
+    // The loose handle retains its signing key, but cannot write Verified
+    // descendants behind a Failed ancestor.
     backend
         .update_verification_status(&a, VerificationStatus::Failed)
         .await
         .unwrap();
-    let default_tips = tree.snapshot().await.unwrap().into_tips();
+    assert_eq!(
+        backend.get_verification_status(&b).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+    assert!(loose.snapshot().await.unwrap().is_empty());
     assert!(
-        !default_tips.contains(&b),
-        "default view must not expose state behind a Failed ancestor"
+        loose.new_transaction().await.is_err(),
+        "Failed raw tips cannot anchor a transaction"
     );
-
-    // The loose handle keeps the signing key (set via `..self`) and sees the
-    // raw tip `b`, so it can commit on top of it.
-    let loose = tree.clone().allow_unverified();
-    assert_eq!(loose.snapshot().await.unwrap().into_tips(), vec![b.clone()]);
-    let e = add_data_to_subtree(&loose, "data", &[("s", "e")]).await;
-
-    // The new entry was locally validated → Verified, and built on `b`.
-    assert_eq!(
-        backend.get_verification_status(&e).await.unwrap(),
-        VerificationStatus::Verified
-    );
-    assert_eq!(
-        tree.get_entry(&e).await.unwrap().parents().unwrap(),
-        vec![b]
-    );
-    // Loose view advances to `e`; the default frontier is still cut (the new
-    // entry sits behind the Failed `a`, so it remains hidden by default).
-    assert_eq!(loose.snapshot().await.unwrap().into_tips(), vec![e.clone()]);
-    assert!(!tree.snapshot().await.unwrap().into_tips().contains(&e));
+    assert!(!tree.snapshot().await.unwrap().tips().contains(&b));
 }
 
 /// The access-time auto-verify hook in `snapshot` must handle *multiple*
@@ -1118,16 +1104,18 @@ async fn test_deep_chain_frontier_cut() {
         vec![chain[failed_idx - 1].clone()],
         "frontier must cut to the last all-Verified prefix entry"
     );
-    // The loose view keeps the raw tip (#29) — only Failed is dropped, and
-    // #29 itself is Verified.
+    // The default read re-verifies the demoted suffix and propagates Failed.
     assert_eq!(
+        backend.get_verification_status(&chain[29]).await.unwrap(),
+        VerificationStatus::Failed
+    );
+    assert!(
         tree.clone()
             .allow_unverified()
             .snapshot()
             .await
             .unwrap()
-            .into_tips(),
-        vec![chain[29].clone()]
+            .is_empty()
     );
 }
 

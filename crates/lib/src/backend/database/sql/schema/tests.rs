@@ -430,3 +430,195 @@ async fn lower_schema_version_keeps_unknown_migration_error() {
     assert_eq!(db.versions().await, vec![(unsupported,)]);
     db.cleanup().await;
 }
+
+include!("mainline_v0.rs");
+
+/// Real mainline DDL, not a current database with its version marker changed.
+async fn mainline_fixture(db: &TestDatabase) -> (Entry, Entry, Entry) {
+    for statement in MAINLINE_V0.split(';').filter(|s| !s.trim().is_empty()) {
+        let statement = statement.replace("BLOB", "BYTEA");
+        db.pool
+            .execute(sqlx::AssertSqlSafe(statement))
+            .await
+            .unwrap();
+    }
+    let root = Entry::root_builder().build().unwrap();
+    let parent = Entry::builder(root.id())
+        .add_parent(root.id())
+        .set_subtree_data("test", b"parent")
+        .build()
+        .unwrap();
+    let child = Entry::builder(root.id())
+        .add_parent(parent.id())
+        .set_subtree_data("test", b"child")
+        .build()
+        .unwrap();
+    for (entry, status) in [(&root, 0i64), (&parent, 2), (&child, 0)] {
+        sqlx::query("INSERT INTO entries (id, tree_id, is_root, verification_status, height, entry_cbor) VALUES ($1,$2,$3,$4,$5,$6)")
+            .bind(entry.id().to_string()).bind(root.id().to_string()).bind(i64::from(entry.is_root()))
+            .bind(status).bind(99i64).bind(entry.to_dagcbor().unwrap()).execute(&db.pool).await.unwrap();
+        for parent in entry.parents().unwrap() {
+            sqlx::query("INSERT INTO tree_parents (child_id, parent_id) VALUES ($1,$2)")
+                .bind(entry.id().to_string())
+                .bind(parent.to_string())
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+    }
+    (root, parent, child)
+}
+
+#[tokio::test]
+async fn mainline_migration_repairs_statuses_and_retains_only_tips() {
+    use crate::backend::VerificationStatus;
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let (root, parent, child) = mainline_fixture(&db).await;
+    let backend = db.open().await.unwrap();
+    assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
+    assert_eq!(
+        backend.get_verification_status(&child.id()).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+    assert_eq!(
+        backend.verified_snapshot(&root.id()).await.unwrap().tips(),
+        &[root.id()]
+    );
+    for entry in [&root, &parent, &child] {
+        assert_eq!(&backend.get(&entry.id()).await.unwrap(), entry);
+    }
+    assert_eq!(
+        backend
+            .repair_verification(&root.id())
+            .await
+            .unwrap()
+            .demoted,
+        0
+    );
+    for entry in [&parent, &child] {
+        backend
+            .update_verification_status(&entry.id(), VerificationStatus::Verified)
+            .await
+            .unwrap();
+    }
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM verified_tips")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "interior Verified entries must have no retained membership rows"
+    );
+    assert_eq!(
+        backend.verified_snapshot(&root.id()).await.unwrap().tips(),
+        &[child.id()]
+    );
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn migration_failure_rolls_back_schema_statuses_and_version() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let (_, _, child) = mainline_fixture(&db).await;
+    sqlx::query("UPDATE entries SET entry_cbor = $1 WHERE id = $2")
+        .bind(b"invalid".to_vec())
+        .bind(child.id().to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let before_catalog = db.catalog().await;
+    let before_content = db.content().await;
+    assert!(db.open().await.is_err());
+    assert_eq!(db.versions().await, vec![(0,)]);
+    assert_eq!(db.catalog().await, before_catalog);
+    assert_eq!(db.content().await, before_content);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn candidate_prefix_format_is_refused_without_ddl_or_data_changes() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    mainline_fixture(&db).await;
+    db.pool
+        .execute("CREATE TABLE verified_prefix (tree_id TEXT, entry_id TEXT, is_frontier BIGINT)")
+        .await
+        .unwrap();
+    db.pool
+        .execute("UPDATE schema_version SET version = 1")
+        .await
+        .unwrap();
+    let before_catalog = db.catalog().await;
+    let before_content = db.content().await;
+    let error = match db.open().await {
+        Ok(_) => panic!("old candidate must be refused"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("Unsupported prefix-tracking candidate format"),
+        "{error}"
+    );
+    assert_eq!(db.versions().await, vec![(1,)]);
+    assert_eq!(db.catalog().await, before_catalog);
+    assert_eq!(db.content().await, before_content);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn status_and_tip_failure_roll_back_together() {
+    use crate::backend::VerificationStatus;
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let (root, parent, child) = mainline_fixture(&db).await;
+    let backend = db.open().await.unwrap();
+    for entry in [&parent, &child] {
+        backend
+            .update_verification_status(&entry.id(), VerificationStatus::Verified)
+            .await
+            .unwrap();
+    }
+    let next = Entry::builder(root.id())
+        .add_parent(child.id())
+        .set_subtree_data("test", b"next")
+        .build()
+        .unwrap();
+    backend.put(next.clone()).await.unwrap();
+    if backend.is_sqlite() {
+        db.pool.execute("CREATE TRIGGER fail_tip BEFORE INSERT ON verified_tips BEGIN SELECT RAISE(ABORT, 'injected tip failure'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE FUNCTION fail_tip() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected tip failure'; END $$").await.unwrap();
+        db.pool.execute("CREATE TRIGGER fail_tip BEFORE INSERT ON verified_tips FOR EACH ROW EXECUTE FUNCTION fail_tip()").await.unwrap();
+    }
+    let before = db.content().await;
+    let tips = backend.verified_snapshot(&root.id()).await.unwrap();
+    assert!(
+        backend
+            .update_verification_status(&parent.id(), VerificationStatus::Unverified)
+            .await
+            .is_err()
+    );
+    assert_eq!(db.content().await, before);
+    assert_eq!(backend.verified_snapshot(&root.id()).await.unwrap(), tips);
+    assert!(
+        backend
+            .update_verification_status(&next.id(), VerificationStatus::Verified)
+            .await
+            .is_err()
+    );
+    assert_eq!(db.content().await, before);
+    assert_eq!(backend.verified_snapshot(&root.id()).await.unwrap(), tips);
+    assert!(backend.repair_verification(&root.id()).await.is_err());
+    assert_eq!(db.content().await, before);
+    assert_eq!(backend.verified_snapshot(&root.id()).await.unwrap(), tips);
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}

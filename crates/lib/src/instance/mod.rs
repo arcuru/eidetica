@@ -1930,8 +1930,8 @@ impl Instance {
     /// retroactive settings-change-driven invalidation) it should route
     /// through this method.
     ///
-    /// O(N) per call: walks `get_tree` to build a children index. Cheap
-    /// for the test sizes this targets; not a hot path.
+    /// O(N) maintenance, delegated to one atomic backend status/descendant/frontier
+    /// update. Failed decisions are preserved; not a hot path.
     ///
     /// Exposed publicly under `cfg(test)` and the `testing` feature so
     /// integration tests in the `it` crate can use it; otherwise
@@ -1947,48 +1947,18 @@ impl Instance {
     }
 
     async fn demote_to_unverified_impl(&self, tree_id: &ID, entry_id: &ID) -> Result<()> {
-        use std::collections::{HashMap, HashSet, VecDeque};
         let backend = self.require_local_engine()?;
-        let entries = backend.get_tree(tree_id).await?;
-
-        // Build children index from each entry's parents.
-        let mut children: HashMap<ID, Vec<ID>> = HashMap::new();
-        for entry in &entries {
-            for p in entry.parents().unwrap_or_default() {
-                children.entry(p).or_default().push(entry.id());
+        let entry = backend.get(entry_id).await?;
+        if !entry.in_tree(tree_id) {
+            return Err(crate::backend::errors::BackendError::EntryNotInTree {
+                entry_id: entry_id.clone(),
+                tree_id: tree_id.clone(),
             }
+            .into());
         }
-
-        // BFS from the target. The target itself always gets demoted
-        // (caller's intent); descendants get demoted only if they are
-        // currently `Verified`. `Failed` or `Unverified` descendants
-        // are left as-is — `Failed` is terminal, `Unverified` is
-        // already at the target state.
-        let mut queue: VecDeque<ID> = VecDeque::new();
-        queue.push_back(entry_id.clone());
-        let mut visited: HashSet<ID> = HashSet::new();
-        while let Some(id) = queue.pop_front() {
-            if !visited.insert(id.clone()) {
-                continue;
-            }
-            let status = match backend.get_verification_status(&id).await {
-                Ok(s) => s,
-                Err(e) if e.is_not_found() => continue,
-                Err(e) => return Err(e),
-            };
-            let is_target = id == *entry_id;
-            if is_target || status == VerificationStatus::Verified {
-                backend
-                    .update_verification_status(&id, VerificationStatus::Unverified)
-                    .await?;
-            }
-            if let Some(kids) = children.get(&id) {
-                for kid in kids {
-                    queue.push_back(kid.clone());
-                }
-            }
-        }
-        Ok(())
+        backend
+            .update_verification_status(entry_id, VerificationStatus::Unverified)
+            .await
     }
 
     /// Dispatch callbacks for a write event.

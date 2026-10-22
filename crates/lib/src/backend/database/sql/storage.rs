@@ -454,10 +454,10 @@ pub async fn reset_local_verification(backend: &SqlxBackend) -> Result<()> {
         .execute(&mut *tx)
         .await
         .sql_context("Failed to reset verification statuses")?;
-    // With every status Unverified the retained verified prefix is empty in
+    // With every status Unverified the retained verified frontier is empty in
     // every tree; clearing it here publishes the reset atomically with the
     // status write, so no reader observes a stale retained frontier.
-    sqlx::query("DELETE FROM verified_prefix")
+    sqlx::query("DELETE FROM verified_tips")
         .execute(&mut *tx)
         .await
         .sql_context("Failed to clear retained verified frontier")?;

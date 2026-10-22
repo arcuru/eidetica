@@ -1040,6 +1040,10 @@ impl BackendImpl for SqlxBackend {
         verified::verified_snapshot(self, tree).await
     }
 
+    async fn repair_verification(&self, tree: &ID) -> Result<crate::backend::VerificationRepair> {
+        verified::repair_verification(self, tree).await
+    }
+
     async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
         verified::rebuild_verified_state(self, tree).await
     }

@@ -15,10 +15,10 @@ use crate::{
 };
 
 /// The current persistence file format version.
-/// v1 adds the retained per-tree verified prefix/frontier beside raw tips.
-const PERSISTENCE_VERSION: u8 = 1;
+/// v2 retains verified tips only; unreleased v1 prefix files are refused.
+const PERSISTENCE_VERSION: u8 = 2;
 
-// v0 files predate the retained verified state; their prefix/frontier is
+// v0 files predate the retained verified state; their frontier is
 // rebuilt from entries and statuses on load.
 /// Helper to check if version is default (0) for serde skip_serializing_if
 fn is_v0(v: &u8) -> bool {
@@ -32,7 +32,7 @@ where
 {
     use serde::Deserialize;
     let version = u8::deserialize(deserializer)?;
-    if version > PERSISTENCE_VERSION {
+    if version != 0 && version != PERSISTENCE_VERSION {
         return Err(serde::de::Error::custom(format!(
             "unsupported persistence version {version}; newest supported version \
              is {PERSISTENCE_VERSION} (v0 files rebuild retained state on load)"
@@ -73,8 +73,8 @@ struct SerializableDatabase {
     /// Cached tips grouped by tree
     #[serde(default)]
     tips: HashMap<ID, TreeTipsCache>,
-    /// Retained verified prefix/frontier per tree. Absent in v0 files and
-    /// rebuilt on load; persisted since v1.
+    /// Retained verified frontier per tree. Absent in v0 files and
+    /// rebuilt on load; persisted since v2.
     #[serde(default)]
     verified: HashMap<ID, VerifiedState>,
 }
@@ -292,14 +292,14 @@ mod persistence_tests {
     }
 
     #[test]
-    fn v1_round_trip_retains_verified_frontier() {
+    fn v2_round_trip_retains_verified_frontier() {
         let (backend, root_id, a_id) = verified_chain();
         let before =
             super::super::storage::verified_snapshot(&backend.inner.read().unwrap(), &root_id);
         assert_eq!(before.tips(), std::slice::from_ref(&a_id));
 
         let value = serde_json::to_value(&backend).expect("serializes");
-        assert_eq!(value["_v"], 1);
+        assert_eq!(value["_v"], 2);
         assert!(value.get("verified").is_some());
 
         let loaded: InMemory = serde_json::from_value(value).expect("deserializes");
@@ -323,11 +323,11 @@ mod persistence_tests {
         assert_eq!(after.tips(), &[a_id]);
     }
 
-    /// A v1 file is trusted as persisted: an emptied retained map loads
+    /// A v2 file is trusted as persisted: an emptied retained map loads
     /// empty rather than silently rescanning history. (Repair is an
     /// explicit `rebuild_verified_state` call, not a load side effect.)
     #[test]
-    fn v1_file_trusts_persisted_state() {
+    fn v2_file_trusts_persisted_state() {
         let (backend, root_id, _) = verified_chain();
         let mut value = serde_json::to_value(&backend).expect("serializes");
         value["verified"] = serde_json::Value::Object(Default::default());
@@ -336,5 +336,115 @@ mod persistence_tests {
         let after =
             super::super::storage::verified_snapshot(&loaded.inner.read().unwrap(), &root_id);
         assert!(after.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+    use crate::backend::BackendImpl;
+
+    #[tokio::test]
+    async fn persisted_tips_scale_with_frontier_not_history_and_repair_is_conservative() {
+        let backend = InMemory::new();
+        let root = Entry::root_builder().build().unwrap();
+        let tree = root.id();
+        backend.put(root).await.unwrap();
+        backend
+            .update_verification_status(&tree, VerificationStatus::Verified)
+            .await
+            .unwrap();
+        let mut ids = vec![tree.clone()];
+        for _ in 0..128 {
+            let entry = Entry::builder(tree.clone())
+                .add_parent(ids.last().unwrap().clone())
+                .build()
+                .unwrap();
+            let id = entry.id();
+            backend.put(entry).await.unwrap();
+            backend
+                .update_verification_status(&id, VerificationStatus::Verified)
+                .await
+                .unwrap();
+            ids.push(id);
+        }
+        let value = serde_json::to_value(&backend).unwrap();
+        let state = &value["verified"][tree.to_string()];
+        assert_eq!(state["frontier"].as_array().unwrap().len(), 1);
+        assert!(state.get("prefix").is_none());
+        assert_eq!(
+            backend
+                .get_entries_by_verification_status(VerificationStatus::Verified)
+                .await
+                .unwrap()
+                .len(),
+            129
+        );
+        // Corrupt only local labels, as an old mainline database can contain.
+        backend
+            .inner
+            .write()
+            .unwrap()
+            .verification_status
+            .insert(ids[64].clone(), VerificationStatus::Failed);
+        let report = backend.repair_verification(&tree).await.unwrap();
+        assert_eq!(report.demoted, 64);
+        assert_eq!(report.snapshot.tips(), &[ids[63].clone()]);
+        assert_eq!(
+            backend.get_verification_status(&ids[64]).await.unwrap(),
+            VerificationStatus::Failed
+        );
+        assert_eq!(backend.repair_verification(&tree).await.unwrap().demoted, 0);
+        assert_eq!(backend.inner.read().unwrap().entries.len(), 129);
+        let loaded: InMemory =
+            serde_json::from_value(serde_json::to_value(&backend).unwrap()).unwrap();
+        assert_eq!(
+            loaded.verified_snapshot(&tree).await.unwrap(),
+            report.snapshot
+        );
+    }
+
+    #[tokio::test]
+    async fn mainline_file_repairs_inconsistent_labels_and_candidate_file_is_refused() {
+        let backend = InMemory::new();
+        let root = Entry::root_builder().build().unwrap();
+        let tree = root.id();
+        let child = Entry::builder(tree.clone())
+            .add_parent(tree.clone())
+            .build()
+            .unwrap();
+        let child_id = child.id();
+        backend.put(root.clone()).await.unwrap();
+        backend.put(child.clone()).await.unwrap();
+        let mut mainline = serde_json::json!({
+            "entries": { tree.to_string(): root, child_id.to_string(): child },
+            "verification_status": { tree.to_string(): "Unverified", child_id.to_string(): "Verified" },
+            "tips": {}, "instance_metadata": null, "instance_secrets": null
+        });
+        let loaded: InMemory = serde_json::from_value(mainline.clone()).unwrap();
+        assert_eq!(
+            loaded.get_verification_status(&child_id).await.unwrap(),
+            VerificationStatus::Unverified
+        );
+        assert_eq!(
+            loaded.get(&child_id).await.unwrap(),
+            backend.get(&child_id).await.unwrap()
+        );
+        loaded
+            .update_verification_status(&tree, VerificationStatus::Verified)
+            .await
+            .unwrap();
+        loaded
+            .update_verification_status(&child_id, VerificationStatus::Verified)
+            .await
+            .unwrap();
+        assert_eq!(
+            loaded.verified_snapshot(&tree).await.unwrap().tips(),
+            &[child_id]
+        );
+        mainline["_v"] = serde_json::json!(1);
+        mainline["verified"] =
+            serde_json::json!({ tree.to_string(): {"prefix": [tree], "frontier": []} });
+        assert!(serde_json::from_value::<InMemory>(mainline).is_err());
     }
 }

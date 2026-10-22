@@ -1,4 +1,4 @@
-//! Retained verified prefix/frontier tests.
+//! Retained verified tips and ancestor-closed status tests.
 //!
 //! The default read view (`verified_snapshot`) must equal a cold full
 //! rebuild after every insertion and promotion order, on every backend.
@@ -38,6 +38,53 @@ async fn promote(backend: &dyn BackendImpl, ids: &[ID]) {
     }
 }
 
+/// Independent read-only reconstruction: repeated closure expansion, not the
+/// production Kahn repair. Never mutates labels/tips before comparing them.
+async fn oracle(backend: &dyn BackendImpl, tree: &ID) -> Snapshot {
+    let entries = backend.get_tree(tree).await.unwrap();
+    let mut verified = HashSet::new();
+    for entry in &entries {
+        if backend.get_verification_status(&entry.id()).await.unwrap()
+            == VerificationStatus::Verified
+        {
+            verified.insert(entry.id());
+        }
+    }
+    let mut accepted = HashSet::new();
+    loop {
+        let before = accepted.len();
+        for entry in &entries {
+            if entry.in_tree(tree)
+                && verified.contains(&entry.id())
+                && entry
+                    .parents()
+                    .unwrap()
+                    .iter()
+                    .all(|id| accepted.contains(id))
+            {
+                accepted.insert(entry.id());
+            }
+        }
+        if before == accepted.len() {
+            break;
+        }
+    }
+    // All persisted Verified labels, not just selected tips, must be closed.
+    assert_eq!(
+        verified, accepted,
+        "Verified labels must have complete Verified ancestry"
+    );
+    let mut tips = accepted.clone();
+    for entry in &entries {
+        if accepted.contains(&entry.id()) {
+            for parent in entry.parents().unwrap() {
+                tips.remove(&parent);
+            }
+        }
+    }
+    Snapshot::new(tips.into_iter().collect())
+}
+
 /// Assert the retained frontier equals `expected` AND a cold full rebuild —
 /// the incremental promotion path must match the oracle after every order.
 async fn assert_verified(backend: &dyn BackendImpl, tree: &ID, expected: &[ID]) {
@@ -47,7 +94,7 @@ async fn assert_verified(backend: &dyn BackendImpl, tree: &ID, expected: &[ID]) 
         expected.iter().collect::<HashSet<_>>(),
         "retained verified frontier mismatch"
     );
-    let rebuilt = backend.rebuild_verified_state(tree).await.unwrap();
+    let rebuilt = oracle(backend, tree).await;
     assert_eq!(
         retained, rebuilt,
         "incremental verified state must equal a cold full rebuild"
@@ -153,16 +200,24 @@ async fn child_before_parent_promotion() {
     let b_id = b.id();
     backend.put(b).await.unwrap();
 
-    // A promotion that arrives before its parents simply waits: nothing is
-    // admitted until the missing ancestors join the prefix.
-    promote(&*backend, std::slice::from_ref(&b_id)).await;
-    assert_retained(&*backend, &root_id, &[]).await;
-    promote(&*backend, std::slice::from_ref(&a_id)).await;
-    assert_retained(&*backend, &root_id, &[]).await;
+    for id in [&b_id, &a_id] {
+        assert!(
+            backend
+                .update_verification_status(id, VerificationStatus::Verified)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            backend.get_verification_status(id).await.unwrap(),
+            VerificationStatus::Unverified
+        );
+    }
+    assert_verified(&*backend, &root_id, &[]).await;
     promote(&*backend, std::slice::from_ref(&root_id)).await;
-    // Promoting the last missing parent recursively activates the waiting
-    // descendants — no read-time scan needed.
-    assert_verified(&*backend, &root_id, std::slice::from_ref(&b_id)).await;
+    assert_verified(&*backend, &root_id, std::slice::from_ref(&root_id)).await;
+    // Only validator retries may promote the descendants, in causal order.
+    promote(&*backend, &[a_id, b_id.clone()]).await;
+    assert_verified(&*backend, &root_id, &[b_id]).await;
 }
 
 #[tokio::test]
@@ -194,15 +249,19 @@ async fn diamond_converges_regardless_of_promotion_order() {
             )
             .await;
         } else {
-            // Merge first: both its parents are missing from the prefix, so
-            // it waits until the last one is promoted.
+            assert!(
+                backend
+                    .update_verification_status(&merge_id, VerificationStatus::Verified)
+                    .await
+                    .is_err()
+            );
             promote(
                 &*backend,
                 &[
-                    merge_id.clone(),
+                    root_id.clone(),
                     right_id.clone(),
                     left_id.clone(),
-                    root_id.clone(),
+                    merge_id.clone(),
                 ],
             )
             .await;
@@ -246,9 +305,12 @@ async fn failed_ancestor_blocks_verified_descendant() {
         .update_verification_status(&bad_id, VerificationStatus::Failed)
         .await
         .unwrap();
-    // Even promoted, the grandchild can never enter the prefix: its parent
-    // is Failed and Failed never enters the prefix.
-    promote(&*backend, std::slice::from_ref(&grandchild_id)).await;
+    assert!(
+        backend
+            .update_verification_status(&grandchild_id, VerificationStatus::Verified)
+            .await
+            .is_err()
+    );
     assert_verified(&*backend, &root_id, std::slice::from_ref(&root_id)).await;
 }
 
@@ -326,9 +388,13 @@ async fn demotion_rebuilds_and_repromotion_recovers() {
         .unwrap();
     assert_verified(&*backend, &root_id, std::slice::from_ref(&root_id)).await;
 
-    // Re-promoting the missing parent recursively re-admits the still-
-    // Verified descendant.
+    assert_eq!(
+        backend.get_verification_status(&b_id).await.unwrap(),
+        VerificationStatus::Unverified
+    );
     promote(&*backend, std::slice::from_ref(&a_id)).await;
+    assert_verified(&*backend, &root_id, std::slice::from_ref(&a_id)).await;
+    promote(&*backend, std::slice::from_ref(&b_id)).await;
     assert_verified(&*backend, &root_id, std::slice::from_ref(&b_id)).await;
 }
 
@@ -491,12 +557,24 @@ async fn shuffled_orders_equal_cold_rebuild() {
         } else {
             VerificationStatus::Verified
         };
-        backend
-            .update_verification_status(&ids[i], status)
-            .await
-            .unwrap();
+        let eligible = status != VerificationStatus::Verified || {
+            let mut all_verified = true;
+            for parent in entries[i].parents().unwrap() {
+                all_verified &= backend.get_verification_status(&parent).await.unwrap()
+                    == VerificationStatus::Verified;
+            }
+            all_verified
+        };
+        let result = backend.update_verification_status(&ids[i], status).await;
+        assert_eq!(result.is_ok(), eligible);
+        if !eligible {
+            assert_eq!(
+                backend.get_verification_status(&ids[i]).await.unwrap(),
+                VerificationStatus::Unverified
+            );
+        }
         let retained = backend.verified_snapshot(&root_id).await.unwrap();
-        let rebuilt = backend.rebuild_verified_state(&root_id).await.unwrap();
+        let rebuilt = oracle(&*backend, &root_id).await;
         assert_eq!(
             retained, rebuilt,
             "incremental diverged from cold rebuild after promoting entry {i}"
@@ -826,16 +904,27 @@ async fn promotion_rejects_unverified_missing_and_foreign_parents_atomically() {
     let root = root_entry();
     let tree = root.id();
     backend.put(root).await.unwrap();
-    let missing = child_entry(&tree, &[tree.clone()], "missing", 1);
-    let foreign = Entry::root_builder().set_subtree_data("test", b"foreign").build().unwrap();
+    let missing = child_entry(&tree, std::slice::from_ref(&tree), "missing", 1);
+    let foreign = Entry::root_builder()
+        .set_subtree_data("test", b"foreign")
+        .build()
+        .unwrap();
     let foreign_id = foreign.id();
     backend.put_verified(foreign).await.unwrap();
     for parent in [tree.clone(), missing.id(), foreign_id] {
         let child = child_entry(&tree, &[parent], "rejected", 2);
         let id = child.id();
         backend.put(child).await.unwrap();
-        assert!(backend.update_verification_status(&id, VerificationStatus::Verified).await.is_err());
-        assert_eq!(backend.get_verification_status(&id).await.unwrap(), VerificationStatus::Unverified);
+        assert!(
+            backend
+                .update_verification_status(&id, VerificationStatus::Verified)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            backend.get_verification_status(&id).await.unwrap(),
+            VerificationStatus::Unverified
+        );
         assert_retained(&*backend, &tree, &[]).await;
     }
 }
@@ -847,16 +936,38 @@ async fn demotion_cascades_across_join_without_forgiving_failed_entries() {
     let join = child_entry(&tree, &[b.clone(), c.clone()], "join", 3);
     let join_id = join.id();
     backend.put_verified(join).await.unwrap();
-    let failed = child_entry(&tree, &[a.clone()], "failed", 2);
+    let failed = child_entry(&tree, std::slice::from_ref(&a), "failed", 2);
     let failed_id = failed.id();
     backend.put(failed).await.unwrap();
-    backend.update_verification_status(&failed_id, VerificationStatus::Failed).await.unwrap();
-    backend.update_verification_status(&a, VerificationStatus::Unverified).await.unwrap();
+    backend
+        .update_verification_status(&failed_id, VerificationStatus::Failed)
+        .await
+        .unwrap();
+    backend
+        .update_verification_status(&a, VerificationStatus::Unverified)
+        .await
+        .unwrap();
     for id in [&a, &b, &join_id] {
-        assert_eq!(backend.get_verification_status(id).await.unwrap(), VerificationStatus::Unverified);
+        assert_eq!(
+            backend.get_verification_status(id).await.unwrap(),
+            VerificationStatus::Unverified
+        );
     }
-    assert_eq!(backend.get_verification_status(&failed_id).await.unwrap(), VerificationStatus::Failed);
+    assert_eq!(
+        backend.get_verification_status(&failed_id).await.unwrap(),
+        VerificationStatus::Failed
+    );
     assert_retained(&*backend, &tree, &[c]).await;
-    assert!(backend.update_verification_status(&failed_id, VerificationStatus::Verified).await.is_err());
-    assert!(backend.update_verification_status(&failed_id, VerificationStatus::Unverified).await.is_err());
+    assert!(
+        backend
+            .update_verification_status(&failed_id, VerificationStatus::Verified)
+            .await
+            .is_err()
+    );
+    assert!(
+        backend
+            .update_verification_status(&failed_id, VerificationStatus::Unverified)
+            .await
+            .is_err()
+    );
 }
