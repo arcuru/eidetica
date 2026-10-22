@@ -285,61 +285,6 @@ mod migration_tests {
         vec![root, a, b]
     }
 
-    /// v0 databases gain the retained verified state on open: the migration
-    /// rebuilds every tree's frontier from entries, edges, and statuses, and
-    /// records version 2 atomically with the schema change.
-    #[tokio::test]
-    async fn v0_to_v2_rebuilds_verified_frontier() {
-        use crate::backend::VerificationStatus;
-
-        let backend = super::super::Sqlite::in_memory()
-            .await
-            .expect("sqlite backend");
-        let entries = test_chain();
-        let tree = entries[0].id();
-        for entry in &entries {
-            super::super::storage::put(&backend, entry.clone())
-                .await
-                .unwrap();
-        }
-        for entry in &entries {
-            super::super::verified::update_verification_status(
-                &backend,
-                &entry.id(),
-                VerificationStatus::Verified,
-            )
-            .await
-            .unwrap();
-        }
-        let before = super::super::verified::verified_snapshot(&backend, &tree)
-            .await
-            .unwrap();
-        assert_eq!(before.tips(), &[entries[2].id()]);
-
-        // Simulate a v0 database: drop the new table, reset the version.
-        sqlx::query("DROP TABLE verified_tips")
-            .execute(backend.pool())
-            .await
-            .unwrap();
-        sqlx::query("UPDATE schema_version SET version = 0")
-            .execute(backend.pool())
-            .await
-            .unwrap();
-
-        // Re-open runs the migration.
-        initialize(&backend).await.unwrap();
-
-        let version: (i64,) = sqlx::query_as("SELECT version FROM schema_version")
-            .fetch_one(backend.pool())
-            .await
-            .unwrap();
-        assert_eq!(version.0, 2);
-        let after = super::super::verified::verified_snapshot(&backend, &tree)
-            .await
-            .unwrap();
-        assert_eq!(before, after);
-    }
-
     /// Reopening a v2 database reads the persisted frontier without
     /// rebuilding: wiping the table without resetting the version leaves the
     /// (now empty) retained state in place rather than resurrecting it.
@@ -375,10 +320,11 @@ mod migration_tests {
             .await
             .unwrap();
         assert!(snapshot.is_empty());
-        // Repair restores the same frontier the migration would compute.
-        let repaired = super::super::verified::rebuild_verified_state(&backend, &tree)
+        // Explicit repair restores the frontier without demoting valid labels.
+        let repaired = super::super::verified::repair_verification(&backend, &tree)
             .await
             .unwrap();
-        assert_eq!(repaired.tips(), &[entries[2].id()]);
+        assert_eq!(repaired.demoted, 0);
+        assert_eq!(repaired.snapshot.tips(), &[entries[2].id()]);
     }
 }

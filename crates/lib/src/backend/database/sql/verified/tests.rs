@@ -17,7 +17,7 @@ const WAIT: Duration = Duration::from_secs(10);
 enum Competitor {
     DemoteAncestor,
     DemoteChild,
-    Rebuild,
+    Repair,
 }
 
 /// Wait for the real INSERT to reach the advisory-lock barrier. Polling
@@ -154,7 +154,7 @@ async fn admission_race(competitor: Competitor) {
                         .update_verification_status(&child_id, VerificationStatus::Failed)
                         .await
                 }
-                Competitor::Rebuild => backend.rebuild_verified_state(&root_id).await.map(|_| ()),
+                Competitor::Repair => backend.repair_verification(&root_id).await.map(|_| ()),
             }
         })
     };
@@ -201,8 +201,8 @@ async fn admission_race(competitor: Competitor) {
             );
             Snapshot::from([root_id])
         }
-        Competitor::Rebuild => {
-            assert!(blocked, "explicit rebuild must serialize with admission");
+        Competitor::Repair => {
+            assert!(blocked, "explicit repair must serialize with admission");
             Snapshot::from([child_id])
         }
     };
@@ -220,6 +220,6 @@ async fn postgres_admission_racing_same_entry_demotion() {
 }
 
 #[tokio::test]
-async fn postgres_admission_serializes_explicit_rebuild() {
-    admission_race(Competitor::Rebuild).await;
+async fn postgres_admission_serializes_explicit_repair() {
+    admission_race(Competitor::Repair).await;
 }

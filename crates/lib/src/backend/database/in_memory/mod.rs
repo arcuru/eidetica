@@ -600,10 +600,6 @@ impl BackendImpl for InMemory {
         storage::repair_verification(&mut inner, tree)
     }
 
-    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
-        Ok(self.repair_verification(tree).await?.snapshot)
-    }
-
     async fn store_snapshot(&self, tree: &ID, subtree: &str) -> Result<Snapshot> {
         // Fast path: check cache with read lock
         {

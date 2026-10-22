@@ -651,8 +651,11 @@ impl BackendImpl for Counting {
         self.inner.verified_snapshot(tree).await
     }
 
-    async fn rebuild_verified_state(&self, tree: &ID) -> eidetica::Result<Snapshot> {
-        self.inner.rebuild_verified_state(tree).await
+    async fn repair_verification(
+        &self,
+        tree: &ID,
+    ) -> eidetica::Result<eidetica::backend::VerificationRepair> {
+        self.inner.repair_verification(tree).await
     }
 
     async fn store_snapshot(&self, tree: &ID, store: &str) -> eidetica::Result<Snapshot> {

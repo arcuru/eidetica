@@ -257,10 +257,6 @@ pub(crate) fn repair_verification(
     Ok(apply_repair(inner, tree, plan))
 }
 
-pub(crate) fn rebuild_verified_state(inner: &mut InMemoryInner, tree: &ID) -> Result<Snapshot> {
-    Ok(repair_verification(inner, tree)?.snapshot)
-}
-
 /// Helper function to update tips for a given tree ID.
 ///
 /// Takes split borrows on entries (read) and tips (write) to avoid

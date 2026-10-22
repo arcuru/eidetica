@@ -142,10 +142,6 @@ pub async fn repair_verification(backend: &SqlxBackend, tree: &ID) -> Result<Ver
     Ok(result)
 }
 
-pub async fn rebuild_verified_state(backend: &SqlxBackend, tree: &ID) -> Result<Snapshot> {
-    Ok(repair_verification(backend, tree).await?.snapshot)
-}
-
 /// Shared by migration, explicit repair, and demotion. Caller holds the tree
 /// lock or exclusive offline migration ownership. Ancestry comes from immutable
 /// Entries, not stored heights or the disposable frontier.

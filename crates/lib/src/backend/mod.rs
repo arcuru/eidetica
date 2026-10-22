@@ -619,12 +619,6 @@ pub trait BackendImpl: Send + Sync + Any {
         Err(BackendError::VerificationRepairUnsupported.into())
     }
 
-    /// Compatibility entry point for conservative repair and frontier reconstruction.
-    /// Unlike a read-only reconstruction oracle, this may demote inconsistent labels.
-    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
-        Ok(self.repair_verification(tree).await?.snapshot)
-    }
-
     /// Returns the snapshot of a specific store within a given tree.
     ///
     /// Store tips are entries within the store that have no children *within
