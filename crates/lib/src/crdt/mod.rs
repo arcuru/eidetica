@@ -13,8 +13,9 @@
 //! - [`Map`] - Per-key composition of arbitrary CRDT operations
 //! - [`Lww`] - Ordered register operations with an explicit identity and tombstone
 //!
-//! `Map` and `Lww` provide standalone merge algebra, without built-in encoding
-//! or Store integration.
+//! `Map` and `Lww` provide standalone merge algebra without Store integration.
+//! `Lww<T>` and `Map<String, V>` have explicit DAG-CBOR [`Codec`]
+//! implementations that require only an encodable payload.
 //!
 //! # Traits
 //!
@@ -23,6 +24,7 @@
 
 // Core modules
 pub mod doc;
+mod envelope;
 pub mod errors;
 pub mod lww;
 pub mod map;

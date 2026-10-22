@@ -7,8 +7,10 @@ use std::sync::{
 
 use eidetica::{
     Error, Result,
-    crdt::{CRDT, CRDTError, Doc, Lww, Map},
+    crdt::{CRDT, CRDTError, Codec, Doc, Lww, Map, doc::Value},
 };
+
+use super::helpers::{Opaque, assert_codec_fixture, assert_codec_rejects};
 
 // Concatenation is associative, but neither commutative nor idempotent.
 // No Default, Codec or Serde: Map must not assume replacement-only values.
@@ -307,4 +309,186 @@ fn test_map_construction_and_insertion_without_clone_or_encoding() {
     assert!(empty.is_empty());
     assert_eq!(empty.len(), 0);
     assert_eq!(empty.iter().count(), 0);
+}
+
+fn opaque_map(entries: &[(&str, Lww<Opaque>)]) -> Map<String, Lww<Opaque>> {
+    let mut map = Map::new();
+    for (key, value) in entries {
+        map.insert((*key).to_owned(), value.clone());
+    }
+    map
+}
+
+fn round_trip<T: Codec>(value: &T) -> T {
+    T::decode(&value.encode().unwrap()).unwrap()
+}
+
+#[test]
+fn test_map_codec_stable_envelope_and_literal_keys() {
+    assert_codec_fixture(&Map::<String, Opaque>::new(), &[0x82, 0x00, 0x80]);
+    let mut map = Map::new();
+    // Inserted out of order; encoded in ascending key order.
+    map.insert("é".to_owned(), Opaque(vec![2]));
+    map.insert("a.b".to_owned(), Opaque(vec![1]));
+    map.insert(String::new(), Opaque(vec![]));
+    #[rustfmt::skip]
+    let bytes = [
+        0x82, 0x00, 0x83,
+        0x82, 0x60, 0x40,                         // ["", h'']
+        0x82, 0x63, b'a', b'.', b'b', 0x41, 0x01, // ["a.b", h'01']
+        0x82, 0x62, 0xc3, 0xa9, 0x41, 0x02,       // ["é", h'02']
+    ];
+    assert_codec_fixture(&map, &bytes);
+    // Dotted keys stay literal, not paths.
+    let decoded = Map::<String, Opaque>::decode(&bytes).unwrap();
+    assert_eq!(decoded.get("a.b"), Some(&Opaque(vec![1])));
+    assert_eq!(decoded.get("a"), None);
+}
+
+#[test]
+fn test_map_codec_order_is_deterministic() {
+    let keys = ["b", "", "ä", "a.b", "a", "\u{10ffff}", "B"];
+    let forward = keys
+        .iter()
+        .map(|key| (*key, Lww::Set(Opaque(key.as_bytes().to_vec()))))
+        .collect::<Vec<_>>();
+    let reverse = forward.iter().rev().cloned().collect::<Vec<_>>();
+    let encoded = opaque_map(&forward).encode().unwrap();
+    assert_eq!(opaque_map(&reverse).encode().unwrap(), encoded);
+    let decoded = Map::<String, Lww<Opaque>>::decode(&encoded).unwrap();
+    let mut sorted = keys.map(str::to_owned);
+    sorted.sort();
+    assert!(decoded.iter().map(|(key, _)| key).eq(sorted.iter()));
+}
+
+#[test]
+fn test_map_codec_retains_tombstones_noops_and_nested_values() {
+    let lww = opaque_map(&[
+        ("deleted", Lww::Delete),
+        ("noop", Lww::NoOp),
+        ("set", Lww::Set(Opaque(vec![]))),
+    ]);
+    assert_eq!(round_trip(&lww), lww);
+    assert_eq!(round_trip(&lww).len(), 3);
+
+    let mut nested = Map::new();
+    nested.insert("inner".to_owned(), lww.clone());
+    nested.insert("empty".to_owned(), Map::new());
+    assert_eq!(round_trip(&nested), nested);
+
+    // Doc keeps its atomic flag and tombstones through its own codec.
+    let mut atomic = Doc::atomic();
+    atomic.set("gone", Value::Deleted);
+    atomic.set("kept", "value");
+    let mut docs = Map::new();
+    docs.insert("row".to_owned(), atomic.clone());
+    let decoded = round_trip(&docs);
+    assert_eq!(decoded, docs);
+    let mut previous = Doc::new();
+    previous.set("old", "value");
+    assert_eq!(
+        previous.merge(decoded.get("row").unwrap()).unwrap(),
+        previous.merge(&atomic).unwrap()
+    );
+    assert_eq!(previous.merge(&atomic).unwrap(), atomic);
+}
+
+// A non-LWW value: associative concatenation with an explicit codec.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Events(Vec<u8>);
+
+impl CRDT for Events {
+    fn merge(&self, other: &Self) -> Result<Self> {
+        Ok(Self([self.0.as_slice(), other.0.as_slice()].concat()))
+    }
+}
+
+impl Codec for Events {
+    fn encode(&self) -> Result<Vec<u8>> {
+        Ok(self.0.clone())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        Ok(Self(bytes.to_vec()))
+    }
+}
+
+#[test]
+fn test_map_codec_composition_agrees_after_round_trip() {
+    let lww_maps = [
+        opaque_map(&[]),
+        opaque_map(&[("x", Lww::Set(Opaque(vec![1])))]),
+        opaque_map(&[("x", Lww::Delete), ("y", Lww::NoOp)]),
+        opaque_map(&[("x", Lww::NoOp), ("", Lww::Set(Opaque(vec![])))]),
+    ];
+    for a in &lww_maps {
+        for b in &lww_maps {
+            let merged = a.merge(b).unwrap();
+            assert_eq!(round_trip(a).merge(&round_trip(b)).unwrap(), merged);
+            assert_eq!(round_trip(&merged), merged);
+        }
+    }
+
+    let event_maps = [("x", vec![1]), ("x", vec![2]), ("y", vec![3])].map(|(key, events)| {
+        let mut map = Map::new();
+        map.insert(key.to_owned(), Events(events));
+        map
+    });
+    for a in &event_maps {
+        for b in &event_maps {
+            let merged = a.merge(b).unwrap();
+            assert_eq!(round_trip(a).merge(&round_trip(b)).unwrap(), merged);
+        }
+    }
+}
+
+#[test]
+fn test_map_codec_rejects_malformed_envelopes() {
+    type Ops = Map<String, Lww<Opaque>>;
+    #[rustfmt::skip]
+    let cases: &[&[u8]] = &[
+        &[],                                     // empty input
+        &[0xa0],                                 // map, not an array
+        &[0x81, 0x00],                           // missing entries
+        &[0x82, 0x01, 0x80],                     // unknown revision
+        &[0x83, 0x00, 0x80, 0x80],               // extra envelope field
+        &[0x82, 0x00, 0xa0],                     // entries are a CBOR map
+        &[0x82, 0x00, 0x81, 0x60],               // entry is not an array
+        &[0x82, 0x00, 0x81, 0x81, 0x60],         // entry without value
+        &[0x82, 0x00, 0x81, 0x83, 0x60, 0x40, 0x40], // entry with extra field
+        &[0x82, 0x00, 0x81, 0x82, 0x40, 0x40],   // byte-string key
+        &[0x82, 0x00, 0x81, 0x82, 0x00, 0x40],   // integer key
+        &[0x82, 0x00, 0x81, 0x82, 0x60, 0x60],   // text value, not bytes
+        &[0x82, 0x00, 0x80, 0x00],               // trailing data
+        &[0x82, 0x00, 0x81, 0x82, 0x60, 0x40],   // value bytes are not an Lww envelope
+        // Value envelope has trailing data.
+        &[0x82, 0x00, 0x81, 0x82, 0x60, 0x44, 0x82, 0x00, 0x00, 0x00],
+    ];
+    for bytes in cases {
+        assert_codec_rejects::<Ops>(bytes);
+    }
+    #[rustfmt::skip]
+    let misordered: [&[u8]; 2] = [
+        // Duplicate "" keys.
+        &[0x82, 0x00, 0x82,
+          0x82, 0x60, 0x43, 0x82, 0x00, 0x00,
+          0x82, 0x60, 0x43, 0x82, 0x00, 0x00],
+        // "b" before "a".
+        &[0x82, 0x00, 0x82,
+          0x82, 0x61, b'b', 0x43, 0x82, 0x00, 0x00,
+          0x82, 0x61, b'a', 0x43, 0x82, 0x00, 0x00],
+    ];
+    for bytes in misordered {
+        let error = Ops::decode(bytes).unwrap_err().to_string();
+        assert!(error.contains("duplicate or out of order"), "{error}");
+    }
+    // Payload bytes that the nested payload codec rejects.
+    assert_codec_rejects::<Ops>(&[
+        0x82, 0x00, 0x81, 0x82, 0x60, 0x44, 0x83, 0x00, 0x01, 0x41, 0xff,
+    ]);
+    // A lone well-formed entry decodes, confirming the fixtures above are minimal.
+    assert_eq!(
+        Ops::decode(&[0x82, 0x00, 0x81, 0x82, 0x60, 0x43, 0x82, 0x00, 0x00]).unwrap(),
+        opaque_map(&[("", Lww::NoOp)])
+    );
 }

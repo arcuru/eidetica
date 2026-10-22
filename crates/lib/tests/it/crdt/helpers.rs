@@ -403,3 +403,52 @@ pub fn create_large_list(size: usize) -> List {
     }
     list
 }
+
+// ===== OPERATION CODEC HELPERS =====
+
+/// Opaque payload with an identity codec and no Serde, Default or CRDT.
+///
+/// Decoding rejects bytes starting with `0xff`, standing in for any payload
+/// format that refuses malformed input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Opaque(pub Vec<u8>);
+
+impl eidetica::crdt::Codec for Opaque {
+    fn encode(&self) -> Result<Vec<u8>> {
+        Ok(self.0.clone())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.first() == Some(&0xff) {
+            return Err(eidetica::crdt::CRDTError::DeserializationFailed {
+                reason: "opaque fixture rejects 0xff".into(),
+            }
+            .into());
+        }
+        Ok(Self(bytes.to_vec()))
+    }
+}
+
+/// Assert exact encoded bytes and a lossless decode.
+pub fn assert_codec_fixture<T>(value: &T, bytes: &[u8])
+where
+    T: eidetica::crdt::Codec + PartialEq + std::fmt::Debug,
+{
+    assert_eq!(value.encode().unwrap(), bytes, "encoding of {value:?}");
+    assert_eq!(
+        &T::decode(bytes).unwrap(),
+        value,
+        "decoding of {bytes:02x?}"
+    );
+}
+
+/// Assert that decoding fails with a CRDT deserialization error.
+pub fn assert_codec_rejects<T: eidetica::crdt::Codec + std::fmt::Debug>(bytes: &[u8]) {
+    match T::decode(bytes) {
+        Err(eidetica::Error::CRDT(error)) => assert!(
+            error.is_serialization_error(),
+            "{bytes:02x?} failed with {error}"
+        ),
+        other => panic!("{bytes:02x?} was not rejected as malformed: {other:?}"),
+    }
+}

@@ -5,7 +5,9 @@ use std::{
     collections::{BTreeMap, btree_map::Entry},
 };
 
-use super::CRDT;
+use ipld_core::ipld::Ipld;
+
+use super::{CRDT, Codec, envelope};
 
 /// Per-key CRDT composition over ordered keys.
 ///
@@ -16,8 +18,9 @@ use super::CRDT;
 ///
 /// Use [`Self::insert_delta`] to compose repeated updates to a key. The
 /// low-level [`Self::insert`] instead replaces the stored operation verbatim.
-/// Values need not implement `Default` or encoding traits. This type has no
-/// built-in [`super::Codec`] or Serde implementation.
+/// Values need not implement `Default` or encoding traits. `Map<String, V>`
+/// has an explicit [`Codec`] requiring only `V: Codec`; there is no Serde
+/// implementation.
 ///
 /// ```
 /// use eidetica::crdt::{CRDT, Lww, Map};
@@ -114,5 +117,58 @@ impl<K: Ord + Clone, V: CRDT + Clone> CRDT for Map<K, V> {
             merged.insert_delta(key.clone(), delta.clone())?;
         }
         Ok(merged)
+    }
+}
+
+/// DAG-CBOR envelope `[0, [[key, value_bytes], ...]]` with literal string keys
+/// in strictly ascending UTF-8 byte order (the `String` ordering) and each
+/// value's complete [`Codec`] bytes.
+///
+/// Only `V: Codec` is required; values are never merged. Every stored
+/// operation, including tombstones and identities, is encoded. Decoding
+/// rejects unknown revisions, wrong arity or field types, duplicate or
+/// out-of-order keys, trailing data and value bytes that `V` rejects.
+impl<V: Codec> Codec for Map<String, V> {
+    fn encode(&self) -> crate::Result<Vec<u8>> {
+        let entries = self
+            .entries
+            .iter()
+            .map(|(key, value)| {
+                Ok(Ipld::List(vec![
+                    Ipld::String(key.clone()),
+                    Ipld::Bytes(value.encode()?),
+                ]))
+            })
+            .collect::<crate::Result<_>>()?;
+        envelope::encode([Ipld::List(entries)])
+    }
+
+    fn decode(bytes: &[u8]) -> crate::Result<Self> {
+        let fields = envelope::decode(bytes, "Map")?;
+        let [Ipld::List(entries)] = fields.as_slice() else {
+            return Err(envelope::malformed("Map", "expected one entry array"));
+        };
+        let mut decoded: Vec<(String, V)> = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let Ipld::List(pair) = entry else {
+                return Err(envelope::malformed("Map", "entry is not an array"));
+            };
+            let [Ipld::String(key), Ipld::Bytes(value)] = pair.as_slice() else {
+                return Err(envelope::malformed(
+                    "Map",
+                    "entry is not a [string key, value bytes] pair",
+                ));
+            };
+            if decoded.last().is_some_and(|(previous, _)| previous >= key) {
+                return Err(envelope::malformed(
+                    "Map",
+                    format!("key {key:?} is duplicate or out of order"),
+                ));
+            }
+            decoded.push((key.clone(), V::decode(value)?));
+        }
+        Ok(Self {
+            entries: decoded.into_iter().collect(),
+        })
     }
 }

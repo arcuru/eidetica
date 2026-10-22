@@ -70,9 +70,10 @@ does not introduce canonical JSON ordering or a new merge algebra.
 ## Standalone Map and Lww Algebra
 
 `Map<K, V>` and `Lww<T>` implement merge algebra independently of persistence.
-Neither provides a built-in `Codec` or Serde implementation, so neither selects
-a durable format or changes an existing Store. Their payloads need not implement
-`Default` or encoding traits.
+Their payloads need not implement `Default` or encoding traits to merge. Explicit
+codecs are available when the payload has one (see
+[Operation codecs](#operation-codecs)); there is no Serde implementation, and no
+existing Store uses these types or their encoding.
 
 ### Ordered register operations
 
@@ -147,6 +148,31 @@ is required.
 These primitives do not integrate with Table, add a live-value convenience
 layer, or define lifecycle resets. Table behavior and persisted bytes are
 unchanged.
+
+### Operation codecs
+
+`Lww<T>` implements `Codec` when `T: Codec`, and `Map<String, V>` implements
+`Codec` when `V: Codec`. Neither needs `CRDT`, `Clone` or Serde on the payload,
+and encoding never merges values. Both use versioned DAG-CBOR arrays rather than
+Serde enum spelling. The leading `0` is the envelope revision:
+
+| Value             | Encoding                         |
+| ----------------- | -------------------------------- |
+| `Lww::NoOp`       | `[0, 0]`                         |
+| `Lww::Set(value)` | `[0, 1, value_bytes]`            |
+| `Lww::Delete`     | `[0, 2]`                         |
+| `Map<String, V>`  | `[0, [[key, value_bytes], ...]]` |
+
+`value_bytes` is a CBOR byte string holding the payload's own complete `Codec`
+output, which may be empty if the payload accepts it. Map keys are literal text
+strings in strictly ascending UTF-8 byte order, so equal maps encode to
+identical bytes.
+Every stored operation is encoded, including `NoOp` and `Delete`, and nested
+values such as `Doc` keep their own atomic flags and tombstones.
+
+Decoding rejects other revisions or operation tags, wrong field counts or types,
+duplicate or out-of-order keys, trailing bytes, and nested bytes that the payload
+codec rejects. These are building blocks: no Store or Table uses them yet.
 
 ## Fork and Merge
 
