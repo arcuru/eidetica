@@ -30,6 +30,10 @@ pub enum BackendError {
     #[error("Store-state records are not supported by this backend")]
     StoreStateStorageUnsupported,
 
+    /// Atomic verification repair is not implemented by this custom backend.
+    #[error("Atomic verification repair is not supported by this backend")]
+    VerificationRepairUnsupported,
+
     /// A staging token does not identify a private unpublished build.
     #[error("Invalid or expired Store-state staging token")]
     InvalidStoreStateStagingToken,

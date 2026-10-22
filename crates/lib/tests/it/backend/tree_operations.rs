@@ -204,13 +204,13 @@ async fn test_backend_get_tree_from_tips_rejects_foreign_ancestor() {
     let backend = test_backend().await;
     let root = Entry::root_builder().build().unwrap();
     let root_id = root.id();
-    backend.put_verified(root).await.unwrap();
+    backend.put(root).await.unwrap();
     let foreign = Entry::root_builder()
         .set_subtree_data("_settings", b"foreign grant")
         .build()
         .unwrap();
     let foreign_id = foreign.id();
-    backend.put_verified(foreign).await.unwrap();
+    backend.put(foreign).await.unwrap();
     let child = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .add_parent(foreign_id.clone())
@@ -218,7 +218,7 @@ async fn test_backend_get_tree_from_tips_rejects_foreign_ancestor() {
         .build()
         .unwrap();
     let child_id = child.id();
-    backend.put_verified(child).await.unwrap();
+    backend.put(child).await.unwrap();
     let err = backend
         .get_tree_from_tips(&root_id, &[child_id])
         .await
@@ -238,7 +238,7 @@ async fn test_backend_get_tree_from_tips_rejects_missing_intermediate() {
         .set_height(0)
         .build()
         .unwrap();
-    backend.put_verified(root_entry).await.unwrap();
+    backend.put(root_entry).await.unwrap();
 
     let missing = ID::from_bytes("missing_intermediate_parent");
     let tip = Entry::builder(root_id.clone())
@@ -247,7 +247,7 @@ async fn test_backend_get_tree_from_tips_rejects_missing_intermediate() {
         .build()
         .unwrap();
     let tip_id = tip.id();
-    backend.put_verified(tip).await.unwrap();
+    backend.put(tip).await.unwrap();
 
     let err = backend
         .get_tree_from_tips(&root_id, &[tip_id])
@@ -271,7 +271,7 @@ async fn test_backend_check_targets_reachable_from() {
         .build()
         .expect("root builds");
     let root_entry_id = root_entry.id();
-    backend.put_verified(root_entry).await.unwrap();
+    backend.put(root_entry).await.unwrap();
 
     let e1_entry = Entry::builder(root_id.clone())
         .add_parent(root_entry_id.clone())
@@ -279,7 +279,7 @@ async fn test_backend_check_targets_reachable_from() {
         .build()
         .expect("e1 builds");
     let e1_id = e1_entry.id();
-    backend.put_verified(e1_entry).await.unwrap();
+    backend.put(e1_entry).await.unwrap();
 
     let e2a_entry = Entry::builder(root_id.clone())
         .add_parent(e1_id.clone())
@@ -288,7 +288,7 @@ async fn test_backend_check_targets_reachable_from() {
         .build()
         .expect("e2a builds");
     let e2a_id = e2a_entry.id();
-    backend.put_verified(e2a_entry).await.unwrap();
+    backend.put(e2a_entry).await.unwrap();
 
     let e2b_entry = Entry::builder(root_id.clone())
         .add_parent(e1_id.clone())
@@ -297,7 +297,7 @@ async fn test_backend_check_targets_reachable_from() {
         .build()
         .expect("e2b builds");
     let e2b_id = e2b_entry.id();
-    backend.put_verified(e2b_entry).await.unwrap();
+    backend.put(e2b_entry).await.unwrap();
 
     let reachable = |from: Vec<ID>, targets: Vec<ID>| {
         let backend = &backend;
@@ -382,7 +382,7 @@ async fn test_backend_check_targets_reachable_from() {
         .build()
         .expect("orphan builds");
     let orphan_id = orphan_entry.id();
-    backend.put_verified(orphan_entry).await.unwrap();
+    backend.put(orphan_entry).await.unwrap();
     assert_eq!(
         reachable(vec![orphan_id.clone()], vec![root_entry_id.clone()])
             .await
