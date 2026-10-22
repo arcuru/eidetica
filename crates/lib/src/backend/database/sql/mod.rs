@@ -994,10 +994,6 @@ impl BackendImpl for SqlxBackend {
         verified::repair_verification(self, tree).await
     }
 
-    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
-        verified::rebuild_verified_state(self, tree).await
-    }
-
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot> {
         traversal::store_snapshot(self, tree, store)
             .await

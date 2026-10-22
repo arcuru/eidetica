@@ -246,30 +246,11 @@ Repeat repair is idempotent. Entries, authoritative Store records, and the indep
 materialization cache are not cleared. Use the SDK re-verification procedure below
 when missing ancestors arrive; repair never promotes entries.
 
-`BackendImpl::repair_verification` exposes the same maintenance operation locally;
-`rebuild_verified_state` delegates to it and may now demote inconsistent labels.
+`BackendImpl::repair_verification` exposes the same maintenance operation locally.
 Custom backends must implement atomic repair or return an explicit unsupported error.
 There is no service-wire repair endpoint. Unlike repair, reset clears **all** local
 trust decisions and disposable state. Neither command creates a missing persistence
 file or treats corrupt JSON as an empty instance.
-
-#### Upgrading the verification-only format to bounded caching
-
-This verification-only increment keeps the existing materialization keys and
-Store-state namespace layout. It adds neither cache budgets nor recency/eviction
-metadata. Existing SQL materializations stay warm across its migration and reopen;
-InMemory materializations remain disposable and are not saved.
-
-The bounded-cache successor must upgrade this tips-only format as well as mainline:
-add/backfill its SQL cache columns transactionally without repairing verification
-again or discarding Entries, authoritative records, or retained tips. Its canonical
-Snapshot keys may miss older materializations and rebuild them normally; a cache
-miss is not loss of authoritative history or a reason to reset trust.
-Stop all backend users and retain an offline backup before that upgrade. Do not
-assume that a shared verification version marker makes an older binary compatible
-with newer cache eviction states. To roll back, restore the pre-upgrade backup to
-a separate location; do not relabel the schema or run the older binary on the
-upgraded copy. The successor's migration tests must cover this intermediate format.
 
 #### Storage compatibility and older candidate data
 

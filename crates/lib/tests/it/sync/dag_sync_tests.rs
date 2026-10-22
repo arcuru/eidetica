@@ -35,7 +35,7 @@ fn create_entry_with_parents(tree_id: &ID, parents: Vec<ID>) -> Entry {
 }
 
 /// Helper to create a linear chain of entries: root -> child1 -> child2 -> ...
-fn create_linear_chain(_tree_id: &str, count: usize) -> Vec<Entry> {
+fn create_linear_chain(count: usize) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
 
     for i in 0..count {
@@ -58,7 +58,7 @@ fn create_linear_chain(_tree_id: &str, count: usize) -> Vec<Entry> {
 }
 
 /// Helper to create a DAG: root -> branch1, branch2 -> merge
-fn create_dag_structure(_tree_id: &str) -> Vec<Entry> {
+fn create_dag_structure() -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
 
     // Root entry
@@ -88,8 +88,7 @@ async fn test_dag_sync_linear_chain() {
     let (base_db2, _sync2) = helpers::setup().await;
 
     // Create a linear chain of entries in backend1
-    let tree_id = "test_tree";
-    let chain = create_linear_chain(tree_id, 5);
+    let chain = create_linear_chain(5);
 
     // Store entire chain in backend1
     for entry in &chain {
@@ -145,8 +144,7 @@ async fn test_dag_sync_branching_structure() {
     let (base_db2, _sync2) = helpers::setup().await;
 
     // Create a DAG structure
-    let tree_id = "test_tree";
-    let dag_entries = create_dag_structure(tree_id);
+    let dag_entries = create_dag_structure();
 
     // Store all entries in backend1
     for entry in &dag_entries {
@@ -207,8 +205,7 @@ async fn test_dag_sync_partial_overlap() {
     let (base_db2, _sync2) = helpers::setup().await;
 
     // Create linear chain
-    let tree_id = "test_tree";
-    let chain = create_linear_chain(tree_id, 6);
+    let chain = create_linear_chain(6);
 
     // Backend1 has all entries
     for entry in &chain {
@@ -249,8 +246,7 @@ async fn test_dag_sync_entry_ordering() {
     let (base_db, _sync) = helpers::setup().await;
 
     // Create entries that must be ordered by height
-    let tree_id = "test_tree";
-    let chain = create_linear_chain(tree_id, 4);
+    let chain = create_linear_chain(4);
 
     // Store entries in random order
     let backend = base_db.backend();
@@ -303,8 +299,7 @@ async fn test_sync_flow_integration() {
     let (base_db2, _sync2) = helpers::setup().await;
 
     // Create a complex DAG structure in database 1
-    let tree_id = "sync_test_tree";
-    let dag_entries = create_dag_structure(tree_id);
+    let dag_entries = create_dag_structure();
 
     // Store all entries in backend1
     for entry in &dag_entries {
@@ -366,7 +361,7 @@ async fn test_bidirectional_sync_flow() {
     let _tree_id_val: ID = ID::from_bytes(tree_id);
 
     // Create different chains in each database
-    let chain1 = create_linear_chain(tree_id, 3);
+    let chain1 = create_linear_chain(3);
     let chain2 = {
         // Create a branch from the same root
         let root = chain1[0].clone();

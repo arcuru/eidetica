@@ -18,8 +18,6 @@ use crate::{
 /// v2 retains verified tips only; unreleased v1 prefix files are refused.
 const PERSISTENCE_VERSION: u8 = 2;
 
-// v0 files predate the retained verified state; their frontier is
-// rebuilt from entries and statuses on load.
 /// Helper to check if version is default (0) for serde skip_serializing_if
 fn is_v0(v: &u8) -> bool {
     *v == 0
@@ -135,7 +133,7 @@ impl<'de> Deserialize<'de> for InMemory {
                 }
             }
             for tree in &trees {
-                super::storage::rebuild_verified_state(&mut inner, tree)
+                super::storage::repair_verification(&mut inner, tree)
                     .map_err(serde::de::Error::custom)?;
             }
         }
@@ -318,7 +316,7 @@ mod persistence_tests {
 
     /// A v2 file is trusted as persisted: an emptied retained map loads
     /// empty rather than silently rescanning history. (Repair is an
-    /// explicit `rebuild_verified_state` call, not a load side effect.)
+    /// explicit `repair_verification` call, not a load side effect.)
     #[test]
     fn v2_file_trusts_persisted_state() {
         let (backend, root_id, _) = verified_chain();

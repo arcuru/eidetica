@@ -77,8 +77,11 @@ impl<B: BackendImpl> BackendImpl for Recordless<B> {
         self.0.verified_snapshot(tree).await
     }
 
-    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
-        self.0.rebuild_verified_state(tree).await
+    async fn repair_verification(
+        &self,
+        tree: &ID,
+    ) -> Result<eidetica::backend::VerificationRepair> {
+        self.0.repair_verification(tree).await
     }
 
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot> {
