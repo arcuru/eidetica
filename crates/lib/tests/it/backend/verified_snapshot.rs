@@ -818,3 +818,45 @@ async fn settled_snapshot_reads_are_scan_free() {
         "settled snapshots must perform no full-tree load and no per-entry status read"
     );
 }
+
+/// Rejected promotion must not leave a waiting Verified label behind.
+#[tokio::test]
+async fn promotion_rejects_unverified_missing_and_foreign_parents_atomically() {
+    let backend = test_backend().await;
+    let root = root_entry();
+    let tree = root.id();
+    backend.put(root).await.unwrap();
+    let missing = child_entry(&tree, &[tree.clone()], "missing", 1);
+    let foreign = Entry::root_builder().set_subtree_data("test", b"foreign").build().unwrap();
+    let foreign_id = foreign.id();
+    backend.put_verified(foreign).await.unwrap();
+    for parent in [tree.clone(), missing.id(), foreign_id] {
+        let child = child_entry(&tree, &[parent], "rejected", 2);
+        let id = child.id();
+        backend.put(child).await.unwrap();
+        assert!(backend.update_verification_status(&id, VerificationStatus::Verified).await.is_err());
+        assert_eq!(backend.get_verification_status(&id).await.unwrap(), VerificationStatus::Unverified);
+        assert_retained(&*backend, &tree, &[]).await;
+    }
+}
+
+#[tokio::test]
+async fn demotion_cascades_across_join_without_forgiving_failed_entries() {
+    let backend = test_backend().await;
+    let (tree, a, b, c) = verified_fork(&*backend).await;
+    let join = child_entry(&tree, &[b.clone(), c.clone()], "join", 3);
+    let join_id = join.id();
+    backend.put_verified(join).await.unwrap();
+    let failed = child_entry(&tree, &[a.clone()], "failed", 2);
+    let failed_id = failed.id();
+    backend.put(failed).await.unwrap();
+    backend.update_verification_status(&failed_id, VerificationStatus::Failed).await.unwrap();
+    backend.update_verification_status(&a, VerificationStatus::Unverified).await.unwrap();
+    for id in [&a, &b, &join_id] {
+        assert_eq!(backend.get_verification_status(id).await.unwrap(), VerificationStatus::Unverified);
+    }
+    assert_eq!(backend.get_verification_status(&failed_id).await.unwrap(), VerificationStatus::Failed);
+    assert_retained(&*backend, &tree, &[c]).await;
+    assert!(backend.update_verification_status(&failed_id, VerificationStatus::Verified).await.is_err());
+    assert!(backend.update_verification_status(&failed_id, VerificationStatus::Unverified).await.is_err());
+}
