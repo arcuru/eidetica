@@ -1,9 +1,10 @@
 # Publish workflow — builds artifacts from source and publishes container images.
 #
 # Triggers:
-#   1. workflow_call: CI calls the dev path after both architectures pass on
-#      main. It remains inside CI's native concurrency group through both image
-#      builds and the manifest. Environment secrets stay in this workflow.
+#   1. workflow_call: CI calls the dev path after main's ARM checks and then its
+#      x86 checks and cache publication pass. It remains inside CI's native
+#      concurrency group through both image builds and the manifest.
+#      Environment secrets stay in this workflow.
 #
 #   2. workflow_dispatch: Triggered by the release-plz workflow after a release
 #      is created, or manually for retrying a failed release. Accepts a tag name
@@ -136,14 +137,8 @@ jobs:
             --option substituters 'https://cache.nixos.org' \
             -f ".#legacyPackages.${SYSTEM}.eidetica.release"
 
-      # Warm the cache with all remaining flake check outputs so subsequent CI
-      # runs are faster. Only needed on the dev path after successful main CI —
-      # independent release runs only build the release artifacts.
-      - name: Warm CI cache
-        if: inputs.dev
-        run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }}
+      # Check outputs are not rebuilt here: main CI publishes the x86 outputs it
+      # checked from its own store, and the ARM runner keeps its own store.
 
       - name: Install Bencher CLI
         if: inputs.dev

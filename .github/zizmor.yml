@@ -15,8 +15,7 @@ rules:
       # `steps.nix.outputs.push-args` is a first-party output of our setup-nix
       # composite (pre-quoted Nix store paths), not attacker-controllable input
       # — see the comment at that step in publish.yml.
-      - publish.yml:135
-      - publish.yml:146
+      - publish.yml:136
   secrets-inherit:
     ignore:
       # PAT_TOKEN reaches the reusable workflow through its own

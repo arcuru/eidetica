@@ -125,11 +125,13 @@
           homeManagerModule = import ./nix/home-manager.nix;
         };
 
-        # Helper to create aggregate packages
+        # Helper to create aggregate packages. An aggregate has no build log
+        # of its own, so CI replays its named constituents' logs instead.
         mkAggregate = name: packages:
           pkgs.symlinkJoin {
             inherit name;
             paths = builtins.attrValues packages;
+            passthru.constituents = packages;
           };
         mkAll = name: mkAggregate "${name}-all";
       in {

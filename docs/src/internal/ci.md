@@ -13,7 +13,7 @@ Fuzz / simulation testing are planned for the future.
 The primary CI runs on GitHub with these workflows. Main CI and its dependent dev publisher share native workflow concurrency: the running pipeline finishes, and GitHub keeps one replaceable pending pipeline. PRs cancel only superseded runs of the same PR; other branches, manual release publishing and release events do not enter the main dev group:
 
 - **[ci.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/ci.yml)**: Main CI pipeline (lint, test, integration tests, docs)
-- **[publish.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/publish.yml)**: Publish pipeline (container images, cache warming, size tracking)
+- **[publish.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/publish.yml)**: Publish pipeline (container images, release artifact caching, size tracking)
 - **[sanitizers.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/sanitizers.yml)**: Memory and thread sanitizer checks
 - **[benchmarks.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/benchmarks.yml)**: Performance benchmarks
 - **[coverage.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/coverage.yml)**: Multi-backend code coverage tracking via Codecov
@@ -27,13 +27,41 @@ The primary CI runs on GitHub with these workflows. Main CI and its dependent de
 - **[dependency-hold.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/dependency-hold.yml)**: Merge gate for dependency PRs
 - **[update-hold.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/update-hold.yml)**: Automatic hold expiry
 
-Ordinary pull requests run formatting (treefmt), lint (including Clippy), module evaluation, the debug binary build and the complete SQLite backend test suite (`legacyPackages.x86_64-linux.ci-pr`).
+Ordinary pull requests run formatting (treefmt), lint (including Clippy), module evaluation, the debug binary build and the complete SQLite backend test suite (`legacyPackages.aarch64-linux.ci-pr`) as `CI (aarch64-linux)`.
 SQLite is selected at runtime with `TEST_BACKEND=sqlite`; the test binaries still use all features.
 Standalone API documentation, doctests and minimal-feature tests are excluded from this lean PR target.
-Main pushes and manual CI runs retain all checks, including documentation, doctests, minimal-feature tests and the full backend suite, plus x86 integration tests and ARM checks.
+Main pushes and manual CI runs retain all checks, including documentation, doctests, minimal-feature tests and the full backend suite, on both platforms, plus x86 integration tests.
 The full `checks` and `legacyPackages.<system>.ci` targets, individual backend/platform/integration targets and their dependency artifacts are unchanged.
 To test a PR's branch with the full suite, select that branch in the CI workflow's **Run workflow** branch selector.
 The manual run checks the selected branch head, not a synthetic merge with main.
+
+Every CI run checks ARM on the persistent native ARM64 runner described below.
+On main pushes and manual main runs, the hosted x86 job starts only after the ARM job succeeds; it then checks x86 and integration and publishes the outputs it checked from that same store (see [Cache Push Isolation](#cache-push-isolation)).
+A failed, cancelled or skipped ARM job stops x86 checks, cache publication and the dev publisher.
+Manual runs of other branches check x86 on a hosted runner alongside ARM, without credentials or publication.
+
+Each check job builds its whole target set in one `nix build -L --keep-going` graph with `.github/scripts/ci-checks.sh`, so fresh builds stream their logs.
+Afterwards it replays the stored log of every leaf check, named by platform and check (for example `aarch64-linux test.sqlite`), whether the check was just built, substituted or failed.
+A replayed log is a retained record, not a rerun: a substituted check's log shows an earlier execution.
+Where no log is available it warns explicitly and infers no test result; log reporting never changes the build's exit status.
+
+### Persistent ARM64 Runner
+
+ARM checks run on a self-hosted runner registered to this repository only, with labels `self-hosted, Linux, ARM64, zinc, nix`.
+Its single listener runs one Eidetica job at a time; other repositories' runners on the same host are independent and may build concurrently.
+The runner uses its own unprivileged account, work directory and registration, and is never shared with another repository.
+The host's Nix daemon owns substituters, signature checking and build limits; the runner account is an ordinary untrusted client, not a `trusted-user`, so jobs cannot add substituters or keys.
+The store persists between jobs, so unchanged outputs are reused instead of rebuilt.
+Jobs receive no secrets, the runner holds no cache signing or upload credentials, and nothing it builds is signed or uploaded.
+
+Public pull requests execute contributor code on this runner, so workflow runs from outside collaborators must require approval before they start (repository **Settings → Actions → General → Approval for running fork pull request workflows from contributors → Require approval for all outside collaborators**).
+
+To provision or verify the runner:
+
+1. Create a dedicated unprivileged user and work directory for Eidetica on the host, separate from any other runner.
+2. Register a persistent (non-ephemeral) runner for `arcuru/eidetica` with a fresh registration token and the labels above; do not copy another runner's credentials or configuration.
+3. Confirm that `nix config show` as the runner user lists `https://cache.eidetica.dev` and its public key among the daemon's substituters, and that the user is not a trusted user (`nix store ping` reports `Trusted: 0`).
+4. Confirm the runner is idle in **Settings → Actions → Runners**, then run CI manually on a branch and check that `CI (aarch64-linux)` runs there, skips Nix installation and replays logs.
 
 ### Forgejo CI
 
@@ -201,11 +229,15 @@ All environments are restricted to the `main` branch. Low-risk tokens that can o
 
 ### Cache Push Isolation
 
-Only jobs in the publish workflow (`publish.yml`) receive the `publish` environment's cache push credentials and signing key. CI check jobs, coverage and sanitizer jobs remain secretless and read-only. CI calls the reusable publisher only after both architectures succeed on trusted main push/manual runs. That calling job grants `packages: write` and names only the publisher's required secrets. GitHub requires those names to be passed even for environment-scoped secrets; the protected callee environments supply their values and take precedence over caller-level values. The repo-level Bencher token is upload-only. The signing key stays in the protected publishing environment, not in CI check jobs. The publisher rebuilds from source rather than consuming PR artifacts.
+Only the protected main x86 job in CI and the jobs in the publish workflow (`publish.yml`) receive the `publish` environment's cache push credentials and signing key. Other CI check jobs, the ARM runner, coverage and sanitizer jobs remain secretless and read-only.
+
+On trusted main push/manual runs, the main x86 job waits for the ARM checks, then builds the x86 checks and integration tests with the project cache as a substituter. It then lists, without building or fetching anything, the realized flake check outputs and the reusable test artifacts (`legacyPackages.x86_64-linux.test.artifacts`): the nextest archive, plus the Cargo targets when that job compiled the tests rather than substituting them. This happens before any secret enters its environment. Only its final step receives credentials; `.github/scripts/publish-cache.sh` refuses any other repository, event or ref, validates the listed store paths, signs them with `nix store sign` and copies them with `nix copy`. It evaluates and builds nothing, and publishes nothing from pull requests or the ARM runner. Integration test results and ARM check outputs are not published.
+
+CI calls the reusable publisher only after that job succeeds. That calling job grants `packages: write` and names only the publisher's required secrets. GitHub requires those names to be passed even for environment-scoped secrets; the protected callee environments supply their values and take precedence over caller-level values. The repo-level Bencher token is upload-only. The signing key stays in the protected publishing environment, not in CI check jobs. The publisher rebuilds from source rather than consuming PR artifacts.
 
 ### Release Build Integrity
 
-The publish workflow builds artifacts (binary and container image) from source using `--option substituters 'https://cache.nixos.org'`, bypassing the project's own binary cache entirely. This prevents a cache poisoning attack from affecting published artifacts. The from-source results are pushed to the cache afterward, along with CI debug artifacts (lint, test, doc targets on dev runs), so subsequent CI runs and developer builds benefit from caching.
+The publish workflow builds artifacts (binary and container image) from source using `--option substituters 'https://cache.nixos.org'`, bypassing the project's own binary cache entirely. This prevents a cache poisoning attack from affecting published artifacts. The from-source results are pushed to the cache afterward. The publisher does not rebuild check outputs: on dev runs, main CI has already published the x86 check outputs from the store that checked them. Its fresh publisher store is separate from that check store, so a cached check output never becomes a release artifact.
 
 ## Releasing
 
@@ -215,7 +247,7 @@ Releases are automated via [release-plz](https://release-plz.dev/) and configure
 
 A single [`publish.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/publish.yml) workflow handles all artifact publishing. It is triggered in three ways:
 
-1. **A dependent job in main CI** (`workflow_call`) — after the x86 and ARM jobs succeed, CI calls the dev publisher for the same commit. It pushes `dev`-tagged container images, warms the Nix binary cache and tracks sizes. The native concurrency group covers CI, both publish architectures and the manifest, with no separate CI-completion queue or revision selector. A manual CI run on main uses the same path; a selected nonmain branch gets full CI without publishing.
+1. **A dependent job in main CI** (`workflow_call`) — after the ARM checks and then the x86 checks and cache publication succeed, CI calls the dev publisher for the same commit. It pushes `dev`-tagged container images, caches the from-source release artifacts and tracks sizes. The native concurrency group covers CI, both publish architectures and the manifest, with no separate CI-completion queue or revision selector. A manual CI run on main uses the same path; a selected nonmain branch gets full CI without publishing.
 
 2. **After a release is created** (`workflow_dispatch`) — triggered by the release-plz workflow after publishing to crates.io and creating a GitHub release. Accepts a tag name and pushes versioned container images (e.g. `1.2.3`, `1.2`, `latest`). Can also be triggered manually to retry a failed release.
 
@@ -234,7 +266,7 @@ flowchart TD
     C --> E["publish.yml
     (dependent reusable job)"]
     E --> F["Build from source +
-    warm cache + dev images +
+    dev images +
     Bencher size tracking"]
     D --> G["Publish to crates.io +
     create GitHub release + tag"]
@@ -262,7 +294,7 @@ flowchart TD
    > **Note:** Subsequent pushes to `main` while the PR is open will cause release-plz to update the PR (re-analyze commits, adjust version if needed).
 
 3. **Merge the PR** — Merging triggers two independent pipelines:
-   - **[`publish.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/publish.yml)**: CI calls it after both architectures pass on main, within the same native concurrency group. It builds that CI run's commit from source, warms the Nix binary cache, pushes `dev`-tagged container images and tracks sizes via Bencher.
+   - **[`publish.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/publish.yml)**: CI calls it after both architectures pass on main, within the same native concurrency group. It builds that CI run's commit from source, caches those release artifacts, pushes `dev`-tagged container images and tracks sizes via Bencher.
    - **[`release-plz.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/release-plz.yml)**: Detects the version bump and runs `release-plz release`.
 
 4. **Automatic publishing** — The `release-plz release` job:
@@ -301,4 +333,4 @@ flowchart TD
 - The `release-plz-pr` job only updates an existing release PR on push to main — it does not create new ones automatically. New release cycles are initiated via `workflow_dispatch`.
 - All publish runs build artifacts from source without the project's own Nix cache substitution to prevent cache poisoning (see [Release Build Integrity](#release-build-integrity)).
 - The dev path exercises the same build and publish jobs as releases. Native concurrency coalesces main pipelines without cancelling a running publish. It does not search for a historically successful revision or promise commit-order scheduling; rerunning an old main workflow can publish its old commit. Dev and independent release runs use separate intermediate base-image tags.
-- Pages deployment follows successful completion of the full CI/dev-publish pipeline, so documentation builds can use its warm cache. It does not follow independent release publishes.
+- Pages deployment follows successful completion of the full CI/dev-publish pipeline, so documentation builds can use its published outputs. It does not follow independent release publishes.
