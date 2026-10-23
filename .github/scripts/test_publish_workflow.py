@@ -67,11 +67,13 @@ class PublishWorkflow(unittest.TestCase):
             return dict(line.split("=", 1) for line in output.read_text().splitlines())
 
     def test_native_queue_spans_ci_and_both_publish_architectures(self):
+        for job in self.ci["jobs"].values():
+            self.assertNotIn("concurrency", job)
         self.assertEqual(expression(self.ci["concurrency"]["group"]), MAIN_QUEUE)
         self.assertEqual(self.ci["concurrency"]["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}")
         self.assertNotIn("concurrency", self.publish)
         job = self.ci["jobs"]["publish"]
-        self.assertEqual(job["needs"], ["ci", "ci-arm"])
+        self.assertEqual(job["needs"], ["main"])
         self.assertEqual(expression(job["if"]), TRUSTED_MAIN)
         self.assertEqual(job["uses"], "./.github/workflows/publish.yml")
         self.assertEqual(job["with"], {"dev": "true"})
@@ -85,6 +87,8 @@ class PublishWorkflow(unittest.TestCase):
         self.assertEqual(self.ci["permissions"], {"contents": "read"})
         for name in ("ci", "ci-arm"):
             self.assertNotIn("secrets.", yaml.safe_dump(self.ci["jobs"][name]))
+        # Main's protected job receives only cache credentials, in its last step.
+        self.assertEqual(self.ci["jobs"]["main"]["environment"], "publish")
         caller = self.ci["jobs"]["publish"]
         self.assertEqual(caller["permissions"], {"contents": "read", "packages": "write"})
         names = {"BENCHER_API_TOKEN", "NIX_CACHE_ACCESS_KEY_ID", "NIX_CACHE_SECRET_ACCESS_KEY", "NIX_CACHE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"}
@@ -95,12 +99,12 @@ class PublishWorkflow(unittest.TestCase):
         self.assertEqual(self.publish["jobs"]["manifest"]["environment"], "release")
 
     def test_pr_and_full_ci_targets_are_unchanged(self):
-        steps = {s["name"]: s for s in self.ci["jobs"]["ci"]["steps"]}
-        self.assertEqual(steps["Checks"]["if"], "github.event_name == 'pull_request'")
-        self.assertIn(".#legacyPackages.x86_64-linux.ci-pr", steps["Checks"]["run"])
-        self.assertEqual(steps["Checks + integration"]["if"], "github.event_name != 'pull_request'")
-        self.assertIn(".#legacyPackages.x86_64-linux.ci'", steps["Checks + integration"]["run"])
-        self.assertEqual(self.ci["jobs"]["ci-arm"]["if"], "github.event_name != 'pull_request'")
+        arm = self.ci["jobs"]["ci-arm"]["steps"][-1]["run"]
+        self.assertIn("legacyPackages.aarch64-linux.ci-pr", arm)
+        self.assertIn("target=checks.aarch64-linux", arm)
+        for job in ("ci", "main"):
+            step = next(s for s in self.ci["jobs"][job]["steps"] if s["name"] == "Checks + integration")
+            self.assertEqual(step["run"], "bash .github/scripts/ci-checks.sh legacyPackages.x86_64-linux.ci")
 
     def test_dev_call_is_main_only_and_release_entries_remain_independent(self):
         self.assertEqual(set(self.publish["on"]), {"workflow_call", "workflow_dispatch", "release"})
@@ -138,8 +142,13 @@ class PublishWorkflow(unittest.TestCase):
         self.assertEqual(steps["Checkout"]["with"]["persist-credentials"], "false")
         self.assertIn("--option substituters 'https://cache.nixos.org'", steps["Build and push release artifacts"]["run"])
         self.assertEqual(steps["Setup Nix"]["with"]["signing-key"], "${{ secrets.NIX_CACHE_SIGNING_KEY }}")
-        for name in ("Warm CI cache", "Install Bencher CLI", "Track artifact sizes"):
+        for name in ("Install Bencher CLI", "Track artifact sizes"):
             self.assertEqual(steps[name]["if"], "inputs.dev")
+        # Main CI publishes the outputs it checked; nothing rebuilds checks here.
+        self.assertNotIn("Warm CI cache", steps)
+        self.assertEqual(
+            sum("push-args" in s.get("run", "") for s in steps.values()), 1
+        )
         self.assertNotIn("download-artifact", yaml.safe_dump(self.publish))
 
     def test_dev_and_release_intermediate_images_do_not_mix(self):
