@@ -10,6 +10,7 @@ use crate::{
         BackendError, CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest,
     },
     crdt::{CRDT, Codec},
+    snapshot::Snapshot,
     store::{DocStore, Registered},
 };
 
@@ -231,7 +232,7 @@ async fn opaque_non_doc_state_materializes_cold_warm_and_after_clear() {
             name: "eidetica/opaque".to_string(),
             version: 0,
         },
-        source_key: entry_id.to_string().into_bytes(),
+        source_key: Snapshot::from([entry_id]).cache_key_bytes(),
     };
     let view = backend
         .resolve_store_state(&request)

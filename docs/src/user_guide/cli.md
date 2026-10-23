@@ -280,6 +280,26 @@ mainline backup exists, keep the old copy and stop for an explicit recovery plan
 The migration fixtures verify mainline-copy repair and old-format refusal; no
 in-place version-1 conversion or automatic deletion is provided.
 
+#### Upgrading a verification-only version-2 database
+
+Existing tips-only version-2 SQL databases gain `size_bytes` and
+`last_access_tick` columns atomically on open. Record sizes are backfilled;
+old access ticks start at zero. This additive upgrade preserves Entries, statuses,
+retained tips, authoritative records and existing materializations without
+re-running verification repair. InMemory version-2 files keep the same serialized
+layout; derived records and recency are ephemeral and start empty on load.
+
+Stop all users of the backend and retain a consistent offline backup before
+upgrading. Materialization lookups now use canonical Snapshot keys: old-key records
+are not deleted by migration, but a new-key miss rebuilds from immutable Entries.
+This is a disposable-cache rebuild, not a data-loss migration, and does not by
+itself require a trust reset. Cache budgets apply on subsequent publication.
+
+The shared version-2 marker does **not** imply downgrade compatibility: older
+binaries do not understand the new eviction states. To roll back, restore the
+pre-upgrade backup in a separate location; do not open the upgraded database with
+the older binary. The unsupported version-1 recovery rules above still apply.
+
 ### Re-verification after reset or incomplete proof
 
 There is currently **no `db verify` CLI subcommand** and the reset command does

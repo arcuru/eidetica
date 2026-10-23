@@ -36,3 +36,22 @@ shared-scope request to the session user, refuses a foreign scope, and falls
 back to shared cached state on a user-scope miss. Encrypted materializations are
 client-computed and user-scoped; a warm encrypted Table point read uses point-record
 requests without scanning the generation or reconstructing history.
+
+## Retention and verification boundaries
+
+Derived materializations use canonical Snapshot keys within database, Store,
+projection and trust-scope namespaces. Verification status is not a cache key:
+the same immutable Snapshot has the same materialization before or after a local
+status transition. A cached value is never an authorization or verification proof.
+
+The default backend-wide budget is 1024 live derived namespaces and 256 MiB of
+record key/value bytes. Publication evicts other least-recently-used namespaces;
+a single protected oversized publication may exceed the byte budget until a later
+publication can evict it. Live access ticks are monotonic; SQL batches recency
+flushes rather than writing on every hit. Reopening SQL retains warm records.
+
+These limits do not bound authoritative history/Store records, namespace metadata,
+staging data, temporarily retained reader generations, or whole-tree repair memory.
+Verified-tip storage is separate from this LRU and proportional to frontier width,
+not history length. Repair/demotion update that frontier, not immutable cached values;
+the offline full trust reset also clears disposable materializations.

@@ -32,6 +32,16 @@ const CREATE_STORE_STATE_TABLES: &[&str] = &[
         projection_version BIGINT NOT NULL,
         source_key BYTEA NOT NULL,
         created_revision BIGINT,
+        -- Total record bytes (key plus value) of the published namespace.
+        -- Computed atomically in the publish transaction; bounds the cache
+        -- by bytes without scanning records on every eviction check.
+        size_bytes BIGINT NOT NULL DEFAULT 0,
+        -- Last-access tick for durable approximate LRU. Assigned from a
+        -- per-backend monotonic clock, touched in memory on every hit and
+        -- flushed in batches (never one write per hit). A crash loses only
+        -- recent recency metadata, never cached values. Rows predating this
+        -- column read as 0 and sort as coldest.
+        last_access_tick BIGINT NOT NULL DEFAULT 0,
         UNIQUE (database_id, store_name, lifecycle, status, scope_user_uuid,
                 projection_name, projection_version, source_key)
     )",
@@ -207,7 +217,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
         .into());
     }
 
-    // Schema, repair, and version publication roll back
+    // Schema, repair, cache-column backfill, and version publication roll back
     // together. Backend ownership excludes other instances during open.
     let mut tx = pool
         .begin()
@@ -230,6 +240,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             .await
             .sql_context("Schema creation failed")?;
     }
+    ensure_store_state_cache_columns(backend, &mut tx).await?;
     for statement in CREATE_INDEXES {
         sqlx::query(*statement)
             .execute(&mut *tx)
@@ -259,6 +270,79 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
     tx.commit()
         .await
         .sql_context("Failed to commit schema initialization")
+}
+
+/// Bring pre-existing `store_state_namespaces` tables up to the cache-bound
+/// columns without touching their rows.
+///
+/// Fresh databases already have the columns from `CREATE_STORE_STATE_TABLES`,
+/// so this is a no-op for them. Databases created before the bounded-cache
+/// work keep every derived row (warm entries stay warm); missing columns are
+/// added and `size_bytes` is backfilled from the records themselves, while
+/// `last_access_tick` starts at 0 (coldest) for those rows. Deliberately not
+/// a `schema_version` bump: the versioned chain rebuilds verified state,
+/// which this change has no reason to redo.
+async fn ensure_store_state_cache_columns(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+) -> Result<()> {
+    let existing: Vec<(String,)> = if backend.is_sqlite() {
+        sqlx::query_as("SELECT name FROM pragma_table_info('store_state_namespaces')")
+            .fetch_all(&mut **tx)
+            .await
+            .sql_context("Failed to inspect Store-state columns")?
+    } else {
+        sqlx::query_as(
+            "SELECT column_name::text FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'store_state_namespaces'",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .sql_context("Failed to inspect Store-state columns")?
+    };
+    for (column, ddl) in [
+        (
+            "size_bytes",
+            "ALTER TABLE store_state_namespaces ADD COLUMN size_bytes BIGINT NOT NULL DEFAULT 0",
+        ),
+        (
+            "last_access_tick",
+            "ALTER TABLE store_state_namespaces ADD COLUMN last_access_tick BIGINT NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !existing.iter().any(|(name,)| name == column) {
+            sqlx::query(ddl)
+                .execute(&mut **tx)
+                .await
+                .sql_context("Failed to add Store-state cache column")?;
+        }
+    }
+    // Backfill sizes for ready rows that predate the column. Staging rows
+    // get their true size in the publish transaction; recomputing them here
+    // would only be overwritten.
+    let key_len = if backend.is_sqlite() {
+        "length(r.record_key)"
+    } else {
+        "octet_length(r.record_key)"
+    };
+    let value_len = if backend.is_sqlite() {
+        "length(r.record_value)"
+    } else {
+        "octet_length(r.record_value)"
+    };
+    // SAFETY: both length expressions are dialect constants; no external
+    // data is interpolated into the backfill statement.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE store_state_namespaces AS n SET size_bytes = COALESCE(
+             (SELECT SUM({key_len} + {value_len}) FROM store_state_records AS r
+              WHERE r.namespace_id = n.namespace_id), 0)
+         WHERE n.size_bytes = 0 AND n.status IN (1, 2, 3)"
+    )))
+    .execute(&mut **tx)
+    .await
+    .sql_context("Failed to backfill Store-state sizes")?;
+    Ok(())
 }
 
 #[cfg(all(test, feature = "sqlite"))]
