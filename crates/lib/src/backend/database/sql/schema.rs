@@ -15,10 +15,9 @@ use super::{SqlxBackend, SqlxResultExt};
 #[cfg(test)]
 mod tests;
 
-/// Current schema version.
-///
-/// Increment this when making schema changes that require migration.
-/// Version 0 is fully unstable and should not be used in production.
+/// Internal SQL format revision counter, independent of release versions and
+/// the InMemory persistence counter. Increment for changes requiring migration,
+/// with an explicit forward path from each supported stored format.
 pub const SCHEMA_VERSION: i64 = 2;
 
 const CREATE_STORE_STATE_TABLES: &[&str] = &[

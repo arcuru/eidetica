@@ -450,6 +450,7 @@ async fn mainline_fixture(db: &TestDatabase) -> (Entry, Entry, Entry) {
         .unwrap();
     let child = Entry::builder(root.id())
         .add_parent(parent.id())
+        .add_subtree_parent("test", parent.id())
         .set_subtree_data("test", b"child")
         .build()
         .unwrap();
@@ -519,14 +520,68 @@ async fn mainline_migration_repairs_statuses_and_retains_only_tips() {
     db.cleanup().await;
 }
 
-/// Verification migration does not change the existing materialization format.
-/// Real v0 records remain resolvable by the same keys, both after migration and reopen.
+/// Real v0 data survives migration and reopen; only the inconsistent child label
+/// changes. Both derived and authoritative Store state retain their original keys.
 #[tokio::test]
-async fn mainline_migration_preserves_warm_materializations() {
+async fn mainline_migration_preserves_data_metadata_and_store_state() {
     let Some(db) = TestDatabase::new().await else {
         return;
     };
-    let (root, _, child) = mainline_fixture(&db).await;
+    let (root, parent, child) = mainline_fixture(&db).await;
+    let secrets = InstanceSecrets {
+        signing_key: PrivateKey::generate(),
+    };
+    let metadata = InstanceMetadata {
+        id: secrets.signing_key.public_key(),
+        users_db: root.id(),
+        databases_db: root.id(),
+        sync_db: Some(root.id()),
+    };
+    for (statement, data) in [
+        (
+            "INSERT INTO instance_metadata (singleton, data) VALUES (1, $1)",
+            serde_json::to_string(&metadata).unwrap(),
+        ),
+        (
+            "INSERT INTO instance_secrets (singleton, data) VALUES (1, $1)",
+            serde_json::to_string(&secrets).unwrap(),
+        ),
+    ] {
+        sqlx::query(statement)
+            .bind(data)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+    for entry in [&parent, &child] {
+        sqlx::query("INSERT INTO subtrees (tree_id, entry_id, store_name, height, data) VALUES ($1, $2, 'test', 99, $3)")
+            .bind(root.id().to_string()).bind(entry.id().to_string())
+            .bind(entry.data("test").unwrap()).execute(&db.pool).await.unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO store_parents (child_id, parent_id, store_name) VALUES ($1, $2, 'test')",
+    )
+    .bind(child.id().to_string())
+    .bind(parent.id().to_string())
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    // A pre-existing terminal rejection is not cleared by format migration.
+    sqlx::query("UPDATE entries SET verification_status = $1 WHERE id = $2")
+        .bind(crate::backend::VerificationStatus::Failed.as_db_int())
+        .bind(parent.id().to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    for store in ["", "test"] {
+        sqlx::query("INSERT INTO tips (tree_id, entry_id, store_name) VALUES ($1, $2, $3)")
+            .bind(root.id().to_string())
+            .bind(child.id().to_string())
+            .bind(store)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
     let request = StoreStateRequest {
         database: root.id(),
         store: "data".into(),
@@ -561,9 +616,34 @@ async fn mainline_migration_preserves_warm_materializations() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let before = db.content().await;
+    sqlx::query("INSERT INTO store_state_namespaces SELECT 'authoritative-mainline', database_id, store_name, $1, status, scope_user_uuid, projection_name, projection_version, source_key, created_revision FROM store_state_namespaces WHERE namespace_id = 'warm-mainline'")
+        .bind(StoreStateLifecycle::Authoritative.as_db_int()).execute(&db.pool).await.unwrap();
+    sqlx::query("INSERT INTO store_state_records (namespace_id, record_key, record_value) VALUES ('authoritative-mainline', $1, $2)")
+        .bind(b"key".to_vec()).bind(b"authoritative mainline record".to_vec())
+        .execute(&db.pool).await.unwrap();
+    let mut expected = db.content().await;
+    assert_eq!(expected.entries.len(), 3);
+    assert_eq!(expected.subtrees.len(), 2);
+    assert_eq!(expected.tree_parents.len(), 2);
+    assert_eq!(expected.store_parents.len(), 1);
+    assert_eq!(expected.tips.len(), 2);
+    assert_eq!(expected.metadata.len(), 1);
+    assert_eq!(expected.secrets.len(), 1);
+    assert_eq!(expected.namespaces.len(), 2);
+    assert_eq!(expected.records.len(), 2);
+    expected
+        .entries
+        .iter_mut()
+        .find(|row| row.0 == child.id().to_string())
+        .unwrap()
+        .3 = crate::backend::VerificationStatus::Unverified.as_db_int();
     for _ in 0..2 {
         let backend = db.open().await.unwrap();
+        assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
+        assert_eq!(
+            backend.verified_snapshot(&root.id()).await.unwrap().tips(),
+            &[root.id()]
+        );
         let view = backend
             .resolve_store_state(&request)
             .await
@@ -577,9 +657,7 @@ async fn mainline_migration_preserves_warm_materializations() {
                 .unwrap(),
             Some(b"unchanged mainline materialization".to_vec())
         );
-        let after = db.content().await;
-        assert_eq!(after.namespaces, before.namespaces);
-        assert_eq!(after.records, before.records);
+        assert_eq!(db.content().await, expected);
         db.close_backend(backend).await;
     }
     db.cleanup().await;

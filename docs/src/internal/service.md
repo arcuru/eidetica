@@ -398,9 +398,9 @@ The encrypted-store-over-service tests cover both paths: `test_database_encrypte
 `ReadScope` controls the DAG snapshot exposed over the wire:
 
 - **`Verified`** (default) — only the maximal all-`Verified` ancestor-closed prefix of the DAG (the "Verified frontier"). Tips that are still `Unverified` are replaced by their nearest `Verified` ancestors; `Failed` entries are always dropped.
-- **`AllowUnverified`** — open against the raw DAG (only `Failed` dropped). The caller must explicitly opt in via `Database::allow_unverified()`.
+- **`AllowUnverified`** — select raw tips with `Failed` tips dropped, not a recursively sanitized accepted prefix. The caller must explicitly opt in via `Database::allow_unverified()`.
 
-`BeginTransaction` carries the caller's `ReadScope`: write parents are drawn from the _same_ snapshot the caller reads, so a write built under `AllowUnverified` uses unverified tips as parents and a write built under the `Verified` default uses only verified ancestors. This ensures the write's parent snapshot is self-consistent with the caller's read posture.
+`BeginTransaction` carries the caller's `ReadScope`: selected parents come from the same snapshot as its reads. Selection is not permission to commit against unsettled ancestry: signed local commit validation requires Verified parents, and server-side verification defers a submitted Entry with Unverified parents. `GetVerifiedTips` itself always returns the server's Verified frontier, even for a client handle with `.allow_unverified()`. The [verification contract](../design/verification.md#writes-inherit-the-selected-boundary-not-weaker-validation) defines the distinction.
 
 ### Gate scope for `AuthenticatedDb`
 

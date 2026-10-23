@@ -14,8 +14,9 @@ use crate::{
     entry::{Entry, ID},
 };
 
-/// The current persistence file format version.
-/// v2 retains verified tips only; unreleased v1 prefix files are refused.
+/// Internal JSON format revision counter, independent of release versions and
+/// the SQL schema counter. v0 reconstructs retained state on load; v2 persists
+/// verified tips only. Unreleased v1 prefix files are refused.
 const PERSISTENCE_VERSION: u8 = 2;
 
 /// Helper to check if version is default (0) for serde skip_serializing_if

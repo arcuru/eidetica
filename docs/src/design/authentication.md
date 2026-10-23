@@ -808,7 +808,8 @@ check and what the outcome was: `Unverified` (not yet checked), `Verified`
 Two rules connect them:
 
 1. **Local validation is the only path to `Verified`.** The storage layer
-   stores every entry as `Unverified` on `put` and exposes no way for a
+   stores every new entry as `Unverified` on `put` (duplicate receipt preserves
+   its existing local status) and exposes no way for a
    service client or sync peer to assert a status. Privileged local backend
    promotion is validator-owned. Only a local
    validation pass (`Transaction` commit, or `Database::verify()`) may
