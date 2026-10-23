@@ -47,8 +47,15 @@ status transition. A cached value is never an authorization or verification proo
 The default backend-wide budget is 1024 live derived namespaces and 256 MiB of
 record key/value bytes. Publication evicts other least-recently-used namespaces;
 a single protected oversized publication may exceed the byte budget until a later
-publication can evict it. Live access ticks are monotonic; SQL batches recency
-flushes rather than writing on every hit. Reopening SQL retains warm records.
+publication can evict it. Live access ticks are monotonic; SQL flushes a batch
+when 64 distinct namespaces have pending hits, or during eviction. Repeated hits
+on fewer namespaces stay in memory. Eviction also considers hits whose SQL
+flushes are still in flight. Reopening SQL retains warm records, but may lose
+recent unflushed recency.
+
+Evicted namespaces stop resolving immediately but remain readable through existing
+views until the next eviction pass or clear. This is separate from clear-unlinked
+namespaces, which eviction leaves alone until the next clear.
 
 These limits do not bound authoritative history/Store records, namespace metadata,
 staging data, temporarily retained reader generations, or whole-tree repair memory.

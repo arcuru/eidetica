@@ -2,16 +2,15 @@
 //!
 //! Both database backends keep exact access order in memory while open:
 //! every derived-namespace hit assigns a fresh monotonically increasing
-//! tick. Reads touch memory only — they never issue a storage write.
+//! tick. Hits accumulate in memory rather than writing to storage each time.
 //!
-//! The SQL backend additionally persists ticks durably in batches (see the
-//! `last_access_tick` column): touches accumulate in `dirty` and are
-//! flushed as one statement once [`RECENCY_FLUSH_THRESHOLD`] touches are
-//! dirty, inside an already-open write transaction (publish, eviction), or
-//! not at all on a read-only workload. A crash therefore loses only recent
-//! recency metadata, never cached values. Eviction flushes first, so it
-//! always decides on the best persisted recency plus the live order —
-//! steady state is approximate durable LRU, never insertion-order eviction.
+//! The SQL backend persists ticks in batches in `last_access_tick`: a hit
+//! flushes once [`RECENCY_FLUSH_THRESHOLD`] distinct namespaces are dirty,
+//! and eviction flushes any remaining tail in its write transaction.
+//! Repeated reads of fewer namespaces stay write-free until eviction.
+//! A crash loses recent recency metadata, never cached values. Eviction
+//! combines persisted ticks with the live order, including hits whose
+//! flushes are still in flight.
 //!
 //! The InMemory backend never persists derived namespaces at all, so its
 //! live map is the whole recency story; the same struct keeps the two
@@ -19,12 +18,9 @@
 
 use std::collections::HashMap;
 
-/// Touches accumulated before one batched durable flush.
-///
-/// Reads stay write-free: only every 64th hit (amortized) performs a single
-/// batched persistence write, and publish/eviction transactions piggyback
-/// whatever is dirty. This is the "bounded cadence" half of the no-write-
-/// per-hit contract.
+/// Distinct dirty namespaces accumulated before one batched durable flush.
+/// Repeated hits on one namespace update its pending tick without growing
+/// the batch; eviction also flushes batches below this threshold.
 pub(crate) const RECENCY_FLUSH_THRESHOLD: usize = 64;
 
 /// Exact in-process access order plus the not-yet-flushed durable tail.

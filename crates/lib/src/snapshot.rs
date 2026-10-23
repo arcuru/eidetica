@@ -183,6 +183,28 @@ mod tests {
     }
 
     #[test]
+    fn cache_keys_are_canonical_and_distinguish_tip_sets() {
+        let a = id(1);
+        let b = id(2);
+        let pair = Snapshot::from([a.clone(), b.clone()]);
+        assert_eq!(
+            pair.cache_key_bytes(),
+            Snapshot::from([b.clone(), a.clone(), a.clone()]).cache_key_bytes()
+        );
+        let keys = [
+            Snapshot::EMPTY.cache_key_bytes(),
+            Snapshot::from([a]).cache_key_bytes(),
+            Snapshot::from([b]).cache_key_bytes(),
+            pair.cache_key_bytes(),
+        ];
+        for (i, key) in keys.iter().enumerate() {
+            for other in &keys[i + 1..] {
+                assert_ne!(key, other);
+            }
+        }
+    }
+
+    #[test]
     fn empty_const_is_empty() {
         assert!(Snapshot::EMPTY.is_empty());
         assert_eq!(Snapshot::EMPTY.len(), 0);

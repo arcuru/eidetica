@@ -84,7 +84,6 @@ pub async fn resolve_store_state(
     .await
     .sql_context("Failed to resolve Store-state namespace")?;
     let view = row.map(|(namespace_id,)| RecordView { namespace_id });
-    // Recency only: in-memory touch, never a storage write per hit.
     if let Some(view) = &view {
         super::cache::touch(backend, &view.namespace_id).await?;
     }
@@ -321,7 +320,6 @@ pub async fn store_state_record_get(
     if !matches!(status, 1..=3) {
         return Err(BackendError::InvalidStoreStateView.into());
     }
-    // Recency only: in-memory touch, never a storage write per hit.
     super::cache::touch(backend, &view.namespace_id).await?;
     Ok(value)
 }
@@ -381,7 +379,6 @@ pub async fn store_state_record_scan(
     tx.commit()
         .await
         .sql_context("Failed to commit Store-state record scan")?;
-    // Recency only: in-memory touch, never a storage write per hit.
     super::cache::touch(backend, &view.namespace_id).await?;
     let mut records = rows;
     let has_more = records.len() > limit;

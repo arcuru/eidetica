@@ -11,10 +11,10 @@
 //!
 //! # Recency without a write per hit
 //!
-//! Reads touch only the in-process [`RecencyState`]. Dirty ticks flush as
-//! one batched `CASE` statement: piggybacked in the eviction transaction,
-//! or on a read path once `RECENCY_FLUSH_THRESHOLD` touches are dirty
-//! (amortized — never one write per hit). A crash loses only recent
+//! Reads update the in-process recency map. Dirty ticks flush as one batched
+//! `CASE` statement: in the eviction transaction, or on a read path once
+//! `RECENCY_FLUSH_THRESHOLD` distinct namespaces are dirty. Repeated hits
+//! on fewer namespaces stay in memory. A crash loses only recent
 //! recency metadata, never cached values.
 //!
 //! # Eviction safety
@@ -77,7 +77,7 @@ pub(crate) async fn ensure_tick_seeded(backend: &SqlxBackend) -> Result<()> {
 
 /// Record a cache hit in memory, flushing once the dirty set is full.
 ///
-/// Never issues more than one write per `RECENCY_FLUSH_THRESHOLD` hits.
+/// Flushes only when `RECENCY_FLUSH_THRESHOLD` distinct namespaces are dirty.
 pub(crate) async fn touch(backend: &SqlxBackend, namespace_id: &str) -> Result<()> {
     ensure_tick_seeded(backend).await?;
     let need_flush = backend.cache_recency.lock().unwrap().touch(namespace_id).1;
@@ -122,8 +122,8 @@ pub(crate) async fn flush_dirty(backend: &SqlxBackend) -> Result<()> {
     Ok(())
 }
 
-/// Flush inside an already-open write transaction (eviction): the following
-/// candidate `SELECT` in the same transaction must see the live order.
+/// Flush the pending tail inside the eviction transaction. Other flushes may
+/// still be in flight, so eviction also consults the live order.
 async fn flush_dirty_in_tx(
     backend: &SqlxBackend,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
@@ -184,11 +184,9 @@ where
 /// Opportunistically trim live derived namespaces to the cache policy.
 ///
 /// Runs after a derived publish commits. Reclaims the generation evicted by
-/// the previous pass first, then unlinks the oldest live namespaces (persisted
-/// recency just flushed, so the order is the best durable approximation of
-/// LRU) until both the row and byte bounds hold. `protect` (the namespace
-/// just published) is never a victim. Within budget the pass is a flush
-/// plus two cheap aggregate queries.
+/// the previous pass first, then unlinks the oldest live namespaces using
+/// persisted ticks plus in-process recency until both bounds hold. `protect`
+/// (the namespace just published) is never a victim.
 pub(crate) async fn evict_derived(backend: &SqlxBackend, protect: Option<&str>) -> Result<()> {
     let policy = backend.cache_policy();
     let mut tx = backend
@@ -240,16 +238,24 @@ pub(crate) async fn evict_derived(backend: &SqlxBackend, protect: Option<&str>) 
     let over_rows = (live_namespaces.max(0) as usize).saturating_sub(policy.max_namespaces);
     let over_bytes = live_bytes.saturating_sub(policy.max_bytes);
     if over_rows > 0 || over_bytes > 0 {
-        let candidates: Vec<(String, i64, i64)> = sqlx::query_as(
+        let mut candidates: Vec<(String, i64, i64)> = sqlx::query_as(
             "SELECT namespace_id, size_bytes, last_access_tick
              FROM store_state_namespaces
-             WHERE lifecycle = $1 AND status = 1
-             ORDER BY last_access_tick ASC, namespace_id ASC",
+             WHERE lifecycle = $1 AND status = 1",
         )
         .bind(StoreStateLifecycle::Derived.as_db_int())
         .fetch_all(&mut *tx)
         .await
         .sql_context("Failed to list Store-state eviction candidates")?;
+        {
+            // Another reader may have drained a newer hit into a flush that
+            // has not reached SQL yet. The live order still contains that hit.
+            let recency = backend.cache_recency.lock().unwrap();
+            for (id, _, tick) in &mut candidates {
+                *tick = (*tick).max(recency.live_tick(id).unwrap_or(0) as i64);
+            }
+        }
+        candidates.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
         let mut victims: Vec<String> = Vec::new();
         let mut freed_bytes: u64 = 0;
         for (id, size, _) in &candidates {
@@ -468,6 +474,21 @@ mod tests {
         .unwrap();
         assert_eq!(persisted_tick(&backend, &hot).await, newest);
         flush_chunk(backend.pool(), &[]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn eviction_preserves_hits_in_an_in_flight_flush() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let hot = publish(&backend, "hot").await;
+        let cold = publish(&backend, "cold").await;
+        touch(&backend, &hot.namespace_id).await.unwrap();
+        // A reader drained the batch and yielded before its SQL write. Eviction
+        // must still see this hit in the live order, not just durable ticks.
+        let in_flight = backend.cache_recency.lock().unwrap().drain_dirty();
+        assert_hot_survives(&backend, &hot, &cold).await;
+        flush_chunk(backend.pool(), &in_flight).await.unwrap();
     }
 
     #[tokio::test]
