@@ -926,3 +926,45 @@ async fn demotion_cascades_across_join_without_forgiving_failed_entries() {
             .is_err()
     );
 }
+
+/// A non-root ID is not a second verification namespace for that Entry.
+#[tokio::test]
+async fn repair_nonroot_id_preserves_real_tree_status_and_frontier() {
+    let backend = test_backend().await;
+    let (tree, a, b, c) = verified_fork(&*backend).await;
+    let before = backend.verified_snapshot(&tree).await.unwrap();
+    let repair = backend.repair_verification(&b).await.unwrap();
+    assert_eq!(repair.demoted, 0, "repair must not change another tree");
+    assert!(repair.snapshot.is_empty());
+    for id in [&tree, &a, &b, &c] {
+        assert_eq!(
+            backend.get_verification_status(id).await.unwrap(),
+            VerificationStatus::Verified
+        );
+    }
+    assert_eq!(backend.verified_snapshot(&tree).await.unwrap(), before);
+    assert_verified(&*backend, &tree, &[b, c]).await;
+}
+
+/// An Entry belongs to its declared root, not to a tree named after itself.
+#[tokio::test]
+async fn promotion_rejects_nonroot_parent_used_as_tree_root() {
+    let backend = test_backend().await;
+    let (tree, a, b, c) = verified_fork(&*backend).await;
+    let foreign = child_entry(&a, std::slice::from_ref(&a), "false-root", 2);
+    let foreign_id = foreign.id();
+    backend.put(foreign).await.unwrap();
+    assert!(
+        backend
+            .update_verification_status(&foreign_id, VerificationStatus::Verified)
+            .await
+            .is_err(),
+        "a parent's ID does not make it a root of a new tree"
+    );
+    assert_eq!(
+        backend.get_verification_status(&foreign_id).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+    assert_retained(&*backend, &a, &[]).await;
+    assert_verified(&*backend, &tree, &[b, c]).await;
+}
