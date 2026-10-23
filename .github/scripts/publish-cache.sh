@@ -17,7 +17,6 @@ list="$RUNNER_TEMP/eidetica-publish-paths"
   exit 1
 }
 mapfile -t paths < <(sort -u "$list")
-((${#paths[@]} > 0)) || exit 1
 for path in "${paths[@]}"; do
   [[ $path =~ ^/nix/store/[a-z0-9]{32}-[a-zA-Z0-9+._?=-]+$ ]] || {
     echo 'Invalid publication store path' >&2
