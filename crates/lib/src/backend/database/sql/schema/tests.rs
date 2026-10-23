@@ -766,3 +766,214 @@ async fn status_and_tip_failure_roll_back_together() {
     db.close_backend(backend).await;
     db.cleanup().await;
 }
+
+include!("parent_v2.rs");
+
+/// Literal verification-only DDL and rows, never a cache database downgraded
+/// by dropping columns or editing its version marker.
+async fn parent_v2_fixture(db: &TestDatabase) -> StoreStateRequest {
+    use crate::backend::VerificationStatus;
+
+    for statement in PARENT_V2 {
+        db.pool
+            .execute(sqlx::AssertSqlSafe(statement.replace("BLOB", "BYTEA")))
+            .await
+            .unwrap();
+    }
+    let root = Entry::root_builder().build().unwrap();
+    let child = Entry::builder(root.id())
+        .add_parent(root.id())
+        .set_subtree_data("data", b"verified")
+        .build()
+        .unwrap();
+    let failed = Entry::builder(root.id())
+        .add_parent(root.id())
+        .set_subtree_data("data", b"failed")
+        .build()
+        .unwrap();
+    let pending = Entry::builder(root.id())
+        .add_parent(child.id())
+        .set_subtree_data("data", b"pending")
+        .build()
+        .unwrap();
+    for (entry, status) in [
+        (&root, VerificationStatus::Verified),
+        (&child, VerificationStatus::Verified),
+        (&failed, VerificationStatus::Failed),
+        (&pending, VerificationStatus::Unverified),
+    ] {
+        sqlx::query("INSERT INTO entries (id, tree_id, is_root, verification_status, height, entry_cbor) VALUES ($1,$2,$3,$4,$5,$6)")
+            .bind(entry.id().to_string()).bind(root.id().to_string()).bind(i64::from(entry.is_root()))
+            .bind(status.as_db_int()).bind(i64::from(!entry.is_root())).bind(entry.to_dagcbor().unwrap())
+            .execute(&db.pool).await.unwrap();
+        for parent in entry.parents().unwrap() {
+            sqlx::query("INSERT INTO tree_parents (child_id, parent_id) VALUES ($1,$2)")
+                .bind(entry.id().to_string())
+                .bind(parent.to_string())
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+    }
+    for entry in [&failed, &pending] {
+        sqlx::query("INSERT INTO tips (entry_id, tree_id, store_name) VALUES ($1,$2,'')")
+            .bind(entry.id().to_string())
+            .bind(root.id().to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO verified_tips (tree_id, entry_id) VALUES ($1,$2)")
+        .bind(root.id().to_string())
+        .bind(child.id().to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let request = StoreStateRequest {
+        database: root.id(),
+        store: "data".into(),
+        lifecycle: StoreStateLifecycle::Derived,
+        scope: CacheScope::Shared,
+        projection: ProjectionDescriptor {
+            name: "eidetica/opaque".into(),
+            version: 0,
+        },
+        source_key: child.id().to_string().into_bytes(),
+    };
+    for (id, lifecycle, status) in [
+        ("warm-parent", StoreStateLifecycle::Derived, 1i64),
+        ("authority-parent", StoreStateLifecycle::Authoritative, 1),
+        ("unlinked-parent", StoreStateLifecycle::Derived, 2),
+    ] {
+        sqlx::query("INSERT INTO store_state_namespaces (namespace_id, database_id, store_name, lifecycle, status, scope_user_uuid, projection_name, projection_version, source_key, created_revision) VALUES ($1,$2,$3,$4,$5,'',$6,0,$7,NULL)")
+            .bind(id).bind(root.id().to_string()).bind(&request.store).bind(lifecycle.as_db_int())
+            .bind(status).bind(&request.projection.name).bind(&request.source_key)
+            .execute(&db.pool).await.unwrap();
+        sqlx::query("INSERT INTO store_state_records (namespace_id, record_key, record_value) VALUES ($1,$2,$3)")
+            .bind(id).bind(b"v".to_vec()).bind(b"parent bytes".to_vec())
+            .execute(&db.pool).await.unwrap();
+    }
+    request
+}
+
+#[tokio::test]
+async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let request = parent_v2_fixture(&db).await;
+    let before = db.content().await;
+    let tips: Vec<(String, String)> =
+        sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    // A repair always deletes/reinserts retained tips, even with zero demotions.
+    // Reject all such writes, so unchanged final contents cannot hide a repair.
+    if db.url.starts_with("sqlite:") {
+        db.pool.execute("CREATE TRIGGER forbid_repair BEFORE DELETE ON verified_tips BEGIN SELECT RAISE(ABORT, 'verification repair during cache upgrade'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE FUNCTION forbid_repair() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'verification repair during cache upgrade'; END $$").await.unwrap();
+        db.pool.execute("CREATE TRIGGER forbid_repair BEFORE DELETE ON verified_tips FOR EACH ROW EXECUTE FUNCTION forbid_repair()").await.unwrap();
+    }
+    for _ in 0..2 {
+        let backend = db.open().await.unwrap();
+        assert_eq!(db.versions().await, vec![(2,)]);
+        assert_eq!(
+            db.content().await,
+            before,
+            "upgrade/reopen must preserve all pre-cache columns and bytes"
+        );
+        let after_tips: Vec<(String, String)> =
+            sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2")
+                .fetch_all(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(after_tips, tips);
+        assert_eq!(
+            backend
+                .verified_snapshot(&request.database)
+                .await
+                .unwrap()
+                .tips(),
+            &[crate::entry::ID::parse(&tips[0].1).unwrap()]
+        );
+        let sizes: Vec<(String, i64, i64)> = sqlx::query_as("SELECT namespace_id, size_bytes, last_access_tick FROM store_state_namespaces ORDER BY 1")
+            .fetch_all(&db.pool).await.unwrap();
+        assert_eq!(sizes.len(), 3);
+        for (_, size, tick) in sizes {
+            assert_eq!(size, 1 + 12, "backfill includes key and value bytes");
+            assert_eq!(
+                tick, 0,
+                "legacy recency starts cold; reads do not persist each hit"
+            );
+        }
+        let view = backend
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .expect("old-key record remains warm");
+        assert_eq!(view.namespace_id, "warm-parent");
+        assert_eq!(
+            backend.store_state_record_get(&view, b"v").await.unwrap(),
+            Some(b"parent bytes".to_vec())
+        );
+        // New Snapshot keys miss normally; the upgrade did not delete old data.
+        let mut new_request = request.clone();
+        new_request.source_key =
+            crate::Snapshot::from([crate::entry::ID::parse(&tips[0].1).unwrap()]).cache_key_bytes();
+        assert!(
+            backend
+                .resolve_store_state(&new_request)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        db.close_backend(backend).await;
+    }
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn parent_v2_cache_backfill_failure_rolls_back_columns_and_data() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    parent_v2_fixture(&db).await;
+    if db.url.starts_with("sqlite:") {
+        db.pool.execute("CREATE TRIGGER fail_backfill BEFORE UPDATE ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'injected cache backfill failure'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE FUNCTION fail_backfill() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected cache backfill failure'; END $$").await.unwrap();
+        db.pool.execute("CREATE TRIGGER fail_backfill BEFORE UPDATE ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_backfill()").await.unwrap();
+    }
+    let catalog = db.catalog().await;
+    let content = db.content().await;
+    let tips: Vec<(String, String)> =
+        sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    let error = match db.open().await {
+        Ok(backend) => {
+            db.close_backend(backend).await;
+            panic!("injected backfill must fail");
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("Failed to backfill Store-state sizes"),
+        "{error}"
+    );
+    assert_eq!(db.catalog().await, catalog);
+    assert_eq!(db.content().await, content);
+    assert_eq!(db.versions().await, vec![(2,)]);
+    let after_tips: Vec<(String, String)> =
+        sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(after_tips, tips);
+    db.cleanup().await;
+}
