@@ -166,7 +166,7 @@ pub(crate) fn update_verification_status(
             if !inner
                 .entries
                 .get(parent)
-                .is_some_and(|entry| entry.in_tree(&tree))
+                .is_some_and(|entry| entry.root().unwrap_or_else(|| parent.clone()) == tree)
                 || inner.verification_status.get(parent) != Some(&VerificationStatus::Verified)
             {
                 return Err(BackendError::EntryValidationFailed {
@@ -204,7 +204,9 @@ fn tree_entries(inner: &InMemoryInner, tree: &ID) -> Vec<(Entry, VerificationSta
     inner
         .entries
         .values()
-        .filter(|entry| entry.in_tree(tree))
+        // `in_tree` also accepts an Entry's own ID, including non-roots.
+        // Maintenance must select only the canonical storage namespace.
+        .filter(|entry| entry.root().unwrap_or_else(|| entry.id()) == *tree)
         .map(|entry| {
             (
                 entry.clone(),
