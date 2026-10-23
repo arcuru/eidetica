@@ -50,6 +50,10 @@ Priority authorizes administrative actions; it does not change Doc merge orderin
   clients cannot assert a verification label. Historical signature queries also
   run the native validator server-side, gated by the handle's acting identity
   and Read permission on the target and claimed delegated trees.
+- `backend/database/{in_memory/storage,sql/verified}.rs`: atomic same-tree parent
+  guards, status/Verified-tip publication, cascading demotion and conservative
+  ancestry repair. These do not rerun signature or delegation validation; see
+  the [backend contract](../design/verification.md#backend-same-tree-ancestor-closure).
 - `backend/database/{in_memory,sql}/traversal.rs`: anchored store boundaries;
   SQL reads both current tip sets in one statement, InMemory uses its lock.
 

@@ -344,8 +344,10 @@ impl VerificationStatus {
 ///
 /// The backend stores a verification status for each entry, indicating whether
 /// the entry has been authenticated by the higher-level authentication system.
-/// The backend itself does not perform verification - it only stores the status
-/// set by the calling code (typically Database/Transaction implementations).
+/// The backend does not perform cryptographic authorization. Its status mutation
+/// boundary enforces same-tree Verified parents and atomically maintains the
+/// Verified frontier; the local Database/Transaction validator owns the remaining
+/// signature, causal-settings and delegation checks.
 #[async_trait]
 pub trait BackendImpl: Send + Sync + Any {
     /// Look up the published cached state for an exact request. Private

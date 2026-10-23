@@ -239,7 +239,7 @@ eidetica db repair-verification --backend sqlite --data-dir /var/lib/eidetica --
 
 Repair preserves valid Verified history and existing Failed decisions, demotes only
 inconsistent Verified entries and their dependent region to Unverified, and rebuilds
-the tree's tips atomically. Missing or foreign parents cannot establish trust;
+the tree's Verified tips atomically. Missing or foreign parents cannot establish trust;
 malformed immutable data and storage errors abort without partial status/tip changes.
 The printed demotion count is not a count of successfully verified entries.
 Repeat repair is idempotent. Entries, authoritative Store records, and the independent
@@ -254,9 +254,14 @@ file or treats corrupt JSON as an empty instance.
 
 #### Storage compatibility and older candidate data
 
-Mainline SQL schema 0 and unversioned InMemory files migrate to tips-only version 2.
-Migration reuses conservative repair; SQL schema, version, and label/tip changes
-commit together. Clean version-2 opens load persisted tips without a history scan.
+SQL schema and InMemory persistence versions are independent internal integer
+format counters, not release versions or stability levels. Both currently equal `2`.
+Mainline SQL schema `0` migrates directly to tips-only `2`; unversioned or explicit
+`_v: 0` InMemory files reconstruct retained state on load and write `2` on next save.
+Migration reuses conservative repair, not cryptographic re-verification; SQL schema,
+version, and label/tip changes commit together. Clean current-format opens load
+persisted tips without a history scan. See the canonical
+[supported migration matrix](../design/verification.md#persistence-restart-and-forward-migration).
 The unreleased version-1 prefix-tracking format is **unsupported** and refused before
 SQL schema initialization; InMemory version-1 files are also refused.
 A trust reset does **not** convert that schema or file format.

@@ -1443,12 +1443,13 @@ impl Database {
     ///   tip is replaced by its nearest `Verified` ancestors; anything reachable
     ///   only through an `Unverified` entry is excluded.
     /// - **[`allow_unverified`](Self::allow_unverified)** — the raw tips with
-    ///   only `Failed` entries dropped (`Unverified` tips are kept).
+    ///   only `Failed` tips dropped (`Unverified` tips are kept). This is not
+    ///   a recursively sanitized accepted prefix.
     ///
-    /// `Failed` entries are dropped in both cases. While a [`verify`](Self::verify)
-    /// pass is on the stack the frontier is bypassed (its own reads must see the
-    /// raw DAG to reconstruct pinned `_settings`); a remote backend returns its
-    /// raw tips unchanged (the server owns verification).
+    /// While a [`verify`](Self::verify) pass is on the stack the frontier is
+    /// bypassed (its own reads must see the raw DAG to reconstruct pinned
+    /// `_settings`). A remote handle returns the server's Verified frontier;
+    /// the server owns verification, not the client.
     ///
     /// # Returns
     /// A `Result` containing the [`Snapshot`] of tip entries or an error.
