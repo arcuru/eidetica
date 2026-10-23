@@ -165,12 +165,10 @@ impl CacheScope {
 /// recomputed from history on the next miss.
 ///
 /// Both bounds apply together: eviction trims the least-recently-used live
-/// derived namespaces until the live count is at most `max_namespaces` AND
-/// their total bytes are at most `max_bytes`. Authoritative and staging
-/// namespaces are never counted and never evicted.
-///
-/// The defaults are deliberately generous so ordinary use never evicts;
-/// tests shrink them through backend test knobs.
+/// derived namespaces until the live count is at most `max_namespaces` and
+/// their total bytes are at most `max_bytes`, except that the just-published
+/// namespace is protected even if it alone exceeds either bound.
+/// Authoritative and staging namespaces are never counted or evicted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerivedCachePolicy {
     /// Maximum live derived namespaces retained.

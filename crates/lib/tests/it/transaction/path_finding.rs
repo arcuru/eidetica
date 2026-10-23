@@ -731,103 +731,27 @@ async fn test_multi_tip_merge_state_caching() {
         "Cache should be populated after first read"
     );
 
-    // Read again - should hit cache and return same result
+    // Reverse the tips without clearing: the same namespace must serve both.
     let tx2 = ctx
         .database()
         .new_transaction_at(&Snapshot::from([
-            diamond.left.clone(),
             diamond.right.clone(),
+            diamond.left.clone(),
         ]))
         .await
         .unwrap();
     let store2 = tx2.get_store::<DocStore>("data").await.unwrap();
     let state2 = store2.get_all().await.unwrap();
 
-    // Verify same data is returned from cache
-    assert!(
-        state2.get("base").is_some(),
-        "Cached read should have base data"
-    );
-    assert!(
-        state2.get("left").is_some(),
-        "Cached read should have left data"
-    );
-    assert!(
-        state2.get("right").is_some(),
-        "Cached read should have right data"
-    );
-}
-
-/// Test that merge cache key is order-independent (tips are sorted).
-#[tokio::test]
-async fn test_multi_tip_cache_key_is_order_independent() {
-    let ctx = TestContext::new().with_local_database().await;
-    let diamond = create_diamond_pattern(ctx.database()).await;
-
-    // Clear cache
-    ctx.database()
-        .backend()
-        .unwrap()
-        .clear_derived_store_state()
-        .await
-        .unwrap();
-
-    // Read with tips in order [left, right]
-    let tx1 = ctx
-        .database()
-        .new_transaction_at(&Snapshot::from([
-            diamond.left.clone(),
-            diamond.right.clone(),
-        ]))
-        .await
-        .unwrap();
-    let store1 = tx1.get_store::<DocStore>("data").await.unwrap();
-    let _ = store1.get_all().await.unwrap();
-
-    // Canonical Snapshot key: construction order must not matter.
-    let merge_snapshot = Snapshot::from([diamond.left.clone(), diamond.right.clone()]);
-
-    // Verify cache was populated
-    let cache_request = opaque_cache_request(ctx.database().root_id(), "data", &merge_snapshot);
-    let cached = ctx
-        .database()
-        .backend()
-        .unwrap()
-        .resolve_store_state(&cache_request)
-        .await
-        .unwrap();
-    assert!(cached.is_some(), "Cache should be populated");
-
-    // Clear cache again
-    ctx.database()
-        .backend()
-        .unwrap()
-        .clear_derived_store_state()
-        .await
-        .unwrap();
-
-    // Read with tips in REVERSE order [right, left]
-    let tx2 = ctx
-        .database()
-        .new_transaction_at(&Snapshot::from([
-            diamond.right.clone(),
-            diamond.left.clone(),
-        ]))
-        .await
-        .unwrap();
-    let store2 = tx2.get_store::<DocStore>("data").await.unwrap();
-    let _ = store2.get_all().await.unwrap();
-
-    // Should use the SAME cache key (tips are sorted internally)
-    let cached_reverse = ctx
-        .database()
-        .backend()
-        .unwrap()
-        .resolve_store_state(&cache_request)
-        .await
-        .unwrap();
-    assert!(
-        cached_reverse.is_some(),
-        "Same cache key should be used regardless of tip order"
+    assert_eq!(state2, state);
+    assert_eq!(
+        ctx.database()
+            .backend()
+            .unwrap()
+            .resolve_store_state(&cache_request)
+            .await
+            .unwrap(),
+        cached_after,
+        "reversed tips must resolve the same published namespace"
     );
 }

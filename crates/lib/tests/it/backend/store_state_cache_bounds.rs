@@ -3,7 +3,8 @@
 //! The cache substrate is the derived-namespace table itself: each live
 //! derived namespace is one retained historical Snapshot materialization,
 //! keyed by its full canonical `source_key` bytes. These tests prove the
-//! settled contract on every backend in the matrix:
+//! cache contract. Bound-shrinking tests use local backends; service tests
+//! exercise identity and reads at the production defaults:
 //!
 //! - many historical Snapshots survive concurrently until bounds force
 //!   oldest-first eviction (row and byte bounds);
@@ -159,7 +160,7 @@ async fn many_historical_snapshots_survive_until_row_bound() {
 }
 
 #[tokio::test]
-async fn byte_bound_trims_largest_cold_tail_first() {
+async fn byte_bound_evicts_oldest_namespaces() {
     let backend = test_backend().await;
     // ~201 bytes per namespace; two live namespaces exceed 250.
     if !set_policy(
@@ -235,9 +236,6 @@ async fn hot_frontier_survives_cold_insertion_pressure() {
 #[tokio::test]
 async fn multi_tip_snapshot_identity_is_canonical() {
     let backend = test_backend().await;
-    if !set_policy(&*backend, row_policy(16)) {
-        return;
-    }
     let database = ID::from_bytes("identity-db");
     let tip_a = ID::from_bytes("tip-a");
     let tip_b = ID::from_bytes("tip-b");
@@ -288,14 +286,7 @@ async fn multi_tip_snapshot_identity_is_canonical() {
 async fn reads_issue_no_write_per_hit() {
     let backend = test_backend().await;
     let database = ID::from_bytes("recency-db");
-    let snapshot = Snapshot::new(vec![ID::from_bytes("recency-tip")]);
-    let req = request(&database, "recency-store", &snapshot);
-    let view = publish(
-        &*backend,
-        req.clone(),
-        vec![(b"v".to_vec(), b"recency".to_vec())],
-    )
-    .await;
+    let published = publish_history(&*backend, &database, 64).await;
 
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     let sql = backend
@@ -304,36 +295,40 @@ async fn reads_issue_no_write_per_hit() {
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     let flushes_before = sql.map(|sql| sql.testing_recency_flush_count());
 
-    // Reads below the batch threshold flush nothing at all.
-    for _ in 0..63 {
-        let hit = backend.resolve_store_state(&req).await.unwrap().unwrap();
-        assert_eq!(get_value(&*backend, &hit).await, Some(b"recency".to_vec()));
+    // The threshold counts distinct dirty namespaces, not repeated hits.
+    for (i, (_, view)) in published[..63].iter().enumerate() {
+        assert_eq!(
+            get_value(&*backend, view).await,
+            Some(format!("value-{i:03}").into_bytes())
+        );
     }
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     if let (Some(sql), Some(before)) = (sql, flushes_before) {
-        assert_eq!(
-            sql.testing_recency_flush_count(),
-            before,
-            "63 hits must flush zero times"
-        );
+        assert_eq!(sql.testing_recency_flush_count(), before);
+    }
+    assert_eq!(
+        get_value(&*backend, &published[63].1).await,
+        Some(b"value-063".to_vec())
+    );
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
+    if let (Some(sql), Some(before)) = (sql, flushes_before) {
+        assert_eq!(sql.testing_recency_flush_count() - before, 1);
     }
 
-    // Past the threshold, flushes stay amortized: one batched write per 64
-    // hits, never one per hit.
+    // Repeated reads of one namespace must not trigger another flush.
+    let (request, view) = &published[0];
     for _ in 0..200 {
-        let hit = backend.resolve_store_state(&req).await.unwrap().unwrap();
-        assert_eq!(get_value(&*backend, &hit).await, Some(b"recency".to_vec()));
+        let hit = backend.resolve_store_state(request).await.unwrap().unwrap();
+        assert_eq!(&hit, view);
+        assert_eq!(
+            get_value(&*backend, &hit).await,
+            Some(b"value-000".to_vec())
+        );
     }
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     if let (Some(sql), Some(before)) = (sql, flushes_before) {
-        let flushes = sql.testing_recency_flush_count() - before;
-        assert!(
-            flushes <= 5,
-            "263 hits flushed {flushes} times: recency must stay batched"
-        );
+        assert_eq!(sql.testing_recency_flush_count() - before, 1);
     }
-    // The published view still reads through every path.
-    assert_eq!(get_value(&*backend, &view).await, Some(b"recency".to_vec()));
 }
 
 #[tokio::test]
@@ -396,19 +391,8 @@ async fn concurrent_publishers_agree_with_eviction_active() {
     for handle in handles {
         handle.await.unwrap();
     }
-    // One final sequential publish forces a quiescent serial eviction pass
-    // that sees every concurrent commit, so the bound holds deterministically
-    // (concurrent trims alone are only opportunistically serial).
-    let final_snapshot = Snapshot::new(vec![ID::from_bytes("distinct-final")]);
-    let final_req = request(&database, "distinct-store-final", &final_snapshot);
-    publish(
-        &*backend,
-        final_req.clone(),
-        vec![(b"v".to_vec(), b"distinct".to_vec())],
-    )
-    .await;
-    // Ten publishes against a bound of four: at most four live, every live
-    // entry value-intact, and the just-published entry always among them.
+    // Every publish awaits its serialized eviction pass. The bound must hold
+    // once all finish, without an extra sequential publish to repair it.
     // The race winner is colder than eight newer inserts, so correct LRU
     // may have evicted it; that is the policy working, not a regression.
     let mut probed = vec![(req.clone(), b"winner".to_vec())];
@@ -419,7 +403,6 @@ async fn concurrent_publishers_agree_with_eviction_active() {
             b"distinct".to_vec(),
         ));
     }
-    probed.push((final_req.clone(), b"distinct".to_vec()));
     let mut live = 0;
     for (req, expected) in &probed {
         if let Some(view) = backend.resolve_store_state(req).await.unwrap() {
@@ -434,14 +417,6 @@ async fn concurrent_publishers_agree_with_eviction_active() {
     assert!(
         live <= 4,
         "row bound must hold after concurrent publishes, found {live} live"
-    );
-    assert!(
-        backend
-            .resolve_store_state(&final_req)
-            .await
-            .unwrap()
-            .is_some(),
-        "just-published entry is protected from its own eviction pass"
     );
 }
 
@@ -543,6 +518,25 @@ async fn zero_budgets_and_oversized_publication_keep_only_protected_namespace() 
         return;
     }
     let database = ID::from_bytes("zero-budget-db");
+    let mut authority = request(&database, "authority", &Snapshot::EMPTY);
+    authority.lifecycle = StoreStateLifecycle::Authoritative;
+    let authority_view = publish(
+        &*backend,
+        authority.clone(),
+        vec![(b"v".to_vec(), b"authority".to_vec())],
+    )
+    .await;
+    let staging = backend
+        .begin_store_state_staging(request(&database, "pending", &Snapshot::EMPTY))
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &staging,
+            [(b"v".to_vec(), Some(b"pending".to_vec()))].into(),
+        )
+        .await
+        .unwrap();
     let published = publish_history(&*backend, &database, 3).await;
     let requests: Vec<_> = published.iter().map(|(req, _)| req.clone()).collect();
     assert_eq!(live_count(&*backend, &requests).await, 1);
@@ -596,5 +590,19 @@ async fn zero_budgets_and_oversized_publication_keep_only_protected_namespace() 
     assert_eq!(
         backend.resolve_store_state(&oversized).await.unwrap(),
         Some(view)
+    );
+    // Neither authoritative records nor private staging are eviction victims.
+    assert_eq!(
+        backend.resolve_store_state(&authority).await.unwrap(),
+        Some(authority_view.clone())
+    );
+    assert_eq!(
+        get_value(&*backend, &authority_view).await,
+        Some(b"authority".to_vec())
+    );
+    let pending = backend.publish_store_state(staging).await.unwrap();
+    assert_eq!(
+        get_value(&*backend, &pending).await,
+        Some(b"pending".to_vec())
     );
 }

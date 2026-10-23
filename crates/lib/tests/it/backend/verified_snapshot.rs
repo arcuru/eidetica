@@ -582,54 +582,6 @@ async fn shuffled_orders_equal_cold_rebuild() {
     }
 }
 
-#[tokio::test]
-async fn snapshot_cache_keys_are_canonical() {
-    let backend = test_backend().await;
-    let root = root_entry();
-    let root_id = root.id();
-    backend.put_verified(root).await.unwrap();
-    let a = child_entry(&root_id, std::slice::from_ref(&root_id), "a", 1);
-    let a_id = a.id();
-    backend.put_verified(a).await.unwrap();
-    let b = child_entry(&root_id, std::slice::from_ref(&root_id), "b", 1);
-    let b_id = b.id();
-    backend.put_verified(b).await.unwrap();
-
-    // Construction order must not matter.
-    assert_eq!(
-        Snapshot::from([a_id.clone(), b_id.clone()]).cache_key_bytes(),
-        Snapshot::from([b_id.clone(), a_id.clone()]).cache_key_bytes(),
-    );
-    // Duplicates collapse to the same key.
-    assert_eq!(
-        Snapshot::from([a_id.clone(), b_id.clone()]).cache_key_bytes(),
-        Snapshot::from([a_id.clone(), a_id.clone(), b_id.clone()]).cache_key_bytes(),
-    );
-    // One-element snapshots live in the same key space (no separate
-    // entry-ID namespace), and distinct states key distinctly.
-    assert_ne!(
-        Snapshot::from([a_id.clone()]).cache_key_bytes(),
-        Snapshot::from([b_id.clone()]).cache_key_bytes(),
-    );
-    assert_ne!(
-        Snapshot::from([a_id.clone()]).cache_key_bytes(),
-        Snapshot::from([a_id.clone(), b_id.clone()]).cache_key_bytes(),
-    );
-    // No synthetic merge IDs anywhere in the encoding.
-    for snapshot in [
-        Snapshot::from([a_id.clone()]),
-        Snapshot::from([a_id.clone(), b_id.clone()]),
-    ] {
-        assert!(
-            !snapshot
-                .cache_key_bytes()
-                .windows(6)
-                .any(|w| w == b"merge:"),
-            "cache key must not contain a synthetic merge ID"
-        );
-    }
-}
-
 /// Shared hot-path counters. Held behind an `Arc` so the test keeps
 /// observing them after the `Instance` takes ownership of the engine.
 #[derive(Default)]

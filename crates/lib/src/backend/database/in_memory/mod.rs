@@ -13,7 +13,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     sync::{
-        RwLock,
+        Mutex, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -118,11 +118,11 @@ pub struct InMemory {
     store_history_reads: AtomicUsize,
     /// Bounds for the derived Store-state materialization cache (one policy
     /// surface; see [`DerivedCachePolicy`]).
-    derived_cache_policy: std::sync::RwLock<DerivedCachePolicy>,
+    derived_cache_policy: RwLock<DerivedCachePolicy>,
     /// Exact access order while open. A leaf lock: never acquire `inner`
     /// while holding it (publish/eviction take it under the `inner` write
     /// lock; reads take it alone).
-    cache_recency: std::sync::Mutex<RecencyState>,
+    cache_recency: Mutex<RecencyState>,
 }
 
 impl InMemory {
@@ -197,8 +197,8 @@ impl InMemory {
             store_state_scan_reads: AtomicUsize::new(0),
             #[cfg(feature = "testing")]
             store_history_reads: AtomicUsize::new(0),
-            derived_cache_policy: std::sync::RwLock::new(DerivedCachePolicy::default()),
-            cache_recency: std::sync::Mutex::new(RecencyState::default()),
+            derived_cache_policy: RwLock::new(DerivedCachePolicy::default()),
+            cache_recency: Mutex::new(RecencyState::default()),
         }
     }
 
@@ -296,8 +296,7 @@ impl InMemory {
                 }
             }
         }
-        let live_ids: std::collections::HashSet<String> =
-            inner.store_state_namespaces.keys().cloned().collect();
+        let live_ids: HashSet<String> = inner.store_state_namespaces.keys().cloned().collect();
         self.cache_recency
             .lock()
             .unwrap()
@@ -417,7 +416,6 @@ impl BackendImpl for InMemory {
                     namespace_id: namespace_id.clone(),
                 })
         };
-        // Recency only: in-memory touch, no storage write of any kind.
         if let Some(view) = &view {
             self.cache_touch(&view.namespace_id);
         }
@@ -563,7 +561,6 @@ impl BackendImpl for InMemory {
                 .ok_or(BackendError::InvalidStoreStateView)?;
             namespace.records.get(key).and_then(Clone::clone)
         };
-        // Recency only: in-memory touch, no storage write of any kind.
         self.cache_touch(&view.namespace_id);
         Ok(value)
     }
@@ -610,7 +607,6 @@ impl BackendImpl for InMemory {
             };
             RecordPage { records, next }
         };
-        // Recency only: in-memory touch, no storage write of any kind.
         self.cache_touch(&view.namespace_id);
         Ok(page)
     }
@@ -630,8 +626,7 @@ impl BackendImpl for InMemory {
         inner.store_state_namespaces.retain(|_, namespace| {
             namespace.request.lifecycle == StoreStateLifecycle::Authoritative
         });
-        let live_ids: std::collections::HashSet<String> =
-            inner.store_state_namespaces.keys().cloned().collect();
+        let live_ids: HashSet<String> = inner.store_state_namespaces.keys().cloned().collect();
         self.cache_recency
             .lock()
             .unwrap()

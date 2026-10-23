@@ -3,14 +3,21 @@
 //! This module handles serialization and file I/O for saving/loading
 //! the in-memory database state to/from JSON files.
 
-use std::{collections::HashMap, path::Path, sync::RwLock};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Mutex, RwLock},
+};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{InMemory, InMemoryInner, TreeTipsCache, VerifiedState};
 use crate::{
     Error, Result,
-    backend::{InstanceMetadata, InstanceSecrets, VerificationStatus, errors::BackendError},
+    backend::{
+        DerivedCachePolicy, InstanceMetadata, InstanceSecrets, VerificationStatus,
+        database::recency::RecencyState, errors::BackendError,
+    },
     entry::{Entry, ID},
 };
 
@@ -148,10 +155,8 @@ impl<'de> Deserialize<'de> for InMemory {
             // Derived Store-state namespaces are disposable performance
             // state and are never persisted; the policy resets to defaults
             // and recency restarts empty on load.
-            derived_cache_policy: std::sync::RwLock::new(
-                crate::backend::DerivedCachePolicy::default(),
-            ),
-            cache_recency: std::sync::Mutex::new(super::super::recency::RecencyState::default()),
+            derived_cache_policy: RwLock::new(DerivedCachePolicy::default()),
+            cache_recency: Mutex::new(RecencyState::default()),
         })
     }
 }
