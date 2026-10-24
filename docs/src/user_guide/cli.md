@@ -91,7 +91,8 @@ EIDETICA_ADMIN_PASSWORD=… eidetica daemon --data-dir /var/lib/eidetica init --
 eidetica daemon --data-dir ~/.local/share/eidetica init --username me --passwordless
 ```
 
-Backend options (`--backend`, `--data-dir`, `--postgres-url`) go before the `init` subcommand and are shared with `daemon` (see below).
+Backend options (`--backend`, `--data-dir`, `--postgres-url`,
+`--cache-bytes`, `--cache-namespaces`) go before the `init` subcommand and are shared with `daemon` (see below).
 
 ### `daemon`
 
@@ -110,6 +111,16 @@ eidetica daemon [OPTIONS]
 | `--backend`        | `-b`  | `sqlite`      | `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
 | `--data-dir`       | `-d`  | current dir   | `EIDETICA_DATA_DIR`       | Data directory for storage files                                |
 | `--postgres-url`   |       | —             | `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL (required when backend is `postgres`) |
+
+All commands opening a backend also accept `--cache-bytes`
+(`EIDETICA_CACHE_BYTES`) and `--cache-namespaces`
+(`EIDETICA_CACHE_NAMESPACES`, default `1024`). The byte defaults are `268435456`
+for InMemory and `4294967296` for file-backed SQL. These count live derived
+record key/value payload, not total memory or physical disk use. Zero disables
+retention; oversized derived materializations use history instead. The daemon
+installs these bounds before startup trim; remote clients cannot override them.
+See [cache retention](../internal/cache.md#retention-and-verification-boundaries)
+for reader-generation costs and legacy-client limits.
 
 The daemon runs until interrupted with SIGINT or SIGTERM. Clients connect using `Instance::connect("unix://...")`. See [Service (Daemon) Mode](service.md) for full documentation.
 
@@ -255,8 +266,8 @@ file or treats corrupt JSON as an empty instance.
 #### Storage compatibility and older candidate data
 
 SQL schema and InMemory persistence versions are independent internal integer
-format counters, not release versions or stability levels. Both currently equal `2`.
-Mainline SQL schema `0` migrates directly to tips-only `2`; unversioned or explicit
+format counters, not release versions or stability levels. SQL currently uses `3`
+and InMemory uses `2`. Mainline SQL schema `0` migrates directly to `3`; unversioned or explicit
 `_v: 0` InMemory files reconstruct retained state on load and write `2` on next save.
 Migration reuses conservative repair, not cryptographic re-verification; SQL schema,
 version, and label/tip changes commit together. Clean current-format opens load
@@ -272,7 +283,7 @@ backup). Do not edit its version marker, drop tables, or overwrite the original.
 A supported recovery path is to restore a known mainline-format backup into a
 **separate** location and let the new version migrate that copy, then reverify and
 compare required Entries and authoritative records before changing application paths.
-Alternatively create a separate empty version-2 instance and repopulate it through
+Alternatively create a separate empty current-format instance and repopulate it through
 normal ingest/replication from a complete trusted source, followed by verification.
 That is recreation, not conversion: instance-local credentials and authoritative
 Store records are not guaranteed to replicate. If either is irreplaceable and no
@@ -282,23 +293,25 @@ in-place version-1 conversion or automatic deletion is provided.
 
 #### Upgrading a verification-only version-2 database
 
-Existing tips-only version-2 SQL databases gain `size_bytes` and
-`last_access_tick` columns atomically on open. Record sizes are backfilled;
-old access ticks start at zero. This additive upgrade preserves Entries, statuses,
-retained tips, authoritative records and existing materializations without
-re-running verification repair. InMemory version-2 files keep the same serialized
-layout; derived records and recency are ephemeral and start empty on load.
+Existing tips-only version-2 SQL databases migrate atomically to **version 3**,
+adding `size_bytes` and `last_access_tick` when absent. Record sizes are backfilled
+once; existing valid durable ticks are preserved. This migration preserves Entries,
+statuses, retained Verified tips and authoritative records without verification
+repair. Only the supported v0 transition repairs verification closure. Ordinary
+v3 open does not backfill or repair. InMemory version-2 files are unchanged;
+derived records and recency remain ephemeral.
 
 Stop all users of the backend and retain a consistent offline backup before
-upgrading. Materialization lookups now use canonical Snapshot keys: old-key records
-are not deleted by migration, but a new-key miss rebuilds from immutable Entries.
-This is a disposable-cache rebuild, not a data-loss migration, and does not by
-itself require a trust reset. Cache budgets apply on subsequent publication.
+upgrading. Snapshot digest keys miss old-key cache rows and rebuild from immutable
+Entries; old keys are never relabelled. Exclusive startup reclaims abandoned and
+retired derived generations, seeds recency and enforces the configured budget
+before exposing storage. This does not require a trust reset.
 
-The shared version-2 marker does **not** imply downgrade compatibility: older
-binaries do not understand the new eviction states. To roll back, restore the
-pre-upgrade backup in a separate location; do not open the upgraded database with
-the older binary. The unsupported version-1 recovery rules above still apply.
+Pinned older version-2 constructors refuse the version-3 marker. Binary rollback
+requires restoring a compatible pre-upgrade backup in a separate location, not
+lowering the marker or opening the upgraded database with old software. Malformed,
+newer and unsupported version-1/prefix layouts are refused. No rollout or deployed
+client/server compatibility inventory is implied by these migration checks.
 
 ### Re-verification after reset or incomplete proof
 

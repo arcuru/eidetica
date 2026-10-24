@@ -2,7 +2,7 @@
 //!
 //! The cache substrate is the derived-namespace table itself: each live
 //! derived namespace is one retained historical Snapshot materialization,
-//! keyed by its full canonical `source_key` bytes. These tests prove the
+//! keyed by its domain-separated Snapshot digest. These tests prove the
 //! cache contract. Bound-shrinking tests use local backends; service tests
 //! exercise identity and reads at the production defaults:
 //!
@@ -506,7 +506,7 @@ async fn reopened_postgres_keeps_warm_entries() {
 }
 
 #[tokio::test]
-async fn zero_budgets_and_oversized_publication_keep_only_protected_namespace() {
+async fn zero_budgets_and_oversized_publications_are_not_retained() {
     let backend = test_backend().await;
     if !set_policy(
         &*backend,
@@ -526,72 +526,55 @@ async fn zero_budgets_and_oversized_publication_keep_only_protected_namespace() 
         vec![(b"v".to_vec(), b"authority".to_vec())],
     )
     .await;
-    let staging = backend
-        .begin_store_state_staging(request(&database, "pending", &Snapshot::EMPTY))
-        .await
-        .unwrap();
-    backend
-        .stage_store_state_records(
-            &staging,
-            [(b"v".to_vec(), Some(b"pending".to_vec()))].into(),
-        )
-        .await
-        .unwrap();
-    let published = publish_history(&*backend, &database, 3).await;
-    let requests: Vec<_> = published.iter().map(|(req, _)| req.clone()).collect();
-    assert_eq!(live_count(&*backend, &requests).await, 1);
-    let (last_request, last_view) = &published[2];
-    assert_eq!(
-        backend.resolve_store_state(last_request).await.unwrap(),
-        Some(last_view.clone())
-    );
-    assert_eq!(
-        get_value(&*backend, last_view).await,
-        Some(b"value-002".to_vec())
-    );
-    // The preceding victim remains readable until the next eviction pass.
-    assert_eq!(
-        get_value(&*backend, &published[1].1).await,
-        Some(b"value-001".to_vec())
-    );
+    let disabled = request(&database, "disabled", &Snapshot::EMPTY);
     assert!(
         backend
-            .store_state_record_get(&published[0].1, b"v")
+            .begin_store_state_staging(disabled.clone())
             .await
-            .is_err()
+            .unwrap_err()
+            .is_store_state_not_retained()
     );
+    assert_eq!(backend.resolve_store_state(&disabled).await.unwrap(), None);
 
     set_policy(
         &*backend,
         DerivedCachePolicy {
             max_namespaces: 10,
-            max_bytes: 1,
+            max_bytes: 10,
         },
     );
-    let oversized = request(
-        &database,
-        "oversized",
-        &Snapshot::from([ID::from_bytes("oversized")]),
-    );
-    let view = publish(
+    let fitting = request(&database, "fitting", &Snapshot::EMPTY);
+    let fitting_view = publish(
         &*backend,
-        oversized.clone(),
-        vec![(b"v".to_vec(), vec![7; 200])],
+        fitting.clone(),
+        vec![(b"v".to_vec(), b"small".to_vec())],
     )
     .await;
-    assert_eq!(get_value(&*backend, &view).await, Some(vec![7; 200]));
+    let oversized = request(&database, "oversized", &Snapshot::EMPTY);
+    let token = backend
+        .begin_store_state_staging(oversized.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(&token, [(b"v".to_vec(), Some(vec![7; 200]))].into())
+        .await
+        .unwrap();
     assert!(
         backend
-            .resolve_store_state(last_request)
+            .publish_store_state(token)
             .await
-            .unwrap()
-            .is_none()
+            .unwrap_err()
+            .is_store_state_not_retained()
+    );
+    assert_eq!(backend.resolve_store_state(&oversized).await.unwrap(), None);
+    assert_eq!(
+        backend.resolve_store_state(&fitting).await.unwrap(),
+        Some(fitting_view.clone())
     );
     assert_eq!(
-        backend.resolve_store_state(&oversized).await.unwrap(),
-        Some(view)
+        get_value(&*backend, &fitting_view).await,
+        Some(b"small".to_vec())
     );
-    // Neither authoritative records nor private staging are eviction victims.
     assert_eq!(
         backend.resolve_store_state(&authority).await.unwrap(),
         Some(authority_view.clone())
@@ -599,10 +582,5 @@ async fn zero_budgets_and_oversized_publication_keep_only_protected_namespace() 
     assert_eq!(
         get_value(&*backend, &authority_view).await,
         Some(b"authority".to_vec())
-    );
-    let pending = backend.publish_store_state(staging).await.unwrap();
-    assert_eq!(
-        get_value(&*backend, &pending).await,
-        Some(b"pending".to_vec())
     );
 }

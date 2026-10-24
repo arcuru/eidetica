@@ -212,6 +212,27 @@ impl<B: BackendImpl> BackendImpl for Recordless<B> {
         if stale.phase.load(Ordering::SeqCst) == 0 {
             return self.0.store_state_record_get(view, key).await;
         }
+        match stale.phase.load(Ordering::SeqCst) {
+            4 => {
+                stale.get.fetch_add(1, Ordering::SeqCst);
+                return Err(BackendError::InvalidStoreStateView.into());
+            }
+            6 => {
+                return Err(BackendError::StateInconsistency {
+                    reason: "injected real read failure".into(),
+                }
+                .into());
+            }
+            7 => {
+                let mut value = self.0.store_state_record_get(view, key).await?;
+                if let Some(bytes) = &mut value {
+                    bytes[0] ^= 1;
+                }
+                return Ok(value);
+            }
+            _ => {}
+        }
+
         if stale.get.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(BackendError::InvalidStoreStateView.into());
         }
@@ -231,6 +252,29 @@ impl<B: BackendImpl> BackendImpl for Recordless<B> {
         let Some(stale) = self.1.as_ref() else {
             return Err(BackendError::StoreStateStorageUnsupported.into());
         };
+        match stale.phase.load(Ordering::SeqCst) {
+            4 => {
+                stale.scan.fetch_add(1, Ordering::SeqCst);
+                return Err(BackendError::InvalidStoreStateView.into());
+            }
+            5 => {
+                let n = stale.scan.fetch_add(1, Ordering::SeqCst);
+                if n % 2 == 1 {
+                    return Err(BackendError::InvalidStoreStateView.into());
+                }
+                return self
+                    .0
+                    .store_state_record_scan(view, range, after, limit)
+                    .await;
+            }
+            6 => {
+                return Err(BackendError::StateInconsistency {
+                    reason: "injected real read failure".into(),
+                }
+                .into());
+            }
+            _ => {}
+        }
         if stale.phase.load(Ordering::SeqCst) < 2 {
             return self
                 .0
@@ -584,4 +628,248 @@ async fn encrypted_table_history_fallback_preserves_physical_pagination() {
         cached[1..],
         "a history cursor must continue through all remaining cached pages"
     );
+}
+
+#[tokio::test]
+async fn disabled_and_oversized_real_backends_read_rows_and_opaque_history() {
+    use eidetica::backend::DerivedCachePolicy;
+    let _guard = ENCRYPTED_FALLBACK_TEST.lock().await;
+    for max_bytes in [0, 1] {
+        let backend = crate::helpers::test_backend().await;
+        let policy = DerivedCachePolicy {
+            max_namespaces: 1024,
+            max_bytes,
+        };
+        if let Some(memory) = backend.as_any().downcast_ref::<InMemory>() {
+            memory.testing_set_derived_cache_policy(policy);
+        }
+        #[cfg(any(feature = "sqlite", feature = "postgres"))]
+        if let Some(sql) = backend
+            .as_any()
+            .downcast_ref::<eidetica::backend::database::SqlxBackend>()
+        {
+            sql.testing_set_derived_cache_policy(policy);
+        }
+        // Instance bootstrap and every commit exercise auth-floor publication
+        // under the same optional-cache refusal as the application Stores.
+        let (instance, _) = Instance::create_backend(backend, NewAccount::passwordless("admin"))
+            .await
+            .unwrap();
+        let (key, _) = generate_keypair();
+        let database = Database::create(&instance, key, Doc::new()).await.unwrap();
+        let tx = database.new_transaction().await.unwrap();
+        tx.get_store::<DocStore>("doc")
+            .await
+            .unwrap()
+            .set("key", "opaque")
+            .await
+            .unwrap();
+        let rows = tx.get_store::<Table<TableRow>>("rows").await.unwrap();
+        for (key, value) in [("a", 1), ("b", 2), ("c", 3)] {
+            rows.set(key, TableRow { value }).await.unwrap();
+        }
+        let mut encrypted = tx
+            .get_store::<PasswordStore<Table<TableRow>>>("encrypted")
+            .await
+            .unwrap();
+        encrypted.initialize("pass", Doc::new()).await.unwrap();
+        encrypted
+            .inner()
+            .await
+            .unwrap()
+            .set("secret", TableRow { value: 42 })
+            .await
+            .unwrap();
+        let boundary = tx.commit().await.unwrap();
+        let tx = database.new_transaction().await.unwrap();
+        let rows = tx.get_store::<Table<TableRow>>("rows").await.unwrap();
+        rows.delete("a").await.unwrap();
+        rows.set("d", TableRow { value: 4 }).await.unwrap();
+        assert_eq!(rows.get("b").await.unwrap().value, 2);
+        let first = rows.scan_page(None, 2).await.unwrap();
+        assert_eq!(
+            first.rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
+        let next = rows.scan_page(first.next.as_ref(), 2).await.unwrap();
+        assert_eq!(next.rows, vec![("d".into(), TableRow { value: 4 })]);
+        assert_eq!(
+            tx.get_store::<DocStore>("doc")
+                .await
+                .unwrap()
+                .get_string("key")
+                .await
+                .unwrap(),
+            "opaque"
+        );
+        assert!(
+            instance.backend().get(&boundary).await.is_ok(),
+            "cache refusal cannot remove Entries"
+        );
+        let mut encrypted = tx
+            .get_store::<PasswordStore<Table<TableRow>>>("encrypted")
+            .await
+            .unwrap();
+        encrypted.open("pass").unwrap();
+        assert_eq!(
+            encrypted
+                .inner()
+                .await
+                .unwrap()
+                .get("secret")
+                .await
+                .unwrap()
+                .value,
+            42
+        );
+        let bad_tx = database.new_transaction().await.unwrap();
+        let mut encrypted = bad_tx
+            .get_store::<PasswordStore<Table<TableRow>>>("encrypted")
+            .await
+            .unwrap();
+        let error = encrypted.open("wrong").unwrap_err();
+        assert!(
+            !error.is_optional_store_state_unavailable(),
+            "wrong-key history read must remain an error"
+        );
+    }
+}
+
+#[tokio::test]
+async fn second_invalidated_view_uses_history_and_partial_pages_restart() {
+    let state = Arc::new(StaleThenUnsupported {
+        phase: AtomicU8::new(0),
+        get: AtomicU8::new(0),
+        scan: AtomicU8::new(0),
+    });
+    let (instance, _) = Instance::create_backend(
+        Box::new(Recordless(InMemory::new(), Some(state.clone()))),
+        NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let database = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let table = tx.get_store::<Table<TableRow>>("rows").await.unwrap();
+    for (key, value) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
+        table.set(key, TableRow { value }).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let table = tx.get_store::<Table<TableRow>>("rows").await.unwrap();
+    state.phase.store(4, Ordering::SeqCst);
+    assert_eq!(table.get("c").await.unwrap().value, 3);
+    assert_eq!(
+        state.get.load(Ordering::SeqCst),
+        2,
+        "second stale view must terminate"
+    );
+    assert_eq!(table.get("d").await.unwrap().value, 4);
+    assert_eq!(
+        state.get.load(Ordering::SeqCst),
+        2,
+        "transaction bypass must persist"
+    );
+    state.phase.store(0, Ordering::SeqCst);
+    let tx = database.new_transaction().await.unwrap();
+    let table = tx.get_store::<Table<TableRow>>("rows").await.unwrap();
+    table.delete("a").await.unwrap();
+    table.delete("b").await.unwrap();
+    state.scan.store(0, Ordering::SeqCst);
+    state.phase.store(5, Ordering::SeqCst);
+    let page = table.scan_page(None, 2).await.unwrap();
+    assert_eq!(
+        page.rows,
+        vec![
+            ("c".into(), TableRow { value: 3 }),
+            ("d".into(), TableRow { value: 4 })
+        ]
+    );
+    assert!(page.next.is_none());
+    assert_eq!(
+        state.scan.load(Ordering::SeqCst),
+        4,
+        "one retry must restart the whole cached page"
+    );
+}
+
+#[tokio::test]
+async fn cache_read_errors_are_not_optional_misses() {
+    let state = Arc::new(StaleThenUnsupported {
+        phase: AtomicU8::new(0),
+        get: AtomicU8::new(0),
+        scan: AtomicU8::new(0),
+    });
+    let (instance, _) = Instance::create_backend(
+        Box::new(Recordless(InMemory::new(), Some(state.clone()))),
+        NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let database = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let table = tx.get_store::<Table<TableRow>>("rows").await.unwrap();
+    table.set("a", TableRow { value: 1 }).await.unwrap();
+    tx.commit().await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let table = tx.get_store::<Table<TableRow>>("rows").await.unwrap();
+    state.phase.store(6, Ordering::SeqCst);
+    let error = table.get("a").await.unwrap_err();
+    assert!(
+        error.to_string().contains("injected real read failure"),
+        "{error}"
+    );
+    let error = table.scan_page(None, 1).await.unwrap_err();
+    assert!(
+        error.to_string().contains("injected real read failure"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn corrupt_encrypted_cached_row_is_not_a_history_miss() {
+    let _guard = ENCRYPTED_FALLBACK_TEST.lock().await;
+    let state = Arc::new(StaleThenUnsupported {
+        phase: AtomicU8::new(0),
+        get: AtomicU8::new(0),
+        scan: AtomicU8::new(0),
+    });
+    let (instance, _) = Instance::create_backend(
+        Box::new(Recordless(InMemory::new(), Some(state.clone()))),
+        NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let database = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<TableRow>>>("encrypted")
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    encrypted
+        .inner()
+        .await
+        .unwrap()
+        .set("a", TableRow { value: 1 })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<TableRow>>>("encrypted")
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    assert_eq!(table.get("a").await.unwrap().value, 1);
+    state.phase.store(7, Ordering::SeqCst);
+    let error = table.get("a").await.unwrap_err();
+    assert!(!error.is_optional_store_state_unavailable());
+    assert!(!error.is_invalid_store_state_view());
+    state.phase.store(0, Ordering::SeqCst);
+    assert_eq!(table.get("a").await.unwrap().value, 1);
 }

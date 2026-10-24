@@ -84,7 +84,9 @@ pub async fn resolve_store_state(
     .await
     .sql_context("Failed to resolve Store-state namespace")?;
     let view = row.map(|(namespace_id,)| RecordView { namespace_id });
-    if let Some(view) = &view {
+    if let Some(view) = &view
+        && request.lifecycle == StoreStateLifecycle::Derived
+    {
         super::cache::touch(backend, &view.namespace_id).await?;
     }
     Ok(view)
@@ -96,6 +98,12 @@ pub async fn begin_store_state_staging(
 ) -> Result<StagingToken> {
     if request.lifecycle == StoreStateLifecycle::Staging {
         return Err(BackendError::InvalidStoreStateStagingToken.into());
+    }
+    if request.lifecycle == StoreStateLifecycle::Derived && !backend.cache_policy().admits(0) {
+        return Err(BackendError::StoreStateNotRetained {
+            reason: "derived retention disabled".into(),
+        }
+        .into());
     }
     let namespace_id = uuid::Uuid::new_v4().to_string();
     let staging_source = namespace_id.as_bytes();
@@ -170,33 +178,62 @@ pub async fn stage_store_state_records(
         .sql_context("Failed to commit Store-state record chunk")
 }
 
-/// Make a staging namespace ready.
-///
-/// A concurrent materializer can publish the same target first. That is not an
-/// error: both callers derived the same state from the same source, so the
-/// winner's namespace is adopted and this one is discarded. Any other failure
-/// also discards the staging namespace, because the caller has surrendered its
-/// token and can no longer abort it.
-///
-/// On success of a derived publish, the freshly committed namespace is
-/// recorded in recency and the cache is opportunistically trimmed to the
-/// cache policy (see `super::cache::evict_derived`).
+/// Publish, admission and eviction commit together. No fallible maintenance
+/// runs after commit, and arbitrary errors never turn into winner adoption.
 pub async fn publish_store_state(backend: &SqlxBackend, token: StagingToken) -> Result<RecordView> {
-    let target_lifecycle = token.target.lifecycle;
-    match publish_staged_namespace(backend, &token).await {
-        Ok((view, tick)) => {
-            if target_lifecycle == StoreStateLifecycle::Derived {
-                super::cache::record_published(backend, &view.namespace_id, tick);
-                super::cache::evict_derived(backend, Some(&view.namespace_id)).await?;
-            }
-            Ok(view)
-        }
-        Err(err) => {
-            let winner = resolve_store_state(backend, &token.target).await?;
-            discard_staging_namespace(backend, &token.namespace_id).await?;
-            winner.ok_or(err)
-        }
+    let mut tx = backend
+        .pool()
+        .begin()
+        .await
+        .sql_context("Failed to publish Store-state")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to lock Store-state publish transaction")?;
     }
+    super::cache::lock_maintenance(backend, &mut tx).await?;
+    lock_store_state_namespace(backend, &mut tx, &token.target, &token.namespace_id).await?;
+    let prepared = prepare_publication(backend, &mut tx, &token).await;
+    let (view, tick, newly_published) = match prepared {
+        Ok(result) => result,
+        Err(error) => {
+            tx.rollback()
+                .await
+                .sql_context("Store-state rollback outcome uncertain")?;
+            let _ = discard_staging_namespace(backend, &token.namespace_id).await;
+            return Err(error);
+        }
+    };
+    let maintenance = if newly_published && token.target.lifecycle == StoreStateLifecycle::Derived {
+        match super::cache::evict_in_tx(backend, &mut tx, Some(&view.namespace_id)).await {
+            Ok(maintenance) => Some(maintenance),
+            Err(error) => {
+                // Only a confirmed rollback establishes optional non-retention.
+                // Commit/rollback acknowledgement failures are never downgraded.
+                tx.rollback()
+                    .await
+                    .sql_context("Store-state rollback outcome uncertain")?;
+                let _ = discard_staging_namespace(backend, &token.namespace_id).await;
+                return Err(BackendError::StoreStateNotRetained {
+                    reason: format!("admission rolled back: {error}"),
+                }
+                .into());
+            }
+        }
+    } else {
+        None
+    };
+    tx.commit()
+        .await
+        .sql_context("Store-state publish commit outcome uncertain")?;
+    if let Some(maintenance) = maintenance {
+        super::cache::acknowledge(backend, maintenance);
+    }
+    if newly_published && token.target.lifecycle == StoreStateLifecycle::Derived {
+        super::cache::record_published(backend, &view.namespace_id, tick);
+    }
+    Ok(view)
 }
 
 /// Total published record bytes (key plus value) for one namespace.
@@ -215,62 +252,115 @@ fn published_size_expr(backend: &SqlxBackend, namespace_param: &'static str) -> 
     )
 }
 
-async fn publish_staged_namespace(
+pub(super) async fn prepare_publication(
     backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     token: &StagingToken,
-) -> Result<(RecordView, u64)> {
-    // Assigned before the transaction so the tick commits atomically with
-    // the publish itself; gaps from a rolled-back publish are harmless.
-    let tick = super::cache::assign_publish_tick(backend).await?;
-    let mut tx = backend
-        .pool()
-        .begin()
-        .await
-        .sql_context("Failed to publish Store-state")?;
-    if backend.is_sqlite() {
-        sqlx::query("COMMIT; BEGIN IMMEDIATE")
-            .execute(&mut *tx)
-            .await
-            .sql_context("Failed to lock Store-state publish transaction")?;
+) -> Result<(RecordView, u64, bool)> {
+    // The begin-time identity must agree before same-target adoption. A
+    // malformed clone cannot publish another build or destroy a ready view.
+    let valid: Option<(String,)> = sqlx::query_as(
+        "SELECT namespace_id FROM store_state_namespaces
+         WHERE namespace_id = $1 AND database_id = $2 AND store_name = $3
+           AND scope_user_uuid = $4 AND projection_name = $5 AND projection_version = $6
+           AND ((status = 0 AND lifecycle = $7) OR (status = 1 AND lifecycle = $8 AND source_key = $9))")
+        .bind(&token.namespace_id).bind(token.target.database.to_string()).bind(&token.target.store)
+        .bind(store_state_scope(&token.target.scope)).bind(&token.target.projection.name)
+        .bind(i64::from(token.target.projection.version)).bind(StoreStateLifecycle::Staging.as_db_int())
+        .bind(token.target.lifecycle.as_db_int()).bind(&token.target.source_key)
+        .fetch_optional(&mut **tx).await.sql_context("Failed to validate publication identity")?;
+    if valid.is_none() {
+        return Err(BackendError::InvalidStoreStateStagingToken.into());
     }
-    lock_store_state_namespace(backend, &mut tx, &token.target, &token.namespace_id).await?;
+    let winner: Option<(String,)> = sqlx::query_as(
+        "SELECT namespace_id FROM store_state_namespaces
+         WHERE database_id = $1 AND store_name = $2 AND lifecycle = $3 AND status = 1
+           AND scope_user_uuid = $4 AND projection_name = $5
+           AND projection_version = $6 AND source_key = $7",
+    )
+    .bind(token.target.database.to_string())
+    .bind(&token.target.store)
+    .bind(token.target.lifecycle.as_db_int())
+    .bind(store_state_scope(&token.target.scope))
+    .bind(&token.target.projection.name)
+    .bind(i64::from(token.target.projection.version))
+    .bind(&token.target.source_key)
+    .fetch_optional(&mut **tx)
+    .await
+    .sql_context("Failed to inspect Store-state publication winner")?;
+    if let Some((namespace_id,)) = winner {
+        sqlx::query("DELETE FROM store_state_namespaces WHERE namespace_id = $1 AND status = 0")
+            .bind(&token.namespace_id)
+            .execute(&mut **tx)
+            .await
+            .sql_context("Failed to discard losing Store-state build")?;
+        return Ok((RecordView { namespace_id }, 0, false));
+    }
+    let staging: Option<(i64,)> = sqlx::query_as(
+        "SELECT lifecycle FROM store_state_namespaces WHERE namespace_id = $1 AND status = 0",
+    )
+    .bind(&token.namespace_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .sql_context("Failed to validate Store-state publication token")?;
+    if staging != Some((StoreStateLifecycle::Staging.as_db_int(),)) {
+        return Err(BackendError::InvalidStoreStateStagingToken.into());
+    }
     let deletes: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM store_state_records WHERE namespace_id = $1 AND record_value IS NULL",
     )
     .bind(&token.namespace_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await
     .sql_context("Failed to validate Store-state records")?;
     if deletes.0 != 0 {
         return Err(BackendError::InvalidStoreStateStagingToken.into());
     }
-    let size_expr = published_size_expr(backend, "$3");
-    // SAFETY: `size_expr` is built from dialect constants and a constant
-    // placeholder; all request data stays bound.
-    let result = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "UPDATE store_state_namespaces SET lifecycle = $1, status = 1, source_key = $2,
-         size_bytes = {size_expr}, last_access_tick = $4
-         WHERE namespace_id = $3 AND lifecycle = $5 AND status = 0"
+    let size_expr = published_size_expr(backend, "$1");
+    // SAFETY: the size expression and cast are dialect constants.
+    let (size,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT CAST({size_expr} AS BIGINT)"
     )))
+    .bind(&token.namespace_id)
+    .fetch_one(&mut **tx)
+    .await
+    .sql_context("Failed to measure Store-state publication")?;
+    if token.target.lifecycle == StoreStateLifecycle::Derived
+        && !backend.cache_policy().admits(size as u64)
+    {
+        return Err(BackendError::StoreStateNotRetained {
+            reason: "disabled or oversized materialization".into(),
+        }
+        .into());
+    }
+    let tick = if token.target.lifecycle == StoreStateLifecycle::Derived {
+        super::cache::assign_publish_tick(backend).await?
+    } else {
+        0
+    };
+    let result = sqlx::query(
+        "UPDATE store_state_namespaces SET lifecycle = $1, status = 1, source_key = $2,
+         size_bytes = $4, last_access_tick = $5
+         WHERE namespace_id = $3 AND lifecycle = $6 AND status = 0",
+    )
     .bind(token.target.lifecycle.as_db_int())
     .bind(&token.target.source_key)
     .bind(&token.namespace_id)
+    .bind(size)
     .bind(tick as i64)
     .bind(StoreStateLifecycle::Staging.as_db_int())
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .sql_context("Failed to publish Store-state namespace")?;
     if result.rows_affected() != 1 {
         return Err(BackendError::InvalidStoreStateStagingToken.into());
     }
-    tx.commit()
-        .await
-        .sql_context("Failed to commit Store-state publish")?;
     Ok((
         RecordView {
             namespace_id: token.namespace_id.clone(),
         },
         tick,
+        true,
     ))
 }
 
@@ -299,8 +389,8 @@ pub async fn store_state_record_get(
     // after it (live read) — it can never peel the namespace away mid-read
     // into a false missing key. Ready namespaces hold no NULL values (publish
     // rejects them), so a NULL read is an absent key, not an empty value.
-    let row: Option<(i64, Option<Vec<u8>>)> = sqlx::query_as(
-        "SELECT namespaces.status, records.record_value
+    let row: Option<(i64, i64, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT namespaces.status, namespaces.lifecycle, records.record_value
          FROM store_state_namespaces AS namespaces
          LEFT JOIN store_state_records AS records
            ON records.namespace_id = namespaces.namespace_id AND records.record_key = $2
@@ -311,7 +401,7 @@ pub async fn store_state_record_get(
     .fetch_optional(backend.pool())
     .await
     .sql_context("Failed to get Store-state record")?;
-    let Some((status, value)) = row else {
+    let Some((status, lifecycle, value)) = row else {
         return Err(BackendError::InvalidStoreStateView.into());
     };
     // Live (1), clear-unlinked (2), and evicted (3) namespaces all stay
@@ -320,7 +410,9 @@ pub async fn store_state_record_get(
     if !matches!(status, 1..=3) {
         return Err(BackendError::InvalidStoreStateView.into());
     }
-    super::cache::touch(backend, &view.namespace_id).await?;
+    if lifecycle == StoreStateLifecycle::Derived.as_db_int() {
+        super::cache::touch(backend, &view.namespace_id).await?;
+    }
     Ok(value)
 }
 
@@ -343,18 +435,18 @@ pub async fn store_state_record_scan(
     // there. Validation runs before the `limit == 0` shortcut so an invalid
     // view errors instead of reading as an empty page.
     let validation = if backend.is_sqlite() {
-        "SELECT status FROM store_state_namespaces WHERE namespace_id = $1"
+        "SELECT status, lifecycle FROM store_state_namespaces WHERE namespace_id = $1"
     } else {
-        "SELECT status FROM store_state_namespaces WHERE namespace_id = $1 FOR SHARE"
+        "SELECT status, lifecycle FROM store_state_namespaces WHERE namespace_id = $1 FOR SHARE"
     };
-    let status: Option<(i64,)> = sqlx::query_as(validation)
+    let status: Option<(i64, i64)> = sqlx::query_as(validation)
         .bind(&view.namespace_id)
         .fetch_optional(&mut *tx)
         .await
         .sql_context("Failed to validate Store-state view")?;
-    if !matches!(status, Some((1..=3,))) {
+    let Some((1..=3, lifecycle)) = status else {
         return Err(BackendError::InvalidStoreStateView.into());
-    }
+    };
     if limit == 0 {
         return Ok(RecordPage::default());
     }
@@ -379,7 +471,9 @@ pub async fn store_state_record_scan(
     tx.commit()
         .await
         .sql_context("Failed to commit Store-state record scan")?;
-    super::cache::touch(backend, &view.namespace_id).await?;
+    if lifecycle == StoreStateLifecycle::Derived.as_db_int() {
+        super::cache::touch(backend, &view.namespace_id).await?;
+    }
     let mut records = rows;
     let has_more = records.len() > limit;
     records.truncate(limit);
@@ -410,6 +504,7 @@ pub async fn clear_derived_store_state(backend: &SqlxBackend) -> Result<()> {
             .await
             .sql_context("Failed to lock derived Store-state clear")?;
     }
+    super::cache::lock_maintenance(backend, &mut tx).await?;
     sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 AND status IN (2, 3)")
         .bind(StoreStateLifecycle::Derived.as_db_int())
         .execute(&mut *tx)
@@ -440,6 +535,7 @@ pub async fn reset_local_verification(backend: &SqlxBackend) -> Result<()> {
             .await
             .sql_context("Failed to lock trust reset")?;
     }
+    super::cache::lock_maintenance(backend, &mut tx).await?;
     sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 OR lifecycle = $2")
         .bind(StoreStateLifecycle::Derived.as_db_int())
         .bind(StoreStateLifecycle::Staging.as_db_int())

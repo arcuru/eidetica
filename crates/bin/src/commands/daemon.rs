@@ -289,6 +289,8 @@ mod tests {
                 backend: Backend::Inmemory,
                 data_dir: Some(data_dir.to_path_buf()),
                 postgres_url: None,
+                cache_bytes: None,
+                cache_namespaces: 1024,
             },
         }
     }
@@ -306,6 +308,8 @@ mod tests {
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,
+            cache_bytes: None,
+            cache_namespaces: 1024,
         })
         .await
         .unwrap();
@@ -332,6 +336,8 @@ mod tests {
             backend: Backend::Inmemory,
             data_dir: Some(dir.path().into()),
             postgres_url: None,
+            cache_bytes: None,
+            cache_namespaces: 1024,
         })
         .await
         .unwrap();
@@ -365,6 +371,8 @@ mod tests {
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,
+            cache_bytes: None,
+            cache_namespaces: 1024,
         })
         .await
         .unwrap();

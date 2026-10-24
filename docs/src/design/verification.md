@@ -86,7 +86,7 @@ Claims must cover the configured pointer and inherited per-root floors; a
 projection is not a status promotion and cannot substitute for this check.
 
 Missing or present-but-`Unverified` proof leaves the dependent Entry `Unverified`.
-A complete invalid proof produces `Failed`. Operational storage/cache errors
+A complete invalid proof produces `Failed`. Operational storage errors and uncertain cache outcomes
 propagate rather than becoming a denial, an empty floor or an acceptance.
 
 `Database::verify()` holds a per-tree lock, walks the Unverified region from raw
@@ -254,27 +254,29 @@ replace Doc's deterministic conflict resolution.
 ## Persistence, restart and forward migration
 
 SQL `schema_version` and InMemory JSON `_v` are **independent internal integer
-format revision counters**. Both currently equal `2`; they are not release
+format revision counters**. SQL uses `3` and InMemory uses `2`; they are not release
 versions, SemVer or a stability scale. A format change requiring migration
 advances the relevant counter and supplies an explicit supported forward path.
 Do not renumber existing data or infer a migration merely from integer ordering.
 The current supported matrix is:
 
-| Stored format                                             | Open/load behavior                                                                                                                            |
-| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fresh SQL database (no version row)                       | Initialize current schema and marker `2`. This is initialization, not a promise to repair unmarked populated SQL databases.                   |
-| Mainline SQL `0`                                          | Migrate directly to `2`: create retained-tip storage, conservatively repair each tree, publish schema/labels/tips/version in one transaction. |
-| SQL `2`                                                   | Use persisted labels and Verified tips; no startup history repair.                                                                            |
-| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported experimental prefix-tracking layout before schema initialization.                                                      |
-| SQL above `2`, or below `0`                               | Refuse: newer schema or unknown migration path.                                                                                               |
-| InMemory absent `_v` or explicit `_v: 0`                  | Reconstruct Verified tips from Entries and labels on load, conservatively demoting inconsistent Verified regions. Next save writes `2`.       |
-| InMemory `_v: 2`                                          | Load persisted labels/tips without history repair.                                                                                            |
-| InMemory other `_v`                                       | Refuse; this includes experimental `1` and future versions. Invalid/out-of-range encodings also fail deserialization.                         |
+| Stored format                                             | Open/load behavior                                                                                                                              |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fresh SQL database (no version row)                       | Initialize current schema and marker `3`. This is initialization, not a promise to repair unmarked populated SQL databases.                     |
+| Mainline SQL `0`                                          | Migrate directly to `3`: create retained tips/cache accounting, conservatively repair each tree, publish schema/labels/tips/version atomically. |
+| SQL `2`                                                   | Add/backfill cache accounting and advance to `3`, preserving labels and Verified tips without verification repair.                              |
+| SQL `3`                                                   | Use persisted labels, Verified tips and cache accounting; no recurring backfill or history repair.                                              |
+| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported experimental prefix-tracking layout before schema initialization.                                                        |
+| SQL above `3`, or below `0`                               | Refuse: newer schema or unknown migration path.                                                                                                 |
+| InMemory absent `_v` or explicit `_v: 0`                  | Reconstruct Verified tips from Entries and labels on load, conservatively demoting inconsistent Verified regions. Next save writes `2`.         |
+| InMemory `_v: 2`                                          | Load persisted labels/tips without history repair.                                                                                              |
+| InMemory other `_v`                                       | Refuse; this includes experimental `1` and future versions. Invalid/out-of-range encodings also fail deserialization.                           |
 
 SQL migration preserves immutable Entry bytes, parent/subtree records, raw tips,
 instance metadata/secrets and existing Store-state namespaces/records. It changes
-only inconsistent Verified labels and the retained Verified frontier alongside
-schema/version publication. Failed decisions remain Failed. Failure rolls back
+only inconsistent Verified labels and the retained Verified frontier on the v0
+transition; v2→v3 changes cache accounting and its marker, not trust state.
+Exclusive startup may reclaim disposable retired/abandoned cache rows. Failed decisions remain Failed. Failure rolls back
 the migration; version refusal is not a wholly read-only open, since ownership
 bookkeeping and SQLite WAL setup can precede the schema check.
 
