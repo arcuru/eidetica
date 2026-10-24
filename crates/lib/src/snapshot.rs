@@ -82,6 +82,28 @@ impl Snapshot {
     pub fn len(&self) -> usize {
         self.tips.len()
     }
+
+    /// Canonical bytes identifying this `Snapshot` as a materialized-value
+    /// cache key.
+    ///
+    /// Tips are already sorted and deduplicated, so the encoding is
+    /// canonical: every construction order for the same tip set yields
+    /// identical bytes. A single tip is a one-element snapshot — there is
+    /// no separate entry-ID cache namespace. Verification status is never
+    /// part of this key: materializing the same snapshot produces the same
+    /// value whether the node currently calls it verified or unverified.
+    ///
+    /// The domain prefix keeps snapshot keys disjoint from any other
+    /// `source_key` namespace sharing the substrate.
+    pub fn cache_key_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::from(b"eidetica-snapshot-v1\0".as_slice());
+        for tip in &self.tips {
+            let s = tip.to_string();
+            out.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
+        out
+    }
 }
 
 /// Equality is set-equality on tips.
@@ -158,6 +180,28 @@ mod tests {
 
     fn id(byte: u8) -> ID {
         ID::from_bytes([byte])
+    }
+
+    #[test]
+    fn cache_keys_are_canonical_and_distinguish_tip_sets() {
+        let a = id(1);
+        let b = id(2);
+        let pair = Snapshot::from([a.clone(), b.clone()]);
+        assert_eq!(
+            pair.cache_key_bytes(),
+            Snapshot::from([b.clone(), a.clone(), a.clone()]).cache_key_bytes()
+        );
+        let keys = [
+            Snapshot::EMPTY.cache_key_bytes(),
+            Snapshot::from([a]).cache_key_bytes(),
+            Snapshot::from([b]).cache_key_bytes(),
+            pair.cache_key_bytes(),
+        ];
+        for (i, key) in keys.iter().enumerate() {
+            for other in &keys[i + 1..] {
+                assert_ne!(key, other);
+            }
+        }
     }
 
     #[test]
