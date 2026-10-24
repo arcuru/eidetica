@@ -83,26 +83,20 @@ impl Snapshot {
         self.tips.len()
     }
 
-    /// Canonical bytes identifying this `Snapshot` as a materialized-value
-    /// cache key.
+    /// Domain-separated BLAKE3-256 digest of the complete canonical Snapshot.
     ///
-    /// Tips are already sorted and deduplicated, so the encoding is
-    /// canonical: every construction order for the same tip set yields
-    /// identical bytes. A single tip is a one-element snapshot — there is
-    /// no separate entry-ID cache namespace. Verification status is never
-    /// part of this key: materializing the same snapshot produces the same
-    /// value whether the node currently calls it verified or unverified.
-    ///
-    /// The domain prefix keeps snapshot keys disjoint from any other
-    /// `source_key` namespace sharing the substrate.
+    /// Database, Store, projection, lifecycle and trust scope remain separate
+    /// namespace dimensions. Status is not identity. Old full-frontier keys
+    /// simply miss; they are never relabelled as digests.
     pub fn cache_key_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::from(b"eidetica-snapshot-v1\0".as_slice());
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"eidetica-snapshot-v1\0");
         for tip in &self.tips {
             let s = tip.to_string();
-            out.extend_from_slice(&(s.len() as u64).to_le_bytes());
-            out.extend_from_slice(s.as_bytes());
+            hash.update(&(s.len() as u64).to_le_bytes());
+            hash.update(s.as_bytes());
         }
-        out
+        hash.finalize().as_bytes().to_vec()
     }
 }
 
@@ -353,5 +347,35 @@ mod tests {
         let snap_json = serde_json::to_string(&snap).unwrap();
         let vec_json = serde_json::to_string(snap.tips()).unwrap();
         assert_eq!(snap_json, vec_json);
+    }
+    #[test]
+    fn cache_digest_covers_complete_canonical_input() {
+        let snapshot = Snapshot::new(
+            (0..128u64)
+                .map(|i| ID::from_bytes(i.to_le_bytes()))
+                .collect(),
+        );
+        let mut canonical = b"eidetica-snapshot-v1\0".to_vec();
+        for id in snapshot.tips() {
+            let text = id.to_string();
+            canonical.extend_from_slice(&(text.len() as u64).to_le_bytes());
+            canonical.extend_from_slice(text.as_bytes());
+        }
+        assert!(canonical.len() > 8191);
+        assert_eq!(snapshot.cache_key_bytes().len(), 32);
+        assert_eq!(
+            snapshot.cache_key_bytes(),
+            blake3::hash(&canonical).as_bytes()
+        );
+        assert_eq!(
+            Snapshot::EMPTY.cache_key_bytes(),
+            blake3::hash(b"eidetica-snapshot-v1\0").as_bytes()
+        );
+        let mut changed = snapshot.into_tips();
+        changed[127] = ID::from_bytes("different-last-tip");
+        assert_ne!(
+            Snapshot::from(changed).cache_key_bytes(),
+            blake3::hash(&canonical).as_bytes()
+        );
     }
 }

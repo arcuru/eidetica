@@ -62,6 +62,15 @@ pub struct BackendConfig {
     /// PostgreSQL connection URL (required when backend=postgres)
     #[arg(long, env = "EIDETICA_POSTGRES_URL")]
     pub postgres_url: Option<String>,
+
+    /// Live derived key/value bytes (default: 256 MiB RAM, 4 GiB persistent SQL).
+    /// Zero disables retention; this is not an RSS or physical disk quota.
+    #[arg(long, env = "EIDETICA_CACHE_BYTES")]
+    pub cache_bytes: Option<u64>,
+
+    /// Live derived namespace limit. Zero disables retention.
+    #[arg(long, env = "EIDETICA_CACHE_NAMESPACES", default_value_t = 1024)]
+    pub cache_namespaces: usize,
 }
 
 /// Arguments for the serve command

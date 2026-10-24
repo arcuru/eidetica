@@ -121,7 +121,7 @@ pub struct InMemory {
     derived_cache_policy: RwLock<DerivedCachePolicy>,
     /// Exact access order while open. A leaf lock: never acquire `inner`
     /// while holding it (publish/eviction take it under the `inner` write
-    /// lock; reads take it alone).
+    /// lock; record reads may take it under the `inner` read lock).
     cache_recency: Mutex<RecencyState>,
 }
 
@@ -183,6 +183,11 @@ impl InMemory {
 impl InMemory {
     /// Creates a new, empty `InMemory` database.
     pub fn new() -> Self {
+        Self::new_with_cache_policy(DerivedCachePolicy::default())
+    }
+
+    /// Create a backend with explicit live derived-payload and namespace bounds.
+    pub fn new_with_cache_policy(policy: DerivedCachePolicy) -> Self {
         Self {
             inner: RwLock::new(InMemoryInner {
                 entries: HashMap::new(),
@@ -197,14 +202,12 @@ impl InMemory {
             store_state_scan_reads: AtomicUsize::new(0),
             #[cfg(feature = "testing")]
             store_history_reads: AtomicUsize::new(0),
-            derived_cache_policy: RwLock::new(DerivedCachePolicy::default()),
+            derived_cache_policy: RwLock::new(policy),
             cache_recency: Mutex::new(RecencyState::default()),
         }
     }
 
-    /// Test-only knob shrinking the derived-cache bounds so eviction is
-    /// reachable without publishing a thousand namespaces. Production
-    /// always runs the safe defaults.
+    /// Test-only knob shrinking derived-cache bounds for eviction fixtures.
     #[cfg(feature = "testing")]
     pub fn testing_set_derived_cache_policy(&self, policy: DerivedCachePolicy) {
         *self.derived_cache_policy.write().unwrap() = policy;
@@ -220,7 +223,7 @@ impl InMemory {
     /// live order simply stores it).
     fn cache_assign_tick(&self, namespace_id: &str) -> u64 {
         let mut recency = self.cache_recency.lock().unwrap();
-        let tick = recency.now().saturating_add(1);
+        let tick = recency.now().saturating_add(1).min(i64::MAX as u64);
         recency.touch_with_tick(namespace_id, tick);
         tick
     }
@@ -344,6 +347,17 @@ impl InMemory {
         persistence::load_from_file(path)
     }
 
+    /// Load with explicit bounds. Derived records are ephemeral, so policy is
+    /// installed before the backend is exposed without changing persisted state.
+    pub async fn load_from_file_with_cache_policy<P: AsRef<Path>>(
+        path: P,
+        policy: DerivedCachePolicy,
+    ) -> Result<Self> {
+        let backend = persistence::load_from_file(path)?;
+        *backend.derived_cache_policy.write().unwrap() = policy;
+        Ok(backend)
+    }
+
     /// Like [`Self::load_from_file`], but returns `Ok(None)` when the file
     /// does not exist instead of falling back to an empty backend. Lets
     /// callers distinguish "no snapshot yet" from "snapshot loaded as
@@ -416,7 +430,9 @@ impl BackendImpl for InMemory {
                     namespace_id: namespace_id.clone(),
                 })
         };
-        if let Some(view) = &view {
+        if let Some(view) = &view
+            && request.lifecycle == StoreStateLifecycle::Derived
+        {
             self.cache_touch(&view.namespace_id);
         }
         Ok(view)
@@ -428,6 +444,14 @@ impl BackendImpl for InMemory {
     ) -> Result<StagingToken> {
         if request.lifecycle == StoreStateLifecycle::Staging {
             return Err(BackendError::InvalidStoreStateStagingToken.into());
+        }
+        if request.lifecycle == StoreStateLifecycle::Derived
+            && !self.derived_cache_policy.read().unwrap().admits(0)
+        {
+            return Err(BackendError::StoreStateNotRetained {
+                reason: "derived retention disabled".into(),
+            }
+            .into());
         }
         let target = request.clone();
         request.lifecycle = StoreStateLifecycle::Staging;
@@ -481,7 +505,21 @@ impl BackendImpl for InMemory {
                 namespace_id: token.namespace_id,
             });
         }
+        if inner
+            .store_state_namespaces
+            .get(&token.namespace_id)
+            .is_some_and(|ns| ns.ready)
+        {
+            return Err(BackendError::InvalidStoreStateStagingToken.into());
+        }
         let staged = inner.store_state_namespaces.remove(&token.namespace_id);
+        if let Some(namespace) = &staged {
+            let mut expected = namespace.request.clone();
+            expected.lifecycle = token.target.lifecycle;
+            if expected != token.target {
+                return Err(BackendError::InvalidStoreStateStagingToken.into());
+            }
+        }
         // A concurrent materializer may have made this exact target ready
         // first. Both derived the same state from the same source, so adopt the
         // winner and discard this namespace rather than failing the loser.
@@ -493,15 +531,6 @@ impl BackendImpl for InMemory {
             });
         }
         let mut namespace = staged.ok_or(BackendError::InvalidStoreStateStagingToken)?;
-        // A ready namespace is never removed: reaching here with one means the
-        // token's target no longer matches, which is an error that must not
-        // destroy published state.
-        if namespace.ready {
-            inner
-                .store_state_namespaces
-                .insert(token.namespace_id.clone(), namespace);
-            return Err(BackendError::InvalidStoreStateStagingToken.into());
-        }
         if namespace.request.lifecycle != StoreStateLifecycle::Staging {
             return Err(BackendError::InvalidStoreStateStagingToken.into());
         }
@@ -517,6 +546,18 @@ impl BackendImpl for InMemory {
                 key.len() as u64 + value.as_ref().map_or(0, |bytes| bytes.len() as u64)
             })
             .sum();
+        if target_lifecycle == StoreStateLifecycle::Derived
+            && !self
+                .derived_cache_policy
+                .read()
+                .unwrap()
+                .admits(namespace.size_bytes)
+        {
+            return Err(BackendError::StoreStateNotRetained {
+                reason: "disabled or oversized materialization".into(),
+            }
+            .into());
+        }
         let namespace_id = token.namespace_id.clone();
         inner
             .store_state_namespaces
@@ -559,9 +600,11 @@ impl BackendImpl for InMemory {
                 .get(&view.namespace_id)
                 .filter(|namespace| namespace.ready)
                 .ok_or(BackendError::InvalidStoreStateView)?;
+            if namespace.request.lifecycle == StoreStateLifecycle::Derived {
+                self.cache_touch(&view.namespace_id);
+            }
             namespace.records.get(key).and_then(Clone::clone)
         };
-        self.cache_touch(&view.namespace_id);
         Ok(value)
     }
 
@@ -581,6 +624,9 @@ impl BackendImpl for InMemory {
                 .ok_or(BackendError::InvalidStoreStateView)?;
             if limit == 0 {
                 return Ok(RecordPage::default());
+            }
+            if namespace.request.lifecycle == StoreStateLifecycle::Derived {
+                self.cache_touch(&view.namespace_id);
             }
             self.store_state_scan_reads.fetch_add(1, Ordering::Relaxed);
             let mut records = namespace
@@ -607,7 +653,6 @@ impl BackendImpl for InMemory {
             };
             RecordPage { records, next }
         };
-        self.cache_touch(&view.namespace_id);
         Ok(page)
     }
 
@@ -923,6 +968,45 @@ mod store_state_token_tests {
     }
 
     #[tokio::test]
+    async fn authoritative_reads_do_not_enter_derived_recency() {
+        let backend = InMemory::new();
+        let mut target = request("authoritative");
+        target.lifecycle = StoreStateLifecycle::Authoritative;
+        let token = backend
+            .begin_store_state_staging(target.clone())
+            .await
+            .unwrap();
+        let view = backend.publish_store_state(token).await.unwrap();
+        assert_eq!(
+            backend.resolve_store_state(&target).await.unwrap(),
+            Some(view.clone())
+        );
+        assert_eq!(
+            backend
+                .store_state_record_get(&view, b"absent")
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(
+            backend
+                .store_state_record_scan(&view, &crate::backend::RecordRange::default(), None, 1)
+                .await
+                .unwrap()
+                .records
+                .is_empty()
+        );
+        assert_eq!(
+            backend
+                .cache_recency
+                .lock()
+                .unwrap()
+                .live_tick(&view.namespace_id),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn mismatched_target_publish_preserves_ready_namespace() {
         let backend = InMemory::new();
 
@@ -956,13 +1040,12 @@ mod store_state_token_tests {
             .unwrap();
 
         // Malformed clone: B's namespace id, A's target. The ready winner for
-        // A is adopted and A's snapshot is untouched.
+        // A is untouched; the mismatched clone is refused.
         let bad = StagingToken {
             namespace_id: token_b.namespace_id.clone(),
             target: request_a.clone(),
         };
-        let adopted = backend.publish_store_state(bad).await.unwrap();
-        assert_eq!(adopted, view_a);
+        assert!(backend.publish_store_state(bad).await.is_err());
         assert_eq!(
             backend
                 .store_state_record_get(&view_a, b"key")

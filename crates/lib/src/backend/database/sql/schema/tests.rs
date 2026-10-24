@@ -81,6 +81,25 @@ impl TestDatabase {
         unreachable!("only PostgreSQL fixtures are enabled");
     }
 
+    async fn open_with_policy(
+        &self,
+        policy: crate::backend::DerivedCachePolicy,
+    ) -> Result<SqlxBackend> {
+        #[cfg(feature = "postgres")]
+        if let Some(schema) = &self.schema {
+            return SqlxBackend::connect_postgres_configured(
+                &self.url,
+                Some(schema.clone()),
+                policy,
+            )
+            .await;
+        }
+        #[cfg(feature = "sqlite")]
+        return SqlxBackend::connect_sqlite_with_cache_policy(&self.url, policy).await;
+        #[cfg(not(feature = "sqlite"))]
+        unreachable!();
+    }
+
     async fn close_backend(&self, mut backend: SqlxBackend) {
         // Wait for server-side pool locks to be released before reopening.
         #[cfg(feature = "postgres")]
@@ -363,16 +382,14 @@ async fn fresh_and_current_schema_initialize() {
 }
 
 #[tokio::test]
-async fn current_schema_gets_additive_store_state_tables() {
+async fn malformed_current_schema_refused_without_repair() {
     let Some(db) = TestDatabase::new().await else {
         return;
     };
     let backend = db.open().await.unwrap();
     db.populate(&backend).await;
     db.close_backend(backend).await;
-    let mut content = db.content().await;
-    // Model the old version-0 layout without Store-state tables, retaining Entries
-    // and instance metadata. Only this disposable fixture is altered.
+    // A current marker with missing tables is corruption, not a migration.
     db.pool
         .execute("DROP TABLE store_state_records")
         .await
@@ -381,15 +398,17 @@ async fn current_schema_gets_additive_store_state_tables() {
         .execute("DROP TABLE store_state_namespaces")
         .await
         .unwrap();
-    content.namespaces.clear();
-    content.records.clear();
+    let catalog = db.catalog().await;
+    let error = match db.open().await {
+        Ok(_) => panic!("malformed v3 accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("Malformed SQL layout"),
+        "{error}"
+    );
+    assert_eq!(catalog, db.catalog().await);
 
-    let backend = db.open().await.unwrap();
-    assert_eq!(content, db.content().await);
-    db.populate(&backend).await;
-    assert_eq!(db.content().await.records.len(), 1);
-    assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
-    db.close_backend(backend).await;
     db.cleanup().await;
 }
 
@@ -862,7 +881,10 @@ async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
         return;
     };
     let request = parent_v2_fixture(&db).await;
-    let before = db.content().await;
+    let mut before = db.content().await;
+    // Exclusive startup reclaims old derived reader generations, never authority.
+    before.namespaces.retain(|row| row.0 != "unlinked-parent");
+    before.records.retain(|row| row.0 != "unlinked-parent");
     let tips: Vec<(String, String)> =
         sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2")
             .fetch_all(&db.pool)
@@ -878,7 +900,7 @@ async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
     }
     for _ in 0..2 {
         let backend = db.open().await.unwrap();
-        assert_eq!(db.versions().await, vec![(2,)]);
+        assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
         assert_eq!(
             db.content().await,
             before,
@@ -900,7 +922,7 @@ async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
         );
         let sizes: Vec<(String, i64, i64)> = sqlx::query_as("SELECT namespace_id, size_bytes, last_access_tick FROM store_state_namespaces ORDER BY 1")
             .fetch_all(&db.pool).await.unwrap();
-        assert_eq!(sizes.len(), 3);
+        assert_eq!(sizes.len(), 2);
         for (_, size, tick) in sizes {
             assert_eq!(size, 1 + 12, "backfill includes key and value bytes");
             assert_eq!(
@@ -975,5 +997,267 @@ async fn parent_v2_cache_backfill_failure_rolls_back_columns_and_data() {
             .await
             .unwrap();
     assert_eq!(after_tips, tips);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn v2_existing_accounting_preserves_ticks_and_v3_never_backfills() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let request = parent_v2_fixture(&db).await;
+    db.pool
+        .execute(
+            "ALTER TABLE store_state_namespaces ADD COLUMN size_bytes BIGINT NOT NULL DEFAULT 0",
+        )
+        .await
+        .unwrap();
+    db.pool.execute("ALTER TABLE store_state_namespaces ADD COLUMN last_access_tick BIGINT NOT NULL DEFAULT 0").await.unwrap();
+    db.pool
+        .execute("UPDATE store_state_namespaces SET size_bytes = 13, last_access_tick = 9000")
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let backend = db.open().await.unwrap();
+        assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
+        assert_eq!(backend.cache_recency.lock().unwrap().now(), 9000);
+        let ticks: Vec<(i64,)> =
+            sqlx::query_as("SELECT last_access_tick FROM store_state_namespaces")
+                .fetch_all(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(ticks, vec![(9000,), (9000,)]);
+        db.close_backend(backend).await;
+    }
+    // A valid empty cached namespace makes the old recurring size=0 backfill
+    // observable. Ordinary v3 open may not issue that UPDATE at all.
+    let backend = db.open().await.unwrap();
+    let mut empty = request;
+    empty.store = "empty".into();
+    let token = backend
+        .begin_store_state_staging(empty.clone())
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(token).await.unwrap();
+    let (tick,): (i64,) = sqlx::query_as(
+        "SELECT last_access_tick FROM store_state_namespaces WHERE namespace_id = $1",
+    )
+    .bind(&view.namespace_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(
+        tick > 9000,
+        "reopen clock must advance beyond persisted hits"
+    );
+    db.close_backend(backend).await;
+    if db.url.starts_with("sqlite:") {
+        db.pool.execute("CREATE TRIGGER forbid_backfill BEFORE UPDATE ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'recurring backfill'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE FUNCTION forbid_backfill() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'recurring backfill'; END $$").await.unwrap();
+        db.pool.execute("CREATE TRIGGER forbid_backfill BEFORE UPDATE ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION forbid_backfill()").await.unwrap();
+    }
+    let backend = db.open().await.unwrap();
+    assert!(backend.resolve_store_state(&empty).await.unwrap().is_some());
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn startup_reclaims_abandoned_generations_and_enforces_lowered_budget() {
+    use crate::backend::DerivedCachePolicy;
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.populate(&backend).await;
+    let mut request = StoreStateRequest {
+        database: crate::entry::ID::from_bytes("startup-db"),
+        store: "retired".into(),
+        lifecycle: StoreStateLifecycle::Derived,
+        scope: CacheScope::Shared,
+        projection: ProjectionDescriptor {
+            name: "test/startup".into(),
+            version: 1,
+        },
+        source_key: vec![1],
+    };
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend.publish_store_state(token).await.unwrap();
+    backend.clear_derived_store_state().await.unwrap();
+    for store in ["cold", "hot"] {
+        request.store = store.into();
+        let token = backend
+            .begin_store_state_staging(request.clone())
+            .await
+            .unwrap();
+        backend
+            .stage_store_state_records(&token, [(b"k".to_vec(), Some(b"v".to_vec()))].into())
+            .await
+            .unwrap();
+        backend.publish_store_state(token).await.unwrap();
+    }
+    request.store = "abandoned".into();
+    backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    let before = db.content().await;
+    db.close_backend(backend).await;
+    let policy = DerivedCachePolicy {
+        max_namespaces: 1,
+        max_bytes: 2,
+    };
+    let backend = db.open_with_policy(policy).await.unwrap();
+    assert_eq!(backend.cache_policy(), policy);
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT store_name, status, size_bytes FROM store_state_namespaces WHERE lifecycle = 0",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, vec![("hot".into(), 1, 2)]);
+    let (staging,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM store_state_namespaces WHERE lifecycle = 2")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(staging, 0);
+    let after = db.content().await;
+    assert_eq!(after.entries, before.entries);
+    assert_eq!(
+        after
+            .namespaces
+            .iter()
+            .filter(|r| r.3 == 1)
+            .collect::<Vec<_>>(),
+        before
+            .namespaces
+            .iter()
+            .filter(|r| r.3 == 1)
+            .collect::<Vec<_>>()
+    );
+    db.close_backend(backend).await;
+    let backend = db
+        .open_with_policy(DerivedCachePolicy {
+            max_namespaces: 0,
+            max_bytes: 0,
+        })
+        .await
+        .unwrap();
+    let (derived,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM store_state_namespaces WHERE lifecycle = 0")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(derived, 0);
+    assert_eq!(db.content().await.entries, before.entries);
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn startup_trim_failure_refuses_open_instead_of_exposing_over_budget() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    parent_v2_fixture(&db).await;
+    let backend = db.open().await.unwrap();
+    db.close_backend(backend).await;
+    if db.url.starts_with("sqlite:") {
+        db.pool.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'startup trim failure'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE FUNCTION fail_trim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'startup trim failure'; END $$").await.unwrap();
+        db.pool.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_trim()").await.unwrap();
+    }
+    let before = db.content().await;
+    let error = match db
+        .open_with_policy(crate::backend::DerivedCachePolicy {
+            max_namespaces: 0,
+            max_bytes: 0,
+        })
+        .await
+    {
+        Ok(_) => panic!("opened over budget"),
+        Err(error) => error,
+    };
+    assert!(!error.is_optional_store_state_unavailable());
+    assert!(
+        error.to_string().contains("startup trim failure"),
+        "{error}"
+    );
+    assert_eq!(db.content().await, before);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn malformed_markers_and_missing_v3_columns_refuse_without_ddl() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    db.marker(Some(2)).await;
+    db.marker(Some(3)).await;
+    let before = db.catalog().await;
+    let error = match db.open().await {
+        Ok(_) => panic!("ambiguous markers accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("multiple schema version markers"),
+        "{error}"
+    );
+    assert_eq!(db.catalog().await, before);
+    db.cleanup().await;
+
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    parent_v2_fixture(&db).await;
+    db.pool
+        .execute("UPDATE schema_version SET version = 3")
+        .await
+        .unwrap();
+    let before = db.catalog().await;
+    let error = match db.open().await {
+        Ok(_) => panic!("missing v3 counters accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("v3 cache counters missing"),
+        "{error}"
+    );
+    assert_eq!(db.catalog().await, before);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn malformed_negative_cache_counters_refuse_open() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.populate(&backend).await;
+    db.close_backend(backend).await;
+    db.pool
+        .execute("UPDATE store_state_namespaces SET size_bytes = -1")
+        .await
+        .unwrap();
+    let before = db.content().await;
+    let error = match db.open().await {
+        Ok(_) => panic!("negative accounting accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("malformed Store-state cache counters"),
+        "{error}"
+    );
+    assert_eq!(db.content().await, before);
     db.cleanup().await;
 }

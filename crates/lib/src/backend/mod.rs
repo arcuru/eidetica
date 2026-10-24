@@ -166,8 +166,8 @@ impl CacheScope {
 ///
 /// Both bounds apply together: eviction trims the least-recently-used live
 /// derived namespaces until the live count is at most `max_namespaces` and
-/// their total bytes are at most `max_bytes`, except that the just-published
-/// namespace is protected even if it alone exceeds either bound.
+/// their total bytes are at most `max_bytes`. Oversized publications are refused
+/// without evicting useful state. A zero bound disables derived retention.
 /// Authoritative and staging namespaces are never counted or evicted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerivedCachePolicy {
@@ -175,6 +175,20 @@ pub struct DerivedCachePolicy {
     pub max_namespaces: usize,
     /// Maximum total record bytes across live derived namespaces.
     pub max_bytes: u64,
+}
+
+impl DerivedCachePolicy {
+    /// Default for persistent SQL: 4 GiB of live record payload.
+    pub fn persistent() -> Self {
+        Self {
+            max_bytes: 4 * 1024 * 1024 * 1024,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn admits(&self, size: u64) -> bool {
+        self.max_namespaces != 0 && self.max_bytes != 0 && size <= self.max_bytes
+    }
 }
 
 impl Default for DerivedCachePolicy {

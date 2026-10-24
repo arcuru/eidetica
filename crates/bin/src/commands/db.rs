@@ -109,6 +109,7 @@ pub async fn repair_verification(args: &DbRepairArgs) -> Result<(), Box<dyn std:
 async fn open_existing(
     config: &BackendConfig,
 ) -> Result<(Box<dyn BackendImpl>, Option<std::path::PathBuf>), Box<dyn std::error::Error>> {
+    let policy = crate::backend::cache_policy(config);
     match config.backend {
         Backend::Inmemory => {
             let dir = config
@@ -131,7 +132,10 @@ async fn open_existing(
                 return Err("SQLite database file does not exist".into());
             }
             Ok((
-                Box::new(eidetica::backend::database::Sqlite::open(&path).await?),
+                Box::new(
+                    eidetica::backend::database::Sqlite::open_with_cache_policy(&path, policy)
+                        .await?,
+                ),
                 None,
             ))
         }
@@ -141,7 +145,10 @@ async fn open_existing(
                 .as_ref()
                 .ok_or("Specify --postgres-url explicitly")?;
             Ok((
-                Box::new(eidetica::backend::database::Postgres::connect(url).await?),
+                Box::new(
+                    eidetica::backend::database::Postgres::connect_with_cache_policy(url, policy)
+                        .await?,
+                ),
                 None,
             ))
         }

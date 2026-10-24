@@ -38,7 +38,7 @@ impl RecencyState {
     /// Record a hit. Returns the assigned tick and whether the dirty set
     /// reached the flush threshold.
     pub(crate) fn touch(&mut self, namespace_id: &str) -> (u64, bool) {
-        self.tick = self.tick.saturating_add(1);
+        self.tick = self.tick.saturating_add(1).min(i64::MAX as u64);
         self.order.insert(namespace_id.to_string(), self.tick);
         self.dirty.insert(namespace_id.to_string(), self.tick);
         (self.tick, self.dirty.len() >= RECENCY_FLUSH_THRESHOLD)
@@ -78,9 +78,26 @@ impl RecencyState {
         self.order.get(namespace_id).copied()
     }
 
-    /// Drain the dirty set for one batched durable flush.
-    pub(crate) fn drain_dirty(&mut self) -> Vec<(String, u64)> {
-        self.dirty.drain().collect()
+    /// Copy pending ticks without losing them on SQL failure or cancellation.
+    pub(crate) fn pending(&self) -> Vec<(String, u64)> {
+        self.dirty
+            .iter()
+            .map(|(id, tick)| (id.clone(), *tick))
+            .collect()
+    }
+
+    /// Acknowledge only ticks covered by a committed batch. Newer hits survive.
+    pub(crate) fn acknowledge(&mut self, batch: &[(String, u64)]) {
+        for (id, tick) in batch {
+            if self.dirty.get(id).is_some_and(|dirty| dirty <= tick) {
+                self.dirty.remove(id);
+            }
+        }
+    }
+
+    pub(crate) fn remove(&mut self, id: &str) {
+        self.order.remove(id);
+        self.dirty.remove(id);
     }
 
     /// Drop bookkeeping for namespaces that no longer exist.
@@ -114,7 +131,7 @@ mod tests {
         let hit = recency.touch("published").0;
         recency.touch_with_tick("published", 1);
 
-        assert_eq!(recency.drain_dirty(), vec![("published".to_string(), hit)]);
+        assert_eq!(recency.pending(), vec![("published".to_string(), hit)]);
     }
 
     #[test]
@@ -127,20 +144,22 @@ mod tests {
         recency.touch_with_tick("published", published);
         assert_eq!(recency.live_tick("published"), Some(published));
         assert!(published > old_hit);
-        assert_eq!(
-            recency.drain_dirty(),
-            vec![("other".to_string(), other_hit)]
-        );
+        assert_eq!(recency.pending(), vec![("other".to_string(), other_hit)]);
 
+        recency.acknowledge(&[("other".to_string(), other_hit)]);
         let hit = recency.touch("published").0;
         recency.touch_with_tick("published", hit); // Equal is already covered too.
-        assert!(recency.drain_dirty().is_empty());
+        assert!(recency.pending().is_empty());
         let next_hit = recency.touch("published").0;
         assert!(next_hit > hit);
         assert_eq!(recency.live_tick("published"), Some(next_hit));
-        assert_eq!(
-            recency.drain_dirty(),
-            vec![("published".to_string(), next_hit)]
-        );
+        assert_eq!(recency.pending(), vec![("published".to_string(), next_hit)]);
+    }
+    #[test]
+    fn clock_never_wraps_signed_sql_ticks() {
+        let mut recency = RecencyState::default();
+        recency.advance_to(i64::MAX as u64 - 1);
+        assert_eq!(recency.touch("last").0, i64::MAX as u64);
+        assert_eq!(recency.touch("saturated").0, i64::MAX as u64);
     }
 }

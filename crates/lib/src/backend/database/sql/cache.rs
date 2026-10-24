@@ -1,40 +1,7 @@
-//! Bounded derived Store-state materialization cache for SQL backends.
-//!
-//! The cache substrate is the `store_state_namespaces` table itself:
-//! every derived (`Derived`, live) namespace is one retained historical
-//! Snapshot materialization, keyed by its full canonical `source_key`
-//! bytes (equality-compared, never truncated — there is no digest
-//! collision class). Bounds come from the one [`DerivedCachePolicy`]
-//! surface; eviction is performance-only and never changes semantics
-//! (a miss recomputes from history, and readers already retry an
-//! invalidated view once — see `store::state::load_cached`).
-//!
-//! # Recency without a write per hit
-//!
-//! Reads update the in-process recency map. Dirty ticks flush as one batched
-//! `CASE` statement: in the eviction transaction, or on a read path once
-//! `RECENCY_FLUSH_THRESHOLD` distinct namespaces are dirty. Repeated hits
-//! on fewer namespaces stay in memory. A crash loses only recent
-//! recency metadata, never cached values.
-//!
-//! # Eviction safety
-//!
-//! Eviction runs after a derived publish commits, in its own transaction:
-//! `BEGIN IMMEDIATE` on SQLite serializes writers, and PostgreSQL takes a
-//! transaction-scoped advisory lock on a fixed eviction key so concurrent
-//! publish-triggered passes cannot over-evict each other. Victims are
-//! unlinked to a dedicated evicted generation (`status = 3`), never
-//! hard-deleted, so a reader holding a resolved view keeps reading through
-//! it; the next pass reclaims the previous evicted generation.
-//! `clear_derived_store_state` owns the other unlinked generation
-//! (`status = 2`): eviction never reclaims it, so the clear contract —
-//! unlinked stays readable until the following clear — is preserved
-//! exactly. The just-published namespace is always protected, and the
-//! current raw/verified frontier materializations are protected by recency
-//! itself: every current read re-touches them, so oldest-first eviction
-//! reaches cold history long before it reaches a hot frontier. (A separate
-//! pin set would need a signal for "no longer current" that the backend
-//! does not have; recency is the honest mechanism.)
+//! Derived cache admission/eviction is part of publication's transaction.
+//! Reads copy dirty recency batches and acknowledge only committed ticks, so
+//! failures, cancellation and out-of-order flushes cannot discard newer hits.
+//! Evicted and clear-unlinked generations retain their separate lifetimes.
 
 use crate::Result;
 use crate::backend::StoreStateLifecycle;
@@ -82,7 +49,11 @@ pub(crate) async fn touch(backend: &SqlxBackend, namespace_id: &str) -> Result<(
     ensure_tick_seeded(backend).await?;
     let need_flush = backend.cache_recency.lock().unwrap().touch(namespace_id).1;
     if need_flush {
-        flush_dirty(backend).await?;
+        // Optional metadata maintenance must not turn a successful read into
+        // failure. Pending ticks remain retryable (including after cancellation).
+        if let Err(error) = flush_dirty(backend).await {
+            tracing::warn!(%error, "Deferred Store-state recency flush");
+        }
     }
     Ok(())
 }
@@ -93,7 +64,7 @@ pub(crate) async fn touch(backend: &SqlxBackend, namespace_id: &str) -> Result<(
 pub(crate) async fn assign_publish_tick(backend: &SqlxBackend) -> Result<u64> {
     ensure_tick_seeded(backend).await?;
     let mut recency = backend.cache_recency.lock().unwrap();
-    let tick = recency.now().saturating_add(1);
+    let tick = recency.now().saturating_add(1).min(i64::MAX as u64);
     recency.advance_to(tick);
     Ok(tick)
 }
@@ -109,9 +80,10 @@ pub(crate) fn record_published(backend: &SqlxBackend, namespace_id: &str, tick: 
 
 /// Flush accumulated recency touches in chunks of one batched statement.
 pub(crate) async fn flush_dirty(backend: &SqlxBackend) -> Result<()> {
-    let batch = backend.cache_recency.lock().unwrap().drain_dirty();
+    let batch = backend.cache_recency.lock().unwrap().pending();
     for chunk in batch.chunks(BATCH_CHUNK) {
         flush_chunk(backend.pool(), chunk).await?;
+        backend.cache_recency.lock().unwrap().acknowledge(chunk);
     }
     if !batch.is_empty() {
         #[cfg(feature = "testing")]
@@ -127,18 +99,12 @@ pub(crate) async fn flush_dirty(backend: &SqlxBackend) -> Result<()> {
 async fn flush_dirty_in_tx(
     backend: &SqlxBackend,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
-) -> Result<()> {
-    let batch = backend.cache_recency.lock().unwrap().drain_dirty();
+) -> Result<Vec<(String, u64)>> {
+    let batch = backend.cache_recency.lock().unwrap().pending();
     for chunk in batch.chunks(BATCH_CHUNK) {
         flush_chunk(&mut **tx, chunk).await?;
     }
-    if !batch.is_empty() {
-        #[cfg(feature = "testing")]
-        backend
-            .recency_flushes
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-    Ok(())
+    Ok(batch)
 }
 
 async fn flush_chunk<'e, E>(executor: E, chunk: &[(String, u64)]) -> Result<()>
@@ -148,7 +114,7 @@ where
     if chunk.is_empty() {
         return Ok(());
     }
-    // Drained batches can finish out of order. Compare in the UPDATE itself
+    // Copied batches can finish out of order. Compare in the UPDATE itself
     // so an older in-flight flush cannot lower a newer durable tick. CASE
     // works on both SQLite and PostgreSQL (unlike scalar MAX/GREATEST).
     let mut sql = String::from("UPDATE store_state_namespaces SET last_access_tick = CASE ");
@@ -181,40 +147,64 @@ where
     Ok(())
 }
 
-/// Opportunistically trim live derived namespaces to the cache policy.
-///
-/// Runs after a derived publish commits. Reclaims the generation evicted by
-/// the previous pass first, then unlinks the oldest live namespaces using
-/// persisted ticks plus in-process recency until both bounds hold. `protect`
-/// (the namespace just published) is never a victim.
-pub(crate) async fn evict_derived(backend: &SqlxBackend, protect: Option<&str>) -> Result<()> {
-    let policy = backend.cache_policy();
-    let mut tx = backend
-        .pool()
-        .begin()
-        .await
-        .sql_context("Failed to begin Store-state eviction")?;
-    if backend.is_sqlite() {
-        sqlx::query("COMMIT; BEGIN IMMEDIATE")
-            .execute(&mut *tx)
-            .await
-            .sql_context("Failed to lock Store-state eviction transaction")?;
-    } else {
+/// Global admission lock precedes target/namespace locks on PostgreSQL.
+/// SQLite's immediate writer transaction already serializes maintenance.
+pub(crate) async fn lock_maintenance(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+) -> Result<()> {
+    if !backend.is_sqlite() {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
             .bind(EVICT_LOCK_KEY)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
-            .sql_context("Failed to lock Store-state eviction")?;
+            .sql_context("Failed to lock Store-state admission")?;
     }
-    flush_dirty_in_tx(backend, &mut tx).await?;
+    Ok(())
+}
 
+/// Copied recency and reclaimed IDs to acknowledge only after commit.
+pub(crate) struct Maintenance {
+    batch: Vec<(String, u64)>,
+    reclaimed: Vec<(String,)>,
+}
+
+pub(crate) fn acknowledge(backend: &SqlxBackend, maintenance: Maintenance) {
+    #[cfg(feature = "testing")]
+    if !maintenance.batch.is_empty() {
+        backend
+            .recency_flushes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    let mut recency = backend.cache_recency.lock().unwrap();
+    recency.acknowledge(&maintenance.batch);
+    for (id,) in maintenance.reclaimed {
+        recency.remove(&id);
+    }
+}
+
+/// Trim inside the caller's locked publication/startup transaction.
+pub(crate) async fn evict_in_tx(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    protect: Option<&str>,
+) -> Result<Maintenance> {
+    let policy = backend.cache_policy();
+    let batch = flush_dirty_in_tx(backend, tx).await?;
+    let reclaimed = sqlx::query_as(
+        "SELECT namespace_id FROM store_state_namespaces WHERE lifecycle = $1 AND status = 3",
+    )
+    .bind(StoreStateLifecycle::Derived.as_db_int())
+    .fetch_all(&mut **tx)
+    .await
+    .sql_context("Failed to list reclaimed Store-state namespaces")?;
     // Reclaim the generation evicted by the previous pass (records
     // cascade). Rows unlinked by `clear_derived_store_state` (`status = 2`)
     // are never reclaimed here: the clear contract keeps them readable
     // until the following clear.
     sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 AND status = 3")
         .bind(StoreStateLifecycle::Derived.as_db_int())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .sql_context("Failed to reclaim evicted Store-state namespaces")?;
 
@@ -230,7 +220,7 @@ pub(crate) async fn evict_derived(backend: &SqlxBackend, protect: Option<&str>) 
     };
     let (live_namespaces, live_bytes): (i64, Option<i64>) = sqlx::query_as(measure)
         .bind(StoreStateLifecycle::Derived.as_db_int())
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .sql_context("Failed to measure Store-state cache")?;
     let live_bytes = live_bytes.unwrap_or(0).max(0) as u64;
@@ -244,11 +234,11 @@ pub(crate) async fn evict_derived(backend: &SqlxBackend, protect: Option<&str>) 
              WHERE lifecycle = $1 AND status = 1",
         )
         .bind(StoreStateLifecycle::Derived.as_db_int())
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await
         .sql_context("Failed to list Store-state eviction candidates")?;
         {
-            // Another reader may have drained a newer hit into a flush that
+            // Another reader may have copied a newer hit into a flush that
             // has not reached SQL yet. The live order still contains that hit.
             let recency = backend.cache_recency.lock().unwrap();
             for (id, _, tick) in &mut candidates {
@@ -288,32 +278,78 @@ pub(crate) async fn evict_derived(backend: &SqlxBackend, protect: Option<&str>) 
                 query = query.bind(id);
             }
             query
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .sql_context("Failed to unlink Store-state eviction victims")?;
         }
     }
 
-    // Prune touches for namespaces that no longer resolve. Evicted rows
-    // stay tracked while readable; the reclaim above already dropped the
-    // previous evicted generation.
-    let live_ids: Vec<(String,)> = sqlx::query_as(
-        "SELECT namespace_id FROM store_state_namespaces WHERE lifecycle = $1 AND status IN (1, 2, 3)",
-    )
-    .bind(StoreStateLifecycle::Derived.as_db_int())
-    .fetch_all(&mut *tx)
-    .await
-    .sql_context("Failed to list live Store-state namespaces")?;
-    backend.cache_recency.lock().unwrap().retain_existing(
-        &live_ids
-            .into_iter()
-            .map(|(id,)| id)
-            .collect::<std::collections::HashSet<_>>(),
-    );
+    Ok(Maintenance { batch, reclaimed })
+}
 
+/// Exclusive startup: no views or builders survive from the previous owner.
+/// A lowered policy is enforced before exposing the backend; failure refuses open.
+pub(crate) async fn startup(backend: &SqlxBackend) -> Result<()> {
+    let invalid_query = if backend.is_sqlite() {
+        "SELECT COUNT(*) FROM store_state_namespaces WHERE size_bytes < 0 OR last_access_tick < 0 OR typeof(size_bytes) <> 'integer' OR typeof(last_access_tick) <> 'integer'"
+    } else {
+        "SELECT COUNT(*) FROM store_state_namespaces WHERE size_bytes < 0 OR last_access_tick < 0 OR size_bytes IS NULL OR last_access_tick IS NULL"
+    };
+    let (invalid,): (i64,) = sqlx::query_as(invalid_query)
+        .fetch_one(backend.pool())
+        .await
+        .sql_context("Failed to validate cache accounting")?;
+    if invalid != 0 {
+        return Err(crate::backend::BackendError::StateInconsistency {
+            reason: "malformed Store-state cache counters".into(),
+        }
+        .into());
+    }
+    ensure_tick_seeded(backend).await?;
+    let mut tx = backend
+        .pool()
+        .begin()
+        .await
+        .sql_context("Failed to begin cache startup")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to lock cache startup")?;
+    }
+    lock_maintenance(backend, &mut tx).await?;
+    sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 OR (lifecycle = $2 AND status IN (0, 2, 3))")
+        .bind(StoreStateLifecycle::Staging.as_db_int())
+        .bind(StoreStateLifecycle::Derived.as_db_int())
+        .execute(&mut *tx).await.sql_context("Failed to reclaim abandoned Store state")?;
+    let maintenance = evict_in_tx(backend, &mut tx, None).await?;
+    sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 AND status = 3")
+        .bind(StoreStateLifecycle::Derived.as_db_int())
+        .execute(&mut *tx)
+        .await
+        .sql_context("Failed to reclaim startup cache victims")?;
     tx.commit()
         .await
-        .sql_context("Failed to commit Store-state eviction")?;
+        .sql_context("Failed to commit cache startup")?;
+    acknowledge(backend, maintenance);
+    Ok(())
+}
+
+#[cfg(all(test, feature = "testing"))]
+async fn evict_derived(backend: &SqlxBackend, protect: Option<&str>) -> Result<()> {
+    let mut tx = backend.pool().begin().await.unwrap();
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    lock_maintenance(backend, &mut tx).await?;
+    let maintenance = evict_in_tx(backend, &mut tx, protect).await?;
+    tx.commit()
+        .await
+        .sql_context("Failed to commit cache trim")?;
+    acknowledge(backend, maintenance);
     Ok(())
 }
 
@@ -432,8 +468,8 @@ mod tests {
     async fn flush_out_of_order(backend: &SqlxBackend, hot: &RecordView, cold: &RecordView) -> u64 {
         touch(backend, &hot.namespace_id).await.unwrap();
         touch(backend, &cold.namespace_id).await.unwrap();
-        // A flush drains under the mutex, then can yield before its SQL write.
-        let older = backend.cache_recency.lock().unwrap().drain_dirty();
+        // A flush copies under the mutex, then can yield before its SQL write.
+        let older = backend.cache_recency.lock().unwrap().pending();
         touch(backend, &cold.namespace_id).await.unwrap();
         touch(backend, &hot.namespace_id).await.unwrap();
         let newest = backend
@@ -484,9 +520,9 @@ mod tests {
         let hot = publish(&backend, "hot").await;
         let cold = publish(&backend, "cold").await;
         touch(&backend, &hot.namespace_id).await.unwrap();
-        // A reader drained the batch and yielded before its SQL write. Eviction
+        // A reader copied the batch and yielded before its SQL write. Eviction
         // must still see this hit in the live order, not just durable ticks.
-        let in_flight = backend.cache_recency.lock().unwrap().drain_dirty();
+        let in_flight = backend.cache_recency.lock().unwrap().pending();
         assert_hot_survives(&backend, &hot, &cold).await;
         flush_chunk(backend.pool(), &in_flight).await.unwrap();
     }
@@ -500,5 +536,368 @@ mod tests {
         let cold = publish(&backend, "cold").await;
         flush_out_of_order(&backend, &hot, &cold).await;
         assert_hot_survives(&backend, &hot, &cold).await;
+    }
+
+    #[tokio::test]
+    async fn authoritative_reads_do_not_enter_derived_recency() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let before = backend.testing_recency_flush_count();
+        for i in 0..64 {
+            let request = StoreStateRequest {
+                database: ID::from_bytes("authoritative-db"),
+                store: format!("store-{i}"),
+                lifecycle: StoreStateLifecycle::Authoritative,
+                scope: CacheScope::Shared,
+                projection: ProjectionDescriptor {
+                    name: "test/recency".into(),
+                    version: 1,
+                },
+                source_key: vec![1],
+            };
+            let token = backend
+                .begin_store_state_staging(request.clone())
+                .await
+                .unwrap();
+            let view = backend.publish_store_state(token).await.unwrap();
+            assert_eq!(
+                backend.resolve_store_state(&request).await.unwrap(),
+                Some(view.clone())
+            );
+            assert_eq!(
+                backend
+                    .store_state_record_get(&view, b"absent")
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert!(
+                backend
+                    .store_state_record_scan(
+                        &view,
+                        &crate::backend::RecordRange::default(),
+                        None,
+                        1
+                    )
+                    .await
+                    .unwrap()
+                    .records
+                    .is_empty()
+            );
+            assert_eq!(
+                backend
+                    .cache_recency
+                    .lock()
+                    .unwrap()
+                    .live_tick(&view.namespace_id),
+                None
+            );
+        }
+        assert_eq!(backend.testing_recency_flush_count(), before);
+    }
+    #[tokio::test]
+    async fn wide_frontier_publication_round_trips() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let snapshot = crate::Snapshot::new(
+            (0..128)
+                .map(|i: u64| ID::from_bytes(i.to_le_bytes()))
+                .collect(),
+        );
+        let request = StoreStateRequest {
+            database: ID::from_bytes("wide-db"),
+            store: "wide".into(),
+            lifecycle: StoreStateLifecycle::Derived,
+            scope: CacheScope::Shared,
+            projection: ProjectionDescriptor {
+                name: "test/wide".into(),
+                version: 1,
+            },
+            source_key: snapshot.cache_key_bytes(),
+        };
+        let token = backend
+            .begin_store_state_staging(request.clone())
+            .await
+            .unwrap();
+        backend
+            .stage_store_state_records(&token, [(b"key".to_vec(), Some(b"value".to_vec()))].into())
+            .await
+            .unwrap();
+        let view = backend.publish_store_state(token).await.unwrap();
+        assert_eq!(
+            backend.resolve_store_state(&request).await.unwrap(),
+            Some(view.clone())
+        );
+        assert_eq!(
+            backend.store_state_record_get(&view, b"key").await.unwrap(),
+            Some(b"value".to_vec())
+        );
+    }
+
+    async fn fail_tick_writes(backend: &SqlxBackend) {
+        use sqlx::Executor;
+        if backend.is_sqlite() {
+            backend.pool().execute("CREATE TRIGGER fail_tick BEFORE UPDATE OF last_access_tick ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'injected tick failure'); END").await.unwrap();
+        } else {
+            backend.pool().execute("CREATE FUNCTION fail_tick() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected tick failure'; END $$").await.unwrap();
+            backend.pool().execute("CREATE TRIGGER fail_tick BEFORE UPDATE OF last_access_tick ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_tick()").await.unwrap();
+        }
+    }
+
+    async fn drop_tick_failure(backend: &SqlxBackend) {
+        let ddl = if backend.is_sqlite() {
+            "DROP TRIGGER fail_tick"
+        } else {
+            "DROP TRIGGER fail_tick ON store_state_namespaces"
+        };
+        sqlx::query(ddl).execute(backend.pool()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_recency_batch_retries_without_failing_data_reads() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let views = futures_util::future::join_all((0..64).map(|i| {
+            let backend = &backend;
+            async move { publish(backend, &format!("pending-{i}")).await }
+        }))
+        .await;
+        fail_tick_writes(&backend).await;
+        for view in &views {
+            assert_eq!(
+                backend
+                    .store_state_record_get(view, b"absent")
+                    .await
+                    .unwrap(),
+                None
+            );
+        }
+        let batch = backend.cache_recency.lock().unwrap().pending();
+        assert_eq!(batch.len(), 64);
+        assert!(flush_dirty(&backend).await.is_err());
+        assert_eq!(backend.cache_recency.lock().unwrap().pending().len(), 64);
+        drop_tick_failure(&backend).await;
+        flush_dirty(&backend).await.unwrap();
+        assert!(backend.cache_recency.lock().unwrap().pending().is_empty());
+        for (id, tick) in batch {
+            assert_eq!(
+                persisted_tick(&backend, &RecordView { namespace_id: id }).await,
+                tick
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_recency_batch_remains_pending_and_retries() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let view = publish(&backend, "cancel-flush").await;
+        let old = persisted_tick(&backend, &view).await;
+        touch(&backend, &view.namespace_id).await.unwrap();
+        // Hold the row (Postgres) / sole connection (SQLite). Poll the real
+        // flush until it has copied the batch and yielded, then cancel it.
+        let mut blocker = backend.pool().begin().await.unwrap();
+        sqlx::query("UPDATE store_state_namespaces SET last_access_tick = last_access_tick WHERE namespace_id = $1")
+            .bind(&view.namespace_id).execute(&mut *blocker).await.unwrap();
+        let mut flush = Box::pin(flush_dirty(&backend));
+        assert!(futures_util::poll!(flush.as_mut()).is_pending());
+        drop(flush);
+        let copied = backend.cache_recency.lock().unwrap().pending();
+        assert_eq!(copied.len(), 1, "cancellation discarded pending recency");
+        blocker.rollback().await.unwrap();
+        assert_eq!(persisted_tick(&backend, &view).await, old);
+        flush_dirty(&backend).await.unwrap();
+        assert_eq!(persisted_tick(&backend, &view).await, copied[0].1);
+        assert!(backend.cache_recency.lock().unwrap().pending().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rolled_back_recency_and_older_ack_preserve_newer_hits() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        let view = publish(&backend, "ack-race").await;
+        touch(&backend, &view.namespace_id).await.unwrap();
+        let mut tx = backend.pool().begin().await.unwrap();
+        let older = flush_dirty_in_tx(&backend, &mut tx).await.unwrap();
+        // Cancellation of the surrounding publication rolls back this write.
+        tx.rollback().await.unwrap();
+        assert_eq!(backend.cache_recency.lock().unwrap().pending(), older);
+        touch(&backend, &view.namespace_id).await.unwrap();
+        let newer = backend.cache_recency.lock().unwrap().pending();
+        backend.cache_recency.lock().unwrap().acknowledge(&older);
+        assert_eq!(backend.cache_recency.lock().unwrap().pending(), newer);
+        flush_dirty(&backend).await.unwrap();
+        assert_eq!(persisted_tick(&backend, &view).await, newer[0].1);
+    }
+
+    #[tokio::test]
+    async fn reclaim_failure_rolls_back_publication_not_post_commit_success() {
+        use sqlx::Executor;
+        let Some(backend) = backend().await else {
+            return;
+        };
+        backend.testing_set_derived_cache_policy(DerivedCachePolicy {
+            max_namespaces: 1,
+            max_bytes: 1024,
+        });
+        let retired = publish(&backend, "retired").await;
+        let current = publish(&backend, "current").await;
+        // This fault used to happen after publication's successful commit.
+        if backend.is_sqlite() {
+            backend.pool().execute("CREATE TRIGGER fail_reclaim BEFORE DELETE ON store_state_namespaces WHEN OLD.lifecycle = 0 BEGIN SELECT RAISE(ABORT, 'injected reclaim failure'); END").await.unwrap();
+        } else {
+            backend.pool().execute("CREATE FUNCTION fail_reclaim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.lifecycle = 0 THEN RAISE EXCEPTION 'injected reclaim failure'; END IF; RETURN OLD; END $$").await.unwrap();
+            backend.pool().execute("CREATE TRIGGER fail_reclaim BEFORE DELETE ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_reclaim()").await.unwrap();
+        }
+        let mut request = StoreStateRequest {
+            database: ID::from_bytes("recency-db"),
+            store: "failed".into(),
+            lifecycle: StoreStateLifecycle::Derived,
+            scope: CacheScope::Shared,
+            projection: ProjectionDescriptor {
+                name: "test/recency".into(),
+                version: 1,
+            },
+            source_key: vec![1],
+        };
+        let token = backend
+            .begin_store_state_staging(request.clone())
+            .await
+            .unwrap();
+        let error = backend.publish_store_state(token).await.unwrap_err();
+        assert!(error.is_store_state_not_retained(), "{error}");
+        assert_eq!(
+            backend.resolve_store_state(&request).await.unwrap(),
+            None,
+            "Err must not hide a committed publication"
+        );
+        request.store = "current".into();
+        assert_eq!(
+            backend.resolve_store_state(&request).await.unwrap(),
+            Some(current.clone())
+        );
+        assert_eq!(
+            backend
+                .store_state_record_get(&retired, b"absent")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            backend
+                .store_state_record_get(&current, b"absent")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_failure_is_not_optional_non_retention() {
+        use sqlx::Executor;
+        let Some(backend) = backend().await else {
+            return;
+        };
+        backend.pool().execute("CREATE TABLE commit_guard (parent TEXT REFERENCES store_state_namespaces(namespace_id) DEFERRABLE INITIALLY DEFERRED)").await.unwrap();
+        if backend.is_sqlite() {
+            backend.pool().execute("CREATE TRIGGER fail_commit AFTER UPDATE OF status ON store_state_namespaces WHEN NEW.status = 1 BEGIN INSERT INTO commit_guard (parent) VALUES ('missing'); END").await.unwrap();
+        } else {
+            backend.pool().execute("CREATE FUNCTION fail_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO commit_guard (parent) VALUES ('missing'); RETURN NEW; END $$").await.unwrap();
+            backend.pool().execute("CREATE TRIGGER fail_commit AFTER UPDATE OF status ON store_state_namespaces FOR EACH ROW WHEN (NEW.status = 1) EXECUTE FUNCTION fail_commit()").await.unwrap();
+        }
+        let request = StoreStateRequest {
+            database: ID::from_bytes("commit-db"),
+            store: "uncertain".into(),
+            lifecycle: StoreStateLifecycle::Derived,
+            scope: CacheScope::Shared,
+            projection: ProjectionDescriptor {
+                name: "test/commit".into(),
+                version: 1,
+            },
+            source_key: vec![1],
+        };
+        let token = backend
+            .begin_store_state_staging(request.clone())
+            .await
+            .unwrap();
+        let error = backend.publish_store_state(token).await.unwrap_err();
+        assert!(
+            !error.is_optional_store_state_unavailable(),
+            "commit failure misclassified: {error}"
+        );
+        assert!(
+            error.to_string().contains("commit outcome uncertain"),
+            "{error}"
+        );
+        assert_eq!(backend.resolve_store_state(&request).await.unwrap(), None);
+    }
+    #[tokio::test]
+    async fn cancelled_publication_rolls_back_admission_and_recency_together() {
+        let Some(backend) = backend().await else {
+            return;
+        };
+        backend.testing_set_derived_cache_policy(DerivedCachePolicy {
+            max_namespaces: 1,
+            max_bytes: 1024,
+        });
+        let keep = publish(&backend, "keep-on-cancel").await;
+        touch(&backend, &keep.namespace_id).await.unwrap();
+        let pending = backend.cache_recency.lock().unwrap().pending();
+        let target = StoreStateRequest {
+            database: ID::from_bytes("recency-db"),
+            store: "cancelled".into(),
+            lifecycle: StoreStateLifecycle::Derived,
+            scope: CacheScope::Shared,
+            projection: ProjectionDescriptor {
+                name: "test/recency".into(),
+                version: 1,
+            },
+            source_key: vec![1],
+        };
+        let token = backend
+            .begin_store_state_staging(target.clone())
+            .await
+            .unwrap();
+        let mut tx = backend.pool().begin().await.unwrap();
+        if backend.is_sqlite() {
+            sqlx::query("COMMIT; BEGIN IMMEDIATE")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        lock_maintenance(&backend, &mut tx).await.unwrap();
+        let (view, _, published) =
+            super::super::storage::prepare_publication(&backend, &mut tx, &token)
+                .await
+                .unwrap();
+        assert!(published);
+        let _unacknowledged = evict_in_tx(&backend, &mut tx, Some(&view.namespace_id))
+            .await
+            .unwrap();
+        // Dropping at this await boundary is the cancellation path of the
+        // real publisher: neither its publication nor eviction can survive.
+        drop(tx);
+        assert_eq!(backend.resolve_store_state(&target).await.unwrap(), None);
+        let status_sql = if backend.is_sqlite() {
+            "SELECT status FROM store_state_namespaces WHERE namespace_id = $1"
+        } else {
+            "SELECT status FROM store_state_namespaces WHERE namespace_id = $1 FOR UPDATE"
+        };
+        let (status,): (i64,) = sqlx::query_as(status_sql)
+            .bind(&keep.namespace_id)
+            .fetch_one(backend.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            status, 1,
+            "cancelled publication must not evict the prior live state"
+        );
+        assert_eq!(backend.cache_recency.lock().unwrap().pending(), pending);
+        backend.abort_store_state(token).await.unwrap();
     }
 }
