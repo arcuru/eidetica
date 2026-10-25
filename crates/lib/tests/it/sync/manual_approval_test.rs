@@ -1954,3 +1954,59 @@ async fn pending_request_with_sufficient_current_grant_can_retry_without_regrant
         "finalization reissued the sufficient grant"
     );
 }
+
+#[tokio::test]
+async fn bootstrap_approval_cannot_create_a_higher_priority_admin() {
+    let (instance, user, key, database, sync, tree) = setup_manual_approval_server().await;
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &key,
+            AuthKey::active(Some("limited admin"), AuthPermission::Admin(5)),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let requester = PrivateKey::generate();
+    let id = create_pending_bootstrap_request(
+        &create_test_sync_handler(&sync),
+        &tree,
+        &requester,
+        "requester",
+        AuthPermission::Admin(0),
+        &instance.id(),
+    )
+    .await;
+    let before = database.snapshot().await.unwrap();
+    let error = user
+        .approve_bootstrap_request(&sync, &id, &key)
+        .await
+        .expect_err("Admin(5) must not create Admin(0) through bootstrap approval");
+    assert!(
+        matches!(error, eidetica::Error::Sync(e) if matches!(*e, eidetica::sync::SyncError::InsufficientPermission { .. }))
+    );
+    assert_eq!(database.snapshot().await.unwrap(), before);
+    assert!(matches!(
+        sync.get_bootstrap_request(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .1
+            .status,
+        RequestStatus::Pending
+    ));
+    assert!(
+        !Database::can_access(
+            &instance,
+            &tree,
+            &requester.public_key(),
+            &AuthPermission::Read
+        )
+        .await
+        .unwrap()
+    );
+    user.reject_bootstrap_request(&sync, &id, &key)
+        .await
+        .unwrap();
+}
