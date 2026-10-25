@@ -1593,6 +1593,59 @@ impl AccountSession {
         }
     }
 
+    /// Update this account's sync preferences for an already tracked database.
+    ///
+    /// Requires the recorded key/mapping to still authorize reading the database.
+    /// Does not discover or repair mappings, track a new database, or change
+    /// additional sync properties. The signed preference commit triggers the
+    /// instance's ordinary reconciliation; this is not global runtime control.
+    ///
+    /// The read/modify/write uses an ordinary transaction, not distributed CAS.
+    /// Concurrent sessions follow the database's normal CRDT merge semantics.
+    /// A failed acknowledgement is not proof of rollback; reload before retrying.
+    pub async fn set_sync_preferences(
+        &mut self,
+        database_id: &ID,
+        enabled: bool,
+        on_commit: bool,
+        interval_seconds: Option<u64>,
+    ) -> Result<()> {
+        let tx = self.account.database().new_transaction().await?;
+        let table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
+        let key = database_id.to_string();
+        let mut tracked = match table.get(&key).await {
+            Ok(tracked) => tracked,
+            Err(Error::Store(e)) if matches!(*e, StoreError::KeyNotFound { .. }) => {
+                return Err(AccountError::DatabaseNotTracked {
+                    database_id: database_id.clone(),
+                }
+                .into());
+            }
+            Err(e) => return Err(e),
+        };
+        let database = self
+            .open_database_with_key(database_id, &tracked.key_id)
+            .await?;
+        if database.current_permission().await? < Permission::Read {
+            return Err(AccountError::InsufficientPermissions.into());
+        }
+        let settings = &mut tracked.sync_settings;
+        if (
+            settings.sync_enabled,
+            settings.sync_on_commit,
+            settings.interval_seconds,
+        ) == (enabled, on_commit, interval_seconds)
+        {
+            return Ok(());
+        }
+        settings.sync_enabled = enabled;
+        settings.sync_on_commit = on_commit;
+        settings.interval_seconds = interval_seconds;
+        table.set(&key, tracked).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Stop tracking a database.
     ///
     /// This removes the database from the account's tracked list.

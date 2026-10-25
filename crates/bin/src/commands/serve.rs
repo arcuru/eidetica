@@ -16,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 
 use eidetica::{
     Instance,
-    account::{AccountSession, SyncSettings},
+    account::{AccountError, AccountSession, SyncSettings},
     auth::{Permission, crypto::PublicKey},
     backend::database::{DbKind, InMemory, SqlxBackend},
     entry::ID,
@@ -75,6 +75,15 @@ struct AccessDecisionForm {
     database_id: String,
     request_id: String,
     decision: String,
+}
+
+/// Existing per-account preferences only; never accepts an account or key selector.
+#[derive(Deserialize)]
+struct SyncPreferencesForm {
+    id: String,
+    enabled: bool,
+    sync_on_commit: bool,
+    interval_seconds: String,
 }
 
 /// Run the Eidetica server
@@ -154,6 +163,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!("  POST /dashboard/track - Request database access (requires login)");
     println!("  GET  /dashboard/requests - Pending access requests (requires database Admin)");
     println!("  POST /dashboard/requests/decide - Approve or reject an exact request");
+    println!("  POST /dashboard/database/sync - Save account sync preferences");
     println!("  GET  /stats        - Server statistics");
     println!("  POST /api/v0       - Eidetica sync protocol endpoint");
     println!();
@@ -247,6 +257,7 @@ fn dashboard_router(state: AppState, include_http_sync: bool) -> Router {
         .route("/dashboard/track", post(handle_track_database))
         .route("/dashboard/requests", get(handle_access_requests))
         .route("/dashboard/requests/decide", post(handle_access_decision))
+        .route("/dashboard/database/sync", post(handle_sync_preferences))
         .route("/stats", get(handle_stats_request));
     if include_http_sync {
         app = app.route("/api/v0", post(handle_sync_request));
@@ -690,6 +701,66 @@ async fn handle_access_decision(
     }
 }
 
+/// Save only the authenticated account's existing tracked-database preferences.
+async fn handle_sync_preferences(
+    State(state): State<AppState>,
+    cookies: Cookies,
+    headers: HeaderMap,
+    Form(form): Form<SyncPreferencesForm>,
+) -> Response {
+    if let Err(code) = form_origin(&headers) {
+        return code.into_response();
+    }
+    let Some(cookie) = cookies.get(SESSION_COOKIE) else {
+        return Redirect::to("/login").into_response();
+    };
+    let Some(user_lock) = state.sessions.get_user(cookie.value()).await else {
+        return Redirect::to("/login").into_response();
+    };
+    let database_id = match ID::parse(&form.id) {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid database ID").into_response(),
+    };
+    // Blank means the existing background default, not a new explicit interval.
+    let interval = if form.interval_seconds.is_empty() {
+        None
+    } else {
+        match form.interval_seconds.parse::<u64>() {
+            Ok(seconds) if seconds > 0 && std::time::Instant::now()
+                .checked_add(Duration::from_secs(seconds)).is_some() => Some(seconds),
+            _ => return (StatusCode::BAD_REQUEST,
+                "Interval must be a positive, timer-representable number of seconds, or blank for default").into_response(),
+        }
+    };
+
+    // Serialize the complete read/modify/signed-write within this browser session.
+    // Other sessions/devices still use ordinary CRDT transaction semantics.
+    let mut user = user_lock.write().await;
+    match user
+        .set_sync_preferences(&database_id, form.enabled, form.sync_on_commit, interval)
+        .await
+    {
+        Ok(()) => Redirect::to(&format!("/dashboard/database?id={database_id}")).into_response(),
+        Err(eidetica::Error::Account(e))
+            if matches!(*e, AccountError::DatabaseNotTracked { .. }) =>
+        {
+            (
+                StatusCode::NOT_FOUND,
+                "Database not tracked by this account",
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Html(crate::templates::sync_preferences_error(
+                &e.to_string(),
+                &database_id.to_string(),
+            )),
+        )
+            .into_response(),
+    }
+}
+
 /// Handler for POST /dashboard/track - Request database access (bootstrap)
 async fn handle_track_database(
     State(state): State<AppState>,
@@ -1008,3 +1079,6 @@ mod tests {
         assert_eq!(form_origin(&headers("[::1]", Some("http://[::1]"))), Ok(()));
     }
 }
+
+#[cfg(test)]
+mod sync_preferences_tests;

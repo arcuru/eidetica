@@ -4,7 +4,7 @@
 
 use eidetica::{
     Database,
-    account::{AccountSession, TrackedDatabase},
+    account::{AccountSession, SyncSettings, TrackedDatabase},
     sync::BootstrapRequest,
 };
 
@@ -61,6 +61,7 @@ const COMMON_STYLES: &str = r#"
     }
     input[type="text"],
     input[type="password"],
+    input[type="number"],
     textarea {
         width: 100%;
         padding: 10px;
@@ -224,7 +225,7 @@ pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> St
         let rows: String = databases
             .iter()
             .map(|db| {
-                let sync_status = if db.sync_enabled {
+                let sync_status = if db.sync_settings.sync_enabled {
                     r#"<span style="color: #28a745;">✓ Enabled</span>"#
                 } else {
                     r#"<span style="color: #999;">✗ Disabled</span>"#
@@ -256,7 +257,7 @@ pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> St
                 <th>Database ID</th>
                 <th>Name</th>
                 <th>Entries</th>
-                <th>Sync Status</th>
+                <th>Your Sync Preference</th>
                 <th>Actions</th>
             </tr>
             {rows}
@@ -441,7 +442,7 @@ pub fn database_detail_page(
         )
     };
 
-    let sync_status = if db_info.sync_enabled {
+    let sync_status = if db_info.sync_settings.sync_enabled {
         r#"<span style="color: #28a745;">✓ Enabled</span>"#
     } else {
         r#"<span style="color: #999;">✗ Disabled</span>"#
@@ -466,7 +467,7 @@ pub fn database_detail_page(
 
         <h2>Database: {}</h2>
         <p style="color: #666; font-size: 0.9em; margin-top: -10px;">
-            Background sync is active. New entries from peers will appear automatically. Click Refresh to update view.
+            Your preferences do not indicate global sync activity. Click Refresh to reload this view.
         </p>
 
         <div class="info-row">
@@ -478,13 +479,15 @@ pub fn database_detail_page(
             <span class="value">{}</span>
         </div>
         <div class="info-row">
-            <span class="label">Sync Status:</span>
+            <span class="label">Your Sync Preference:</span>
             <span class="value">{}</span>
         </div>
         <div class="info-row">
             <span class="label">Key ID:</span>
             <span class="value code">{}</span>
         </div>
+
+        {}
 
         <h2>Entries</h2>
         {}
@@ -497,7 +500,70 @@ pub fn database_detail_page(
         db_info.entry_count,
         sync_status,
         html_escape(&db_info.key_id),
+        sync_preferences_form(&db_info),
         entries_html
+    )
+}
+
+fn sync_preferences_form(db: &DatabaseInfo) -> String {
+    let settings = &db.sync_settings;
+    let selected = |value| if value { " selected" } else { "" };
+    format!(
+        r#"<h2>Your Sync Preferences</h2>
+        <p>These preferences apply only to your account. Another account may still
+        request sync. Disabling does not cancel in-flight network work or revoke access.</p>
+        <form method="POST" action="/dashboard/database/sync">
+            <input type="hidden" name="id" value="{}">
+            <div class="form-group">
+                <label for="enabled">Sync enabled:</label>
+                <select id="enabled" name="enabled" required>
+                    <option value="true"{}>Enabled</option>
+                    <option value="false"{}>Disabled</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="sync_on_commit">Sync on commit (when enabled):</label>
+                <select id="sync_on_commit" name="sync_on_commit" required>
+                    <option value="true"{}>Enabled</option>
+                    <option value="false"{}>Disabled</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="interval_seconds">Periodic interval (seconds):</label>
+                <input type="number" id="interval_seconds" name="interval_seconds"
+                       min="1" step="1" value="{}" aria-describedby="interval-help">
+                <small id="interval-help">Leave blank for the background default.
+                This is a scheduling preference, not an exact per-database deadline.</small>
+            </div>
+            <p>Saving replaces these three preferences. Concurrent sessions use normal
+            database merging, not conflict detection. Reload before editing to see current values.</p>
+            <button type="submit">Save sync preferences</button>
+        </form>"#,
+        html_escape(&db.root_id),
+        selected(settings.sync_enabled),
+        selected(!settings.sync_enabled),
+        selected(settings.sync_on_commit),
+        selected(!settings.sync_on_commit),
+        settings
+            .interval_seconds
+            .map(|seconds| seconds.to_string())
+            .unwrap_or_default()
+    )
+}
+
+/// A failed acknowledgement may follow a committed write; never claim rollback.
+pub fn sync_preferences_error(error: &str, database_id: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html><html><head><meta charset="utf-8">
+        <title>Sync preferences error</title><style>{COMMON_STYLES}</style></head>
+        <body><main class="container"><h1>Could not confirm sync preferences</h1>
+        <p class="error" role="alert">{}</p>
+        <p>The write may not have completed, or may have committed before the error.
+        Reload the current preferences before retrying.</p>
+        <a href="/dashboard/database?id={}">Reload database</a>
+        <a href="/dashboard">Dashboard</a></main></body></html>"#,
+        html_escape(error),
+        html_escape(database_id)
     )
 }
 
@@ -506,7 +572,7 @@ pub struct DatabaseInfo {
     pub root_id: String,
     pub name: String,
     pub entry_count: usize,
-    pub sync_enabled: bool,
+    pub sync_settings: SyncSettings,
     pub key_id: String,
 }
 
@@ -534,7 +600,7 @@ impl DatabaseInfo {
             root_id: tracked.database_id.to_string(),
             name,
             entry_count,
-            sync_enabled: tracked.sync_settings.sync_enabled,
+            sync_settings: tracked.sync_settings.clone(),
             key_id: tracked.key_id.to_string(),
         }
     }
