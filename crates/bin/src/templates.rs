@@ -5,6 +5,7 @@
 use eidetica::{
     Database,
     account::{AccountSession, TrackedDatabase},
+    sync::BootstrapRequest,
 };
 
 /// Common CSS styles for all pages
@@ -123,6 +124,7 @@ const COMMON_STYLES: &str = r#"
         padding: 2px 6px;
         border-radius: 3px;
         font-size: 13px;
+        overflow-wrap: anywhere;
     }
 "#;
 
@@ -288,6 +290,8 @@ pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> St
             <span class="value code">{}</span>
         </div>
 
+        <p><a href="/dashboard/requests">Manage pending database access requests</a></p>
+
         <h2>Tracked Databases</h2>
         {}
 
@@ -321,6 +325,80 @@ pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> St
         html_escape(user.username()),
         html_escape(user.login_id()),
         databases_html
+    )
+}
+
+/// Render only the requests the handler has authorized this session to inspect.
+pub fn access_requests_page(requests: &[(String, BootstrapRequest)]) -> String {
+    let mut rows = String::new();
+    for (id, request) in requests {
+        rows.push_str(&format!(
+            r#"<section>
+                <h2>Pending request</h2>
+                <dl>
+                    <dt>Request ID</dt><dd class="code">{id}</dd>
+                    <dt>Target database</dt><dd class="code">{database}</dd>
+                    <dt>Requester public key</dt><dd class="code">{key}</dd>
+                    <dt>Requester-supplied key name (unverified)</dt><dd>{name}</dd>
+                    <dt>Requested permission and priority</dt><dd>{permission}</dd>
+                    <dt>Lifecycle state</dt><dd>Pending approval</dd>
+                    <dt>Submitted</dt><dd>{timestamp}</dd>
+                </dl>
+                <form method="POST" action="/dashboard/requests/decide">
+                    <input type="hidden" name="database_id" value="{database}">
+                    <input type="hidden" name="request_id" value="{id}">
+                    <button type="submit" name="decision" value="approve">Approve exact request</button>
+                    <button type="submit" name="decision" value="reject">Reject request</button>
+                </form>
+            </section>"#,
+            id = html_escape(id),
+            database = html_escape(&request.tree_id.to_string()),
+            key = html_escape(&request.requesting_pubkey.to_string()),
+            name = html_escape(&request.requesting_key_name),
+            permission = html_escape(&format!("{:?}", request.requested_permission)),
+            timestamp = html_escape(&request.timestamp),
+        ));
+    }
+    if requests.is_empty() {
+        rows.push_str("<p>No pending requests available to this session.</p>");
+    }
+    format!(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Eidetica - Access requests</title>
+<style>{COMMON_STYLES}</style></head><body><main class="container">
+    <h1>Database access requests</h1>
+    <p><a href="/dashboard">Dashboard</a> · <a href="/dashboard/requests">Refresh requests</a></p>
+    <p>Only databases where a held account key currently has Admin permission are shown.
+       A public key proves a key identity, not an independently verified person.
+       Lower priority numbers have higher authority. Approval uses the exact permission
+       and priority requested and remains subject to database Auth rules.</p>
+    {rows}
+</main></body></html>"#
+    )
+}
+
+/// Lifecycle outcomes are rendered directly, not passed in an editable query string.
+pub fn access_result_page(title: &str, message: &str, retry: Option<(&str, &str)>) -> String {
+    let retry = retry.map_or_else(String::new, |(ticket, permission)| {
+        format!(
+            r#"<form method="POST" action="/dashboard/track">
+            <input type="hidden" name="ticket" value="{}">
+            <input type="hidden" name="permission" value="{}">
+            <button type="submit">Retry request</button>
+        </form>"#,
+            html_escape(ticket),
+            html_escape(permission),
+        )
+    });
+    format!(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Eidetica - {title}</title>
+<style>{COMMON_STYLES}</style></head><body><main class="container">
+    <h1>{title}</h1><p role="status">{message}</p>{retry}
+    <p><a href="/dashboard">Dashboard</a> · <a href="/dashboard/requests">Refresh requests</a></p>
+</main></body></html>"#,
+        title = html_escape(title),
+        message = html_escape(message),
     )
 }
 
@@ -469,4 +547,43 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#x27;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eidetica::{
+        ID,
+        auth::{Permission, crypto::PublicKey},
+        sync::{RequestStatus, peer_types::Address},
+    };
+
+    #[test]
+    fn access_pages_escape_requester_fields_and_lifecycle_errors() {
+        let request = BootstrapRequest {
+            tree_id: ID::from_bytes("database"),
+            requesting_pubkey: PublicKey::random(),
+            requesting_key_name: "<script>not a verified name</script>".to_string(),
+            requested_permission: Permission::Admin(42),
+            timestamp: "<untrusted>".to_string(),
+            status: RequestStatus::Pending,
+            peer_address: Address::http("127.0.0.1:0"),
+            metadata: None,
+        };
+        let page = access_requests_page(&[("\" onmouseover=\"alert(1)".to_string(), request)]);
+        assert!(page.contains("&lt;script&gt;not a verified name&lt;/script&gt;"));
+        assert!(page.contains("&lt;untrusted&gt;"));
+        assert!(page.contains("&quot; onmouseover=&quot;alert(1)"));
+        assert!(page.contains("Admin(42)"));
+        assert!(!page.contains("<script>"));
+        let result = access_result_page("<title>", "<error>", Some(("\"ticket", "\"read")));
+        for escaped in [
+            "&lt;title&gt;",
+            "&lt;error&gt;",
+            "&quot;ticket",
+            "&quot;read",
+        ] {
+            assert!(result.contains(escaped));
+        }
+    }
 }

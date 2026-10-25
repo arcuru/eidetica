@@ -460,3 +460,67 @@ async fn test_is_sync_enabled_returns_false_for_untracked_database() -> Result<(
     assert!(!user.is_sync_enabled(database.root_id()).await?);
     Ok(())
 }
+
+/// Split GUI bookkeeping uses the same observed-state rule as native join,
+/// including when the Account is accessed through the service backend.
+#[tokio::test]
+async fn split_access_bookkeeping_preserves_intervening_tracked_row() -> Result<()> {
+    let instance = setup_instance().await;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = login_account(&instance, "test_user", None).await;
+    let key = user.get_default_key()?;
+    let other_key = user.add_private_key(Some("other")).await?;
+    let db = user.create_database(Doc::new(), &key).await?;
+    let tx = db.new_transaction().await?;
+    tx.get_settings()?
+        .set_auth_key(
+            &other_key,
+            AuthKey::active(Some("other"), Permission::Write(5)),
+        )
+        .await?;
+    tx.commit().await?;
+    let original = user.database(db.root_id()).await?;
+    let mapping_before = user.key_mapping(&other_key, db.root_id())?;
+    let error = user
+        .record_database_access_if_unchanged(
+            db.root_id(),
+            &other_key,
+            SyncSettings::enabled(),
+            Err(eidetica::sync::SyncError::BootstrapPending {
+                request_id: "pending".to_string(),
+                message: "wait".to_string(),
+            }
+            .into()),
+            Some(original.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, eidetica::Error::Sync(e) if matches!(*e, eidetica::sync::SyncError::BootstrapPending { .. }))
+    );
+    assert_eq!(user.database(db.root_id()).await?, original);
+    assert_eq!(user.key_mapping(&other_key, db.root_id())?, mapping_before);
+    let changed_settings = SyncSettings::disabled().with_interval(71);
+    user.track_database(db.root_id().clone(), &other_key, changed_settings.clone())
+        .await?;
+    let changed = user.database(db.root_id()).await?;
+    user.record_database_access_if_unchanged(
+        db.root_id(),
+        &key,
+        SyncSettings::enabled(),
+        Ok(()),
+        Some(original),
+    )
+    .await?;
+    assert_eq!(user.database(db.root_id()).await?, changed);
+    assert_eq!(changed.key_id, other_key);
+    assert_eq!(changed.sync_settings, changed_settings);
+    assert_eq!(
+        user.open_database_with_key(db.root_id(), &other_key)
+            .await?
+            .current_permission()
+            .await?,
+        Permission::Write(5)
+    );
+    Ok(())
+}
