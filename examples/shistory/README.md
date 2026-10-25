@@ -192,7 +192,9 @@ names are bounded to 80, 40, and 20 characters respectively, with an ellipsis
 when truncated. Queries default to 20 unique full commands: filters select
 executions first, then the newest occurrence of each exact command text is kept,
 then the limit is applied. `--duplicates` displays every matching execution.
-Queries accept limits from 1 through 1000.
+Queries accept limits from 1 through 1000. Each query pins one history snapshot
+for host names and records, reusing that boundary across stores. The limit bounds
+output, not the amount of history scanned.
 
 `summary` scans all stored records, regardless of the list/search limit. It
 reports the total, date range, success/failure/incomplete counts, the most
