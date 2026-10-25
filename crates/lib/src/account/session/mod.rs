@@ -1357,6 +1357,33 @@ impl AccountSession {
         .await
     }
 
+    /// Record a completed bootstrap without replacing tracked preferences changed
+    /// since the caller observed `original` before its network wait.
+    ///
+    /// Like [`record_database_access`](Self::record_database_access), this reports
+    /// Pending, Rejected and network errors without writing Account metadata.
+    /// After successful access, SigKey mapping repair still proceeds; the tracked
+    /// row is only updated if it still equals `original`. This is an observed-state
+    /// check, not distributed compare-and-set. Local persistence errors remain
+    /// errors even when the network grant or Account commit already succeeded.
+    pub async fn record_database_access_if_unchanged(
+        &mut self,
+        database_id: &ID,
+        key_id: &PublicKey,
+        sync_settings: SyncSettings,
+        bootstrap_result: Result<()>,
+        original: Option<TrackedDatabase>,
+    ) -> Result<()> {
+        self.record_database_access_with_expected(
+            database_id,
+            key_id,
+            sync_settings,
+            bootstrap_result,
+            Some(original),
+        )
+        .await
+    }
+
     async fn record_database_access_with_expected(
         &mut self,
         database_id: &ID,
