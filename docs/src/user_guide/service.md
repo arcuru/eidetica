@@ -83,6 +83,36 @@ NixOS module opens the port when `openFirewall = true` and a web listener
 at `dataDir/service.sock` (not in systemd's private `/tmp`); client processes
 need owner-approved access to that directory.
 
+### Dashboard sync preferences
+
+Open a tracked database's detail page to edit **your account's** sync-enabled,
+sync-on-commit, and periodic-interval preferences.
+Blank interval means the background default; explicit intervals must be positive
+whole seconds representable by the server's timer.
+Saving retains the recorded key mapping, additional sync properties, and unrelated
+account settings.
+Only an already tracked database whose recorded key/mapping still authorizes reads
+can be updated; this form cannot create a tracking record or repair access.
+
+These are preferences, not global daemon switches or a report of network health.
+The ordinary signed write and daemon reconciliation combine the enabled accounts'
+preferences: sync-on-commit uses OR and explicit intervals use the minimum.
+Another account can therefore keep requesting sync after you disable it.
+Disabling neither cancels in-flight work nor revokes access.
+The current background scheduler uses a shared timer, so this is not an exact
+per-database deadline.
+
+Requests from one browser session hold its write lock through the complete
+read/modify/commit; reads in that session take the corresponding read lock.
+Separate logins, socket clients and replicas do not share that browser lock.
+They use normal snapshot transactions and the Table's row-level LWW merge,
+not distributed compare-and-swap or stale-form detection.
+Saving submits all three displayed preferences, so an older form can replace a
+newer edit; concurrent updates to the same row need not preserve each other's fields.
+Reload before editing to see current values.
+A commit error or lost response is not proof of rollback: the error page links to
+reload the actual preferences before retrying.
+
 ### Default Socket Path
 
 If no `--socket` is specified, the daemon uses:
