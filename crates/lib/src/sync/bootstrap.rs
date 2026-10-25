@@ -499,6 +499,18 @@ impl Sync {
             {
                 return Err(SyncError::PermissionDenied("approval retry cannot restore reduced, revoked, removed or uncertain authority; explicitly grant access before finalizing".to_string()).into());
             }
+            // Key creation must obey the same permission/priority ceiling as
+            // ordinary Auth management. Recheck under the target tree lock so
+            // a concurrent downgrade cannot turn an old Admin check into a grant.
+            let permission = database.current_permission().await?;
+            if !permission.can_admin() || permission < request.requested_permission {
+                return Err(SyncError::InsufficientPermission {
+                    request_id: request_id.to_string(),
+                    required_permission: format!("{:?}", request.requested_permission),
+                    actual_permission: permission,
+                }
+                .into());
+            }
             settings
                 .set_auth_key(
                     &request.requesting_pubkey,
