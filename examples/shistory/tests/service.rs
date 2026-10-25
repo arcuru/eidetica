@@ -154,6 +154,14 @@ async fn service_capture_query_and_incomplete_records() -> Result<()> {
     assert_eq!(entries[1].exit_status, None);
     assert_ne!(one, two);
 
+    let before = database.snapshot().await?;
+    assert!(
+        start(&database, Uuid::new_v4(), "shell", "/", "true", time(4))
+            .await
+            .is_err()
+    );
+    assert_eq!(database.snapshot().await?, before);
+
     daemon.stop().await;
     Ok(())
 }
@@ -1756,6 +1764,7 @@ async fn ticket_join_retry_repairs_missing_reference_without_new_root() -> Resul
 struct CaptureTrace {
     output: std::process::Output,
     roots: Vec<ID>,
+    history_snapshots: usize,
     pre_submit: Option<Duration>,
     total: Duration,
 }
@@ -1796,6 +1805,7 @@ async fn traced_cli(
         let (mut client_read, mut client_write) = client.into_split();
         let (mut server_read, mut server_write) = server.into_split();
         let mut roots = Vec::new();
+        let mut history_snapshots = 0;
         let mut pre_submit = None;
         let requests = async {
             let handshake: Handshake = read_frame(&mut client_read).await.unwrap().unwrap();
@@ -1804,6 +1814,9 @@ async fn traced_cli(
                 if let ServiceRequest::AuthenticatedDb(db) = &request
                     && pre_submit.is_none()
                 {
+                    if db.root_id == history && matches!(db.op, DatabaseOp::GetVerifiedTips) {
+                        history_snapshots += 1;
+                    }
                     if db.root_id == history
                         && matches!(db.op, DatabaseOp::SubmitSignedEntry { .. })
                     {
@@ -1818,7 +1831,7 @@ async fn traced_cli(
         };
         let responses = tokio::io::copy(&mut server_read, &mut client_write);
         tokio::select! { () = requests => {}, _ = responses => {} }
-        (roots, pre_submit)
+        (roots, history_snapshots, pre_submit)
     });
     let bin = bin.to_owned();
     let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
@@ -1841,14 +1854,54 @@ async fn traced_cli(
     .await
     .unwrap();
     let total = began.elapsed();
-    let (roots, pre_submit) = proxy.await.unwrap();
+    let (roots, history_snapshots, pre_submit) = proxy.await.unwrap();
     std::fs::remove_file(path).unwrap();
     CaptureTrace {
         output,
         roots,
+        history_snapshots,
         pre_submit,
         total,
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_queries_pin_host_and_history_reads_once() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut alice) = connect_to(&daemon.socket_url, "alice").await?;
+    let first = setup(&mut alice, None, "first").await?;
+    let database = open_database(&alice).await?;
+    let second = shistory::setup_existing(&alice, database.root_id(), "second").await?;
+    for (host, second) in [(first.id, 1), (second.id, 2)] {
+        start(&database, host, "shell", "/", "probe", time(second)).await?;
+    }
+    let before = database.snapshot().await?;
+    let host_id = first.id.to_string();
+    for args in [
+        vec!["--user", "alice", "list", "--all-hosts", "--duplicates"],
+        vec!["--user", "alice", "search", "probe", "--all-hosts"],
+        vec!["--user", "alice", "summary"],
+        vec!["--user", "alice", "list", "--host-id", &host_id],
+    ] {
+        let trace = traced_cli(&daemon, &shistory_bin(), &args, b"", database.root_id()).await;
+        assert!(
+            trace.output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&trace.output.stderr)
+        );
+        assert_eq!(
+            trace.history_snapshots, 1,
+            "{args:?}: pin one history boundary"
+        );
+        assert!(
+            trace.pre_submit.is_none(),
+            "queries must not submit history writes"
+        );
+        assert!(String::from_utf8_lossy(&trace.output.stdout).contains("probe"));
+    }
+    assert_eq!(database.snapshot().await?, before);
+    daemon.stop().await;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1949,6 +2002,12 @@ async fn remembered_capture_opens_no_unrelated_databases_as_they_grow() -> Resul
         scan.roots.len(),
         migrated.roots.len()
     );
+    for trace in [&small, &large, &migrated] {
+        assert_eq!(
+            trace.history_snapshots, 2,
+            "capture needs one host-selection boundary and one history-write boundary"
+        );
+    }
 
     daemon.stop().await;
     Ok(())

@@ -10,7 +10,7 @@ use eidetica::{
     auth::{AuthKey, Permission},
     crdt::Doc,
     service::default_socket_url,
-    store::{StoreError, Table},
+    store::{Store, StoreError, Table},
     sync::DatabaseTicket,
 };
 use serde::{Deserialize, Serialize};
@@ -219,8 +219,11 @@ pub async fn start(
     if command.starts_with(' ') {
         return Ok(None);
     }
-    host(database, host_id).await?;
     let transaction = database.new_transaction().await?;
+    Table::<Host>::load(&transaction, HOSTS_STORE.to_owned())
+        .await?
+        .get(&host_id.to_string())
+        .await?;
     let id = transaction
         .get_store::<Table<HistoryEntry>>(&history_store(host_id))
         .await?
@@ -422,17 +425,17 @@ async fn matching_entries(
     host_id: Option<Uuid>,
     text: Option<&str>,
 ) -> Result<Vec<HistoryEntry>> {
+    let transaction = database.new_transaction().await?;
+    let hosts = Table::<Host>::load(&transaction, HOSTS_STORE.to_owned()).await?;
     let mut host_ids = match host_id {
         Some(host_id) => vec![host_id],
-        None => configured_hosts(database).await?,
+        None => configured_hosts(&hosts).await?,
     };
     host_ids.sort_unstable();
     let mut entries = Vec::new();
     for host_id in host_ids {
-        let host_name = host(database, host_id).await?.name;
-        let history = database
-            .get_store_viewer::<Table<HistoryEntry>>(&history_store(host_id))
-            .await?;
+        let host_name = hosts.get(&host_id.to_string()).await?.name;
+        let history = Table::<HistoryEntry>::load(&transaction, history_store(host_id)).await?;
         entries.extend(
             history
                 .search(|entry| text.is_none_or(|text| entry.command.contains(text)))
@@ -590,10 +593,8 @@ fn configuration_error(reason: String) -> eidetica::Error {
     .into()
 }
 
-async fn configured_hosts(database: &Database) -> Result<Vec<Uuid>> {
-    database
-        .get_store_viewer::<Table<Host>>(HOSTS_STORE)
-        .await?
+async fn configured_hosts(hosts: &Table<Host>) -> Result<Vec<Uuid>> {
+    hosts
         .search(|_| true)
         .await?
         .into_iter()
