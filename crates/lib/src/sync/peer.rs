@@ -327,6 +327,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::ConnectToPeer {
+                span: tracing::Span::current(),
                 address: address.clone(),
                 cancel,
                 response: tx,
@@ -336,6 +337,21 @@ impl Sync {
 
         rx.await
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Account for the initial handshake of an address-based sync operation.
+    pub(super) async fn connect_for_operation(
+        &self,
+        address: &Address,
+        operation: &mut super::operation::SyncOperation,
+    ) -> Result<PublicKey> {
+        operation.routes(1, 1);
+        let result = self.connect_to_peer(address).await;
+        match &result {
+            Ok(_) => operation.selected(address),
+            Err(error) => operation.failed_route(error),
+        }
+        result
     }
 
     /// Update the connection state of a peer.
