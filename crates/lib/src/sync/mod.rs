@@ -120,6 +120,9 @@ mod bootstrap_request_manager;
 mod dial_testing;
 #[cfg(test)]
 mod join_transfer_tests;
+mod operation;
+#[cfg(test)]
+mod operation_tests;
 mod ops;
 mod peer;
 mod peer_state;

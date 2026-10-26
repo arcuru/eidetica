@@ -76,6 +76,7 @@ impl DialAttempt {
 
 /// Connect to a peer and perform the handshake.
 pub(super) async fn run_handshake(ctx: HandshakeCtx, address: Address) -> Result<PublicKey> {
+    debug!(address = ?address, "Starting peer handshake");
     let HandshakeCtx {
         transport,
         instance,
