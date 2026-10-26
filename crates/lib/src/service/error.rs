@@ -56,6 +56,11 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
         }
         ("backend", "InvalidStoreStateView") => BackendError::InvalidStoreStateView.into(),
         ("backend", "RecordTooLarge") => BackendError::RecordTooLarge { encoded_bytes: 0 }.into(),
+        ("backend", "BlobResponseTooLarge") => BackendError::BlobResponseTooLarge {
+            size: 0,
+            encoded_bytes: 0,
+        }
+        .into(),
         ("backend", "EntryNotFound") => BackendError::EntryNotFound {
             id: extract_id_from_message(&err.message).unwrap_or_default(),
         }

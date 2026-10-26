@@ -3,10 +3,10 @@
 //! This module contains the database schema used by SQL backends.
 //! The schema is designed to be portable between SQLite and Postgres.
 //!
-//! Mainline v0 migrates directly to v3 in one transaction. v2 adds cache
-//! accounting without verification repair. Version 1
+//! Mainline v0 migrates directly to v4 in one transaction. v2 adds cache
+//! accounting without verification repair; v4 adds blob storage. Version 1
 //! belonged to an unsupported prefix-tracking candidate and is refused before
-//! schema writes. Ordinary v3 opens neither backfill nor reconstruct verification history.
+//! schema writes. Ordinary v3/v4 opens never reconstruct verification history.
 
 use crate::Result;
 use crate::backend::errors::BackendError;
@@ -19,7 +19,7 @@ mod tests;
 /// Internal SQL format revision counter, independent of release versions and
 /// the InMemory persistence counter. Increment for changes requiring migration,
 /// with an explicit forward path from each supported stored format.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 const CREATE_STORE_STATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
@@ -132,6 +132,54 @@ pub const CREATE_TABLES: &[&str] = &[
         singleton BIGINT PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
         data TEXT NOT NULL
     )",
+    // Content-addressed blob storage (durable, out-of-band from the entry DAG).
+    //
+    // A blob is keyed by `cid` (the raw-codec `0x55` BLAKE3 CIDv1 of its
+    // bytes), giving global dedup for free. `size` caches the byte length so
+    // callers don't have to materialize the blob to learn how big it is.
+    // `location` is the hybrid inline/disk split (§5.2): `location = 0` keeps
+    // the bytes inline in `data`; `location = 1` means `data` is NULL and the
+    // bytes live in a content-addressed file under the backend's blob dir (the
+    // tier is enabled per-backend via `with_blob_dir`, for SQLite and Postgres
+    // alike). See `BlobLocation` in `storage.rs` for the encoding.
+    //
+    // `last_accessed` (epoch ms) drives LRU eviction in `gc_blobs` (§6). It is
+    // stamped to *now* on every put and every local read hit. A blob is durable
+    // owned content and is evicted ONLY by an explicit GC pass, and even then
+    // only when it is not pinned (see `blob_pins`). This column is part of the
+    // v4 additive blob tables; earlier supported layouts gain them atomically.
+    //
+    // `outboard` holds the pre-order bao hash tree (§7) — the interior BLAKE3
+    // nodes, ~0.4% of `size` at the 16 KiB block size. Persisting it means a
+    // verified range *serve* reads only the requested window of `data` (via a
+    // ranged read) plus this small sidecar, instead of whole-loading and
+    // re-hashing the blob. The blob's CID is the bao root, so `outboard` needs
+    // no address of its own. Created with the blob table in v4.
+    "CREATE TABLE IF NOT EXISTS blobs (
+        cid           TEXT PRIMARY KEY,
+        size          BIGINT NOT NULL,
+        location      BIGINT NOT NULL,
+        last_accessed BIGINT NOT NULL DEFAULT 0,
+        data          BLOB,
+        outboard      BLOB NOT NULL
+    )",
+    // Blob pins (Phase 1.5, §6) — the local GC root set.
+    //
+    // A pin is an instance-LOCAL retention assertion (it does NOT replicate as
+    // an entry, so it is not a frozen wire surface). Keyed by
+    // `(user_id, database_id, blob_cid)`: a blob is retained while ANY row names
+    // its CID, and the `(user, database)` decomposition lets us un-pin and
+    // attribute pinned size per user (`pinned_size_by_user`, for provenance /
+    // quota). `database_id` uses the empty-string sentinel for "not tied to a
+    // specific database" (PostgreSQL disallows NULL in a PK column; database IDs
+    // are CIDs and never empty, matching the `tips` convention). GC's root set
+    // is `SELECT DISTINCT blob_cid FROM blob_pins`.
+    "CREATE TABLE IF NOT EXISTS blob_pins (
+        user_id      TEXT NOT NULL,
+        database_id  TEXT NOT NULL DEFAULT '',
+        blob_cid     TEXT NOT NULL,
+        PRIMARY KEY (user_id, database_id, blob_cid)
+    )",
 ];
 
 /// SQL statements to create indexes.
@@ -151,6 +199,9 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_store_parents_child ON store_parents(store_name, child_id)",
     // Tip lookups
     "CREATE INDEX IF NOT EXISTS idx_tips_tree_store ON tips(tree_id, store_name)",
+    // Blob pin reverse lookups (DISTINCT blob_cid for the GC root set; the
+    // PK prefix already covers per-user queries).
+    "CREATE INDEX IF NOT EXISTS idx_blob_pins_cid ON blob_pins(blob_cid)",
 ];
 
 /// Initialize the database schema.
@@ -247,7 +298,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             .await
             .sql_context("Schema creation failed")?;
     }
-    if row != Some((SCHEMA_VERSION,)) {
+    if matches!(row, None | Some((0 | 2,))) {
         ensure_store_state_cache_columns(backend, &mut tx).await?;
     }
     for statement in CREATE_INDEXES {
@@ -265,7 +316,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             super::verified::repair_in_tx(&mut tx, &crate::entry::ID::parse(&tree)?).await?;
         }
     }
-    if matches!(row, Some((0 | 2,))) {
+    if matches!(row, Some((0 | 2 | 3,))) {
         sqlx::query("UPDATE schema_version SET version = $1")
             .bind(SCHEMA_VERSION)
             .execute(&mut *tx)
@@ -349,6 +400,18 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
             "store_state_records",
             &["namespace_id", "record_key", "record_value"],
         ),
+        (
+            "blobs",
+            &[
+                "cid",
+                "size",
+                "location",
+                "last_accessed",
+                "data",
+                "outboard",
+            ],
+        ),
+        ("blob_pins", &["user_id", "database_id", "blob_cid"]),
     ];
     for (table, required) in tables {
         let existing = columns(backend, table).await?;
@@ -356,6 +419,9 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
             if !existing.is_empty() {
                 return Err(malformed("unversioned application tables"));
             }
+            continue;
+        }
+        if matches!(*table, "blobs" | "blob_pins") && version.is_some_and(|v| v < 4) {
             continue;
         }
         if version == Some(0)
@@ -373,7 +439,7 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
             return Err(malformed(&format!("missing columns in {table}")));
         }
         if *table == "store_state_namespaces"
-            && version == Some(SCHEMA_VERSION)
+            && matches!(version, Some(3 | 4))
             && ["size_bytes", "last_access_tick"]
                 .iter()
                 .any(|column| !existing.iter().any(|(name,)| name == column))

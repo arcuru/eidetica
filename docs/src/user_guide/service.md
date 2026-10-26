@@ -231,3 +231,10 @@ For the `Database::on_write` semantics on a connected Instance — including
 the deliberate trade that callbacks fire asynchronously to `commit()` in
 exchange for a single daemon-canonical event ordering — see [Write
 Callbacks](transactions.md#write-callbacks).
+
+## Local blobs
+
+Connected clients use the same local `Instance` blob put/get/range/GC methods as embedded callers; the daemon owns the bytes and evaluates access times.
+These calls never fetch from sync peers.
+Use `--blob-dir` / `EIDETICA_BLOB_DIR` to override the SQL disk tier's default `<data-dir>/blobs`; InMemory does not use a disk tier.
+See [Blob Storage](concepts/blobs.md) for cache lifetime, verification and the separate byte/frame limits.

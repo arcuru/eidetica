@@ -1,4 +1,5 @@
 mod basic_operations;
+mod blob_storage;
 mod concurrent_writes;
 // Compares the two reference backends against each other, so it needs both.
 #[cfg(feature = "sqlite")]

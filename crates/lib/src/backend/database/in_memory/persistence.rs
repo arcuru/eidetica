@@ -4,7 +4,7 @@
 //! the in-memory database state to/from JSON files.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     sync::{Mutex, RwLock},
 };
@@ -23,8 +23,8 @@ use crate::{
 
 /// Internal JSON format revision counter, independent of release versions and
 /// the SQL schema counter. v0 reconstructs retained state on load; v2 persists
-/// verified tips only. Unreleased v1 prefix files are refused.
-const PERSISTENCE_VERSION: u8 = 2;
+/// verified tips only; v3 adds blob bytes and retention roots. v1 prefix files are refused.
+const PERSISTENCE_VERSION: u8 = 3;
 
 /// Helper to check if version is default (0) for serde skip_serializing_if
 fn is_v0(v: &u8) -> bool {
@@ -38,7 +38,7 @@ where
 {
     use serde::Deserialize;
     let version = u8::deserialize(deserializer)?;
-    if version != 0 && version != PERSISTENCE_VERSION {
+    if version != 0 && version != 2 && version != PERSISTENCE_VERSION {
         return Err(serde::de::Error::custom(format!(
             "unsupported persistence version {version}; newest supported version \
              is {PERSISTENCE_VERSION} (v0 files rebuild retained state on load)"
@@ -83,6 +83,16 @@ struct SerializableDatabase {
     /// rebuilt on load; persisted since v2.
     #[serde(default)]
     verified: HashMap<ID, VerifiedState>,
+    /// Content-addressed blobs. Durable owned content (unlike the CRDT cache),
+    /// so it IS persisted. `#[serde(default)]` keeps pre-blob snapshots loading.
+    #[serde(default)]
+    blobs: HashMap<ID, Vec<u8>>,
+    /// Per-blob last-access time (epoch ms) for LRU eviction (§6).
+    #[serde(default)]
+    blob_accessed: HashMap<ID, i64>,
+    /// Blob pins (`(user_id, database_id, blob_cid)`): the local GC root set.
+    #[serde(default)]
+    blob_pins: HashSet<(String, String, ID)>,
 }
 
 impl Serialize for InMemory {
@@ -104,6 +114,9 @@ impl Serialize for InMemory {
                 cache: None,
                 tips: inner.tips.clone(),
                 verified: inner.verified.clone(),
+                blobs: inner.blobs.clone(),
+                blob_accessed: inner.blob_accessed.clone(),
+                blob_pins: inner.blob_pins.clone(),
             }
         };
 
@@ -128,6 +141,9 @@ impl<'de> Deserialize<'de> for InMemory {
             instance_secrets: serializable.instance_secrets,
             tips: serializable.tips,
             verified: serializable.verified,
+            blobs: serializable.blobs,
+            blob_accessed: serializable.blob_accessed,
+            blob_pins: serializable.blob_pins,
         };
         // v0 files predate the retained verified state: rebuild every
         // touched tree from entries and statuses so the hot path never
@@ -190,6 +206,9 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
             cache: None,
             tips: inner.tips.clone(),
             verified: inner.verified.clone(),
+            blobs: inner.blobs.clone(),
+            blob_accessed: inner.blob_accessed.clone(),
+            blob_pins: inner.blob_pins.clone(),
         }
     };
 
@@ -303,7 +322,7 @@ mod persistence_tests {
         assert_eq!(before.tips(), std::slice::from_ref(&a_id));
 
         let value = serde_json::to_value(&backend).expect("serializes");
-        assert_eq!(value["_v"], 2);
+        assert_eq!(value["_v"], 3);
         assert!(value.get("verified").is_some());
 
         let loaded: InMemory = serde_json::from_value(value).expect("deserializes");

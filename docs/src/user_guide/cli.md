@@ -365,3 +365,11 @@ rebuild on the local backend matrix. Automatic dependency acquisition and
 retry ordering are deferred to [PR #126](https://github.com/arcuru/eidetica/pull/126).
 See the [causal authorization contract](../design/authentication.md#delegated-database-references)
 for pointer rewinds, effective removal and the nested-floor recovery limitation.
+
+### Blob directory
+
+Commands opening a backend accept `--blob-dir` (`EIDETICA_BLOB_DIR`).
+SQL backends use it for large content-addressed blob files, defaulting to `<data-dir>/blobs`; small blobs and Bao outboards stay in SQL.
+InMemory stores blobs in its saved snapshot and does not use this directory.
+Back up SQL storage together with the blob directory while the backend is stopped.
+See [Blob Storage](concepts/blobs.md).

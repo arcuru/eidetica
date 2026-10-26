@@ -1261,3 +1261,55 @@ async fn malformed_negative_cache_counters_refuse_open() {
     assert_eq!(db.content().await, before);
     db.cleanup().await;
 }
+
+/// Existing v3 files have no blob tables. Add them without a trust repair or
+/// changing any Entry, Account, Store-state or retained verification bytes.
+#[tokio::test]
+async fn blob_tables_upgrade_existing_v3_and_persist_on_reopen() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.populate(&backend).await;
+    db.close_backend(backend).await;
+    db.pool.execute("DROP TABLE blob_pins").await.unwrap();
+    db.pool.execute("DROP TABLE blobs").await.unwrap();
+    db.pool
+        .execute("UPDATE schema_version SET version = 3")
+        .await
+        .unwrap();
+    let before = db.content().await;
+    let backend = db.open().await.unwrap();
+    assert_eq!(db.content().await, before);
+    assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
+    let data = b"new bytes after supported reopen".to_vec();
+    let cid = crate::ID::from_bytes(&data);
+    backend.put_blob(&cid, data.clone()).await.unwrap();
+    backend.pin_blob("local-owner", "db", &cid).await.unwrap();
+    backend.touch_blob_accessed(&cid, 1234).await.unwrap();
+    db.close_backend(backend).await;
+    let backend = db.open().await.unwrap();
+    assert_eq!(backend.get_blob(&cid).await.unwrap(), Some(data));
+    assert!(backend.pinned_cids().await.unwrap().contains(&cid));
+    assert_eq!(
+        backend.all_blob_meta().await.unwrap()[0].last_accessed,
+        1234
+    );
+    assert_eq!(db.content().await, before);
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn blob_current_missing_table_refuses_without_recreating_content() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.close_backend(backend).await;
+    db.pool.execute("DROP TABLE blobs").await.unwrap();
+    let before = db.catalog().await;
+    assert!(db.open().await.is_err());
+    assert_eq!(db.catalog().await, before);
+    db.cleanup().await;
+}

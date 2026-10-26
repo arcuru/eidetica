@@ -468,3 +468,14 @@ This is a **fully trusted local-client** v1. Filesystem access to the socket gra
 - **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier can now read the retained frontier (`BackendImpl::verified_snapshot`); wiring it into the per-commit path is still future work.
 - **Notification backpressure**: the per-connection writer channel is `mpsc::unbounded_channel`; a stalled client reader buffers notifications in memory. Switch to a bounded channel with a documented drop-oldest policy if memory growth becomes measurable.
 - **Derived-key caching**: cache the Argon2id-derived encryption key in an OS secret store with a TTL, evolving the daemon into an ssh-agent-like key agent to eliminate repeated password prompts for CLI tools.
+
+## Local blob operations
+
+`GetBlob`, `PutBlob`, `GetBlobRange` and `GcBlobs` require an authenticated session and operate on daemon-local storage only.
+They carry neither a Database root nor an acting identity; naming a CID permits reading it, but never enumerating stored CIDs.
+Puts re-verify the CID and the 64 MiB byte limit.
+Window reads use the persisted Bao outboard; GC shares the local publication/read lock and returns only aggregate counts.
+Backend retention records are internal substrate; no application pin/unpin operation is exposed.
+Responses that exceed the existing service-frame budget return `BlobResponseTooLarge` before framing, so a client can continue with smaller ranges on the same connection.
+The frame cap remains 64 MiB and is independent of the blob byte cap.
+See [Blob Storage](../user_guide/concepts/blobs.md).

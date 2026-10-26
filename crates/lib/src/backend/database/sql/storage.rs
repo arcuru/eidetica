@@ -2,11 +2,14 @@
 //!
 //! This module implements the core CRUD operations for entries using sqlx.
 
+use std::collections::HashSet;
+
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
-    CacheScope, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-    RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
+    BlobMeta, CacheScope, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage,
+    RecordRange, RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest,
+    VerificationStatus,
 };
 use crate::entry::{Entry, ID};
 
@@ -1095,4 +1098,401 @@ pub async fn set_instance_secrets(backend: &SqlxBackend, secrets: &InstanceSecre
     }
 
     Ok(())
+}
+// === Blob Storage (content-addressed, durable) ===
+
+/// Inline/disk split point for the hybrid blob tier (§5.2): blobs of at most
+/// this many bytes stay inline in the SQL `data` column; larger ones go to a
+/// content-addressed file on disk (when the backend has a blob dir). 16 KiB is
+/// iroh's figure — small enough that a DB row stays cheap, large enough that the
+/// vast majority of small blobs never touch the filesystem. This is a §4.3
+/// throwaway internal: changing it only changes where *new* blobs land.
+const INLINE_BLOB_THRESHOLD: u64 = 16 * 1024;
+
+/// Where a blob's bytes live — the meaning of the `blobs.location` column. This
+/// is the single place that integer mapping is defined; every read decodes
+/// through [`from_db`](Self::from_db) so an unrecognized value is a hard error
+/// rather than silently reading from the wrong tier.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlobLocation {
+    /// Bytes inline in the SQL `data` column (small blobs).
+    Inline,
+    /// Bytes in a content-addressed file under the backend's blob dir (§5.2).
+    OnDisk,
+}
+
+impl BlobLocation {
+    fn to_db(self) -> i64 {
+        match self {
+            Self::Inline => 0,
+            Self::OnDisk => 1,
+        }
+    }
+
+    fn from_db(value: i64) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Inline),
+            1 => Ok(Self::OnDisk),
+            other => Err(BackendError::StateInconsistency {
+                reason: format!("unknown blob location {other} (expected 0=inline, 1=on-disk)"),
+            }
+            .into()),
+        }
+    }
+}
+
+/// Store a blob under its content address. Idempotent: a row already present
+/// for `cid` is left untouched (the bytes are identical by content addressing),
+/// so re-storing is a cheap no-op. The caller
+/// ([`super::SqlxBackend::put_blob`]) verifies `cid` matches the bytes before
+/// this runs.
+///
+/// Hybrid tier (§5.2): a blob larger than [`INLINE_BLOB_THRESHOLD`] is written
+/// to a file on disk (`location = 1`, `data` NULL) when the backend has a blob
+/// dir; everything else stays inline (`location = 0`). The file is written
+/// *before* the row so a crash never leaves a row pointing at a missing file —
+/// an orphan file is inert. Row-based GC does not reclaim orphan files.
+pub async fn put_blob(backend: &SqlxBackend, cid: &ID, data: Vec<u8>) -> Result<()> {
+    let pool = backend.pool();
+    let size = data.len() as i64;
+    // Persist the bao outboard alongside the metadata (§7) so a later range
+    // serve reads only the requested window plus this ~0.4% sidecar instead of
+    // whole-loading and re-hashing. Computed once, here, on the write path. The
+    // outboard stays in SQL for both tiers (it is small; the data is what's big).
+    let outboard = crate::blob::bao::compute_outboard(&data);
+
+    // Large blobs go to disk when this backend has a blob dir; otherwise inline.
+    let location = match backend.blob_dir() {
+        Some(dir) if data.len() as u64 > INLINE_BLOB_THRESHOLD => {
+            super::blob_disk::write_atomic(dir, cid, &data).await?;
+            BlobLocation::OnDisk
+        }
+        _ => BlobLocation::Inline,
+    };
+    // Inline blobs carry their bytes in `data`; disk blobs store NULL there.
+    let inline_data: Option<&[u8]> = match location {
+        BlobLocation::Inline => Some(&data),
+        BlobLocation::OnDisk => None,
+    };
+
+    // `last_accessed` defaults to 0 here; the caller stamps it to *now* via
+    // `touch_blob_accessed` (see `Instance::persist_blob`) so LRU/GC see a fresh
+    // blob and the grace window protects it.
+    let sql = if backend.is_sqlite() {
+        "INSERT OR IGNORE INTO blobs (cid, size, location, data, outboard) VALUES ($1, $2, $3, $4, $5)"
+    } else {
+        "INSERT INTO blobs (cid, size, location, data, outboard) VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (cid) DO NOTHING"
+    };
+
+    sqlx::query(sql)
+        .bind(cid.to_string())
+        .bind(size)
+        .bind(location.to_db())
+        .bind(inline_data)
+        .bind(&outboard)
+        .execute(pool)
+        .await
+        .sql_context("Failed to store blob")?;
+
+    Ok(())
+}
+
+/// Read a byte range of a blob's `data` without materializing the whole blob,
+/// using the backend's native 1-indexed substring (SQLite `substr(b, from,
+/// for)`, Postgres `substring(b FROM from FOR for)`). `range` is clamped to the
+/// stored bytes: an over-long `end` yields the available tail and an
+/// empty/past-the-end range yields empty bytes. Returns `Ok(None)` only if the
+/// blob is not held.
+///
+/// Offsets are bound as `i32`, the native width of both dialects' substring
+/// arguments — the `DEFAULT_MAX_BLOB_BYTES` cap keeps every offset well inside
+/// 32 bits, so the saturating casts never actually clamp. Raising the cap past
+/// ~2 GiB would require widening this (and moving to a disk tier for the data
+/// anyway, since a >2 GiB SQL BLOB column is its own problem).
+pub async fn get_blob_range(
+    backend: &SqlxBackend,
+    cid: &ID,
+    range: std::ops::Range<u64>,
+) -> Result<Option<Vec<u8>>> {
+    let pool = backend.pool();
+    // 1-indexed start for both dialects; length is the half-open span. Bound as
+    // i32 so each dialect hits its native substring(_, int, int) signature.
+    let start = range.start.saturating_add(1).min(i32::MAX as u64) as i32;
+    let len = range.end.saturating_sub(range.start).min(i32::MAX as u64) as i32;
+
+    // Fetch the tier alongside the inline substring in one round trip. For a
+    // disk blob (`location = 1`) `data` is NULL, so the substring is NULL and we
+    // then read the window from the file via `pread`.
+    let sql = if backend.is_sqlite() {
+        "SELECT location, substr(data, $2, $3) FROM blobs WHERE cid = $1"
+    } else {
+        "SELECT location, substring(data FROM $2 FOR $3) FROM blobs WHERE cid = $1"
+    };
+
+    let row: Option<(i64, Option<Vec<u8>>)> = sqlx::query_as(sql)
+        .bind(cid.to_string())
+        .bind(start)
+        .bind(len)
+        .fetch_optional(pool)
+        .await
+        .sql_context("Failed to read blob range")?;
+
+    match row {
+        None => Ok(None),
+        Some((loc, bytes)) => match BlobLocation::from_db(loc)? {
+            BlobLocation::Inline => Ok(Some(bytes.unwrap_or_default())),
+            // On-disk tier: read only the requested window from the file.
+            BlobLocation::OnDisk => {
+                let dir = backend.blob_dir().ok_or_else(disk_tier_unavailable)?;
+                // As in `get_blob`: a row recorded on disk with no file is an
+                // inconsistency. (An empty/past-EOF range over a present file
+                // still reads back as `Some(empty)`, so only a truly absent file
+                // reaches this arm.)
+                match super::blob_disk::read_range(dir, cid, range).await? {
+                    Some(bytes) => Ok(Some(bytes)),
+                    None => Err(blob_file_missing(cid)),
+                }
+            }
+        },
+    }
+}
+
+/// Error for an on-disk blob (`location = 1`) whose backend has no blob dir —
+/// i.e. the database was opened without the blob tier that originally wrote it.
+/// The bytes exist on disk but we can't locate them. Reopen the backend with
+/// the same `with_blob_dir` (or `open_sqlite`) directory it was created with.
+fn disk_tier_unavailable() -> crate::Error {
+    BackendError::StateInconsistency {
+        reason: "blob stored on disk (location=1) but this backend has no blob directory; \
+                 reopen the backend with its on-disk blob tier (with_blob_dir / open_sqlite)"
+            .to_string(),
+    }
+    .into()
+}
+
+/// Error for an on-disk blob (`location = 1`) whose backing file is gone — the
+/// metadata row says we hold it but the bytes are absent (a lost rename after a
+/// crash, an external deletion, or bit-rot). Distinct from "blob not held" so a
+/// vanished blob does not read back as if it were never stored.
+fn blob_file_missing(cid: &ID) -> crate::Error {
+    BackendError::BlobFileMissing { cid: cid.clone() }.into()
+}
+
+/// Fetch a blob's `(size, pre-order outboard)` without materializing its data —
+/// the input a verified range serve needs before reading the window (§7).
+/// Returns `Ok(None)` if the blob is not held.
+pub async fn get_blob_header(backend: &SqlxBackend, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
+    let pool = backend.pool();
+    let row: Option<(i64, Vec<u8>)> =
+        sqlx::query_as("SELECT size, outboard FROM blobs WHERE cid = $1")
+            .bind(cid.to_string())
+            .fetch_optional(pool)
+            .await
+            .sql_context("Failed to read blob header")?;
+    Ok(row.map(|(size, outboard)| (size.max(0) as u64, outboard)))
+}
+
+/// Fetch a blob's bytes by content address, or `None` if not held locally.
+/// Reads inline bytes from SQL (`location = 0`) or the whole file from the
+/// on-disk tier (`location = 1`).
+pub async fn get_blob(backend: &SqlxBackend, cid: &ID) -> Result<Option<Vec<u8>>> {
+    let pool = backend.pool();
+
+    let row: Option<(i64, Option<Vec<u8>>)> =
+        sqlx::query_as("SELECT location, data FROM blobs WHERE cid = $1")
+            .bind(cid.to_string())
+            .fetch_optional(pool)
+            .await
+            .sql_context("Failed to get blob")?;
+
+    match row {
+        None => Ok(None),
+        Some((loc, data)) => match BlobLocation::from_db(loc)? {
+            BlobLocation::Inline => Ok(Some(data.unwrap_or_default())),
+            BlobLocation::OnDisk => {
+                let dir = backend.blob_dir().ok_or_else(disk_tier_unavailable)?;
+                // The row says we hold these bytes on disk, so an absent file is
+                // an inconsistency, not "not held" — surface it rather than
+                // letting a vanished (possibly pinned) blob read back as None.
+                match super::blob_disk::read_whole(dir, cid).await? {
+                    Some(bytes) => Ok(Some(bytes)),
+                    None => Err(blob_file_missing(cid)),
+                }
+            }
+        },
+    }
+}
+
+/// Cheap existence check for a blob, without materializing its bytes.
+pub async fn has_blob(backend: &SqlxBackend, cid: &ID) -> Result<bool> {
+    let pool = backend.pool();
+
+    let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM blobs WHERE cid = $1")
+        .bind(cid.to_string())
+        .fetch_optional(pool)
+        .await
+        .sql_context("Failed to check blob existence")?;
+
+    Ok(row.is_some())
+}
+
+/// Stamp a blob's `last_accessed` to `now_ms` (epoch ms). No-op if the blob is
+/// not held locally. Called on every put and every local read hit so LRU
+/// eviction (§6) reflects recency.
+pub async fn touch_blob_accessed(backend: &SqlxBackend, cid: &ID, now_ms: i64) -> Result<()> {
+    let pool = backend.pool();
+    sqlx::query("UPDATE blobs SET last_accessed = $1 WHERE cid = $2")
+        .bind(now_ms)
+        .bind(cid.to_string())
+        .execute(pool)
+        .await
+        .sql_context("Failed to touch blob access time")?;
+    Ok(())
+}
+
+/// Delete a blob's bytes and row outright (complete-only deletion, §5.5).
+/// Returns whether a row existed. Used by GC eviction; does not touch
+/// `blob_pins`. For an on-disk blob, the file is unlinked after the row is
+/// removed (row first: a dangling row — a `location = 1` entry whose bytes were
+/// already unlinked — would read back as a hard error via `get_blob`, whereas
+/// an orphan file is inert). Note an orphan file is *not* currently reclaimed by
+/// GC, which sweeps rows only (`all_blob_meta`); a crash between the row delete
+/// and the unlink leaks the file. Acceptable for now (rare, bounded by the
+/// content-addressed name so it cannot duplicate), tracked as a GC follow-up.
+pub async fn delete_blob(backend: &SqlxBackend, cid: &ID) -> Result<bool> {
+    let pool = backend.pool();
+    // Learn the tier before deleting so we know whether a file backs this blob.
+    let location: Option<i64> = sqlx::query_as("SELECT location FROM blobs WHERE cid = $1")
+        .bind(cid.to_string())
+        .fetch_optional(pool)
+        .await
+        .sql_context("Failed to read blob location for delete")?
+        .map(|(l,): (i64,)| l);
+
+    let result = sqlx::query("DELETE FROM blobs WHERE cid = $1")
+        .bind(cid.to_string())
+        .execute(pool)
+        .await
+        .sql_context("Failed to delete blob")?;
+    let existed = result.rows_affected() > 0;
+
+    let on_disk = matches!(location, Some(l) if BlobLocation::from_db(l)? == BlobLocation::OnDisk);
+    if existed
+        && on_disk
+        && let Some(dir) = backend.blob_dir()
+    {
+        super::blob_disk::delete(dir, cid).await?;
+    }
+
+    Ok(existed)
+}
+
+/// Enumerate every locally-held blob's `(cid, size, last_accessed)` — the GC
+/// sweep input. Engine-internal: NOT exposed as a callable wire/local API
+/// (the §10.1 no-enumeration invariant is about callable surfaces; the
+/// collector derives reachability here, where the design says it should).
+pub async fn all_blob_meta(backend: &SqlxBackend) -> Result<Vec<BlobMeta>> {
+    let pool = backend.pool();
+    let rows: Vec<(String, i64, i64)> =
+        sqlx::query_as("SELECT cid, size, last_accessed FROM blobs")
+            .fetch_all(pool)
+            .await
+            .sql_context("Failed to list blob metadata")?;
+    rows.into_iter()
+        .map(|(cid, size, last_accessed)| {
+            Ok(BlobMeta {
+                cid: ID::parse(&cid)?,
+                size: size.max(0) as u64,
+                last_accessed,
+            })
+        })
+        .collect()
+}
+
+/// Pin a blob for `(user, database)`. Idempotent. A pin keeps the blob from
+/// being GC'd while it exists (§6).
+pub async fn pin_blob(
+    backend: &SqlxBackend,
+    user_id: &str,
+    database_id: &str,
+    blob_cid: &ID,
+) -> Result<()> {
+    let pool = backend.pool();
+    let sql = if backend.is_sqlite() {
+        "INSERT OR IGNORE INTO blob_pins (user_id, database_id, blob_cid) VALUES ($1, $2, $3)"
+    } else {
+        "INSERT INTO blob_pins (user_id, database_id, blob_cid) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, database_id, blob_cid) DO NOTHING"
+    };
+    sqlx::query(sql)
+        .bind(user_id)
+        .bind(database_id)
+        .bind(blob_cid.to_string())
+        .execute(pool)
+        .await
+        .sql_context("Failed to pin blob")?;
+    Ok(())
+}
+
+/// Remove a `(user, database, blob)` pin. Returns whether a pin existed.
+pub async fn unpin_blob(
+    backend: &SqlxBackend,
+    user_id: &str,
+    database_id: &str,
+    blob_cid: &ID,
+) -> Result<bool> {
+    let pool = backend.pool();
+    let result = sqlx::query(
+        "DELETE FROM blob_pins WHERE user_id = $1 AND database_id = $2 AND blob_cid = $3",
+    )
+    .bind(user_id)
+    .bind(database_id)
+    .bind(blob_cid.to_string())
+    .execute(pool)
+    .await
+    .sql_context("Failed to unpin blob")?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// The GC root set: every distinct blob CID with at least one live pin.
+pub async fn pinned_cids(backend: &SqlxBackend) -> Result<HashSet<ID>> {
+    let pool = backend.pool();
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT blob_cid FROM blob_pins")
+        .fetch_all(pool)
+        .await
+        .sql_context("Failed to list pinned blobs")?;
+    rows.into_iter().map(|(cid,)| ID::parse(&cid)).collect()
+}
+
+/// Every `(user_id, database_id, blob_cid)` pin row.
+pub async fn all_blob_pins(backend: &SqlxBackend) -> Result<Vec<(String, String, ID)>> {
+    let pool = backend.pool();
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT user_id, database_id, blob_cid FROM blob_pins")
+            .fetch_all(pool)
+            .await
+            .sql_context("Failed to list blob pins")?;
+    rows.into_iter()
+        .map(|(user, database, cid)| Ok((user, database, ID::parse(&cid)?)))
+        .collect()
+}
+
+/// Total bytes of the distinct blobs pinned by `user_id` (data-provenance /
+/// quota accounting). A blob pinned under several `(user, database)` rows for
+/// the same user counts once.
+pub async fn pinned_size_by_user(backend: &SqlxBackend, user_id: &str) -> Result<u64> {
+    let pool = backend.pool();
+    // Postgres SUM(bigint) returns NUMERIC, which sqlx's Any driver cannot
+    // decode. Keep the aggregate in the same integer domain as stored sizes.
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT CAST(COALESCE(SUM(b.size), 0) AS BIGINT) FROM (
+             SELECT DISTINCT blob_cid FROM blob_pins WHERE user_id = $1
+         ) p JOIN blobs b ON b.cid = p.blob_cid",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .sql_context("Failed to sum pinned size for user")?;
+    Ok(row.and_then(|(s,)| s).unwrap_or(0).max(0) as u64)
 }

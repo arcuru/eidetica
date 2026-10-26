@@ -129,6 +129,24 @@ impl ID {
     pub fn hash_code(&self) -> Option<u64> {
         self.0.as_ref().map(|cid| cid.hash().code())
     }
+
+    /// Get the multicodec content type of this ID's CID.
+    ///
+    /// Returns the codec byte that distinguishes how the addressed bytes are
+    /// interpreted: raw `0x55` (opaque blob bytes) vs dag-cbor `0x71`
+    /// (DAG-CBOR encoded content such as an `Entry`). `None` for an empty ID.
+    /// This is the dispatch key for
+    /// content-addressed storage (see the backend's codec-branched blob
+    /// methods), not a global object-type tag.
+    pub fn codec(&self) -> Option<u64> {
+        self.0.as_ref().map(|cid| cid.codec())
+    }
+
+    /// True if this ID addresses raw/opaque bytes (multicodec `0x55`), i.e. a
+    /// blob rather than a DAG-CBOR object such as an `Entry`.
+    pub fn is_raw(&self) -> bool {
+        self.codec() == Some(RAW_CODEC)
+    }
 }
 
 impl From<Cid> for ID {
