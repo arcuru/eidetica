@@ -165,8 +165,8 @@ Serde enum spelling. The leading `0` is the envelope revision:
 
 `value_bytes` is a CBOR byte string holding the payload's own complete `Codec`
 output, which may be empty if the payload accepts it. Map keys are literal text
-strings in strictly ascending UTF-8 byte order, so equal maps encode to
-identical bytes.
+strings in strictly ascending UTF-8 byte order, independent of insertion order.
+Equal maps encode to identical bytes when their value codec is deterministic.
 Every stored operation is encoded, including `NoOp` and `Delete`, and nested
 values such as `Doc` keep their own atomic flags and tombstones.
 

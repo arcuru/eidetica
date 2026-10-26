@@ -1,4 +1,4 @@
-//! Pointwise laws and delta composition through the public Map API.
+//! Pointwise laws, delta composition and encoding through the public Map API.
 
 use std::sync::{
     Arc,
@@ -309,6 +309,61 @@ fn test_map_construction_and_insertion_without_clone_or_encoding() {
     assert!(empty.is_empty());
     assert_eq!(empty.len(), 0);
     assert_eq!(empty.iter().count(), 0);
+}
+
+// No Clone, CRDT, Default or Serde: encoding must not require merge bounds.
+#[derive(Debug, PartialEq, Eq)]
+struct CodecOnly(bool);
+
+impl Codec for CodecOnly {
+    fn encode(&self) -> Result<Vec<u8>> {
+        if self.0 {
+            return Err(CRDTError::InvalidValue {
+                reason: "payload encode rejected".into(),
+            }
+            .into());
+        }
+        Ok(vec![])
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        if !bytes.is_empty() {
+            return Err(CRDTError::InvalidValue {
+                reason: "payload decode rejected".into(),
+            }
+            .into());
+        }
+        Ok(Self(false))
+    }
+}
+
+#[test]
+fn test_operation_codecs_without_clone_or_merge_bounds() {
+    assert_codec_fixture(&Lww::<CodecOnly>::NoOp, &[0x82, 0x00, 0x00]);
+    assert_codec_fixture(&Lww::<CodecOnly>::Delete, &[0x82, 0x00, 0x02]);
+    assert_codec_fixture(&Lww::Set(CodecOnly(false)), &[0x83, 0x00, 0x01, 0x40]);
+    let mut map = Map::new();
+    map.insert(String::new(), CodecOnly(false));
+    assert_codec_fixture(&map, &[0x82, 0x00, 0x81, 0x82, 0x60, 0x40]);
+}
+
+#[test]
+fn test_operation_codecs_preserve_payload_errors() {
+    let mut map = Map::new();
+    map.insert(String::new(), CodecOnly(true));
+    for result in [Lww::Set(CodecOnly(true)).encode(), map.encode()] {
+        assert!(matches!(result, Err(Error::CRDT(error))
+            if matches!(*error, CRDTError::InvalidValue { ref reason }
+                if reason == "payload encode rejected")));
+    }
+    for result in [
+        Lww::<CodecOnly>::decode(&[0x83, 0x00, 0x01, 0x41, 0x00]).map(|_| ()),
+        Map::<String, CodecOnly>::decode(&[0x82, 0x00, 0x81, 0x82, 0x60, 0x41, 0x00]).map(|_| ()),
+    ] {
+        assert!(matches!(result, Err(Error::CRDT(error))
+            if matches!(*error, CRDTError::InvalidValue { ref reason }
+                if reason == "payload decode rejected")));
+    }
 }
 
 fn opaque_map(entries: &[(&str, Lww<Opaque>)]) -> Map<String, Lww<Opaque>> {

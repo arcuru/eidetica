@@ -5,9 +5,9 @@
 
 // Helper functions are self-contained and don't need external imports
 use eidetica::{
-    Result,
+    Error, Result,
     crdt::{
-        CRDT, Doc,
+        CRDT, CRDTError, Codec, Doc,
         doc::{List, Value, list::Position},
     },
 };
@@ -413,14 +413,14 @@ pub fn create_large_list(size: usize) -> List {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Opaque(pub Vec<u8>);
 
-impl eidetica::crdt::Codec for Opaque {
+impl Codec for Opaque {
     fn encode(&self) -> Result<Vec<u8>> {
         Ok(self.0.clone())
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.first() == Some(&0xff) {
-            return Err(eidetica::crdt::CRDTError::DeserializationFailed {
+            return Err(CRDTError::DeserializationFailed {
                 reason: "opaque fixture rejects 0xff".into(),
             }
             .into());
@@ -432,7 +432,7 @@ impl eidetica::crdt::Codec for Opaque {
 /// Assert exact encoded bytes and a lossless decode.
 pub fn assert_codec_fixture<T>(value: &T, bytes: &[u8])
 where
-    T: eidetica::crdt::Codec + PartialEq + std::fmt::Debug,
+    T: Codec + PartialEq + std::fmt::Debug,
 {
     assert_eq!(value.encode().unwrap(), bytes, "encoding of {value:?}");
     assert_eq!(
@@ -443,10 +443,10 @@ where
 }
 
 /// Assert that decoding fails with a CRDT deserialization error.
-pub fn assert_codec_rejects<T: eidetica::crdt::Codec + std::fmt::Debug>(bytes: &[u8]) {
+pub fn assert_codec_rejects<T: Codec + std::fmt::Debug>(bytes: &[u8]) {
     match T::decode(bytes) {
-        Err(eidetica::Error::CRDT(error)) => assert!(
-            error.is_serialization_error(),
+        Err(Error::CRDT(error)) => assert!(
+            matches!(*error, CRDTError::DeserializationFailed { .. }),
             "{bytes:02x?} failed with {error}"
         ),
         other => panic!("{bytes:02x?} was not rejected as malformed: {other:?}"),

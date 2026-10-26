@@ -1,4 +1,4 @@
-//! Laws for ordered register operations, independent of payload encoding.
+//! Ordered register laws and complete operation encoding.
 
 use eidetica::crdt::{CRDT, Codec, Lww};
 
@@ -81,10 +81,10 @@ fn test_lww_codec_stable_envelopes_for_every_operation() {
     assert_codec_fixture(&Lww::<Opaque>::Delete, &[0x82, 0x00, 0x02]);
     // The payload's own bytes are embedded verbatim, not re-serialized.
     let nested = Lww::Set(Lww::Set(Opaque(vec![7])));
-    let inner = Lww::Set(Opaque(vec![7])).encode().unwrap();
-    let mut expected = vec![0x83, 0x00, 0x01, 0x40 | inner.len() as u8];
-    expected.extend(&inner);
-    assert_codec_fixture(&nested, &expected);
+    assert_codec_fixture(
+        &nested,
+        &[0x83, 0x00, 0x01, 0x45, 0x83, 0x00, 0x01, 0x41, 7],
+    );
 }
 
 #[test]
