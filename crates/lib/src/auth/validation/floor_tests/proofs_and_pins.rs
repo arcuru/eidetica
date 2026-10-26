@@ -10,7 +10,7 @@ async fn empty_pin_cannot_promote_unsigned_child() {
     let fx = fixture().await;
     let parents = fx.tips().await;
     let entry = Entry::builder(fx.target.root_id().clone())
-        .set_height(fx.data_entry(&parents).await.height())
+        .set_height(fx.height_after(&parents).await)
         .set_parents(parents)
         .set_subtree_data("data", b"unsigned")
         .build()
@@ -53,7 +53,7 @@ async fn foreign_main_parent_cannot_promote_unsigned_child() {
     let fx = fixture().await;
     let parents = [fx.tips().await, fx.i0.clone()].concat();
     let entry = Entry::builder(fx.target.root_id().clone())
-        .set_height(fx.data_entry(&parents).await.height())
+        .set_height(fx.height_after(&parents).await)
         .set_parents(parents)
         .set_subtree_data("data", b"unsigned foreign-parent")
         .build()
@@ -398,16 +398,18 @@ async fn revoked_signer_cannot_pin_old_settings_below_revocation() {
 async fn missing_main_ancestor_defers_forged_pin_decision_until_retry() {
     let fx = fixture().await;
     let missing_parent = fx.direct(&fx.tips().await).await;
-    let child = fx
-        .data_entry_with_pin(&[missing_parent.id()], &[missing_parent.id()])
-        .await;
     // Keep the forged-pin verdict independent of the height rule even though
     // this parent is deliberately not stored until after the first attempt.
     let child = Entry::builder(fx.target.root_id().clone())
         .add_parent(missing_parent.id())
         .set_height(missing_parent.height() + 1)
-        .set_subtree_data("data", child.data("data").unwrap().clone())
-        .set_metadata(child.metadata().unwrap().clone())
+        .set_subtree_data("data", b"unsigned forged-pin")
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": [missing_parent.id()], "entropy": null,
+            }))
+            .unwrap(),
+        )
         .build()
         .unwrap();
     let child_id = child.id();
@@ -440,7 +442,7 @@ async fn settings_write_pins_pre_write_frontier_not_own_tip() {
     let data = serde_json::to_vec(&settings).unwrap();
     // Build the two variants with identical causal main parents.
     let parents = fx.tips().await;
-    let height = fx.data_entry(&parents).await.height();
+    let height = fx.height_after(&parents).await;
     let metadata = |tips: &[ID]| {
         serde_json::to_vec(&serde_json::json!({"settings_tips": tips, "entropy": null})).unwrap()
     };
