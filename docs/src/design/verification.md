@@ -96,6 +96,21 @@ recursively verifies another tree under the lock. Verify delegated dependencies
 first, then retry their dependents. A `VerifyReport` counts entries considered
 in that pass, not all stored failures; an empty report is not a health inventory.
 
+### Height monotonicity
+
+Before promotion, the verifier requires the main-tree height to be strictly
+greater than each locally `Verified` main parent's height. Equal or decreasing
+heights produce `Failed`, as does a `Failed` parent; missing or `Unverified`
+parents otherwise leave the Entry retryable. Heights need not equal
+`max(parent heights) + 1`: timestamp heights and gaps remain valid.
+
+This checks main-tree heights only. Store heights have independent strategy
+and inheritance rules. Height-based consumers such as `Database::ids_added`
+retain their best-effort behavior for raw, unsettled history. Existing
+`Verified` entries are not rechecked automatically; use the
+[offline trust reset](#explicit-trust-reset-on-verification-rule-upgrades)
+before relying on the new rule for previously accepted history.
+
 ### Backend: same-tree ancestor closure
 
 Promotion requires every direct main parent to exist in the Entry's canonical
