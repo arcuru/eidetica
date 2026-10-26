@@ -2132,6 +2132,7 @@ impl Database {
     /// - an ancestor is still `Unverified`, or not held locally yet (partial
     ///   sync) → left `Unverified` (retried once the ancestor verifies / the
     ///   missing entry arrives);
+    /// - height not strictly greater than a Verified parent's → `Failed`;
     /// - pinned `_settings` not fully held locally → left `Unverified`
     ///   (a later pass retries once the set syncs in);
     /// - signature + permissions valid → promoted to `Verified`;
@@ -2265,7 +2266,11 @@ impl Database {
                         match backend.get_verification_status(p).await {
                             Ok(VerificationStatus::Verified) => {
                                 let parent = backend.get(p).await?;
-                                if !parent.in_tree(self.root_id()) {
+                                // Both height strategies require strict growth; gaps
+                                // are valid, but equal or decreasing heights are not.
+                                if !parent.in_tree(self.root_id())
+                                    || entry.height() <= parent.height()
+                                {
                                     compromised = true;
                                 }
                             }

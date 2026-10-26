@@ -1722,6 +1722,7 @@ async fn test_local_historical_commit_rejects_unverified_parent_without_storage(
         VerificationStatus::Verified
     );
 }
+
 // ===== Height monotonicity at ingest =====
 
 /// Re-encode `entry` with `height` and re-sign it with `key`: a validly signed
@@ -1743,13 +1744,7 @@ fn with_crafted_height(entry: &Entry, height: u64, key: &PrivateKey) -> Entry {
 
 /// Commit three entries and return the tip, its parent, and a signing key the
 /// database accepts. The tip is the template for crafted siblings.
-async fn setup_height_test() -> (
-    Instance,
-    Database,
-    PrivateKey,
-    Entry,
-    Entry,
-) {
+async fn setup_height_test() -> (Instance, Database, PrivateKey, Entry, Entry) {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
         crate::NewAccount::passwordless("admin"),
@@ -1822,9 +1817,9 @@ async fn test_verify_accepts_entry_with_height_gap() {
     );
 }
 
-/// The `ids_added` backward-bracket guard prunes by height. A crafted
-/// non-monotone entry can make it skip that entry, but verification marks the
-/// entry `Failed`, so the only thing the guard hides is data callers drop.
+/// The `ids_added` backward-bracket guard can skip a crafted non-monotone
+/// entry. Verification rejects that entry, keeping it out of the default
+/// Verified frontier even though it remains in the raw DAG.
 #[tokio::test]
 async fn test_ids_added_guard_hides_only_failed_crafted_entries() {
     let (instance, db, key, tip, parent) = setup_height_test().await;
@@ -1837,10 +1832,114 @@ async fn test_ids_added_guard_hides_only_failed_crafted_entries() {
     );
 
     let prev = Snapshot::new(vec![parent.id()]);
-    let post = Snapshot::new(vec![crafted_id.clone()]);
+    let post = Snapshot::new(vec![crafted_id]);
     let added = db.ids_added(&prev, &post).await.unwrap();
     assert!(
         added.is_empty(),
         "guard prunes the crafted entry by height; got {added:?}"
     );
+}
+
+fn with_height_test_parents(entry: &Entry, parents: &[ID]) -> Entry {
+    let mut value = serde_json::to_value(entry).unwrap();
+    value["tree"]["parents"] = serde_json::json!(parents);
+    serde_json::from_value(value).unwrap()
+}
+
+/// Every main parent matters, regardless of parent order. The valid merge
+/// control has the same ancestry and auth metadata as the rejected merges.
+#[tokio::test]
+async fn test_verify_height_checks_every_parent() {
+    let (instance, db, key, tip, parent) = setup_height_test().await;
+    let high = with_crafted_height(&tip, parent.height() + 100, &key);
+    assert_eq!(
+        ingest_status(&instance, &db, high.clone()).await,
+        VerificationStatus::Verified
+    );
+
+    for parents in [vec![parent.id(), high.id()], vec![high.id(), parent.id()]] {
+        let template = with_height_test_parents(&tip, &parents);
+        for height in [parent.height() + 1, high.height()] {
+            let invalid = with_crafted_height(&template, height, &key);
+            assert_eq!(
+                ingest_status(&instance, &db, invalid).await,
+                VerificationStatus::Failed
+            );
+        }
+        let valid = with_crafted_height(&template, high.height() + 1, &key);
+        assert_eq!(
+            ingest_status(&instance, &db, valid).await,
+            VerificationStatus::Verified
+        );
+    }
+}
+
+/// Child-first ingest must not confuse an unknown height with an invalid one.
+/// When the parent arrives, re-verification rejects bad heights and descendants,
+/// but promotes the otherwise identical monotone branch.
+#[tokio::test]
+async fn test_verify_height_after_missing_parent_arrives() {
+    for monotone in [false, true] {
+        let (instance, db, key, tip, parent) = setup_height_test().await;
+        let late_parent = with_crafted_height(&tip, parent.height() + 100, &key);
+        let template = with_height_test_parents(&tip, &[late_parent.id()]);
+        let height = late_parent.height() + u64::from(monotone);
+        let child = with_crafted_height(&template, height, &key);
+        let template = with_height_test_parents(&tip, &[child.id()]);
+        let descendant = with_crafted_height(&template, height + 1, &key);
+        let engine = instance.require_local_engine().unwrap();
+
+        // Reverse arrival order exercises the topological verification walk,
+        // not height sorting: equal/decreasing labels cannot fool it.
+        for entry in [descendant.clone(), child.clone()] {
+            assert_eq!(
+                ingest_status(&instance, &db, entry).await,
+                VerificationStatus::Unverified
+            );
+        }
+        assert_eq!(
+            ingest_status(&instance, &db, late_parent.clone()).await,
+            VerificationStatus::Verified
+        );
+        let expected = if monotone {
+            VerificationStatus::Verified
+        } else {
+            VerificationStatus::Failed
+        };
+        for entry in [&child, &descendant] {
+            assert_eq!(
+                engine.get_verification_status(&entry.id()).await.unwrap(),
+                expected
+            );
+            assert_eq!(
+                engine.get(&entry.id()).await.unwrap().id(),
+                entry.id(),
+                "ingest retains rejected bytes"
+            );
+        }
+        let snapshot = db.snapshot().await.unwrap();
+        assert_eq!(snapshot.tips().contains(&descendant.id()), monotone);
+        assert_eq!(snapshot.tips().contains(&late_parent.id()), !monotone);
+        // Re-receipt cannot erase a rejection (or demote an accepted entry).
+        assert_eq!(ingest_status(&instance, &db, child).await, expected);
+    }
+}
+
+/// A known bad parent-height edge is definitive even if a different parent
+/// has not arrived yet; missing proof must not mask a provable violation.
+#[tokio::test]
+async fn test_verify_height_failure_is_not_masked_by_missing_parent() {
+    let (instance, db, key, tip, parent) = setup_height_test().await;
+    let missing = with_crafted_height(&tip, parent.height() + 100, &key);
+    for parents in [
+        vec![parent.id(), missing.id()],
+        vec![missing.id(), parent.id()],
+    ] {
+        let template = with_height_test_parents(&tip, &parents);
+        let child = with_crafted_height(&template, parent.height(), &key);
+        assert_eq!(
+            ingest_status(&instance, &db, child).await,
+            VerificationStatus::Failed
+        );
+    }
 }
