@@ -227,3 +227,47 @@ async fn over_limit_prefix_closes_socket_without_reading_body() {
         .unwrap();
     assert!(bytes.is_empty());
 }
+
+#[tokio::test]
+async fn oversized_write_response_keeps_ambiguous_commit_without_replay() {
+    use crate::backend::BackendImpl;
+    use tokio::io::AsyncWriteExt;
+
+    let config = ServiceConfig::new(4096).unwrap();
+    let (conn, mut peer) = super::tests::connect_peer_with_config(config).await;
+    let backend = crate::backend::database::InMemory::new();
+    let entry = Entry::root_builder().build().unwrap();
+    let id = entry.id();
+    let mut call = Box::pin(conn.submit_signed_entry(ID::default(), SigKey::default(), entry));
+    let received = tokio::select! {
+        request = read_frame::<_, ServiceRequest>(&mut peer) => request.unwrap().unwrap(),
+        result = &mut call => panic!("unexpected response before dispatch: {result:?}"),
+    };
+    // The peer has performed the write before its response becomes unreadable.
+    let ServiceRequest::AuthenticatedDb(request) = received else {
+        panic!("not database op")
+    };
+    let DatabaseOp::SubmitSignedEntry { entry } = request.op else {
+        panic!("not write")
+    };
+    backend.put(*entry).await.unwrap();
+    peer.write_all(&(config.max_frame_bytes() + 1).to_be_bytes())
+        .await
+        .unwrap();
+    assert_disconnected(tokio::time::timeout(TIMEOUT, call).await.unwrap());
+    assert_eq!(
+        backend.get(&id).await.unwrap().id(),
+        id,
+        "transport failure must not roll back a dispatched write"
+    );
+    assert_disconnected(conn.get_instance_metadata().await);
+    let mut trailing = Vec::new();
+    tokio::time::timeout(TIMEOUT, peer.read_to_end(&mut trailing))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        trailing.is_empty(),
+        "ambiguous write was automatically replayed"
+    );
+}
