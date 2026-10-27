@@ -85,54 +85,6 @@ pub use server::ServiceServer;
 
 use std::path::PathBuf;
 
-/// Daemon frame policy, learned automatically by capable clients at connection.
-///
-/// Legacy clients use at most 64 MiB, or the daemon's smaller limit.
-/// This does not change record chunk/page budgets or queue sizes. A larger limit
-/// permits larger allocations per frame; it is not an aggregate memory budget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ServiceConfig {
-    max_frame_bytes: u32,
-}
-
-impl ServiceConfig {
-    /// Set the maximum encoded JSON payload size (excluding the four-byte prefix).
-    ///
-    /// Rejects zero and sizes not representable by the wire length or a local
-    /// allocation. A 1 GiB limit is supported without allocating that amount here.
-    pub fn new(max_frame_bytes: u64) -> crate::Result<Self> {
-        if max_frame_bytes == 0
-            || max_frame_bytes > u32::MAX as u64
-            || max_frame_bytes > isize::MAX as u64
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "max frame bytes must be between 1 and {}",
-                    (u32::MAX as u64).min(isize::MAX as u64)
-                ),
-            )
-            .into());
-        }
-        Ok(Self {
-            max_frame_bytes: max_frame_bytes as u32,
-        })
-    }
-
-    /// Maximum encoded JSON payload size in bytes.
-    pub fn max_frame_bytes(self) -> u32 {
-        self.max_frame_bytes
-    }
-}
-
-impl Default for ServiceConfig {
-    fn default() -> Self {
-        Self {
-            max_frame_bytes: protocol::MAX_FRAME_SIZE,
-        }
-    }
-}
-
 /// Default socket path for the Eidetica service.
 ///
 /// Resolution order:

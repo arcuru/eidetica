@@ -8,8 +8,9 @@ use super::{Backend, MergeSlice};
 use crate::{
     Result,
     backend::{
-        BackendImpl, InstanceMetadata, RecordMutations, RecordPage, RecordRange, RecordView,
-        StagingToken, StoreStateRequest, VerificationStatus,
+        BackendImpl, HistoryCursor, HistoryPage, HistoryPageLimits, InstanceMetadata,
+        RecordMutations, RecordPage, RecordRange, RecordView, StagingToken, StoreStateRequest,
+        VerificationStatus,
     },
     entry::{Entry, ID},
     instance::WriteSource,
@@ -102,6 +103,19 @@ impl Backend for LocalBackend {
 
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
         self.0.store_at(tree, store, snapshot).await
+    }
+
+    async fn store_history_page(
+        &self,
+        tree: &ID,
+        store: &str,
+        snapshot: &Snapshot,
+        after: Option<&HistoryCursor>,
+        limits: HistoryPageLimits,
+    ) -> Result<HistoryPage> {
+        self.0
+            .store_history_page(tree, store, snapshot, after, limits)
+            .await
     }
 
     async fn compute_merge_state(

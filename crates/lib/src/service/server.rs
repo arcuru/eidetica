@@ -27,13 +27,11 @@ use crate::backend::{
 use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
-use crate::service::ServiceConfig;
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingRequest, MAX_FRAME_SIZE,
-    MAX_HANDSHAKE_BYTES, MergeState, Notification, PROTOCOL_VERSION, ServerFrame, ServiceRequest,
-    ServiceResponse, TicketBootstrapOutcome, TicketBootstrapRequest, read_frame_with_config,
-    write_frame_with_config,
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingRequest, MergeState,
+    Notification, PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse,
+    TicketBootstrapOutcome, TicketBootstrapRequest, read_frame, write_frame,
 };
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
 
@@ -77,6 +75,7 @@ struct SessionStaging {
 /// `fire_write_callbacks` dispatch path handles fan-out by walking the
 /// per-tree callback list, no separate fan-out mechanism required.
 struct ConnectionContext {
+    features: Vec<String>,
     conn_id: ConnectionId,
     tx: mpsc::UnboundedSender<ServerFrame>,
     instance: Instance,
@@ -210,7 +209,6 @@ enum ConnectionState {
 /// `instance.backend()` directly rather than keeping a separate
 /// service-layer cache.
 pub struct ServiceServer {
-    config: ServiceConfig,
     instance: Instance,
     socket_path: PathBuf,
     listener: UnixListener,
@@ -246,23 +244,7 @@ impl ServiceServer {
     /// * `instance` - The Instance to serve. The server holds a strong reference.
     /// * `socket_path` - Path for the Unix domain socket.
     pub async fn bind(instance: Instance, socket_path: impl Into<PathBuf>) -> crate::Result<Self> {
-        Self::bind_with_config(instance, socket_path, ServiceConfig::default()).await
-    }
-
-    /// Bind with an explicit daemon frame policy; legacy peers use at most 64 MiB.
-    pub async fn bind_with_config(
-        instance: Instance,
-        socket_path: impl Into<PathBuf>,
-        config: ServiceConfig,
-    ) -> crate::Result<Self> {
-        Self::bind_inner(
-            instance,
-            socket_path.into(),
-            TOKEN_IDLE_TTL,
-            TOKEN_IDLE_TTL,
-            config,
-        )
-        .await
+        Self::bind_inner(instance, socket_path.into(), TOKEN_IDLE_TTL, TOKEN_IDLE_TTL).await
     }
 
     /// Bind with independent staging-token and published-view lifetimes for expiry tests.
@@ -278,7 +260,6 @@ impl ServiceServer {
             socket_path.into(),
             staging_ttl,
             published_view_ttl,
-            ServiceConfig::default(),
         )
         .await
     }
@@ -288,7 +269,6 @@ impl ServiceServer {
         socket_path: PathBuf,
         staging_idle_ttl: Duration,
         published_view_idle_ttl: Duration,
-        config: ServiceConfig,
     ) -> crate::Result<Self> {
         let socket_path = absolute_socket_path(socket_path)?;
         prepare_parent(&socket_path).await?;
@@ -305,7 +285,6 @@ impl ServiceServer {
         };
 
         Ok(Self {
-            config,
             instance,
             socket_path,
             listener,
@@ -347,12 +326,11 @@ impl ServiceServer {
                     match accept_result {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
-                            let config = self.config;
                             let staging_idle_ttl = self.staging_idle_ttl;
                             let published_view_idle_ttl = self.published_view_idle_ttl;
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl, config).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -625,48 +603,45 @@ async fn handle_connection(
     conn_id: ConnectionId,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
-    config: ServiceConfig,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
-    // 1. Bound bootstrap before learning whether this client supports policy.
-    let bootstrap =
-        ServiceConfig::new(u64::from(config.max_frame_bytes().min(MAX_HANDSHAKE_BYTES)))?;
-    let handshake: Handshake = match read_frame_with_config(&mut reader, bootstrap).await? {
+    let raw: Box<serde_json::value::RawValue> = match read_frame(&mut reader).await? {
         Some(h) => h,
-        None => return Ok(()), // Client disconnected before handshake
+        None => return Ok(()),
     };
-
-    if handshake.protocol_version != PROTOCOL_VERSION {
-        // Send error ack and close
-        let ack = HandshakeAck {
-            protocol_version: PROTOCOL_VERSION,
-            max_frame_bytes: None,
-        };
-        write_frame_with_config(&mut writer, &ack, bootstrap).await?;
-        return Err(crate::Error::Io(std::io::Error::new(
+    if !raw.get().starts_with('{') {
+        return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "Protocol version mismatch: client={}, server={}",
-                handshake.protocol_version, PROTOCOL_VERSION
-            ),
-        )));
+            "handshake must be an object",
+        )
+        .into());
     }
-
-    // Old clients ignore extra fields but cannot accept larger frames. Only an
-    // explicit opt-in permits raising the connection's policy above legacy.
-    let config = if handshake.learns_frame_policy {
-        config
-    } else {
-        ServiceConfig::new(u64::from(config.max_frame_bytes().min(MAX_FRAME_SIZE)))?
-    };
-    let ack = HandshakeAck {
-        protocol_version: PROTOCOL_VERSION,
-        max_frame_bytes: handshake
-            .learns_frame_policy
-            .then_some(u64::from(config.max_frame_bytes())),
-    };
-    write_frame_with_config(&mut writer, &ack, bootstrap).await?;
+    let handshake: Handshake = serde_json::from_str(raw.get())?;
+    if handshake.protocol_version != PROTOCOL_VERSION {
+        write_frame(
+            &mut writer,
+            &HandshakeAck {
+                protocol_version: PROTOCOL_VERSION,
+                features: Vec::new(),
+            },
+        )
+        .await?;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Protocol version mismatch",
+        )
+        .into());
+    }
+    let features = crate::service::protocol::acknowledge_features(&handshake.features)?;
+    write_frame(
+        &mut writer,
+        &HandshakeAck {
+            protocol_version: PROTOCOL_VERSION,
+            features: features.clone(),
+        },
+    )
+    .await?;
 
     // 2. Prepare the per-connection writer future.
     //
@@ -701,13 +676,14 @@ async fn handle_connection(
     // the reader too, and aborting a handler must not orphan a writer task.
     let writer_loop = async move {
         while let Some(frame) = frame_rx.recv().await {
-            write_frame_with_config(&mut writer, &frame, config).await?;
+            write_frame(&mut writer, &frame).await?;
         }
         Ok(())
     };
     tokio::pin!(writer_loop);
 
     let ctx = Arc::new(ConnectionContext {
+        features,
         conn_id,
         tx: frame_tx.clone(),
         instance: instance.clone(),
@@ -723,8 +699,7 @@ async fn handle_connection(
     let mut state = ConnectionState::PreAuth;
     let request_loop = async {
         loop {
-            let request: IncomingRequest = match read_frame_with_config(&mut reader, config).await?
-            {
+            let request: IncomingRequest = match read_frame(&mut reader).await? {
                 Some(req) => req,
                 None => break, // Clean EOF
             };
@@ -788,6 +763,36 @@ async fn handle_connection(
 }
 
 /// Dispatch a service request to the appropriate Instance/Backend method.
+/// Reserve the complete response frame around a negotiated history page.
+fn history_page_limits(
+    max_entries: u32,
+    max_encoded_bytes: u32,
+    allow_large_singleton: bool,
+) -> crate::Result<crate::backend::HistoryPageLimits> {
+    use crate::backend::{HistoryPage, MAX_HISTORY_PAGE_ENCODING, MAX_HISTORY_PAGE_ENTRIES};
+    use crate::encoding::json_encoded_len;
+    let limit = (max_encoded_bytes as usize).min(MAX_HISTORY_PAGE_ENCODING);
+    let empty_frame = ServerFrame::Response(Box::new(ServiceResponse::HistoryPage(
+        HistoryPage::default(),
+    )));
+    let too_large = || crate::backend::BackendError::RecordTooLarge {
+        encoded_bytes: limit + 1,
+    };
+    let frame_size = json_encoded_len(&empty_frame, limit)?.ok_or_else(too_large)?;
+    let page_size = json_encoded_len(&HistoryPage::default(), limit)?.ok_or_else(too_large)?;
+    // A singleton may use the backend's hard page cap; that plus the fixed
+    // response tags stays below the immutable frame cap.
+    debug_assert!(
+        MAX_HISTORY_PAGE_ENCODING + (frame_size - page_size)
+            <= crate::service::protocol::MAX_FRAME_SIZE as usize
+    );
+    Ok(crate::backend::HistoryPageLimits {
+        max_entries: (max_entries as usize).min(MAX_HISTORY_PAGE_ENTRIES),
+        max_encoded_bytes: limit - (frame_size - page_size),
+        allow_large_singleton,
+    })
+}
+
 async fn dispatch(
     instance: &Instance,
     state: &mut ConnectionState,
@@ -1339,6 +1344,48 @@ async fn dispatch_database_op(
             let db = Database::open(instance, &root_id).await?;
             let entries = db.get_store_entries(&store, &tips, scope).await?;
             Ok(ServiceResponse::Entries(entries))
+        }
+
+        DatabaseOp::GetStoreHistoryPage {
+            store,
+            tips,
+            scope: _,
+            after,
+            max_entries,
+            max_encoded_bytes,
+            allow_large_singleton,
+        } => {
+            // Old requests keep old semantics: this op exists only once negotiated.
+            if !ctx
+                .features
+                .iter()
+                .any(|f| f == crate::service::protocol::FEATURE_HISTORY_PAGES)
+            {
+                return Ok(ServiceResponse::Unsupported);
+            }
+            let limits =
+                history_page_limits(max_entries, max_encoded_bytes, allow_large_singleton)?;
+            // Same read semantics as GetStoreEntries: the caller-supplied
+            // Snapshot is captured once and bound into every cursor.
+            let db = Database::open(instance, &root_id).await?;
+            let page = db
+                .ops()
+                .store_history_page(
+                    &root_id,
+                    &store,
+                    &crate::Snapshot::from(tips),
+                    after.as_ref(),
+                    limits,
+                )
+                .await;
+            match page {
+                Err(crate::Error::Backend(error))
+                    if matches!(*error, crate::backend::BackendError::HistoryPageUnsupported) =>
+                {
+                    Ok(ServiceResponse::Unsupported)
+                }
+                page => Ok(ServiceResponse::HistoryPage(page?)),
+            }
         }
 
         DatabaseOp::GetStoreTipsUpToEntries { store, up_to } => {
@@ -2217,7 +2264,7 @@ mod tests {
         // Send a version that remains wrong when the protocol is bumped.
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION.saturating_add(1),
-            learns_frame_policy: false,
+            features: Vec::new(),
         };
         write_frame(&mut writer, &handshake).await.unwrap();
 
@@ -2333,7 +2380,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
-                learns_frame_policy: false,
+                features: Vec::new(),
             },
         )
         .await
@@ -2382,7 +2429,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
-                learns_frame_policy: false,
+                features: Vec::new(),
             },
         )
         .await
@@ -2580,5 +2627,60 @@ mod tests {
             matches!(&err, crate::Error::Auth(b) if matches!(**b, AuthError::PermissionDenied { .. })),
             "expected PermissionDenied, got: {err:?}",
         );
+    }
+}
+
+#[cfg(test)]
+mod history_envelope_tests {
+    use super::*;
+    use crate::backend::{BackendImpl, HistoryPageLimits};
+    #[tokio::test]
+    async fn history_response_envelope_exact_boundary() {
+        let backend = crate::backend::database::InMemory::new();
+        let root = crate::Entry::root_builder()
+            .set_subtree_data("s", "\"\\\n")
+            .build()
+            .unwrap();
+        let tree = root.id();
+        backend.put(root).await.unwrap();
+        let child = crate::Entry::builder(tree.clone())
+            .add_parent(tree.clone())
+            .set_subtree_data("s", "next")
+            .add_subtree_parent("s", tree.clone())
+            .set_subtree_height("s", Some(1))
+            .build()
+            .unwrap();
+        let tips = crate::Snapshot::new(vec![child.id()]);
+        backend.put(child).await.unwrap();
+        let page = backend
+            .store_history_page(
+                &tree,
+                "s",
+                &tips,
+                None,
+                HistoryPageLimits {
+                    max_entries: 2,
+                    max_encoded_bytes: 1 << 20,
+                    allow_large_singleton: false,
+                },
+            )
+            .await
+            .unwrap();
+        let frame = ServerFrame::Response(Box::new(ServiceResponse::HistoryPage(page)));
+        let size = serde_json::to_vec(&frame).unwrap().len();
+        for cap in [size - 1, size, size + 1] {
+            let limits = history_page_limits(2, cap as u32, false).unwrap();
+            let page = backend
+                .store_history_page(&tree, "s", &tips, None, limits)
+                .await
+                .unwrap();
+            assert_eq!(page.entries.len(), if cap < size { 1 } else { 2 });
+            let encoded = serde_json::to_vec(&ServerFrame::Response(Box::new(
+                ServiceResponse::HistoryPage(page),
+            )))
+            .unwrap()
+            .len();
+            assert!(encoded <= cap);
+        }
     }
 }

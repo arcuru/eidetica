@@ -29,8 +29,9 @@ use crate::service::client::RemoteConnection;
 use crate::{
     Result,
     backend::{
-        BackendError, BackendImpl, InstanceMetadata, RecordMutations, RecordPage, RecordRange,
-        RecordView, StagingToken, StoreStateRequest, VerificationStatus,
+        BackendError, BackendImpl, HistoryCursor, HistoryPage, HistoryPageLimits, InstanceMetadata,
+        RecordMutations, RecordPage, RecordRange, RecordView, StagingToken, StoreStateRequest,
+        VerificationStatus,
     },
     entry::{Entry, ID},
     instance::WriteSource,
@@ -126,6 +127,17 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
 
     /// Every entry of `store` reachable from `snapshot`.
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>>;
+
+    async fn store_history_page(
+        &self,
+        _tree: &ID,
+        _store: &str,
+        _snapshot: &Snapshot,
+        _after: Option<&HistoryCursor>,
+        _limits: HistoryPageLimits,
+    ) -> Result<HistoryPage> {
+        Err(BackendError::HistoryPageUnsupported.into())
+    }
 
     /// The merge base of `entry_ids` within `store` and the path of entries
     /// from that base to them, resolved together.

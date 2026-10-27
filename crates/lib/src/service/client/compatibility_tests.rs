@@ -545,7 +545,7 @@ async fn v0_client_rejects_nonzero_handshake_ack() {
             &mut stream,
             &HandshakeAck {
                 protocol_version: 1,
-                max_frame_bytes: None,
+                features: Vec::new(),
             },
         )
         .await

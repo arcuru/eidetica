@@ -296,6 +296,26 @@ impl Backend for RemoteBackend {
             .await
     }
 
+    async fn store_history_page(
+        &self,
+        tree: &ID,
+        store: &str,
+        snapshot: &Snapshot,
+        after: Option<&crate::backend::HistoryCursor>,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> Result<crate::backend::HistoryPage> {
+        self.conn
+            .get_store_history_page(
+                tree.clone(),
+                self.identity(),
+                store.to_string(),
+                snapshot.tips().to_vec(),
+                after.cloned(),
+                limits,
+            )
+            .await
+    }
+
     async fn compute_merge_state(
         &self,
         tree: &ID,

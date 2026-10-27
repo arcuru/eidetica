@@ -32,51 +32,38 @@ eidetica daemon --backend postgres --postgres-url "postgresql://user:pass@host/d
 
 The daemon prints its socket path on startup and runs until interrupted (SIGINT/SIGTERM).
 
-### Frame limits
+### Frame limits and history reads
 
-The default is **exactly 64 MiB (67108864 bytes)** per encoded JSON frame,
-excluding the four-byte length prefix.
-To allow larger local responses, configure the daemon only:
+Every encoded JSON frame has a fixed **64 MiB (67108864 bytes)** maximum,
+excluding the four-byte length prefix. There is no size setting or larger-cap
+negotiation. Oversized frames retire the affected connection and fail pending
+calls; reconcile an ambiguous write before explicitly reconnecting or retrying.
+Other connections remain usable. Started writes are never automatically replayed.
 
-```bash
-eidetica daemon --max-frame-bytes 1073741824
-# Equivalent daemon setting: EIDETICA_MAX_FRAME_BYTES=1073741824
-```
+With upgraded clients and daemons, ordinary `get_store_entries` / `store_at`
+reads collect canonical history pages internally, without application knobs.
+The optional `eidetica.history-pages.v1` extension uses preferred 4 MiB complete
+responses, at most 1024 Entries per page. An individually larger fitting Entry
+may use a singleton within the 63 MiB inner-page ceiling and fixed frame cap.
+An Entry too large for that ceiling is an error, not fragmented or skipped.
+A failed page fails the whole call: no successful partial history is returned.
 
-<!-- Code block ignored: Requires async runtime and a running Unix service -->
+Both peers must support the extension for large aggregate histories. Legacy
+peers still support small existing calls; an oversized legacy aggregate fails.
+Explicit Unsupported before any page progress disables the extension once and
+uses the legacy operation. Auth, corruption, resource and connection errors do
+not trigger fallback or restart.
 
-```rust,ignore
-use eidetica::{Instance, service::{ServiceConfig, ServiceServer}};
-
-let config = ServiceConfig::new(1024 * 1024 * 1024)?; // 1 GiB
-let client = Instance::connect("unix:///run/eidetica/service.sock").await?;
-// For a programmatic daemon:
-let server = ServiceServer::bind_with_config(instance, socket_path, config).await?;
-```
-
-Ordinary `Instance::connect` and `RemoteConnection::connect` clients automatically
-learn the daemon's policy on each new connection, with no application setting or
-additional client ceiling. Legacy clients use at most 64 MiB (or the daemon's
-smaller cap); new clients connecting to legacy daemons retain 64 MiB.
-The limit must be positive and fit both the u32 wire prefix and local allocation
-size; zero is not an unlimited setting.
-The version-0 handshake opts into learning the daemon's limit and is bounded to
-1024 encoded bytes before applying it (the daemon also enforces a smaller configured
-cap during bootstrap). Missing legacy fields remain compatible; malformed policies
-fail the connection. The learned cap applies to requests, responses and notifications.
-A limit too small for bootstrap or required metadata prevents connection.
-This trusts only the existing owner-protected local-socket model; it does not
-authenticate a network server.
-An oversized frame or mismatched limit disconnects the affected connection and
-fails pending calls; reconnect explicitly and reconcile any ambiguous write
-before retrying it.
-Other connections remain usable.
-
-A larger frame limit permits larger per-frame allocations; it is not a memory
-quota and does not resize queues or concurrency limits.
-Record chunks remain capped at **63 MiB** and record pages at **4 MiB** by default,
-independent of frame policy.
-Paging remains preferable for large multi-record results.
+The public result is still a complete Vec, requiring O(total history) client
+memory. Native paging has a finite 16 MiB **accounted metadata workspace** per
+operation, 4096 tips and eight nonqueued concurrent page operations; exceeding
+those supported resources fails explicitly. This is not an allocator/RSS quota.
+SQL rescans reachable metadata per page with per-ID indexed lookups, which can
+be substantially slower than a whole-history query. SQL's 120-second operation
+deadline uses native PostgreSQL timeouts and bounded cooperative SQLite steps;
+cleanup may finish the current step or SQLite's existing five-second lock wait.
+It is not a hard deadline on arbitrary OS I/O. Record chunks retain their 63 MiB
+ceiling and record pages their default 4 MiB budget.
 
 ### Optional web dashboard
 

@@ -325,7 +325,7 @@ async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHal
         &mut writer,
         &Handshake {
             protocol_version: PROTOCOL_VERSION,
-            learns_frame_policy: false,
+            features: Vec::new(),
         },
     )
     .await
@@ -3247,4 +3247,144 @@ async fn zero_budget_daemon_keeps_client_history_reads_available() {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn history_pages_capture_frontier_ciphertext_and_reauthorize_every_page() {
+    use eidetica::backend::HistoryPageLimits;
+    let (path, _shutdown, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &path, "history-reader").await;
+    let user = server.login_account("history-reader", None).await.unwrap();
+    let key = user.get_default_key().unwrap();
+    let db = eidetica::Database::open(&server, &root)
+        .await
+        .unwrap()
+        .with_key(user.get_signing_key(&key).unwrap());
+    for n in 0..3 {
+        db.with_transaction(|tx| async move {
+            let mut store = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+            if n == 0 {
+                store.initialize("synthetic-password", Doc::new()).await?;
+            } else {
+                store.open("synthetic-password")?;
+            }
+            store
+                .inner()
+                .await?
+                .set("secret", format!("synthetic-{n}"))
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+    let tips = db.snapshot().await.unwrap();
+    let expected = server
+        .backend()
+        .store_at(&root, "secrets", &tips)
+        .await
+        .unwrap();
+    let conn = remote_conn(&instance);
+    let limits = HistoryPageLimits {
+        max_entries: 1,
+        max_encoded_bytes: 1 << 20,
+        allow_large_singleton: false,
+    };
+    let first = conn
+        .get_store_history_page(
+            root.clone(),
+            identity.clone(),
+            "secrets".into(),
+            tips.tips().to_vec(),
+            None,
+            limits,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.entries, expected[..1]);
+    assert!(first.next.is_some());
+    db.with_transaction(|tx| async move {
+        let mut store = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+        store.open("synthetic-password")?;
+        store
+            .inner()
+            .await?
+            .set("secret", "later-not-in-capture")
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let mut entries = first.entries;
+    let mut after = first.next;
+    while let Some(cursor) = after {
+        let page = conn
+            .get_store_history_page(
+                root.clone(),
+                identity.clone(),
+                "secrets".into(),
+                tips.tips().to_vec(),
+                Some(cursor),
+                limits,
+            )
+            .await
+            .unwrap();
+        entries.extend(page.entries);
+        after = page.next;
+    }
+    assert_eq!(
+        entries, expected,
+        "captured history and ciphertext changed with later tips"
+    );
+    let cursor = conn
+        .get_store_history_page(
+            root.clone(),
+            identity.clone(),
+            "secrets".into(),
+            tips.tips().to_vec(),
+            None,
+            limits,
+        )
+        .await
+        .unwrap()
+        .next
+        .unwrap();
+    // A different unproven acting identity cannot borrow the cursor's authority.
+    let stranger = PrivateKey::generate().public_key();
+    assert!(
+        conn.get_store_history_page(
+            root.clone(),
+            SigKey::from_pubkey(&stranger),
+            "secrets".into(),
+            tips.tips().to_vec(),
+            Some(cursor.clone()),
+            limits
+        )
+        .await
+        .is_err()
+    );
+    let revoke_key = key.clone();
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?.revoke_auth_key(&revoke_key).await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(
+        conn.get_store_history_page(
+            root,
+            identity,
+            "secrets".into(),
+            tips.into_tips(),
+            Some(cursor),
+            limits
+        )
+        .await
+        .is_err(),
+        "captured cursor bypassed fresh Read authorization after revocation"
+    );
+    assert!(
+        conn.get_instance_metadata().await.unwrap().is_some(),
+        "authorization error retired an aligned connection"
+    );
 }

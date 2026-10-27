@@ -51,52 +51,92 @@ use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 /// Updated peers reject unknown operations with [`ServiceResponse::Unsupported`],
 /// fail one call for unknown responses, and ignore unknown optional notification
 /// variants. Known payloads and required nested types remain strict. There is no
-/// operation-capability negotiation or downgrade. Pre-change v0 peers still disconnect on
+/// general downgrade; the history extension is explicitly negotiated. Pre-change v0 peers still disconnect on
 /// unknown variants; keeping v0 does not retroactively make them extensible.
 /// `#[non_exhaustive]` protects Rust source compatibility, not the wire.
 pub const PROTOCOL_VERSION: u32 = 0;
 
-/// Default maximum frame size: exactly 64 MiB. Daemons may configure another limit.
+/// Fixed maximum encoded frame payload: exactly 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
 
-/// Record payload budget, independent of the configured transport frame limit.
+/// Record payload budget, independent of the fixed transport frame limit.
 pub const MAX_RECORD_CHUNK_BYTES: u32 = 63 * 1024 * 1024;
 
 /// Default upper bound for an encoded record page.
 pub const MAX_RECORD_PAGE_BYTES: u32 = 4 * 1024 * 1024;
 
-/// Bootstrap payload bound, before a daemon's frame policy has been learned.
-/// No allocation depends on an advertised limit until this frame is decoded.
-pub const MAX_HANDSHAKE_BYTES: u32 = 1024;
+/// Optional extension: canonical, count- and byte-bounded Store history pages
+/// ([`DatabaseOp::GetStoreHistoryPage`]).
+pub const FEATURE_HISTORY_PAGES: &str = "eidetica.history-pages.v1";
+
+/// Implemented history extension.
+pub const SUPPORTED_FEATURES: &[&str] = &[FEATURE_HISTORY_PAGES];
+
+/// Bounds on an advertised feature list; a larger list is malformed.
+const MAX_FEATURES: usize = 32;
+const MAX_FEATURE_NAME_BYTES: usize = 64;
 
 /// Handshake message sent by the client on connection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `features` is additive and optional: a missing field means a legacy peer
+/// with no extensions, never "latest".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Handshake {
     pub protocol_version: u32,
-    /// Accept the daemon's validated finite frame policy for this connection.
-    /// Missing in legacy clients, which must never receive frames above 64 MiB.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub learns_frame_policy: bool,
+    /// Optional extensions the client understands.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 /// Handshake acknowledgment sent by the server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `features` acknowledges only the intersection of the client's offer and
+/// [`SUPPORTED_FEATURES`]. Missing means none.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HandshakeAck {
     pub protocol_version: u32,
-    /// Present only for clients that opt into learning the daemon's policy.
-    /// Absence means the legacy 64 MiB limit; explicit null is malformed.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_frame_limit"
-    )]
-    pub max_frame_bytes: Option<u64>,
+    /// Negotiated extensions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
-fn deserialize_frame_limit<'de, D: de::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<u64>, D::Error> {
-    u64::deserialize(deserializer).map(Some)
+fn validate_features(features: &[String]) -> crate::Result<()> {
+    if features.len() > MAX_FEATURES
+        || features
+            .iter()
+            .any(|name| name.is_empty() || name.len() > MAX_FEATURE_NAME_BYTES)
+    {
+        return Err(crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Malformed handshake feature list",
+        )));
+    }
+    Ok(())
+}
+
+/// Server side: acknowledge the supported intersection of a client offer.
+/// Unknown names are ignored; a malformed list is refused.
+pub(crate) fn acknowledge_features(offered: &[String]) -> crate::Result<Vec<String>> {
+    validate_features(offered)?;
+    let mut acked: Vec<String> = SUPPORTED_FEATURES
+        .iter()
+        .filter(|name| offered.iter().any(|offer| offer == *name))
+        .map(|name| (*name).to_string())
+        .collect();
+    acked.dedup();
+    Ok(acked)
+}
+
+/// Client side: an acknowledgment may contain only features that were offered.
+pub(crate) fn accept_features(offered: &[&str], acked: &[String]) -> crate::Result<Vec<String>> {
+    validate_features(acked)?;
+    if let Some(name) = acked.iter().find(|name| !offered.contains(&name.as_str())) {
+        return Err(crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Server acknowledged unoffered feature {name}"),
+        )));
+    }
+    Ok(acked.to_vec())
 }
 
 // ===========================================================================
@@ -190,6 +230,18 @@ pub enum DatabaseOp {
         after: Option<Vec<u8>>,
         max_records: u32,
         max_encoded_bytes: u32,
+    },
+    /// One canonical bounded page of `GetStoreEntries` order. Sent only after
+    /// [`FEATURE_HISTORY_PAGES`] is negotiated; otherwise the server answers
+    /// [`ServiceResponse::Unsupported`]. Gate Read.
+    GetStoreHistoryPage {
+        store: String,
+        tips: Vec<ID>,
+        scope: ReadScope,
+        after: Option<crate::backend::HistoryCursor>,
+        max_entries: u32,
+        max_encoded_bytes: u32,
+        allow_large_singleton: bool,
     },
     /// Acquire everything needed to build+sign a transaction locally for the
     /// given stores, with parents drawn from `scope`'s snapshot. Gate Read.
@@ -304,6 +356,7 @@ impl DatabaseOp {
             DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetVerifiedTips
             | DatabaseOp::GetStoreState { .. }
+            | DatabaseOp::GetStoreHistoryPage { .. }
             | DatabaseOp::GetStoreEntries { .. }
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
             | DatabaseOp::ComputeMergeState { .. }
@@ -536,6 +589,8 @@ pub enum ServerFrame {
 /// Response from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceResponse {
+    /// One canonical bounded history page.
+    HistoryPage(crate::backend::HistoryPage),
     /// Single entry
     Entry(Entry),
     /// Multiple entries
@@ -632,6 +687,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "SubmitSignedEntry",
     "GetVerifiedTips",
     "GetStoreState",
+    "GetStoreHistoryPage",
     "GetStoreEntries",
     "GetStoreTipsUpToEntries",
     "ComputeMergeState",
@@ -644,6 +700,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
     "Entry",
+    "HistoryPage",
     "Entries",
     "Ids",
     "Ok",
@@ -783,30 +840,18 @@ impl<'de> Deserialize<'de> for IncomingServerFrame {
     }
 }
 
-/// Write a length-prefixed JSON frame to an async writer.
+/// Write a complete compact-JSON frame, validating before writing any prefix.
 pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     writer: &mut W,
     value: &T,
 ) -> crate::Result<()> {
-    write_frame_with_config(writer, value, super::ServiceConfig::default()).await
-}
-
-/// Write one frame under the endpoint's local policy. Validate the actual JSON
-/// bytes before writing any prefix, including expansion from escaping/envelopes.
-pub async fn write_frame_with_config<W: AsyncWrite + Unpin, T: Serialize>(
-    writer: &mut W,
-    value: &T,
-    config: super::ServiceConfig,
-) -> crate::Result<()> {
-    let payload = serde_json::to_vec(value)?;
-    let max = config.max_frame_bytes();
-    if payload.len() as u64 > u64::from(max) {
-        return Err(crate::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("frame too large: {} bytes (max {max})", payload.len()),
-        )));
-    }
-    // The validated limit fits the wire prefix; never truncate a usize length.
+    let payload =
+        crate::encoding::encode_json(value, MAX_FRAME_SIZE as usize)?.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "frame too large (max 64 MiB)",
+            )
+        })?;
     let len = u32::try_from(payload.len()).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "frame length overflow")
     })?;
@@ -816,21 +861,10 @@ pub async fn write_frame_with_config<W: AsyncWrite + Unpin, T: Serialize>(
     Ok(())
 }
 
-/// Read a length-prefixed JSON frame from an async reader.
-///
-/// Returns `None` only on EOF before any length-prefix bytes are read.
-/// EOF within the length prefix or payload returns an `UnexpectedEof` I/O error.
+/// Read one fixed-cap frame. Only EOF before the first prefix byte is clean.
+/// Reject an over-limit prefix before allocating or reading its body.
 pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
-) -> crate::Result<Option<T>> {
-    read_frame_with_config(reader, super::ServiceConfig::default()).await
-}
-
-/// Read one frame, checking its prefix against local policy before allocating
-/// or reading the payload. EOF semantics match [`read_frame`].
-pub async fn read_frame_with_config<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
-    reader: &mut R,
-    config: super::ServiceConfig,
 ) -> crate::Result<Option<T>> {
     let mut len_buf = [0u8; 4];
     if reader.read(&mut len_buf[..1]).await? == 0 {
@@ -838,87 +872,21 @@ pub async fn read_frame_with_config<R: AsyncRead + Unpin, T: for<'de> Deserializ
     }
     reader.read_exact(&mut len_buf[1..]).await?;
     let len = u32::from_be_bytes(len_buf);
-    let max = config.max_frame_bytes();
-    if len > max {
-        return Err(crate::Error::Io(std::io::Error::new(
+    if len > MAX_FRAME_SIZE {
+        return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("frame too large: {len} bytes (max {max})"),
-        )));
+            "frame too large (max 64 MiB)",
+        )
+        .into());
     }
     let mut payload = vec![0u8; len as usize];
     reader.read_exact(&mut payload).await?;
-    let value = serde_json::from_slice(&payload)?;
-    Ok(Some(value))
+    Ok(Some(serde_json::from_slice(&payload)?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn frame_configuration_preserves_default_and_record_budgets() {
-        use crate::service::ServiceConfig;
-        assert_eq!(ServiceConfig::default().max_frame_bytes(), 64 * 1024 * 1024);
-        assert_eq!(
-            ServiceConfig::new(1024 * 1024 * 1024)
-                .unwrap()
-                .max_frame_bytes(),
-            1024 * 1024 * 1024
-        );
-        for invalid in [0, u32::MAX as u64 + 1, u64::MAX] {
-            assert!(
-                matches!(ServiceConfig::new(invalid), Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidInput)
-            );
-        }
-        #[cfg(target_pointer_width = "32")]
-        assert!(ServiceConfig::new(isize::MAX as u64 + 1).is_err());
-        assert_eq!(MAX_RECORD_CHUNK_BYTES, 63 * 1024 * 1024);
-        assert_eq!(MAX_RECORD_PAGE_BYTES, 4 * 1024 * 1024);
-    }
-
-    #[tokio::test]
-    async fn configured_frames_measure_encoded_bytes_and_reject_prefix_before_payload() {
-        let value = "\n".repeat(16);
-        let encoded = serde_json::to_vec(&value).unwrap();
-        assert!(encoded.len() > value.len());
-        let exact = crate::service::ServiceConfig::new(encoded.len() as u64).unwrap();
-        let small = crate::service::ServiceConfig::new(encoded.len() as u64 - 1).unwrap();
-        let mut bytes = Vec::new();
-        assert!(
-            write_frame_with_config(&mut bytes, &value, small)
-                .await
-                .is_err()
-        );
-        assert!(bytes.is_empty(), "refusal wrote a partial prefix");
-        write_frame_with_config(&mut bytes, &value, exact)
-            .await
-            .unwrap();
-        assert_eq!(
-            u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize,
-            encoded.len()
-        );
-        let decoded: String = read_frame_with_config(&mut bytes.as_slice(), exact)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(decoded, value);
-
-        // A live reader with only the prefix must reject without waiting for
-        // payload bytes (and before allocating according to an attacker length).
-        for length in [small.max_frame_bytes() + 1, u32::MAX] {
-            let (mut reader, mut writer) = tokio::io::duplex(4);
-            writer.write_all(&length.to_be_bytes()).await.unwrap();
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                read_frame_with_config::<_, String>(&mut reader, small),
-            )
-            .await
-            .unwrap();
-            assert!(
-                matches!(result, Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidData)
-            );
-        }
-    }
 
     // Helper to make a simple entry for testing
     fn test_id() -> ID {
@@ -986,7 +954,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&Handshake {
                 protocol_version: 0,
-                learns_frame_policy: false
+                features: Vec::new()
             })
             .unwrap(),
             r#"{"protocol_version":0}"#
@@ -994,7 +962,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&HandshakeAck {
                 protocol_version: 0,
-                max_frame_bytes: None
+                features: Vec::new()
             })
             .unwrap(),
             r#"{"protocol_version":0}"#
@@ -1076,7 +1044,7 @@ mod tests {
     fn test_handshake_serde() {
         let h = Handshake {
             protocol_version: PROTOCOL_VERSION,
-            learns_frame_policy: false,
+            features: Vec::new(),
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: Handshake = serde_json::from_str(&json).unwrap();
@@ -1084,27 +1052,21 @@ mod tests {
     }
 
     #[test]
-    fn test_handshake_ack_serde() {
-        let h = HandshakeAck {
-            protocol_version: PROTOCOL_VERSION,
-            max_frame_bytes: None,
-        };
-        let json = serde_json::to_string(&h).unwrap();
-        let h2: HandshakeAck = serde_json::from_str(&json).unwrap();
-        assert_eq!(h2.protocol_version, PROTOCOL_VERSION);
-        #[derive(Deserialize)]
-        struct LegacyAck {
-            protocol_version: u32,
-        }
-        let extended = HandshakeAck {
-            protocol_version: 0,
-            max_frame_bytes: Some(1024 * 1024 * 1024),
-        };
-        let old: LegacyAck =
-            serde_json::from_str(&serde_json::to_string(&extended).unwrap()).unwrap();
-        assert_eq!(old.protocol_version, 0);
+    fn handshake_history_is_additive() {
         let legacy: HandshakeAck = serde_json::from_str(r#"{"protocol_version":0}"#).unwrap();
-        assert_eq!(legacy.max_frame_bytes, None);
+        assert!(legacy.features.is_empty());
+        let features =
+            acknowledge_features(&[FEATURE_HISTORY_PAGES.into(), "future".into()]).unwrap();
+        assert_eq!(features, [FEATURE_HISTORY_PAGES]);
+        assert!(accept_features(&[], &features).is_err());
+        assert_eq!(
+            serde_json::to_string(&Handshake {
+                protocol_version: 0,
+                features: vec![]
+            })
+            .unwrap(),
+            r#"{"protocol_version":0}"#
+        );
     }
 
     #[test]

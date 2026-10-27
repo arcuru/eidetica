@@ -35,25 +35,68 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 ```text
 ┌──────────────────┬──────────────────────┐
 │ Length (4 bytes) │ JSON payload         │
-│ big-endian u32   │ (64 MiB default)     │
+│ big-endian u32   │ (64 MiB maximum)     │
 └──────────────────┴──────────────────────┘
 ```
 
-Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. The default maximum frame size is exactly 64 MiB (`MAX_FRAME_SIZE`). `ServiceConfig` supplies a validated positive daemon limit through `ServiceServer::bind_with_config`. Ordinary `Instance::connect` / `RemoteConnection::connect` clients learn it automatically for each new connection. Inbound prefixes are checked before payload allocation; outbound checks count actual encoded JSON bytes before writing a prefix. Frames exceeding local policy retire the affected connection. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF (before any length-prefix byte) and an `UnexpectedEof` I/O error when the stream ends mid-prefix or mid-payload.
+Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. The maximum is fixed at exactly 64 MiB (`MAX_FRAME_SIZE`), including JSON tags, escaping and punctuation but excluding the prefix. Inbound prefixes are checked before allocation. Outbound capped serialization stops before producing an oversized payload and writes no prefix on refusal. An invalid frame retires the affected connection and all pending calls. `read_frame` returns `None` only on EOF before any prefix byte; a partial prefix or body is an error.
 
-`PROTOCOL_VERSION` remains `0`, an unstable protocol. Version mismatches fail the handshake. A new client sends `{"protocol_version":0,"learns_frame_policy":true}`; a new server acknowledges with `{"protocol_version":0,"max_frame_bytes":N}`. The bootstrap payload is bounded to 1024 bytes before allocation (and to any smaller daemon limit). The client accepts only a positive integer that fits the u32 prefix and local allocation size, validated through `ServiceConfig`; explicit null, invalid types and overflow fail. Advertising a large maximum does not itself allocate that amount. There is no hidden client ceiling or general capability framework. Policy is connection-local and reacquired on reconnect, never inherited or used to replay uncertain writes.
-
-Legacy clients omit `learns_frame_policy`, so the server omits `max_frame_bytes` and uses `min(daemon limit, 64 MiB)` on that connection. Legacy servers omit the advertised limit, leaving new clients at 64 MiB. Old serde readers ignore the optional fields; old wire fixtures still decode. A smaller daemon limit remains enforced, including during bootstrap. This relies on the existing owner-protected local socket, not authentication of an untrusted network server.
+`PROTOCOL_VERSION` remains `0`. Version mismatches and malformed known handshake fields fail. The optional `features` list is bounded to 32 names of at most 64 bytes; missing means none. The server acknowledges only the supported intersection and clients reject unoffered acknowledgments. Only `eidetica.history-pages.v1` is offered here. Legacy serde peers ignore the added field. No maximum frame size is advertised or learned; old larger-policy advertisements confer no authority. This remains the owner-protected local-socket trust model, not network-server authentication.
 
 Updated service peers tolerate additions at these named operation extension points:
 
 - An unknown top-level request operation or nested `DatabaseOp` receives `{"Response":"Unsupported"}`. The server performs no operation and does not change login or session-key state. A database envelope must still have a valid `root_id` and `identity`.
-- An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. There is no retry or execution fallback.
+- An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. There is no generic retry or execution fallback. The negotiated history collector has the narrow pre-progress Unsupported fallback described below.
 - An unknown optional variant inside `Notification` is ignored without consuming a response slot or invoking callbacks. Known notifications retain their behavior.
 
-These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix, operation wire shapes and 64 MiB daemon default are unchanged.
+These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix, operation wire shapes and fixed 64 MiB cap are unchanged.
 
-This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no silent operation downgrade, operation-capability advertisement, or legacy execution fallback. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
+This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no generic silent operation downgrade. The optional history extension is sent only after acknowledgment, including when talking to pre-tolerance v0 peers. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
+
+### Bounded raw Store history
+
+`GetStoreHistoryPage` is a normal authenticated Read RPC with one `HistoryPage`
+response; it introduces no response stream or new FIFO slot kind. Every page
+passes the existing acting-key and per-tree Read gates. The SDK freezes root,
+identity, Store, read posture and exact tips throughout collection, validates
+strict `(Store height, ID::Ord)` order, duplicates and exclusive cursor progress,
+and returns its Vec only after the terminal page. Cancellation/EOF/error discards
+the partial Vec. Only explicit Unsupported before a successful page permits a
+one-time legacy fallback; no other failure permits fallback, replay or reconnect.
+Custom backends opt out by default rather than slicing a whole `store_at` Vec.
+
+The cursor binds tree/Store/Snapshot/version and the last key, not identity or
+authority. Fresh authorization is essential. Verified ancestor-closed frontiers
+are stable while later tips arrive. An explicit incomplete unverified frontier
+may gain missing ancestors between RPCs; no long-lived snapshot lease or stronger
+cross-page repeatable-read claim is made. Encrypted Entry data stays opaque.
+
+Preferred complete responses are 4 MiB with at most 1024 Entries. The exact outer
+Response wrapper is reserved before applying the inner budget. A fitting large
+singleton may use the unchanged 63 MiB hard inner-page ceiling; an oversized
+immutable Entry fails explicitly without changing its identity or signature.
+
+Each native operation has a 16 MiB conservative metadata accounting ceiling,
+4096 tips and one of eight nonqueued permits. Visited IDs/queue/TopK are charged
+before container growth, including owned SQL IDs, container slack, argument copies
+and the bounded SQLx row channel. This is not exact allocator/RSS accounting.
+SQL uses the existing schema3 indexes, one captured read transaction per page,
+separate start/final membership predicates and traversal through retained missing
+intermediates as legacy SQL does. InMemory keeps its body-based membership rule.
+No recursive UNION, history-wide temporary operator or whole-body Vec is used
+by native history paging. Selected bodies are individually raw-size guarded,
+decoded and ID-checked. PostgreSQL sets transaction-local 64kB work_mem, disables
+bitmap scans and shrinks a nonzero statement_timeout before native work. SQLite
+uses indexed bounded streams and its existing 5000ms busy timeout. Cancellation
+uses ordinary driver drain/rollback and keeps pool ownership until safe reuse;
+it never closes an in-memory database to simulate cancellation. The 120-second
+operation deadline is not an exact-instant native interrupt or OS-I/O bound.
+
+Each page rescans metadata; SQL per-ID round trips can be costly. Reachable
+metadata that does not fit the supported workspace fails explicitly, even if
+its Entries would fit the wire. Client collection still uses O(total history)
+memory; queue/RSS/cache amplification and other large aggregate operations are
+not repaired by this transport change.
 
 ### Connection Lifecycle
 
@@ -197,7 +240,7 @@ Operations deliberately **not** exposed over the wire — `update_verification_s
 
 `DatabaseOp::required_permission() -> Permission` returns `Write(0)` for `SubmitSignedEntry` (advisory only — the per-tree gate is skipped for submit) and for the Store-state staging operations, `Admin(0)` for `SetInstanceMetadata` (advisory — gated against `_databases` instead of `root_id`), and `Read` for every other variant. The match is exhaustive, so a new operation cannot inherit `Read` by falling through.
 
-Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The record chunk budget remains 63 MiB and the default page budget remains 4 MiB, independent of configured frame limits. Multi-record state is paged or chunked and a single record that cannot fit the record budget is refused with `RecordTooLarge`. A smaller configured frame limit can still disconnect a connection carrying an otherwise valid chunk or page.
+Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The record chunk budget remains 63 MiB and the default page budget remains 4 MiB, independent of history transfer. Multi-record state is paged or chunked and a single record that cannot fit the record budget is refused with `RecordTooLarge`.
 
 ### ServiceResponse
 

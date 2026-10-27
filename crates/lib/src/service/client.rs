@@ -36,16 +36,15 @@ use crate::backend::{
 };
 use crate::entry::{Entry, ID};
 use crate::instance::WeakInstance;
-use crate::service::ServiceConfig;
 use crate::service::error::service_error_to_eidetica_error;
-use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingServerFrame,
-    MAX_HANDSHAKE_BYTES, MergeState, Notification, PROTOCOL_VERSION, ReadScope, ServiceRequest,
-    ServiceResponse, TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext,
-    WireCrdtValue, read_frame_with_config, write_frame_with_config,
-};
 #[cfg(test)]
-use crate::service::protocol::{ServerFrame, read_frame, write_frame};
+use crate::service::protocol::ServerFrame;
+use crate::service::protocol::{
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingServerFrame, MergeState,
+    Notification, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse,
+    TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext, WireCrdtValue, read_frame,
+    write_frame,
+};
 use crate::snapshot::Snapshot;
 
 /// How long an `Idle` per-tree subscription is kept warm before the
@@ -203,7 +202,8 @@ enum SubRole {
 
 /// Internal state for a remote connection, wrapped in Arc for Clone.
 struct RemoteConnectionInner {
-    config: ServiceConfig,
+    features: Vec<String>,
+    history_disabled: AtomicBool,
     /// A duplicate descriptor allows synchronous shutdown of both directions
     /// even while a frame write holds the async writer lock.
     shutdown_socket: std::os::unix::net::UnixStream,
@@ -519,8 +519,8 @@ impl std::fmt::Debug for RemoteConnection {
 impl RemoteConnection {
     /// Connect to a service server at the given socket path.
     ///
-    /// Learns the daemon's finite frame policy during a bounded handshake;
-    /// legacy daemons retain the 64 MiB default. Started writes are never replayed.
+    /// Negotiates the history extension; all frames remain fixed at 64 MiB.
+    /// Started writes are never replayed.
     /// Performs the protocol handshake, then spawns a background reader
     /// task that demuxes [`ServerFrame`](crate::service::protocol::ServerFrame)s:
     /// `Response` frames pop the next pending oneshot in FIFO order,
@@ -533,24 +533,23 @@ impl RemoteConnection {
         let stream = UnixStream::from_std(shutdown_socket.try_clone()?)?;
         let (mut reader, mut writer) = stream.into_split();
 
-        // Bootstrap is bounded independently of any advertised larger policy.
-        let bootstrap = ServiceConfig::new(u64::from(MAX_HANDSHAKE_BYTES))?;
         // Send handshake
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION,
-            learns_frame_policy: true,
+            features: crate::service::protocol::SUPPORTED_FEATURES
+                .iter()
+                .map(|f| (*f).to_string())
+                .collect(),
         };
-        write_frame_with_config(&mut writer, &handshake, bootstrap).await?;
+        write_frame(&mut writer, &handshake).await?;
 
         // Read ack
-        let raw_ack: Box<RawValue> = read_frame_with_config(&mut reader, bootstrap)
-            .await?
-            .ok_or_else(|| {
-                crate::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionAborted,
-                    "Server closed connection during handshake",
-                ))
-            })?;
+        let raw_ack: Box<RawValue> = read_frame(&mut reader).await?.ok_or_else(|| {
+            crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "Server closed connection during handshake",
+            ))
+        })?;
 
         if !raw_ack.get().starts_with('{') {
             return Err(std::io::Error::new(
@@ -571,13 +570,13 @@ impl RemoteConnection {
             )));
         }
 
-        // Each connection learns afresh. Legacy daemons omit the field.
-        let config = match ack.max_frame_bytes {
-            Some(bytes) => ServiceConfig::new(bytes)?,
-            None => ServiceConfig::default(),
-        };
+        let features = crate::service::protocol::accept_features(
+            crate::service::protocol::SUPPORTED_FEATURES,
+            &ack.features,
+        )?;
         let inner = Arc::new(RemoteConnectionInner {
-            config,
+            features,
+            history_disabled: AtomicBool::new(false),
             shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
@@ -671,12 +670,7 @@ impl RemoteConnection {
             if self.inner.closed.load(Ordering::Acquire) {
                 return Err(connection_aborted());
             }
-            write_frame_with_config(
-                frame.writer.as_mut().ok_or_else(connection_aborted)?,
-                &req,
-                self.inner.config,
-            )
-            .await?;
+            write_frame(frame.writer.as_mut().ok_or_else(connection_aborted)?, &req).await?;
             frame.complete = true;
         }
         rx.await.map_err(|_| connection_aborted())
@@ -713,6 +707,29 @@ impl RemoteConnection {
             },
         )))
         .await
+    }
+
+    /// Optional page extensions must inspect Unsupported themselves; the core
+    /// request helper converts it to I/O before a feature can disable itself.
+    async fn optional_page_request(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        op: DatabaseOp,
+    ) -> crate::Result<ServiceResponse> {
+        match self
+            .request(ServiceRequest::AuthenticatedDb(Box::new(
+                AuthenticatedDbRequest {
+                    root_id,
+                    identity,
+                    op,
+                },
+            )))
+            .await?
+        {
+            ServiceResponse::Error(error) => Err(service_error_to_eidetica_error(error)),
+            response => Ok(response),
+        }
     }
 
     /// Authenticate this connection as `username` by completing the
@@ -1257,10 +1274,88 @@ impl RemoteConnection {
         }
     }
 
-    /// Fetch ordered, verified, opaque store entries reachable from `tips`.
-    ///
-    /// Universal primitive — works for encrypted stores (client decrypts
-    /// locally) as well as unencrypted ones.
+    /// Whether the history extension was negotiated and has not opted out.
+    pub fn has_feature(&self, feature: &str) -> bool {
+        feature == crate::service::protocol::FEATURE_HISTORY_PAGES
+            && !self.inner.history_disabled.load(Ordering::Acquire)
+            && self.inner.features.iter().any(|name| name == feature)
+    }
+
+    /// Fetch one bounded canonical history page. Missing support is explicit;
+    /// this helper never collects and slices a whole legacy history response.
+    pub async fn get_store_history_page(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        tips: Vec<ID>,
+        after: Option<crate::backend::HistoryCursor>,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> crate::Result<crate::backend::HistoryPage> {
+        self.history_page_scoped(
+            root_id,
+            identity,
+            store,
+            tips,
+            ReadScope::Verified,
+            after,
+            limits,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn history_page_scoped(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        tips: Vec<ID>,
+        scope: ReadScope,
+        after: Option<crate::backend::HistoryCursor>,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> crate::Result<crate::backend::HistoryPage> {
+        use crate::backend::{BackendError, MAX_HISTORY_PAGE_ENTRIES};
+        if !self.has_feature(crate::service::protocol::FEATURE_HISTORY_PAGES) {
+            return Err(BackendError::HistoryPageUnsupported.into());
+        }
+        let initial = after.is_none();
+        let max_entries = limits.max_entries.clamp(1, MAX_HISTORY_PAGE_ENTRIES);
+        let response = self
+            .optional_page_request(
+                root_id,
+                identity,
+                DatabaseOp::GetStoreHistoryPage {
+                    store,
+                    tips,
+                    scope,
+                    after,
+                    max_entries: max_entries as u32,
+                    max_encoded_bytes: u32::try_from(limits.max_encoded_bytes).unwrap_or(u32::MAX),
+                    allow_large_singleton: limits.allow_large_singleton,
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::HistoryPage(page)
+                if page.entries.len() <= max_entries
+                    && !(page.entries.is_empty() && page.next.is_some()) =>
+            {
+                Ok(page)
+            }
+            ServiceResponse::Unsupported => {
+                if initial {
+                    self.inner.history_disabled.store(true, Ordering::Release);
+                }
+                Err(BackendError::HistoryPageUnsupported.into())
+            }
+            other => Err(unexpected_response("bounded HistoryPage", &other)),
+        }
+    }
+
+    /// Fetch complete opaque Store history at exactly the supplied frontier.
+    /// Negotiated peers transfer bounded pages internally. The returned Vec is
+    /// still O(total history); no partial result, reconnect or replay is used.
     pub async fn get_store_entries(
         &self,
         root_id: ID,
@@ -1269,14 +1364,60 @@ impl RemoteConnection {
         tips: Vec<ID>,
         scope: ReadScope,
     ) -> crate::Result<Vec<Entry>> {
-        let resp = self
+        if self.has_feature(crate::service::protocol::FEATURE_HISTORY_PAGES) {
+            use crate::backend::{
+                BackendError, HistoryPageLimits, MAX_HISTORY_PAGE_ENTRIES,
+                history_page::{HistoryQuery, validate_page},
+            };
+            let snapshot = Snapshot::from(tips.clone());
+            let mut after = None;
+            let mut entries = Vec::new();
+            let mut previous = None;
+            let mut progressed = false;
+            loop {
+                let query = HistoryQuery::new(&root_id, &store, &snapshot, after.as_ref())?;
+                let page = self
+                    .history_page_scoped(
+                        root_id.clone(),
+                        identity.clone(),
+                        store.clone(),
+                        tips.clone(),
+                        scope,
+                        after.clone(),
+                        HistoryPageLimits {
+                            max_entries: MAX_HISTORY_PAGE_ENTRIES,
+                            max_encoded_bytes: crate::service::protocol::MAX_RECORD_PAGE_BYTES
+                                as usize,
+                            allow_large_singleton: true,
+                        },
+                    )
+                    .await;
+                let page = match page {
+                    Err(crate::Error::Backend(error))
+                        if !progressed
+                            && matches!(*error, BackendError::HistoryPageUnsupported) =>
+                    {
+                        break;
+                    }
+                    page => page?,
+                };
+                validate_page(&query, &page, &mut previous)?;
+                progressed = true;
+                entries.extend(page.entries);
+                match page.next {
+                    Some(next) => after = Some(next),
+                    None => return Ok(entries),
+                }
+            }
+        }
+        let response = self
             .db_request(
                 root_id,
                 identity,
                 DatabaseOp::GetStoreEntries { store, tips, scope },
             )
             .await?;
-        match resp {
+        match response {
             ServiceResponse::Entries(entries) => Ok(entries),
             other => Err(unexpected_response("Entries", &other)),
         }
@@ -1560,7 +1701,7 @@ fn connection_aborted() -> crate::Error {
 
 /// Background task driving the read half of the socket.
 ///
-/// Loops on [`read_frame_with_config`] and demuxes by [`IncomingServerFrame`] variant:
+/// Loops on [`read_frame`] and demuxes by [`IncomingServerFrame`] variant:
 ///
 /// - `Response(r)`: pop the front of the pending FIFO and resolve its
 ///   oneshot. If the queue is empty something has gone badly wrong
@@ -1583,7 +1724,7 @@ fn connection_aborted() -> crate::Error {
 async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionInner>) {
     loop {
         let frame_result: crate::Result<Option<IncomingServerFrame>> =
-            read_frame_with_config(&mut reader, inner.config).await;
+            read_frame(&mut reader).await;
         let frame = match frame_result {
             Ok(Some(f)) => f,
             Ok(None) => break, // Clean EOF
@@ -1911,6 +2052,8 @@ mod compatibility_tests;
 mod frame_limit_tests;
 #[cfg(test)]
 mod handshake_tests;
+#[cfg(test)]
+mod history_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1919,11 +2062,10 @@ mod tests {
 
     /// Exercise the real connect/handshake/background-reader path, not a mock FIFO.
     pub(super) async fn connect_peer() -> (RemoteConnection, UnixStream) {
-        connect_peer_with_config(ServiceConfig::default()).await
+        connect_peer_features(Vec::new()).await
     }
-
-    pub(super) async fn connect_peer_with_config(
-        config: ServiceConfig,
+    pub(super) async fn connect_peer_features(
+        features: Vec<String>,
     ) -> (RemoteConnection, UnixStream) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peer.sock");
@@ -1936,7 +2078,7 @@ mod tests {
                 &mut stream,
                 &HandshakeAck {
                     protocol_version: 0,
-                    max_frame_bytes: Some(u64::from(config.max_frame_bytes())),
+                    features,
                 },
             )
             .await
@@ -1973,7 +2115,8 @@ mod tests {
         let client_side = UnixStream::from_std(shutdown_socket.try_clone().unwrap()).unwrap();
         let (_reader, writer) = client_side.into_split();
         let inner = Arc::new(RemoteConnectionInner {
-            config: ServiceConfig::default(),
+            features: Vec::new(),
+            history_disabled: AtomicBool::new(false),
             shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),

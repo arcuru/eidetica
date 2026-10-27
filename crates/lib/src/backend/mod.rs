@@ -8,6 +8,13 @@
 //!
 //! Instance wraps BackendImpl in a `Backend` struct that provides a layer for future development.
 
+pub(crate) mod history_page;
+mod record_page;
+pub use history_page::{
+    HistoryCursor, HistoryPage, HistoryPageLimits, MAX_HISTORY_PAGE_ENCODING,
+    MAX_HISTORY_PAGE_ENTRIES,
+};
+
 use std::{any::Any, collections::BTreeMap};
 
 use async_trait::async_trait;
@@ -935,6 +942,19 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `store` - The name of the store to retrieve.
     /// * `snapshot` - The store snapshot defining the state to read from.
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>>;
+
+    /// Read a native bounded canonical page without collecting whole history.
+    /// Custom backends explicitly opt in; the default is Unsupported.
+    async fn store_history_page(
+        &self,
+        _tree: &ID,
+        _store: &str,
+        _snapshot: &Snapshot,
+        _after: Option<&HistoryCursor>,
+        _limits: HistoryPageLimits,
+    ) -> Result<HistoryPage> {
+        Err(BackendError::HistoryPageUnsupported.into())
+    }
 
     /// Get the store parent IDs for a specific entry and store, sorted by height then ID.
     ///

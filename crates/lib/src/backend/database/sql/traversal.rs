@@ -721,6 +721,265 @@ pub async fn store_at(
     Ok(entries)
 }
 
+/// Native bounded metadata walk. Legacy `store_at` retains its historical SQL
+/// predicates; starts require tree membership, but parent edges can traverse
+/// missing/foreign intermediate metadata. No output cursor prunes that walk.
+pub async fn store_history_page(
+    backend: &SqlxBackend,
+    query: &crate::backend::history_page::HistoryQuery<'_>,
+    limits: &crate::backend::HistoryPageLimits,
+) -> Result<crate::backend::HistoryPage> {
+    use crate::backend::history_page::{MAX_HISTORY_QUERY_DURATION, resource};
+    let deadline = tokio::time::Instant::now() + MAX_HISTORY_QUERY_DURATION;
+    tokio::time::timeout_at(
+        deadline,
+        history_page_until(
+            backend,
+            query,
+            limits,
+            deadline,
+            crate::backend::history_page::Workspace::new(),
+        ),
+    )
+    .await
+    .map_err(|_| {
+        resource(
+            "history query seconds",
+            MAX_HISTORY_QUERY_DURATION.as_secs() as usize,
+        )
+    })?
+}
+
+// Guard raw text in SQL before it can enter SQLx's finite row channel. IDs use
+// Cid<64>, canonically displayed as base32; 256 covers all supported fields.
+const HISTORY_ID_TEXT_BYTES: usize = 256;
+// SQLx SQLite's default row channel holds 50 rows. Include the current row,
+// argument/string/row envelopes and copies, rather than counting only CID bytes.
+const HISTORY_DRIVER_SLACK: usize = 64 * (HISTORY_ID_TEXT_BYTES + 4096);
+const HISTORY_START: &str = "SELECT st.height FROM entries e
+    JOIN subtrees st ON st.entry_id = e.id AND st.store_name = $2
+    WHERE e.id = $1 AND e.tree_id = $3";
+const HISTORY_MEMBER: &str = "SELECT st.height FROM entries e
+    JOIN subtrees st ON st.entry_id = e.id AND st.store_name = $2 WHERE e.id = $1";
+const HISTORY_PARENTS_SQLITE: &str = "SELECT
+    CASE WHEN octet_length(parent_id) <= $3 THEN parent_id ELSE NULL END,
+    CAST(octet_length(parent_id) AS BIGINT)
+    FROM store_parents INDEXED BY idx_store_parents_child
+    WHERE store_name = $1 AND child_id = $2 LIMIT $4";
+const HISTORY_PARENTS_POSTGRES: &str = "SELECT
+    CASE WHEN octet_length(parent_id) <= $3 THEN parent_id ELSE NULL END,
+    CAST(octet_length(parent_id) AS BIGINT)
+    FROM store_parents WHERE store_name = $1 AND child_id = $2 LIMIT $4";
+
+fn history_sql_error(error: sqlx::Error) -> crate::Error {
+    // Never turn arbitrary storage/corruption/auth errors into resource failure.
+    if error.as_database_error().is_some_and(|e| {
+        e.code().as_deref() == Some("57014") && e.message().contains("statement timeout")
+    }) {
+        return crate::backend::history_page::resource("history native statement deadline", 120);
+    }
+    BackendError::SqlxError {
+        reason: format!("Bounded history SQL: {error}"),
+        source: Some(error),
+    }
+    .into()
+}
+
+async fn history_statement_deadline(
+    connection: &mut sqlx::AnyConnection,
+    kind: super::DbKind,
+    deadline: tokio::time::Instant,
+) -> Result<()> {
+    let remaining = deadline
+        .checked_duration_since(tokio::time::Instant::now())
+        .filter(|time| time.as_millis() >= 1)
+        .ok_or_else(|| crate::backend::history_page::resource("history query seconds", 120))?;
+    if kind == super::DbKind::Postgres {
+        // A stable parameterized statement, never a unique SQL string per ID.
+        // PostgreSQL's zero DISABLES timeout, so expiry must refuse, not bind 0.
+        sqlx::query("SELECT set_config('statement_timeout', $1, true)")
+            .bind(format!("{}ms", remaining.as_millis()))
+            .execute(connection)
+            .await
+            .map_err(history_sql_error)?;
+    }
+    Ok(())
+}
+
+async fn history_page_until(
+    backend: &SqlxBackend,
+    query: &crate::backend::history_page::HistoryQuery<'_>,
+    limits: &crate::backend::HistoryPageLimits,
+    deadline: tokio::time::Instant,
+    mut workspace: crate::backend::history_page::Workspace,
+) -> Result<crate::backend::HistoryPage> {
+    use crate::backend::history_page::{
+        HistoryPageBuilder, MAX_ENTRY_RAW_BYTES, MAX_HISTORY_WORKSPACE_BYTES, TopK, Visits,
+        resource,
+    };
+    use futures_util::TryStreamExt;
+    let mut page = HistoryPageBuilder::new(query, limits)?;
+    // Charge argument copies before binding; store names are caller-controlled.
+    let arguments = query
+        .store
+        .len()
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(HISTORY_DRIVER_SLACK))
+        .ok_or_else(|| resource("history metadata workspace", MAX_HISTORY_WORKSPACE_BYTES))?;
+    workspace.charge(arguments)?;
+    let mut top = TopK::new(query, limits, &mut workspace)?;
+    let max_ids = (workspace.limit() - workspace.used) / Visits::<ID>::COST;
+    let mut visits = Visits::<ID>::new();
+    if query.tips.is_empty() {
+        return Ok(page.finish());
+    }
+    let mut tx = if backend.kind == super::DbKind::Postgres {
+        backend
+            .pool()
+            .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .await
+    } else {
+        backend.pool().begin().await
+    }
+    .map_err(history_sql_error)?;
+    history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+    if backend.kind == super::DbKind::Postgres {
+        sqlx::query("SET LOCAL work_mem = '64kB'")
+            .execute(&mut *tx)
+            .await
+            .map_err(history_sql_error)?;
+        sqlx::query("SET LOCAL enable_bitmapscan = off")
+            .execute(&mut *tx)
+            .await
+            .map_err(history_sql_error)?;
+    }
+    for tip in query.tips {
+        history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+        let member: Option<(i64,)> = sqlx::query_as(HISTORY_START)
+            .bind(tip.to_string())
+            .bind(query.store)
+            .bind(query.tree.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(history_sql_error)?;
+        if member.is_some() {
+            visits.insert(tip.clone(), &mut workspace)?;
+        }
+    }
+    #[cfg(test)]
+    pause_history_metadata(query.tree).await;
+    while let Some(id) = visits.queue.pop_front() {
+        history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+        let member: Option<(i64,)> = sqlx::query_as(HISTORY_MEMBER)
+            .bind(id.to_string())
+            .bind(query.store)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(history_sql_error)?;
+        if let Some((height,)) = member {
+            top.offer(history_height(height)?, &id);
+        }
+        history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+        let parents = if backend.kind == super::DbKind::Sqlite {
+            HISTORY_PARENTS_SQLITE
+        } else {
+            HISTORY_PARENTS_POSTGRES
+        };
+        // V+1 is based on TOTAL distinct-ID capacity, not remaining slots:
+        // already-seen shared parents can fill a row set legitimately.
+        let mut rows = sqlx::query_as::<_, (Option<String>, Option<i64>)>(parents)
+            .bind(query.store)
+            .bind(id.to_string())
+            .bind(HISTORY_ID_TEXT_BYTES as i64)
+            .bind((max_ids + 1) as i64)
+            .fetch(&mut *tx);
+        let mut count = 0;
+        while let Some((text, bytes)) = rows.try_next().await.map_err(history_sql_error)? {
+            count += 1;
+            if count > max_ids {
+                return Err(resource("history parent IDs", max_ids));
+            }
+            let text = text
+                .filter(|_| bytes.is_some_and(|n| n > 0 && n <= HISTORY_ID_TEXT_BYTES as i64))
+                .ok_or_else(|| BackendError::StateInconsistency {
+                    reason: "NULL, empty or oversized history parent ID".into(),
+                })?;
+            let parent = ID::parse(&text)?;
+            visits.insert(parent, &mut workspace)?;
+        }
+    }
+    let (selected, more) = top.finish()?;
+    // Bodies are immutable and individually guarded. Holding this transaction
+    // only for this page also prevents metadata/body selection straddling writes.
+    for (index, (height, id)) in selected.iter().enumerate() {
+        if page.is_full() {
+            break;
+        }
+        history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+        let (body, raw_size): (Option<Vec<u8>>, i64) = sqlx::query_as(
+            "SELECT CASE WHEN length(entry_cbor) <= $2 THEN entry_cbor ELSE NULL END,
+             CAST(length(entry_cbor) AS BIGINT) FROM entries WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .bind(MAX_ENTRY_RAW_BYTES as i64)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(history_sql_error)?
+        .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?;
+        if raw_size > MAX_ENTRY_RAW_BYTES as i64 {
+            page.raw_too_large(id)?;
+            break;
+        }
+        let body = body.ok_or_else(|| BackendError::StateInconsistency {
+            reason: "Stored history Entry is NULL".into(),
+        })?;
+        let entry: Entry =
+            serde_ipld_dagcbor::from_slice(&body).map_err(|e| BackendError::SqlxError {
+                reason: format!("CBOR deserialization failed: {e}"),
+                source: None,
+            })?;
+        drop(body);
+        if entry.id_ref() != id || entry.subtree_height(query.store).unwrap_or(0) != *height {
+            return Err(BackendError::EntryValidationFailed {
+                entry_id: id.clone(),
+                reason: "Stored history Entry does not match its ID/Store height".into(),
+            }
+            .into());
+        }
+        if !page.push(*height, &entry, more || index + 1 < selected.len())? {
+            break;
+        }
+    }
+    tx.commit().await.map_err(history_sql_error)?;
+    Ok(page.finish())
+}
+
+fn history_height(height: i64) -> Result<u64> {
+    u64::try_from(height).map_err(|_| {
+        BackendError::SqlxError {
+            reason: format!("Negative Store height {height}"),
+            source: None,
+        }
+        .into()
+    })
+}
+
+#[cfg(test)]
+static HISTORY_PAUSE: std::sync::OnceLock<std::sync::Mutex<Option<(ID, SnapshotPause)>>> =
+    std::sync::OnceLock::new();
+#[cfg(test)]
+async fn pause_history_metadata(tree: &ID) {
+    let pause = HISTORY_PAUSE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .take_if(|(id, _)| id == tree);
+    if let Some((_, (entered, resume))) = pause {
+        let _ = entered.send(());
+        let _ = resume.await;
+    }
+}
+
 /// Get parents of an entry in a store, sorted by height then ID.
 ///
 /// Uses a single query joining store_parents with subtrees to get heights efficiently.
@@ -967,3 +1226,6 @@ mod atomic_tips_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod history_tests;

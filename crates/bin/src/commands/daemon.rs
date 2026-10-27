@@ -30,7 +30,6 @@ use crate::cli::{BackendConfig, DaemonArgs, DaemonInitArgs};
 /// [`InstanceError::NotInitialized`]).
 pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
-    let service_config = eidetica::service::ServiceConfig::new(args.max_frame_bytes)?;
 
     // Create backend
     let backend = create_backend(&args.backend_config).await?;
@@ -56,8 +55,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // Determine socket path
     let socket_path = args.socket.clone().unwrap_or_else(default_socket_path);
-    let server =
-        ServiceServer::bind_with_config(instance.clone(), &socket_path, service_config).await?;
+    let server = ServiceServer::bind(instance.clone(), &socket_path).await?;
 
     // Reserve the address before announcing readiness; no second backend is opened.
     // A bind failure drops the socket owner.
@@ -287,7 +285,6 @@ mod tests {
             dashboard: false,
             dashboard_host: "127.0.0.1".into(),
             dashboard_port: 5942,
-            max_frame_bytes: u64::from(eidetica::service::protocol::MAX_FRAME_SIZE),
             backend_config: BackendConfig {
                 backend: Backend::Inmemory,
                 data_dir: Some(data_dir.to_path_buf()),
