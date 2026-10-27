@@ -349,7 +349,7 @@ impl Sync {
         let result = self.connect_to_peer(address).await;
         match &result {
             Ok(_) => operation.selected(address),
-            Err(error) => operation.failed_route(error),
+            Err(error) => operation.failed_route(error, false),
         }
         result
     }

@@ -81,17 +81,9 @@ impl Sync {
         operation: &mut SyncOperation,
     ) -> Result<()> {
         let addresses = self.peer_addresses(peer_pubkey).await?;
-        let peer = peer_pubkey.clone();
-        let tree = tree_id.clone();
-        let key = signing_key.cloned();
-        self.with_selected_address(&addresses, peer_pubkey, operation, move |sync, addr| {
-            let peer = peer.clone();
-            let tree = tree.clone();
-            let key = key.clone();
-            async move {
-                sync.sync_tree_with_peer_at(&addr, &peer, &tree, key.as_ref())
-                    .await
-            }
+        self.with_selected_address(&addresses, peer_pubkey, operation, |address| async move {
+            self.sync_tree_with_peer_at(&address, peer_pubkey, tree_id, signing_key)
+                .await
         })
         .await
     }
@@ -792,28 +784,17 @@ impl Sync {
         operation: &mut SyncOperation,
     ) -> Result<()> {
         let addresses = self.peer_addresses(peer_pubkey).await?;
-        let peer = peer_pubkey.clone();
-        let tree = tree_id.clone();
-        let key = requesting_key.cloned();
-        let key_name = requesting_key_name.map(str::to_string);
-        self.with_selected_address(&addresses, peer_pubkey, operation, move |sync, addr| {
-            let peer = peer.clone();
-            let tree = tree.clone();
-            let key = key.clone();
-            let key_name = key_name.clone();
-            let metadata = metadata.clone();
-            async move {
-                sync.sync_tree_with_peer_auth_at(
-                    &addr,
-                    &peer,
-                    &tree,
-                    key.as_ref(),
-                    key_name.as_deref(),
-                    requested_permission,
-                    metadata,
-                )
-                .await
-            }
+        self.with_selected_address(&addresses, peer_pubkey, operation, |address| async move {
+            self.sync_tree_with_peer_auth_at(
+                &address,
+                peer_pubkey,
+                tree_id,
+                requesting_key,
+                requesting_key_name,
+                requested_permission,
+                metadata,
+            )
+            .await
         })
         .await
     }
@@ -1117,15 +1098,15 @@ impl Sync {
         f: F,
     ) -> Result<()>
     where
-        F: Fn(Sync, Address) -> Fut,
-        Fut: Future<Output = Result<()>> + Send + 'static,
+        F: FnOnce(Address) -> Fut,
+        Fut: Future<Output = Result<()>>,
     {
         let result = match self
             .select_address(addresses, Some(peer_pubkey), operation)
             .await
         {
             Ok((address, _)) => {
-                let result = f(self.clone(), address).await;
+                let result = f(address).await;
                 operation.tree_result(&result);
                 result
             }
@@ -1200,6 +1181,7 @@ impl Sync {
                         sync.connect_to_peer_with_cancel(&addr, cancel),
                     )
                     .await;
+                    let attempt_timed_out = result.is_err();
                     let result = match result {
                         Ok(Ok(peer_pubkey)) => Ok((addr, peer_pubkey)),
                         Ok(Err(error)) => Err(error),
@@ -1209,11 +1191,10 @@ impl Sync {
                                 "Address attempt timed out after {:?}",
                                 Self::ADDRESS_ATTEMPT_TIMEOUT,
                             );
-                            Err(SyncError::Timeout {
-                                address: addr_info.address.clone(),
-                                phase: super::TimeoutPhase::Connect,
-                                elapsed: Self::ADDRESS_ATTEMPT_TIMEOUT,
-                            }
+                            Err(SyncError::Network(format!(
+                                "Address attempt timed out after {:?}",
+                                Self::ADDRESS_ATTEMPT_TIMEOUT,
+                            ))
                             .into())
                         }
                     };
@@ -1225,7 +1206,7 @@ impl Sync {
                     }
                     // Ignore send errors — the receiver is dropped once a winner
                     // was selected and this loser's dial has been abandoned.
-                    let _ = tx.send(result).await;
+                    let _ = tx.send((result, attempt_timed_out)).await;
                 }
                 .in_current_span(),
             );
@@ -1234,7 +1215,7 @@ impl Sync {
         drop(tx);
 
         let mut last_err = None;
-        while let Some(result) = rx.recv().await {
+        while let Some((result, attempt_timed_out)) = rx.recv().await {
             match result {
                 Ok((addr, answered)) => match expected {
                     Some(want) if want != &answered => {
@@ -1259,7 +1240,7 @@ impl Sync {
                     }
                 },
                 Err(e) => {
-                    operation.failed_route(&e);
+                    operation.failed_route(&e, attempt_timed_out);
                     last_err = Some(e);
                 }
             }

@@ -59,10 +59,13 @@ impl SyncOperation {
         self.attempted += attempted;
     }
 
-    pub(super) fn failed_route(&mut self, error: &Error) {
+    // The outer race deadline includes queuing, handshake and registration;
+    // unlike a transport timeout, it cannot establish a connection phase.
+    pub(super) fn failed_route(&mut self, error: &Error, attempt_timed_out: bool) {
         self.failed += 1;
         self.observed += 1;
-        self.timed_out += usize::from(matches!(error, Error::Sync(e) if e.is_timeout()));
+        self.timed_out +=
+            usize::from(attempt_timed_out || matches!(error, Error::Sync(e) if e.is_timeout()));
     }
 
     pub(super) fn wrong_peer(&mut self) {

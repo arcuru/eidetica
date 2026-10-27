@@ -212,7 +212,10 @@ async fn background_round_correlates_routes_and_reports_partial_tree_outcome() -
         .await?;
     trace.clear();
 
-    recipient.engine.sync_with_peer(&PeerId::from(peer)).await?;
+    recipient
+        .engine
+        .sync_with_peer(&PeerId::from(peer.clone()))
+        .await?;
     let output = trace.output();
     let aggregate = summary(&output);
     assert_fields(
@@ -241,6 +244,19 @@ async fn background_round_correlates_routes_and_reports_partial_tree_outcome() -
             .expect(message);
         assert_eq!(operation_id(event), id, "{event}");
     }
+    // A round still returns Ok when none of its trees sync. Its diagnostic
+    // outcome must describe those failures rather than the scheduling policy.
+    recipient
+        .sync
+        .remove_tree_sync(&peer, tree.root_id())
+        .await?;
+    trace.clear();
+    recipient.engine.sync_with_peer(&PeerId::from(peer)).await?;
+    let output = trace.output();
+    assert_fields(
+        summary(&output),
+        &["outcome=\"failed\"", "trees_ok=0", "trees_failed=1"],
+    );
     source.engine.stop_server(None).await?;
     Ok(())
 }

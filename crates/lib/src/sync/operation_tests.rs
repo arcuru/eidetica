@@ -7,7 +7,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use tracing_subscriber::fmt::format::FmtSpan;
 
 use super::{
     Address, DatabaseTicket, Sync, SyncError, TimeoutPhase,
@@ -45,7 +44,6 @@ impl Trace {
                 .with_max_level(tracing::Level::DEBUG)
                 .with_ansi(false)
                 .without_time()
-                .with_span_events(FmtSpan::NONE)
                 .with_writer(move || writer.clone())
                 .finish(),
         )
@@ -250,7 +248,6 @@ async fn bridge_pull_correlates_routes_engine_request_and_tree_lifecycle() -> Re
         .expect("tree request kept the caller context across the engine channel");
     assert_eq!(operation_id(sent), id);
     assert!(instance.has_entry(bridge.tree.root_id()).await);
-    eprintln!("Representative bridge-call trace:\n{output}");
     bridge.transport.stop_server().await?;
     stranger.transport.stop_server().await?;
     Ok(())
@@ -294,7 +291,6 @@ async fn bridge_boundary_preserves_real_request_timeout_and_peer_rejection() -> 
         ],
     );
     assert!(!aggregate.contains("BootstrapRejected"));
-    eprintln!("Eidetica-to-Chaz timeout boundary: {timed_out:?}\n{aggregate}");
     trace.clear();
     let refused = sync
         .sync_tree_with_peer_auth(
@@ -325,7 +321,6 @@ async fn bridge_boundary_preserves_real_request_timeout_and_peer_rejection() -> 
         !output.contains("No address answered"),
         "the peer did answer"
     );
-    eprintln!("Eidetica-to-Chaz refusal boundary: {refused:?}\n{aggregate}");
     silent.transport.stop_server().await?;
     refusing.transport.stop_server().await?;
     Ok(())
@@ -417,7 +412,9 @@ async fn failed_route_summary_counts_a_real_handshake_timeout() -> Result<()> {
         .sync_tree_with_peer(&bridge.instance.id(), bridge.tree.root_id())
         .await
         .unwrap_err();
-    assert!(matches!(error, Error::Sync(e) if e.is_timeout()));
+    // The race budget expires after TCP connected; it does not prove which
+    // transport phase stalled and must not claim the peer was unreachable.
+    assert!(matches!(error, Error::Sync(e) if matches!(*e, SyncError::Network(_))));
     let output = trace.output();
     let aggregate = summary(&output);
     assert_fields(
@@ -428,6 +425,8 @@ async fn failed_route_summary_counts_a_real_handshake_timeout() -> Result<()> {
             "attempted=2",
             "route_failures=2",
             "route_timeouts=1",
+            "timeout_phase=None",
+            "peer_reachable=None",
             "unobserved=0",
             "selected=None",
         ],
@@ -438,6 +437,58 @@ async fn failed_route_summary_counts_a_real_handshake_timeout() -> Result<()> {
         .expect("deadline event");
     assert_eq!(operation_id(aggregate), operation_id(timeout_event));
     bridge.transport.stop_server().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn address_wrapper_reuses_one_operation_and_does_not_fail_losing_routes() -> Result<()> {
+    let trace = Trace::default();
+    let _guard = trace.capture();
+    let bridge = Bridge::start(Reply::Normal, Duration::ZERO).await?;
+    let silent = Bridge::start(Reply::SilentHandshake, Duration::ZERO).await?;
+    let (_instance, sync) = client(
+        &bridge,
+        vec![bridge.address.clone(), silent.address.clone()],
+    )
+    .await?;
+    trace.clear();
+
+    sync.sync_with_peer(&bridge.address, Some(bridge.tree.root_id()))
+        .await?;
+    let output = trace.output();
+    let aggregate = summary(&output);
+    assert_fields(
+        aggregate,
+        &[
+            "kind=\"sync_address\"",
+            "outcome=\"success\"",
+            "routes=3",
+            "attempted=3",
+            "route_failures=0",
+            "route_timeouts=0",
+            "unobserved=1",
+            "trees_ok=1",
+        ],
+    );
+    let id = operation_id(aggregate);
+    let handshakes: Vec<_> = output
+        .lines()
+        .filter(|line| line.contains("Starting peer handshake"))
+        .collect();
+    assert!(
+        handshakes.len() >= 2,
+        "initial handshake and route selection: {output}"
+    );
+    for event in handshakes {
+        assert_eq!(operation_id(event), id, "{event}");
+    }
+    let completed = output
+        .lines()
+        .find(|line| line.contains("Completed tree synchronization"))
+        .expect("tree exchange completed");
+    assert_eq!(operation_id(completed), id);
+    bridge.transport.stop_server().await?;
+    silent.transport.stop_server().await?;
     Ok(())
 }
 

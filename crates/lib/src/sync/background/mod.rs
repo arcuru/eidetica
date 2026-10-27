@@ -616,6 +616,7 @@ impl BackgroundSync {
                         conn::run_handshake(ctx, addr.clone()),
                     )
                     .await;
+                    let attempt_timed_out = result.is_err();
                     let result = match result {
                         Ok(Ok(answered)) => Ok((transport, addr, answered)),
                         Ok(Err(error)) => Err(error),
@@ -625,15 +626,13 @@ impl BackgroundSync {
                                 timeout = ?ADDRESS_ATTEMPT_TIMEOUT,
                                 "Address attempt timed out",
                             );
-                            Err(SyncError::Timeout {
-                                address: addr_info.address.clone(),
-                                phase: super::TimeoutPhase::Connect,
-                                elapsed: ADDRESS_ATTEMPT_TIMEOUT,
-                            }
+                            Err(SyncError::Network(format!(
+                                "Address attempt timed out after {ADDRESS_ATTEMPT_TIMEOUT:?}"
+                            ))
                             .into())
                         }
                     };
-                    let _ = tx.send(result).await;
+                    let _ = tx.send((result, attempt_timed_out)).await;
                 }
                 .in_current_span(),
             ));
@@ -641,7 +640,7 @@ impl BackgroundSync {
         drop(tx);
 
         let mut last_err = None;
-        while let Some(result) = rx.recv().await {
+        while let Some((result, attempt_timed_out)) = rx.recv().await {
             match result {
                 Ok((transport, addr, answered)) if &answered == expected => {
                     // Cancel every attempt that has not succeeded and let no
@@ -676,7 +675,7 @@ impl BackgroundSync {
                     );
                 }
                 Err(e) => {
-                    operation.failed_route(&e);
+                    operation.failed_route(&e, attempt_timed_out);
                     debug!(error = %e, "Address attempt failed");
                     last_err = Some(e);
                 }
