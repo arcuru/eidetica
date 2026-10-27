@@ -129,8 +129,10 @@ The summary reports:
   when a peer round has both successes and failures, and `failed` when all
   attempted trees fail, even if the background round itself returns `Ok`.
 - `error` or `last_tree_error`: the operation failure or last failed tree.
-  `timeout_phase` and `peer_reachable` retain the existing timeout distinction;
-  silence is not evidence of an authorization refusal.
+  `timeout_phase` and `peer_reachable` retain the transport's timeout distinction.
+  An address-race deadline covers the whole handshake attempt, including engine
+  queuing and peer registration, so it counts as a timeout without claiming a
+  transport phase or reachability. Silence is not an authorization refusal.
 
 Transport errors remain typed at the public sync API: `SyncError::Timeout`
 keeps its phase, while a rejected bootstrap is `SyncError::BootstrapRejected`.
