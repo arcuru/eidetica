@@ -548,6 +548,24 @@ impl Instance {
         Self::connect_impl(url.as_ref(), Arc::new(SystemClock)).await
     }
 
+    /// Connect to a `unix://` service URL with an explicit local frame policy.
+    ///
+    /// Other URL schemes are rejected; embedded backends have no service frames.
+    #[cfg(all(unix, feature = "service"))]
+    pub async fn connect_with_service_config(
+        url: impl AsRef<str>,
+        config: crate::service::ServiceConfig,
+    ) -> Result<Self> {
+        let url::ConnectionUrl::Unix { socket_path } = url::parse(url.as_ref())? else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "service configuration requires a unix:// URL",
+            )
+            .into());
+        };
+        Self::connect_unix_socket_with_config(socket_path, Arc::new(SystemClock), config).await
+    }
+
     /// Open or initialise an eidetica instance described by a connection URL.
     ///
     /// On the load arm: identical to [`Instance::connect`]; `initial` is
@@ -799,7 +817,23 @@ impl Instance {
 
     #[cfg(all(unix, feature = "service"))]
     async fn connect_unix_socket(socket_path: PathBuf, clock: Arc<dyn Clock>) -> Result<Self> {
-        let conn = crate::service::client::RemoteConnection::connect(&socket_path).await?;
+        Self::connect_unix_socket_with_config(
+            socket_path,
+            clock,
+            crate::service::ServiceConfig::default(),
+        )
+        .await
+    }
+
+    #[cfg(all(unix, feature = "service"))]
+    async fn connect_unix_socket_with_config(
+        socket_path: PathBuf,
+        clock: Arc<dyn Clock>,
+        config: crate::service::ServiceConfig,
+    ) -> Result<Self> {
+        let conn =
+            crate::service::client::RemoteConnection::connect_with_config(&socket_path, config)
+                .await?;
         // Keep a clone for the post-construction `attach_instance` call:
         // the reader task spawned inside `RemoteConnection::connect` needs a
         // `WeakInstance` to route push notifications into, and the Instance

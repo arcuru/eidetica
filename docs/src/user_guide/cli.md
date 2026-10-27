@@ -102,15 +102,16 @@ Runs the Eidetica service daemon against an already-initialised backend. Fails w
 eidetica daemon [OPTIONS]
 ```
 
-| Option             | Short | Default       | Env Var                   | Description                                                     |
-| ------------------ | ----- | ------------- | ------------------------- | --------------------------------------------------------------- |
-| `--dashboard`      |       | off           | `EIDETICA_DASHBOARD`      | Enable web dashboard (never service RPC)                        |
-| `--dashboard-host` |       | `127.0.0.1`   | `EIDETICA_DASHBOARD_HOST` | Dashboard bind address (only with `--dashboard`)                |
-| `--dashboard-port` |       | `5942`        | `EIDETICA_DASHBOARD_PORT` | Dashboard port (only with `--dashboard`)                        |
-| `--socket`         | `-s`  | auto-detected | `EIDETICA_SOCKET`         | Unix socket path (see [Service Mode](service.md) for defaults)  |
-| `--backend`        | `-b`  | `sqlite`      | `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
-| `--data-dir`       | `-d`  | current dir   | `EIDETICA_DATA_DIR`       | Data directory for storage files                                |
-| `--postgres-url`   |       | —             | `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL (required when backend is `postgres`) |
+| Option              | Short | Default       | Env Var                    | Description                                                                            |
+| ------------------- | ----- | ------------- | -------------------------- | -------------------------------------------------------------------------------------- |
+| `--dashboard`       |       | off           | `EIDETICA_DASHBOARD`       | Enable web dashboard (never service RPC)                                               |
+| `--dashboard-host`  |       | `127.0.0.1`   | `EIDETICA_DASHBOARD_HOST`  | Dashboard bind address (only with `--dashboard`)                                       |
+| `--dashboard-port`  |       | `5942`        | `EIDETICA_DASHBOARD_PORT`  | Dashboard port (only with `--dashboard`)                                               |
+| `--max-frame-bytes` |       | `67108864`    | `EIDETICA_MAX_FRAME_BYTES` | Maximum encoded service frame payload bytes; positive finite u32/local allocation size |
+| `--socket`          | `-s`  | auto-detected | `EIDETICA_SOCKET`          | Unix socket path (see [Service Mode](service.md) for defaults)                         |
+| `--backend`         | `-b`  | `sqlite`      | `EIDETICA_BACKEND`         | Storage backend (`sqlite`, `postgres`, `inmemory`)                                     |
+| `--data-dir`        | `-d`  | current dir   | `EIDETICA_DATA_DIR`        | Data directory for storage files                                                       |
+| `--postgres-url`    |       | —             | `EIDETICA_POSTGRES_URL`    | PostgreSQL connection URL (required when backend is `postgres`)                        |
 
 All commands opening a backend also accept `--cache-bytes`
 (`EIDETICA_CACHE_BYTES`) and `--cache-namespaces`

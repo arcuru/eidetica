@@ -35,11 +35,11 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 ```text
 ┌──────────────────┬──────────────────────┐
 │ Length (4 bytes) │ JSON payload         │
-│ big-endian u32   │ (up to 64 MiB)       │
+│ big-endian u32   │ (64 MiB default)       │
 └──────────────────┴──────────────────────┘
 ```
 
-Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF (before any length-prefix byte) and an `UnexpectedEof` I/O error when the stream ends mid-prefix or mid-payload.
+Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. The default maximum frame size is exactly 64 MiB (`MAX_FRAME_SIZE`). `ServiceConfig` supplies a validated positive per-endpoint limit; `ServiceServer::bind_with_config`, `RemoteConnection::connect_with_config` and `Instance::connect_with_service_config` apply it to all frame I/O. Inbound prefixes are checked before payload allocation; outbound checks count actual encoded JSON bytes before writing a prefix. Frames exceeding local policy retire the affected connection. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF (before any length-prefix byte) and an `UnexpectedEof` I/O error when the stream ends mid-prefix or mid-payload.
 
 `PROTOCOL_VERSION` remains `0`, an unstable protocol. Version mismatches fail the handshake; the handshake and acknowledgment still advertise only the version, with no feature-capability negotiation.
 
@@ -49,7 +49,7 @@ Updated service peers tolerate additions at four named extension points:
 - An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. There is no retry or execution fallback.
 - An unknown optional variant inside `Notification` is ignored without consuming a response slot or invoking callbacks. Known notifications retain their behavior.
 
-These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix and 64 MiB cap are unchanged.
+These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix, wire shapes and 64 MiB default are unchanged; frame limits are local and are not negotiated.
 
 This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no silent downgrade, capability advertisement, or legacy execution fallback. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
 
@@ -96,6 +96,14 @@ sequenceDiagram
 5. **Termination**: client closes its write half (EOF); the server detects EOF and cleans up.
 
 ### Cancellation and frame integrity
+
+The server drives its writer and request loop concurrently in one handler future.
+A writer error (including an oversized response) ends the handler and closes both
+socket halves, rather than leaving a reader waiting on a connection that can no
+longer answer. Server shutdown cancels both halves together, even during a write.
+The client reader marks the connection dead on an over-limit prefix, EOF or parse
+error, releasing all pending callers. There is no fallback response appended after
+a partial frame and no automatic replay of started requests.
 
 The pending response slot is enqueued under the writer lock before sending the
 frame, preserving request/response order even if a response arrives immediately.
@@ -187,7 +195,7 @@ Operations deliberately **not** exposed over the wire — `update_verification_s
 
 `DatabaseOp::required_permission() -> Permission` returns `Write(0)` for `SubmitSignedEntry` (advisory only — the per-tree gate is skipped for submit) and for the Store-state staging operations, `Admin(0)` for `SetInstanceMetadata` (advisory — gated against `_databases` instead of `root_id`), and `Read` for every other variant. The match is exhaustive, so a new operation cannot inherit `Read` by falling through.
 
-Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The unchanged 64 MiB frame cap is enforced per request and response, so multi-record state is paged or chunked and a single record that cannot fit is refused with `RecordTooLarge`.
+Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The record chunk budget remains 63 MiB and the default page budget remains 4 MiB, independent of configured frame limits. Multi-record state is paged or chunked and a single record that cannot fit the record budget is refused with `RecordTooLarge`. A smaller configured frame limit can still disconnect a connection carrying an otherwise valid chunk or page.
 
 ### ServiceResponse
 

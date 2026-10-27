@@ -139,6 +139,13 @@ pub struct DaemonArgs {
     #[arg(long, env = "EIDETICA_DASHBOARD_PORT", default_value_t = 5942)]
     pub dashboard_port: u16,
 
+    /// Maximum service frame payload bytes (default: exactly 64 MiB).
+    /// Configure clients separately; does not change record/page/queue budgets.
+    #[arg(long, env = "EIDETICA_MAX_FRAME_BYTES",
+        default_value_t = u64::from(eidetica::service::protocol::MAX_FRAME_SIZE),
+        value_parser = parse_max_frame_bytes)]
+    pub max_frame_bytes: u64,
+
     /// Unix socket path (default: $XDG_RUNTIME_DIR/eidetica/service.sock).
     /// Only used when running the daemon — ignored by `daemon init`.
     #[arg(short, long, env = "EIDETICA_SOCKET", global = true)]
@@ -216,4 +223,37 @@ pub struct DbRepairArgs {
     /// Acknowledge that inconsistent Verified entries will become Unverified
     #[arg(long, required = true)]
     pub confirm: bool,
+}
+
+fn parse_max_frame_bytes(value: &str) -> Result<u64, String> {
+    let bytes = value.parse::<u64>().map_err(|error| error.to_string())?;
+    eidetica::service::ServiceConfig::new(bytes).map_err(|error| error.to_string())?;
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod frame_limit_tests {
+    use super::*;
+
+    #[test]
+    fn daemon_frame_limits_validate_bytes() {
+        for bytes in ["0", "4294967296", "18446744073709551616", "-1"] {
+            assert!(
+                Cli::try_parse_from(["eidetica", "daemon", "--max-frame-bytes", bytes]).is_err()
+            );
+        }
+        for bytes in [67108864, 1073741824] {
+            let parsed = Cli::try_parse_from([
+                "eidetica",
+                "daemon",
+                "--max-frame-bytes",
+                &bytes.to_string(),
+            ])
+            .unwrap();
+            let Some(Commands::Daemon(args)) = parsed.command else {
+                panic!("not daemon")
+            };
+            assert_eq!(args.max_frame_bytes, bytes);
+        }
+    }
 }

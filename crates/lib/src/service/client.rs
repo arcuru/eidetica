@@ -35,15 +35,16 @@ use crate::backend::{
 };
 use crate::entry::{Entry, ID};
 use crate::instance::WeakInstance;
+use crate::service::ServiceConfig;
 use crate::service::error::service_error_to_eidetica_error;
-#[cfg(test)]
-use crate::service::protocol::ServerFrame;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingServerFrame, MergeState,
     Notification, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse,
-    TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext, WireCrdtValue, read_frame,
-    write_frame,
+    TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext, WireCrdtValue,
+    read_frame_with_config, write_frame_with_config,
 };
+#[cfg(test)]
+use crate::service::protocol::{ServerFrame, read_frame, write_frame};
 use crate::snapshot::Snapshot;
 
 /// How long an `Idle` per-tree subscription is kept warm before the
@@ -201,6 +202,10 @@ enum SubRole {
 
 /// Internal state for a remote connection, wrapped in Arc for Clone.
 struct RemoteConnectionInner {
+    config: ServiceConfig,
+    /// A duplicate descriptor allows synchronous shutdown of both directions
+    /// even while a frame write holds the async writer lock.
+    shutdown_socket: std::os::unix::net::UnixStream,
     /// Owns the write half of the socket. `tokio::sync::Mutex` because
     /// `write_frame` is async (held across awaits). Only ever held for the
     /// duration of one frame's write plus the FIFO push into [`Self::pending`];
@@ -432,6 +437,7 @@ impl RemoteConnectionInner {
     ///    The handle is `take`n so a later `mark_dead` is a no-op.
     fn mark_dead(&self) {
         self.closed.store(true, Ordering::Release);
+        let _ = self.shutdown_socket.shutdown(std::net::Shutdown::Both);
         self.pending_lock().clear();
         self.tree_workers
             .lock()
@@ -519,22 +525,36 @@ impl RemoteConnection {
     /// the attached `Instance`'s callback registry (after
     /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
+        Self::connect_with_config(path, ServiceConfig::default()).await
+    }
+
+    /// Connect with an explicit local frame policy, including the handshake.
+    /// An over-limit request or response retires the connection and fails all
+    /// pending calls. Started writes are never automatically replayed.
+    pub async fn connect_with_config(
+        path: impl AsRef<Path>,
+        config: ServiceConfig,
+    ) -> crate::Result<Self> {
         let stream = UnixStream::connect(path.as_ref()).await?;
+        let shutdown_socket = stream.into_std()?;
+        let stream = UnixStream::from_std(shutdown_socket.try_clone()?)?;
         let (mut reader, mut writer) = stream.into_split();
 
         // Send handshake
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION,
         };
-        write_frame(&mut writer, &handshake).await?;
+        write_frame_with_config(&mut writer, &handshake, config).await?;
 
         // Read ack
-        let ack: HandshakeAck = read_frame(&mut reader).await?.ok_or_else(|| {
-            crate::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::ConnectionAborted,
-                "Server closed connection during handshake",
-            ))
-        })?;
+        let ack: HandshakeAck = read_frame_with_config(&mut reader, config)
+            .await?
+            .ok_or_else(|| {
+                crate::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    "Server closed connection during handshake",
+                ))
+            })?;
 
         if ack.protocol_version != PROTOCOL_VERSION {
             return Err(crate::Error::Io(std::io::Error::new(
@@ -547,6 +567,8 @@ impl RemoteConnection {
         }
 
         let inner = Arc::new(RemoteConnectionInner {
+            config,
+            shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),
@@ -639,7 +661,12 @@ impl RemoteConnection {
             if self.inner.closed.load(Ordering::Acquire) {
                 return Err(connection_aborted());
             }
-            write_frame(frame.writer.as_mut().ok_or_else(connection_aborted)?, &req).await?;
+            write_frame_with_config(
+                frame.writer.as_mut().ok_or_else(connection_aborted)?,
+                &req,
+                self.inner.config,
+            )
+            .await?;
             frame.complete = true;
         }
         rx.await.map_err(|_| connection_aborted())
@@ -1523,7 +1550,7 @@ fn connection_aborted() -> crate::Error {
 
 /// Background task driving the read half of the socket.
 ///
-/// Loops on [`read_frame`] and demuxes by [`IncomingServerFrame`] variant:
+/// Loops on [`read_frame_with_config`] and demuxes by [`IncomingServerFrame`] variant:
 ///
 /// - `Response(r)`: pop the front of the pending FIFO and resolve its
 ///   oneshot. If the queue is empty something has gone badly wrong
@@ -1546,7 +1573,7 @@ fn connection_aborted() -> crate::Error {
 async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionInner>) {
     loop {
         let frame_result: crate::Result<Option<IncomingServerFrame>> =
-            read_frame(&mut reader).await;
+            read_frame_with_config(&mut reader, inner.config).await;
         let frame = match frame_result {
             Ok(Some(f)) => f,
             Ok(None) => break, // Clean EOF
@@ -1871,12 +1898,21 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
 mod compatibility_tests;
 
 #[cfg(test)]
+mod frame_limit_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
 
     /// Exercise the real connect/handshake/background-reader path, not a mock FIFO.
     pub(super) async fn connect_peer() -> (RemoteConnection, UnixStream) {
+        connect_peer_with_config(ServiceConfig::default()).await
+    }
+
+    pub(super) async fn connect_peer_with_config(
+        config: ServiceConfig,
+    ) -> (RemoteConnection, UnixStream) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peer.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
@@ -1895,7 +1931,7 @@ mod tests {
             stream
         };
         let (conn, peer) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(RemoteConnection::connect(&path), peer)
+            tokio::join!(RemoteConnection::connect_with_config(&path, config), peer)
         })
         .await
         .unwrap();
@@ -1920,8 +1956,12 @@ mod tests {
     /// caller keeps the socket open for the duration of the test.
     pub(super) fn test_conn() -> (RemoteConnection, tokio::net::UnixStream) {
         let (client_side, peer) = tokio::net::UnixStream::pair().unwrap();
+        let shutdown_socket = client_side.into_std().unwrap();
+        let client_side = UnixStream::from_std(shutdown_socket.try_clone().unwrap()).unwrap();
         let (_reader, writer) = client_side.into_split();
         let inner = Arc::new(RemoteConnectionInner {
+            config: ServiceConfig::default(),
+            shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),

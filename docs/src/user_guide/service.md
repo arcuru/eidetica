@@ -32,6 +32,45 @@ eidetica daemon --backend postgres --postgres-url "postgresql://user:pass@host/d
 
 The daemon prints its socket path on startup and runs until interrupted (SIGINT/SIGTERM).
 
+### Frame limits
+
+The default is **exactly 64 MiB (67108864 bytes)** per encoded JSON frame,
+excluding the four-byte length prefix.
+To allow larger local responses, configure both the daemon and each client:
+
+```bash
+eidetica daemon --max-frame-bytes 1073741824
+# Equivalent daemon setting: EIDETICA_MAX_FRAME_BYTES=1073741824
+```
+
+<!-- Code block ignored: Requires async runtime and a running Unix service -->
+
+```rust,ignore
+use eidetica::{Instance, service::{ServiceConfig, ServiceServer}};
+
+let config = ServiceConfig::new(1024 * 1024 * 1024)?; // 1 GiB
+let client = Instance::connect_with_service_config("unix:///run/eidetica/service.sock", config).await?;
+// For a programmatic daemon:
+let server = ServiceServer::bind_with_config(instance, socket_path, config).await?;
+```
+
+Low-level clients use `RemoteConnection::connect_with_config(path, config)`.
+Existing constructors retain the 64 MiB default.
+The limit must be positive and fit both the u32 wire prefix and local allocation
+size; zero is not an unlimited setting.
+Limits are local, not negotiated, and apply to the handshake, requests, responses
+and notifications.
+An oversized frame or mismatched limit disconnects the affected connection and
+fails pending calls; reconnect explicitly and reconcile any ambiguous write
+before retrying it.
+Other connections remain usable.
+
+A larger frame limit permits larger per-frame allocations; it is not a memory
+quota and does not resize queues or concurrency limits.
+Record chunks remain capped at **63 MiB** and record pages at **4 MiB** by default,
+independent of frame policy.
+Paging remains preferable for large multi-record results.
+
 ### Optional web dashboard
 
 `eidetica daemon --dashboard` also hosts the existing login/dashboard, health,

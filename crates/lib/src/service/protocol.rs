@@ -56,11 +56,11 @@ use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 /// `#[non_exhaustive]` protects Rust source compatibility, not the wire.
 pub const PROTOCOL_VERSION: u32 = 0;
 
-/// Maximum frame size: 64 MiB.
+/// Default maximum frame size: exactly 64 MiB. Endpoints may configure another limit.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
 
-/// Record payload budget leaving room for the JSON envelope and length prefix.
-pub const MAX_RECORD_CHUNK_BYTES: u32 = MAX_FRAME_SIZE - 1024 * 1024;
+/// Record payload budget, independent of the configured transport frame limit.
+pub const MAX_RECORD_CHUNK_BYTES: u32 = 63 * 1024 * 1024;
 
 /// Default upper bound for an encoded record page.
 pub const MAX_RECORD_PAGE_BYTES: u32 = 4 * 1024 * 1024;
@@ -766,14 +766,28 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     writer: &mut W,
     value: &T,
 ) -> crate::Result<()> {
+    write_frame_with_config(writer, value, super::ServiceConfig::default()).await
+}
+
+/// Write one frame under the endpoint's local policy. Validate the actual JSON
+/// bytes before writing any prefix, including expansion from escaping/envelopes.
+pub async fn write_frame_with_config<W: AsyncWrite + Unpin, T: Serialize>(
+    writer: &mut W,
+    value: &T,
+    config: super::ServiceConfig,
+) -> crate::Result<()> {
     let payload = serde_json::to_vec(value)?;
-    let len = payload.len() as u32;
-    if len > MAX_FRAME_SIZE {
+    let max = config.max_frame_bytes();
+    if payload.len() as u64 > u64::from(max) {
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
+            format!("frame too large: {} bytes (max {max})", payload.len()),
         )));
     }
+    // The validated limit fits the wire prefix; never truncate a usize length.
+    let len = u32::try_from(payload.len()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "frame length overflow")
+    })?;
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(&payload).await?;
     writer.flush().await?;
@@ -787,16 +801,26 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
 pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> crate::Result<Option<T>> {
+    read_frame_with_config(reader, super::ServiceConfig::default()).await
+}
+
+/// Read one frame, checking its prefix against local policy before allocating
+/// or reading the payload. EOF semantics match [`read_frame`].
+pub async fn read_frame_with_config<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
+    reader: &mut R,
+    config: super::ServiceConfig,
+) -> crate::Result<Option<T>> {
     let mut len_buf = [0u8; 4];
     if reader.read(&mut len_buf[..1]).await? == 0 {
         return Ok(None);
     }
     reader.read_exact(&mut len_buf[1..]).await?;
     let len = u32::from_be_bytes(len_buf);
-    if len > MAX_FRAME_SIZE {
+    let max = config.max_frame_bytes();
+    if len > max {
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
+            format!("frame too large: {len} bytes (max {max})"),
         )));
     }
     let mut payload = vec![0u8; len as usize];
@@ -808,6 +832,71 @@ pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_configuration_preserves_default_and_record_budgets() {
+        use crate::service::ServiceConfig;
+        assert_eq!(ServiceConfig::default().max_frame_bytes(), 64 * 1024 * 1024);
+        assert_eq!(
+            ServiceConfig::new(1024 * 1024 * 1024)
+                .unwrap()
+                .max_frame_bytes(),
+            1024 * 1024 * 1024
+        );
+        for invalid in [0, u32::MAX as u64 + 1, u64::MAX] {
+            assert!(
+                matches!(ServiceConfig::new(invalid), Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidInput)
+            );
+        }
+        #[cfg(target_pointer_width = "32")]
+        assert!(ServiceConfig::new(isize::MAX as u64 + 1).is_err());
+        assert_eq!(MAX_RECORD_CHUNK_BYTES, 63 * 1024 * 1024);
+        assert_eq!(MAX_RECORD_PAGE_BYTES, 4 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn configured_frames_measure_encoded_bytes_and_reject_prefix_before_payload() {
+        let value = "\n".repeat(16);
+        let encoded = serde_json::to_vec(&value).unwrap();
+        assert!(encoded.len() > value.len());
+        let exact = crate::service::ServiceConfig::new(encoded.len() as u64).unwrap();
+        let small = crate::service::ServiceConfig::new(encoded.len() as u64 - 1).unwrap();
+        let mut bytes = Vec::new();
+        assert!(
+            write_frame_with_config(&mut bytes, &value, small)
+                .await
+                .is_err()
+        );
+        assert!(bytes.is_empty(), "refusal wrote a partial prefix");
+        write_frame_with_config(&mut bytes, &value, exact)
+            .await
+            .unwrap();
+        assert_eq!(
+            u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize,
+            encoded.len()
+        );
+        let decoded: String = read_frame_with_config(&mut bytes.as_slice(), exact)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded, value);
+
+        // A live reader with only the prefix must reject without waiting for
+        // payload bytes (and before allocating according to an attacker length).
+        for length in [small.max_frame_bytes() + 1, u32::MAX] {
+            let (mut reader, mut writer) = tokio::io::duplex(4);
+            writer.write_all(&length.to_be_bytes()).await.unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                read_frame_with_config::<_, String>(&mut reader, small),
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(result, Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidData)
+            );
+        }
+    }
 
     // Helper to make a simple entry for testing
     fn test_id() -> ID {

@@ -27,11 +27,12 @@ use crate::backend::{
 use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
+use crate::service::ServiceConfig;
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, HandshakeAck, IncomingRequest, MergeState, Notification,
     PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, TicketBootstrapOutcome,
-    TicketBootstrapRequest, read_frame, write_frame,
+    TicketBootstrapRequest, read_frame_with_config, write_frame_with_config,
 };
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
 
@@ -208,6 +209,7 @@ enum ConnectionState {
 /// `instance.backend()` directly rather than keeping a separate
 /// service-layer cache.
 pub struct ServiceServer {
+    config: ServiceConfig,
     instance: Instance,
     socket_path: PathBuf,
     listener: UnixListener,
@@ -243,7 +245,23 @@ impl ServiceServer {
     /// * `instance` - The Instance to serve. The server holds a strong reference.
     /// * `socket_path` - Path for the Unix domain socket.
     pub async fn bind(instance: Instance, socket_path: impl Into<PathBuf>) -> crate::Result<Self> {
-        Self::bind_inner(instance, socket_path.into(), TOKEN_IDLE_TTL, TOKEN_IDLE_TTL).await
+        Self::bind_with_config(instance, socket_path, ServiceConfig::default()).await
+    }
+
+    /// Bind with an explicit local frame policy for every accepted connection.
+    pub async fn bind_with_config(
+        instance: Instance,
+        socket_path: impl Into<PathBuf>,
+        config: ServiceConfig,
+    ) -> crate::Result<Self> {
+        Self::bind_inner(
+            instance,
+            socket_path.into(),
+            TOKEN_IDLE_TTL,
+            TOKEN_IDLE_TTL,
+            config,
+        )
+        .await
     }
 
     /// Bind with independent staging-token and published-view lifetimes for expiry tests.
@@ -259,6 +277,7 @@ impl ServiceServer {
             socket_path.into(),
             staging_ttl,
             published_view_ttl,
+            ServiceConfig::default(),
         )
         .await
     }
@@ -268,6 +287,7 @@ impl ServiceServer {
         socket_path: PathBuf,
         staging_idle_ttl: Duration,
         published_view_idle_ttl: Duration,
+        config: ServiceConfig,
     ) -> crate::Result<Self> {
         let socket_path = absolute_socket_path(socket_path)?;
         prepare_parent(&socket_path).await?;
@@ -284,6 +304,7 @@ impl ServiceServer {
         };
 
         Ok(Self {
+            config,
             instance,
             socket_path,
             listener,
@@ -325,11 +346,12 @@ impl ServiceServer {
                     match accept_result {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
+                            let config = self.config;
                             let staging_idle_ttl = self.staging_idle_ttl;
                             let published_view_idle_ttl = self.published_view_idle_ttl;
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl, config).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -579,22 +601,22 @@ impl Drop for ServiceServer {
 
 /// Handle a single client connection.
 ///
-/// I/O is split across two tasks:
+/// I/O is driven concurrently within this handler:
 ///
-/// - **Writer task** (spawned below) owns the `WriteHalf` and drains an
+/// - **Writer future** owns the `WriteHalf` and drains an
 ///   `mpsc::UnboundedReceiver<ServerFrame>` into `write_frame` in
 ///   submission order. Responses (dispatched from the request loop) and
 ///   server-pushed notifications (from subscribed per-db callbacks both
 ///   capture clones of the same `frame_tx`, so a single connection-local
 ///   order is preserved.
 ///
-/// - **This task** owns the `ReadHalf`, runs the auth/request loop, and
+/// - **Request loop** owns the `ReadHalf`, runs the auth/request loop, and
 ///   sends `ServerFrame::Response(...)` into the channel. It also holds
 ///   a [`ConnectionGuard`] whose Drop unregisters every subscription this
 ///   connection made on every exit path (clean EOF, error, or panic).
 ///
-/// Handshake still runs inline on the read side first; the writer task is
-/// not started until the handshake succeeds, so a version-mismatch close
+/// Handshake still runs inline on the read side first; the writer future is
+/// not polled until the handshake succeeds, so a version-mismatch close
 /// uses the simpler inline writer path.
 async fn handle_connection(
     stream: tokio::net::UnixStream,
@@ -602,21 +624,23 @@ async fn handle_connection(
     conn_id: ConnectionId,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
+    config: ServiceConfig,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
     // 1. Read and validate handshake (inline writer, no channel yet).
-    let handshake: crate::service::protocol::Handshake = match read_frame(&mut reader).await? {
-        Some(h) => h,
-        None => return Ok(()), // Client disconnected before handshake
-    };
+    let handshake: crate::service::protocol::Handshake =
+        match read_frame_with_config(&mut reader, config).await? {
+            Some(h) => h,
+            None => return Ok(()), // Client disconnected before handshake
+        };
 
     if handshake.protocol_version != PROTOCOL_VERSION {
         // Send error ack and close
         let ack = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
         };
-        write_frame(&mut writer, &ack).await?;
+        write_frame_with_config(&mut writer, &ack, config).await?;
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
@@ -630,9 +654,9 @@ async fn handle_connection(
     let ack = HandshakeAck {
         protocol_version: PROTOCOL_VERSION,
     };
-    write_frame(&mut writer, &ack).await?;
+    write_frame_with_config(&mut writer, &ack, config).await?;
 
-    // 2. Spin up the per-connection writer task.
+    // 2. Prepare the per-connection writer future.
     //
     // TODO(backpressure): this channel is `unbounded`, so a stalled client
     // reader buffers frames in daemon memory without limit. Socket access is
@@ -661,14 +685,15 @@ async fn handle_connection(
     // drop-oldest the right policy and considerably softens the cost of
     // dropping at all — but the work still needs doing for prod.
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
-    let writer_task = tokio::spawn(async move {
+    // Keep both halves in this handler's future: a writer failure must close
+    // the reader too, and aborting a handler must not orphan a writer task.
+    let writer_task = async move {
         while let Some(frame) = frame_rx.recv().await {
-            if let Err(e) = write_frame(&mut writer, &frame).await {
-                tracing::debug!(conn_id, "Connection writer error: {e}");
-                break;
-            }
+            write_frame_with_config(&mut writer, &frame, config).await?;
         }
-    });
+        Ok(())
+    };
+    tokio::pin!(writer_task);
 
     let ctx = Arc::new(ConnectionContext {
         conn_id,
@@ -684,9 +709,10 @@ async fn handle_connection(
     // 3. Request/response loop with per-connection auth state. Responses
     //    travel through the writer channel as `ServerFrame::Response`.
     let mut state = ConnectionState::PreAuth;
-    let loop_result: crate::Result<()> = async {
+    let request_loop = async {
         loop {
-            let request: IncomingRequest = match read_frame(&mut reader).await? {
+            let request: IncomingRequest = match read_frame_with_config(&mut reader, config).await?
+            {
                 Some(req) => req,
                 None => break, // Clean EOF
             };
@@ -706,11 +732,17 @@ async fn handle_connection(
             }
         }
         Ok(())
-    }
-    .await;
+    };
+    let loop_result: crate::Result<()> = tokio::select! {
+        result = &mut writer_task => return result,
+        result = request_loop => result,
+    };
+    // Invalid framing cannot be recovered on this FIFO connection. Do not
+    // drain queued responses onto a stream whose request framing has failed.
+    loop_result?;
 
     // Cleanup ordering matters — every clone of `frame_tx` must be
-    // dropped before `writer_task.await` can complete (the task is
+    // dropped before `writer_task.await` can complete (the future is
     // waiting on `frame_rx.recv()`, which only returns `None` when no
     // senders remain):
     //
@@ -722,7 +754,7 @@ async fn handle_connection(
     //    subscribed — e.g. handshake-then-malformed-frame paths.)
     // 3. Drop `ctx` — releases `ctx.tx`, the last sender clone held
     //    on the request-loop side.
-    // 4. The writer task's `recv()` returns `None`; the task exits and
+    // 4. The writer future's `recv()` returns `None`; it exits and
     //    `writer_task.await` finishes.
     //
     // Note: a callback dispatch in flight when step 2 runs holds its
@@ -733,7 +765,7 @@ async fn handle_connection(
     drop(frame_tx);
     drop(guard);
     drop(ctx);
-    let _ = writer_task.await;
+    let writer_result = writer_task.await;
 
     // Session teardown: subscription cleanup ran via the guard's Drop.
     // The unified CRDT-state cache lives in `BackendImpl` and is bounded
@@ -742,7 +774,7 @@ async fn handle_connection(
     // disconnect intentionally so a reconnecting client recovers
     // materialized state from tier 2 without recomputing from entries.
 
-    loop_result
+    writer_result
 }
 
 /// Dispatch a service request to the appropriate Instance/Backend method.
@@ -1942,7 +1974,7 @@ async fn gate_entry_read(
 mod tests {
     use super::*;
     use crate::backend::database::InMemory;
-    use crate::service::protocol::{Handshake, write_frame};
+    use crate::service::protocol::{Handshake, read_frame, write_frame};
 
     fn private_tempdir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
