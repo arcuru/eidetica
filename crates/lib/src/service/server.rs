@@ -687,13 +687,13 @@ async fn handle_connection(
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
     // Keep both halves in this handler's future: a writer failure must close
     // the reader too, and aborting a handler must not orphan a writer task.
-    let writer_task = async move {
+    let writer_loop = async move {
         while let Some(frame) = frame_rx.recv().await {
             write_frame_with_config(&mut writer, &frame, config).await?;
         }
         Ok(())
     };
-    tokio::pin!(writer_task);
+    tokio::pin!(writer_loop);
 
     let ctx = Arc::new(ConnectionContext {
         conn_id,
@@ -727,14 +727,14 @@ async fn handle_connection(
                 .send(ServerFrame::Response(Box::new(response)))
                 .is_err()
             {
-                // Writer task has exited; nothing more we can send.
+                // Writer has exited; nothing more we can send.
                 break;
             }
         }
         Ok(())
     };
     let loop_result: crate::Result<()> = tokio::select! {
-        result = &mut writer_task => return result,
+        result = &mut writer_loop => return result,
         result = request_loop => result,
     };
     // Invalid framing cannot be recovered on this FIFO connection. Do not
@@ -742,7 +742,7 @@ async fn handle_connection(
     loop_result?;
 
     // Cleanup ordering matters — every clone of `frame_tx` must be
-    // dropped before `writer_task.await` can complete (the future is
+    // dropped before `writer_loop.await` can complete (the future is
     // waiting on `frame_rx.recv()`, which only returns `None` when no
     // senders remain):
     //
@@ -755,18 +755,16 @@ async fn handle_connection(
     // 3. Drop `ctx` — releases `ctx.tx`, the last sender clone held
     //    on the request-loop side.
     // 4. The writer future's `recv()` returns `None`; it exits and
-    //    `writer_task.await` finishes.
+    //    `writer_loop.await` finishes.
     //
     // Note: a callback dispatch in flight when step 2 runs holds its
     // own Arc to the closure (from `fire_write_callbacks`'s snapshot).
     // It can still send a final notification through its captured `tx`
-    // before that Arc is released; the writer task will drain that
+    // before that Arc is released; the writer future will drain that
     // frame before exiting in step 4.
     drop(frame_tx);
     drop(guard);
     drop(ctx);
-    let writer_result = writer_task.await;
-
     // Session teardown: subscription cleanup ran via the guard's Drop.
     // The unified CRDT-state cache lives in `BackendImpl` and is bounded
     // by its own eviction policy (byte-bounded LRU on the in-memory
@@ -774,7 +772,7 @@ async fn handle_connection(
     // disconnect intentionally so a reconnecting client recovers
     // materialized state from tier 2 without recomputing from entries.
 
-    writer_result
+    writer_loop.await
 }
 
 /// Dispatch a service request to the appropriate Instance/Backend method.
