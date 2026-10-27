@@ -35,7 +35,7 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 ```text
 ┌──────────────────┬──────────────────────┐
 │ Length (4 bytes) │ JSON payload         │
-│ big-endian u32   │ (64 MiB default)       │
+│ big-endian u32   │ (64 MiB default)     │
 └──────────────────┴──────────────────────┘
 ```
 

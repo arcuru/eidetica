@@ -229,6 +229,54 @@ async fn over_limit_prefix_closes_socket_without_reading_body() {
 }
 
 #[tokio::test]
+async fn over_limit_prefix_interrupts_blocked_writer_and_pending_calls() {
+    use tokio::io::AsyncWriteExt;
+
+    let (conn, mut peer) = super::tests::connect_peer().await;
+    let mut first = Box::pin(conn.get_instance_metadata());
+    tokio::select! {
+        request = read_frame::<_, ServiceRequest>(&mut peer) => assert!(matches!(request.unwrap(), Some(ServiceRequest::GetInstanceMetadata))),
+        result = &mut first => panic!("unexpected response: {result:?}"),
+    }
+    // Fill the send buffer without letting the peer consume the request body.
+    let mut sending = Box::pin(conn.request(ServiceRequest::TrustedLoginAccount {
+        username: "x".repeat(2 * 1024 * 1024),
+    }));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut sending)
+            .await
+            .is_err()
+    );
+    let mut prefix = [0; 4];
+    peer.read_exact(&mut prefix).await.unwrap();
+    let expected = u32::from_be_bytes(prefix) as usize;
+    assert!(expected > 1024 * 1024, "frame write never began");
+    assert!(
+        conn.inner.writer.try_lock().is_err(),
+        "writer is not blocked"
+    );
+    assert_eq!(conn.inner.pending_lock().len(), 2);
+
+    peer.write_all(&u32::MAX.to_be_bytes()).await.unwrap();
+    let (first, sending) = tokio::time::timeout(TIMEOUT, async { tokio::join!(first, sending) })
+        .await
+        .expect("prefix rejection stranded a caller behind the writer lock");
+    assert_disconnected(first);
+    assert_disconnected(sending);
+    assert_disconnected(conn.get_instance_metadata().await);
+    assert!(conn.inner.pending_lock().is_empty());
+    let mut partial = Vec::new();
+    tokio::time::timeout(TIMEOUT, peer.read_to_end(&mut partial))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        partial.len() < expected,
+        "retired writer completed its frame"
+    );
+}
+
+#[tokio::test]
 async fn oversized_write_response_keeps_ambiguous_commit_without_replay() {
     use crate::backend::BackendImpl;
     use tokio::io::AsyncWriteExt;
