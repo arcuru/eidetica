@@ -293,9 +293,10 @@ fn crafted_v1_config(plaintext: &[u8], salt: &str, nonce: Vec<u8>) -> Doc {
     config.encryption = EncryptionInfo::current(8, 1, 1);
     config.encryption.salt = SALT.to_string();
     let wrapping_key = config.encryption.derive_key(PASSWORD, "secrets").unwrap();
-    config.wrapped_key = Some(EncryptedFragment::encrypt(
-        wrapping_key.as_bytes(), &test_key(PASSWORD), "secrets"
-    ).unwrap());
+    config.wrapped_key = Some(
+        EncryptedFragment::encrypt(wrapping_key.as_bytes(), &test_key(PASSWORD), "secrets")
+            .unwrap(),
+    );
     config.encryption.salt = salt.to_string();
     config.into()
 }
@@ -453,7 +454,13 @@ async fn open_failures_wipe_converted_password() {
 #[tokio::test]
 async fn v1_open_failures_wipe_password_wrapping_key_and_data_key() {
     for (plaintext, salt, nonce, password, registrations) in [
-        (valid_wrapped("docstore:v0"), SALT, vec![7; 12], "wrong-password", 2),
+        (
+            valid_wrapped("docstore:v0"),
+            SALT,
+            vec![7; 12],
+            "wrong-password",
+            2,
+        ),
         (valid_wrapped("docstore:v0"), "!", vec![7; 12], PASSWORD, 1),
         (valid_wrapped("docstore:v0"), SALT, vec![7; 11], PASSWORD, 3),
         (b"not json".to_vec(), SALT, vec![7; 12], PASSWORD, 4),
@@ -462,7 +469,11 @@ async fn v1_open_failures_wipe_password_wrapping_key_and_data_key() {
         let (_instance, db) = database().await;
         write_config(&db, crafted_v1_config(&plaintext, salt, nonce)).await;
         let watch = Watch::start();
-        assert!(open_with::<DocStore>(&db, watched_password(&watch, password)).await.is_err());
+        assert!(
+            open_with::<DocStore>(&db, watched_password(&watch, password))
+                .await
+                .is_err()
+        );
         assert_all_wiped(&watch.finish(), registrations);
     }
 }
@@ -847,7 +858,10 @@ async fn initialize_persistence_failure_wipes_password() {
 async fn assert_malformed_metadata_redacted<S: Store>() {
     let malformed = format!(r#"{{"type":"{}","config":"{SENTINEL}"}}"#, S::type_id()).into_bytes();
     let (_instance, db) = database().await;
-    for config in [crafted_config(&malformed, SALT, vec![7; 12]), crafted_v1_config(&malformed, SALT, vec![7; 12])] {
+    for config in [
+        crafted_config(&malformed, SALT, vec![7; 12]),
+        crafted_v1_config(&malformed, SALT, vec![7; 12]),
+    ] {
         write_config(&db, config).await;
         let error = open_with::<S>(&db, PASSWORD.to_string()).await.unwrap_err();
         assert!(error.is_store_serialization_error(), "{error}");
@@ -858,13 +872,19 @@ async fn assert_malformed_metadata_redacted<S: Store>() {
 /// A decrypted wrapped type that does not match `S` is not echoed in the error.
 async fn assert_type_mismatch_redacted<S: Store>() {
     let (_instance, db) = database().await;
-    for config in [crafted_config(&valid_wrapped(SENTINEL), SALT, vec![7; 12]), crafted_v1_config(&valid_wrapped(SENTINEL), SALT, vec![7; 12])] {
+    for config in [
+        crafted_config(&valid_wrapped(SENTINEL), SALT, vec![7; 12]),
+        crafted_v1_config(&valid_wrapped(SENTINEL), SALT, vec![7; 12]),
+    ] {
         write_config(&db, config).await;
         let error = open_with::<S>(&db, PASSWORD.to_string()).await.unwrap_err();
         assert!(error.is_store_type_error(), "{error}");
         let chain = formatted_chain(&error);
         assert!(!chain.contains(SENTINEL), "{chain}");
-        assert!(chain.contains(S::type_id()), "expected type stays visible: {chain}");
+        assert!(
+            chain.contains(S::type_id()),
+            "expected type stays visible: {chain}"
+        );
     }
 }
 
@@ -1007,7 +1027,11 @@ fn authenticated_key_is_guarded_and_shared_without_copying() {
     let encryptor = PasswordEncryptor::new(Arc::clone(&key), "first".to_string(), b"database");
     assert_eq!(encryptor.key.as_bytes().as_ptr(), ptr);
     drop(key);
-    assert_eq!(encryptor.key.as_bytes().as_ptr(), ptr, "encryptor retains the same allocation");
+    assert_eq!(
+        encryptor.key.as_bytes().as_ptr(),
+        ptr,
+        "encryptor retains the same allocation"
+    );
     drop(encryptor);
     let observations = watch.finish();
     assert_all_wiped(&observations, 1);
@@ -1016,7 +1040,10 @@ fn authenticated_key_is_guarded_and_shared_without_copying() {
     encryption.salt = "!".to_string();
     let watch = Watch::start();
     assert!(encryption.derive_key(PASSWORD, "first").is_err());
-    assert!(watch.finish().is_empty(), "invalid salt fails before key allocation");
+    assert!(
+        watch.finish().is_empty(),
+        "invalid salt fails before key allocation"
+    );
 }
 
 #[test]

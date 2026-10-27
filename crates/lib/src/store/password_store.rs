@@ -643,16 +643,13 @@ impl Encryptor for PasswordEncryptor {
 
         let (nonce_bytes, encrypted_data) = ciphertext.split_at(AES_GCM_NONCE_SIZE);
 
-        let encryption_key = self.key.as_bytes();
-        // Create cipher
-        let cipher = Aes256Gcm::new_from_slice(encryption_key).map_err(|e| {
+        let cipher = Aes256Gcm::new_from_slice(self.key.as_bytes()).map_err(|e| {
             StoreError::ImplementationError {
                 store: self.subtree_name.clone(),
                 reason: format!("Failed to create cipher: {e}"),
             }
         })?;
 
-        // Decrypt
         let nonce = Nonce::from_slice(nonce_bytes);
         cipher.decrypt(nonce, encrypted_data).map_err(|_| {
             StoreError::ImplementationError {
@@ -664,19 +661,14 @@ impl Encryptor for PasswordEncryptor {
     }
 
     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        let encryption_key = self.key.as_bytes();
-        // Create cipher
-        let cipher = Aes256Gcm::new_from_slice(encryption_key).map_err(|e| {
+        let cipher = Aes256Gcm::new_from_slice(self.key.as_bytes()).map_err(|e| {
             StoreError::ImplementationError {
                 store: self.subtree_name.clone(),
                 reason: format!("Failed to create cipher: {e}"),
             }
         })?;
 
-        // Generate random nonce
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-
-        // Encrypt
         let ciphertext =
             cipher
                 .encrypt(&nonce, plaintext)
@@ -1056,7 +1048,9 @@ impl<S: Store> PasswordStore<S> {
             .into());
         }
 
-        let password = Password { password: password.into() };
+        let password = Password {
+            password: password.into(),
+        };
         let encryption = EncryptionInfo::current(
             DEFAULT_ARGON2_M_COST,
             DEFAULT_ARGON2_T_COST,
@@ -1149,17 +1143,19 @@ impl<S: Store> PasswordStore<S> {
         }
 
         let config = self.config.as_ref().expect("Locked state requires config");
-        let password = Password { password: password.into() };
+        let password = Password {
+            password: password.into(),
+        };
         let data_key = config.data_key(&password.password, &self.name)?;
-        let decrypted_config = config.wrapped_config.decrypt(data_key.as_bytes(), &self.name)?;
+        let decrypted_config = config
+            .wrapped_config
+            .decrypt(data_key.as_bytes(), &self.name)?;
 
         // Parser errors can quote decrypted content; retain only fixed diagnostic text.
-        let wrapped_info: WrappedStoreInfo =
-            serde_json::from_slice(decrypted_config.as_bytes()).map_err(|_| {
-                StoreError::DeserializationFailed {
-                    store: self.name.clone(),
-                    reason: "Failed to parse wrapped store info".to_string(),
-                }
+        let wrapped_info: WrappedStoreInfo = serde_json::from_slice(decrypted_config.as_bytes())
+            .map_err(|_| StoreError::DeserializationFailed {
+                store: self.name.clone(),
+                reason: "Failed to parse wrapped store info".to_string(),
             })?;
         drop(decrypted_config);
 
@@ -1237,7 +1233,8 @@ impl<S: Store> PasswordStore<S> {
             p.max(DEFAULT_ARGON2_P_COST),
         );
         let wrapping_key = config.encryption.derive_key(
-            &self.cached_password
+            &self
+                .cached_password
                 .as_ref()
                 .expect("Unlocked state requires password")
                 .password,
@@ -1328,20 +1325,7 @@ mod tests {
 
     fn encryptor(store: &str) -> PasswordEncryptor {
         PasswordEncryptor::new(
-            Arc::new(
-                EncryptionInfo {
-                    algorithm: "aes-256-gcm".to_string(),
-                    kdf: "argon2id".to_string(),
-                    salt: "MDEyMzQ1Njc4OUFCQ0RFRg".to_string(),
-                    version: "v0".to_string(),
-                    salt_encoding: None,
-                    argon2_m_cost: Some(8),
-                    argon2_t_cost: Some(1),
-                    argon2_p_cost: Some(1),
-                }
-                .derive_key("record-authentication", store)
-                .unwrap(),
-            ),
+            Arc::new(SecretBytes::from_vec(vec![42; 32])),
             store.to_string(),
             b"database",
         )
@@ -1424,7 +1408,8 @@ mod tests {
             info.salt = "invalid!".into();
             assert!(
                 info.derive_key("password", "test")
-                    .err().unwrap()
+                    .err()
+                    .unwrap()
                     .to_string()
                     .contains("work ceiling")
             );
@@ -1436,7 +1421,8 @@ mod tests {
         info.salt = "invalid!".into();
         assert!(
             info.derive_key("password", "test")
-                .err().unwrap()
+                .err()
+                .unwrap()
                 .to_string()
                 .contains("Invalid salt")
         );
@@ -1444,7 +1430,8 @@ mod tests {
             let info = EncryptionInfo::current(m, t, p);
             assert!(
                 info.derive_key("password", "test")
-                    .err().unwrap()
+                    .err()
+                    .unwrap()
                     .to_string()
                     .contains("Invalid Argon2 parameters")
             );
@@ -1497,7 +1484,9 @@ mod tests {
         let key = [42; 32];
         let good = PasswordStoreConfig {
             encryption,
-            wrapped_key: Some(EncryptedFragment::encrypt(wrapping_key.as_bytes(), &key, "test").unwrap()),
+            wrapped_key: Some(
+                EncryptedFragment::encrypt(wrapping_key.as_bytes(), &key, "test").unwrap(),
+            ),
             wrapped_config: EncryptedFragment::encrypt(&key, b"metadata", "test").unwrap(),
         };
         assert_eq!(good.data_key("password", "test").unwrap().as_bytes(), key);

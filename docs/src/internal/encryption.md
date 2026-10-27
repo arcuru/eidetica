@@ -71,8 +71,8 @@ envelopes do not change. The atomic configuration update and registry type chang
 when the caller commits the transaction. An already-current Store is a no-op; a locked or
 uninitialized Store cannot report an authenticated upgrade or perform one.
 
-This is upgrade plumbing, not password rotation or retroactive strengthening of history. Old
-immutable `_index` Entries and backups still expose the old password wrapping or v0 derivation
+KDF upgrades do not rotate passwords or retroactively strengthen history. Old immutable
+`_index` Entries and backups still expose the old password wrapping or v0 derivation
 for the same data key. Upgrading does not revoke those copies, erase old metadata, or prevent an
 offline attack using their old KDF costs.
 
@@ -86,16 +86,16 @@ PasswordStore clears specific owned allocations when their owner drops, includin
 returns, future cancellation, and panic unwinding. This is best-effort cleanup of those buffers,
 not a guarantee that plaintext is erased from process memory.
 
-| Plaintext                            | Owner and lifetime                                                                                                   |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| Converted password                   | Moved into the zeroizing `Password` immediately after the state check, before derivation, encryption or persistence  |
-| Unlocked password                    | Zeroizing `Password` retained by the wrapper for explicit upgrades; the encryptor does not retain the password                              |
-| Password-derived wrapping key          | Private zeroizing byte owner from allocation; dropped after key wrapping/unwrapping, before persistence        |
-| Authenticated data key            | Private zeroizing byte owner, shared without copying by the wrapper and transaction encryptor until their last owner drops                |
-| Record subkeys                       | `Zeroizing<[u8; 32]>`, scoped to one hash or cipher operation                                                        |
-| Wrapped-config and row envelope JSON | Serialized directly into a guarded buffer sized by a measuring pass; dropped right after encryption                  |
-| Decrypted config and envelope JSON   | Guarded immediately after AES-GCM decryption; dropped right after parsing                                            |
-| Decrypted row `key`/`value` fields   | Guarded once each field deserializes; cleared on rejection, moved without copying into the returned `Vec`s otherwise |
+| Plaintext                            | Owner and lifetime                                                                                                         |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Converted password                   | Moved into the zeroizing `Password` immediately after the state check, before derivation, encryption or persistence        |
+| Unlocked password                    | Zeroizing `Password` retained by the wrapper for explicit upgrades; the encryptor does not retain the password             |
+| Password-derived wrapping key        | Private zeroizing byte owner from allocation; dropped after key wrapping/unwrapping, before persistence                    |
+| Authenticated data key               | Private zeroizing byte owner, shared without copying by the wrapper and transaction encryptor until their last owner drops |
+| Record subkeys                       | `Zeroizing<[u8; 32]>`, scoped to one hash or cipher operation                                                              |
+| Wrapped-config and row envelope JSON | Serialized directly into a guarded buffer sized by a measuring pass; dropped right after encryption                        |
+| Decrypted config and envelope JSON   | Guarded immediately after AES-GCM decryption; dropped right after parsing                                                  |
+| Decrypted row `key`/`value` fields   | Guarded once each field deserializes; cleared on rejection, moved without copying into the returned `Vec`s otherwise       |
 
 The private byte owner implements no `Debug`, `Display`, `Clone`, or serde trait. Decrypted wrapped
 metadata is parsed only to validate it, then dropped; PasswordStore does not retain it.

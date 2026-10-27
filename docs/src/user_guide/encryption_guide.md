@@ -94,6 +94,8 @@ decrypted content. Keep transactions short and avoid logging passwords or decryp
 
 New Stores use a v1 KDF envelope with raw salt bytes. Existing v0 Stores remain readable with
 their original text-salt derivation. `open` uses the stored parameters without migrating anything.
+Readers that only support v0 cannot open new or upgraded v1 Stores; update readers before creating
+or upgrading Stores. Rolling back the reader does not undo a committed upgrade.
 After a successful open, the application can check `needs_rehash()` and explicitly opt into an
 upgrade:
 

@@ -1039,6 +1039,8 @@ async fn test_password_store_open_uninitialized_fails() {
 
     let result = encrypted.open("password");
     assert!(result.is_err());
+    assert!(encrypted.needs_rehash().is_err());
+    assert!(encrypted.upgrade_kdf().await.is_err());
 }
 
 // Build the old envelope independently: v0 fed the unpadded base64 *text* to
@@ -1135,7 +1137,8 @@ async fn test_password_store_rejects_excessive_kdf_iterations() {
         .get_store::<PasswordStore<DocStore>>("expensive")
         .await
         .unwrap();
-    assert!(encrypted.open("legacy password").is_err());
+    let error = encrypted.open("legacy password").unwrap_err();
+    assert!(error.to_string().contains("work ceiling"), "{error}");
     assert!(!encrypted.is_open());
 }
 
@@ -1424,9 +1427,7 @@ async fn test_password_table_kdf_upgrade_keeps_cached_rows() {
         lifecycle: eidetica::backend::StoreStateLifecycle::Derived,
         scope: eidetica::backend::CacheScope::Shared,
         projection: PasswordStore::<Table<PasswordTestRecord>>::state_model().descriptor(),
-        source_key: eidetica::entry::ID::from_bytes(format!("merge:{entry_id}").as_bytes())
-            .to_string()
-            .into_bytes(),
+        source_key: Snapshot::from([entry_id]).cache_key_bytes(),
     };
     let view = backend
         .resolve_store_state(&request)
