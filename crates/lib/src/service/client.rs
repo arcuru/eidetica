@@ -18,6 +18,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
+use serde_json::value::RawValue;
 use tokio::net::{
     UnixStream,
     unix::{OwnedReadHalf, OwnedWriteHalf},
@@ -38,10 +39,10 @@ use crate::instance::WeakInstance;
 use crate::service::ServiceConfig;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingServerFrame, MergeState,
-    Notification, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse,
-    TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext, WireCrdtValue,
-    read_frame_with_config, write_frame_with_config,
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingServerFrame,
+    MAX_HANDSHAKE_BYTES, MergeState, Notification, PROTOCOL_VERSION, ReadScope, ServiceRequest,
+    ServiceResponse, TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext,
+    WireCrdtValue, read_frame_with_config, write_frame_with_config,
 };
 #[cfg(test)]
 use crate::service::protocol::{ServerFrame, read_frame, write_frame};
@@ -518,6 +519,8 @@ impl std::fmt::Debug for RemoteConnection {
 impl RemoteConnection {
     /// Connect to a service server at the given socket path.
     ///
+    /// Learns the daemon's finite frame policy during a bounded handshake;
+    /// legacy daemons retain the 64 MiB default. Started writes are never replayed.
     /// Performs the protocol handshake, then spawns a background reader
     /// task that demuxes [`ServerFrame`](crate::service::protocol::ServerFrame)s:
     /// `Response` frames pop the next pending oneshot in FIFO order,
@@ -525,29 +528,22 @@ impl RemoteConnection {
     /// the attached `Instance`'s callback registry (after
     /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
-        Self::connect_with_config(path, ServiceConfig::default()).await
-    }
-
-    /// Connect with an explicit local frame policy, including the handshake.
-    /// An over-limit request or response retires the connection and fails all
-    /// pending calls. Started writes are never automatically replayed.
-    pub async fn connect_with_config(
-        path: impl AsRef<Path>,
-        config: ServiceConfig,
-    ) -> crate::Result<Self> {
         let stream = UnixStream::connect(path.as_ref()).await?;
         let shutdown_socket = stream.into_std()?;
         let stream = UnixStream::from_std(shutdown_socket.try_clone()?)?;
         let (mut reader, mut writer) = stream.into_split();
 
+        // Bootstrap is bounded independently of any advertised larger policy.
+        let bootstrap = ServiceConfig::new(u64::from(MAX_HANDSHAKE_BYTES))?;
         // Send handshake
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION,
+            learns_frame_policy: true,
         };
-        write_frame_with_config(&mut writer, &handshake, config).await?;
+        write_frame_with_config(&mut writer, &handshake, bootstrap).await?;
 
         // Read ack
-        let ack: HandshakeAck = read_frame_with_config(&mut reader, config)
+        let raw_ack: Box<RawValue> = read_frame_with_config(&mut reader, bootstrap)
             .await?
             .ok_or_else(|| {
                 crate::Error::Io(std::io::Error::new(
@@ -555,6 +551,15 @@ impl RemoteConnection {
                     "Server closed connection during handshake",
                 ))
             })?;
+
+        if !raw_ack.get().starts_with('{') {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "handshake acknowledgement must be an object",
+            )
+            .into());
+        }
+        let ack: HandshakeAck = serde_json::from_str(raw_ack.get())?;
 
         if ack.protocol_version != PROTOCOL_VERSION {
             return Err(crate::Error::Io(std::io::Error::new(
@@ -566,6 +571,11 @@ impl RemoteConnection {
             )));
         }
 
+        // Each connection learns afresh. Legacy daemons omit the field.
+        let config = match ack.max_frame_bytes {
+            Some(bytes) => ServiceConfig::new(bytes)?,
+            None => ServiceConfig::default(),
+        };
         let inner = Arc::new(RemoteConnectionInner {
             config,
             shutdown_socket,
@@ -1899,6 +1909,8 @@ mod compatibility_tests;
 
 #[cfg(test)]
 mod frame_limit_tests;
+#[cfg(test)]
+mod handshake_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1924,6 +1936,7 @@ mod tests {
                 &mut stream,
                 &HandshakeAck {
                     protocol_version: 0,
+                    max_frame_bytes: Some(u64::from(config.max_frame_bytes())),
                 },
             )
             .await
@@ -1931,7 +1944,7 @@ mod tests {
             stream
         };
         let (conn, peer) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(RemoteConnection::connect_with_config(&path, config), peer)
+            tokio::join!(RemoteConnection::connect(&path), peer)
         })
         .await
         .unwrap();

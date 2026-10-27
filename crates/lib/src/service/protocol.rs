@@ -51,12 +51,12 @@ use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 /// Updated peers reject unknown operations with [`ServiceResponse::Unsupported`],
 /// fail one call for unknown responses, and ignore unknown optional notification
 /// variants. Known payloads and required nested types remain strict. There is no
-/// capability negotiation or downgrade. Pre-change v0 peers still disconnect on
+/// operation-capability negotiation or downgrade. Pre-change v0 peers still disconnect on
 /// unknown variants; keeping v0 does not retroactively make them extensible.
 /// `#[non_exhaustive]` protects Rust source compatibility, not the wire.
 pub const PROTOCOL_VERSION: u32 = 0;
 
-/// Default maximum frame size: exactly 64 MiB. Endpoints may configure another limit.
+/// Default maximum frame size: exactly 64 MiB. Daemons may configure another limit.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
 
 /// Record payload budget, independent of the configured transport frame limit.
@@ -65,16 +65,38 @@ pub const MAX_RECORD_CHUNK_BYTES: u32 = 63 * 1024 * 1024;
 /// Default upper bound for an encoded record page.
 pub const MAX_RECORD_PAGE_BYTES: u32 = 4 * 1024 * 1024;
 
+/// Bootstrap payload bound, before a daemon's frame policy has been learned.
+/// No allocation depends on an advertised limit until this frame is decoded.
+pub const MAX_HANDSHAKE_BYTES: u32 = 1024;
+
 /// Handshake message sent by the client on connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handshake {
     pub protocol_version: u32,
+    /// Accept the daemon's validated finite frame policy for this connection.
+    /// Missing in legacy clients, which must never receive frames above 64 MiB.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub learns_frame_policy: bool,
 }
 
 /// Handshake acknowledgment sent by the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakeAck {
     pub protocol_version: u32,
+    /// Present only for clients that opt into learning the daemon's policy.
+    /// Absence means the legacy 64 MiB limit; explicit null is malformed.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_frame_limit"
+    )]
+    pub max_frame_bytes: Option<u64>,
+}
+
+fn deserialize_frame_limit<'de, D: de::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    u64::deserialize(deserializer).map(Some)
 }
 
 // ===========================================================================
@@ -963,14 +985,16 @@ mod tests {
     fn v0_known_wire_fixtures_are_unchanged() {
         assert_eq!(
             serde_json::to_string(&Handshake {
-                protocol_version: 0
+                protocol_version: 0,
+                learns_frame_policy: false
             })
             .unwrap(),
             r#"{"protocol_version":0}"#
         );
         assert_eq!(
             serde_json::to_string(&HandshakeAck {
-                protocol_version: 0
+                protocol_version: 0,
+                max_frame_bytes: None
             })
             .unwrap(),
             r#"{"protocol_version":0}"#
@@ -1052,6 +1076,7 @@ mod tests {
     fn test_handshake_serde() {
         let h = Handshake {
             protocol_version: PROTOCOL_VERSION,
+            learns_frame_policy: false,
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: Handshake = serde_json::from_str(&json).unwrap();
@@ -1062,10 +1087,24 @@ mod tests {
     fn test_handshake_ack_serde() {
         let h = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
+            max_frame_bytes: None,
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: HandshakeAck = serde_json::from_str(&json).unwrap();
         assert_eq!(h2.protocol_version, PROTOCOL_VERSION);
+        #[derive(Deserialize)]
+        struct LegacyAck {
+            protocol_version: u32,
+        }
+        let extended = HandshakeAck {
+            protocol_version: 0,
+            max_frame_bytes: Some(1024 * 1024 * 1024),
+        };
+        let old: LegacyAck =
+            serde_json::from_str(&serde_json::to_string(&extended).unwrap()).unwrap();
+        assert_eq!(old.protocol_version, 0);
+        let legacy: HandshakeAck = serde_json::from_str(r#"{"protocol_version":0}"#).unwrap();
+        assert_eq!(legacy.max_frame_bytes, None);
     }
 
     #[test]

@@ -1,8 +1,10 @@
 use super::*;
+use eidetica::entry::ID;
 use eidetica::service::ServiceConfig;
+use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp};
 
 /// A real authenticated response larger than the old ceiling, not a fake prefix
-/// or a helper-only codec test. Only ~65 MiB of application data is required.
+/// or a helper-only codec test. Only ~17 MiB of application data is required.
 #[tokio::test]
 async fn configured_frame_limit_roundtrips_entry_above_64_mib() {
     let dir = tempfile::tempdir().unwrap();
@@ -16,7 +18,7 @@ async fn configured_frame_limit_roundtrips_entry_above_64_mib() {
     db.with_transaction(|tx| async move {
         tx.get_store::<DocStore>("data")
             .await?
-            .set("large", "x".repeat(65 * 1024 * 1024))
+            .set("large", "x".repeat(17 * 1024 * 1024))
             .await?;
         Ok(())
     })
@@ -37,9 +39,7 @@ async fn configured_frame_limit_roundtrips_entry_above_64_mib() {
     let (shutdown, rx) = watch::channel(());
     let task = tokio::spawn(server.run(rx));
     let url = format!("unix://{}", path.display());
-    let client = Instance::connect_with_service_config(&url, config)
-        .await
-        .unwrap();
+    let client = Instance::connect(&url).await.unwrap();
     let _admin = client.login_account("admin", None).await.unwrap();
     let conn = remote_conn(&client);
     let entry = tokio::time::timeout(
@@ -76,7 +76,7 @@ async fn configured_frame_limit_roundtrips_entry_above_64_mib() {
     );
     assert!(count.0 < u64::from(config.max_frame_bytes()));
     eprintln!(
-        "Configured 1 GiB endpoint roundtripped an encoded {}-byte response",
+        "Ordinary client with a 1 GiB daemon roundtripped an encoded {}-byte response",
         count.0
     );
     assert!(
@@ -84,69 +84,40 @@ async fn configured_frame_limit_roundtrips_entry_above_64_mib() {
         "follow-up lost FIFO alignment"
     );
 
-    // The unchanged default client must fail explicitly against the same server.
-    let default_client = Instance::connect(&url).await.unwrap();
-    let _admin = default_client.login_account("admin", None).await.unwrap();
-    let default = remote_conn(&default_client);
-    let entry_id_for_shutdown = id.clone();
+    let private = admin.get_signing_key(&key).unwrap();
+    let mut legacy = request_large_entry(
+        &path,
+        false,
+        db.root_id().clone(),
+        SigKey::from_pubkey(&key),
+        id.clone(),
+        &private,
+    )
+    .await;
+    // The server must refuse the large frame before writing even its prefix.
     assert!(
         tokio::time::timeout(
             Duration::from_secs(60),
-            default.db_get_entry(db.root_id().clone(), SigKey::from_pubkey(&key), id,)
+            read_frame::<_, ServerFrame>(&mut legacy)
         )
         .await
-        .expect("default client hung on oversized response")
-        .is_err()
+        .unwrap()
+        .unwrap()
+        .is_none()
     );
-    assert!(
-        tokio::time::timeout(Duration::from_secs(5), default.get_instance_metadata())
-            .await
-            .unwrap()
-            .is_err()
-    );
-    // Stop the server while its writer is blocked sending a large response.
-    // A detached writer would survive handler cancellation and finish sending
-    // the payload (or leave the peer waiting forever) after shutdown returned.
-    let (mut reader, mut writer) = raw_handshake(&path).await;
-    write_frame(
-        &mut writer,
-        &ServiceRequest::TrustedLoginAccount {
-            username: "admin".into(),
-        },
+    assert!(conn.get_instance_metadata().await.unwrap().is_some());
+
+    // A capable raw peer gets the large prefix; shutdown must interrupt its
+    // blocked response writer rather than leave a detached task behind.
+    let mut reader = request_large_entry(
+        &path,
+        true,
+        db.root_id().clone(),
+        SigKey::from_pubkey(&key),
+        id,
+        &private,
     )
-    .await
-    .unwrap();
-    let challenge = match read_response(&mut reader).await {
-        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
-        other => panic!("unexpected login response: {other:?}"),
-    };
-    let private = admin.get_signing_key(&key).unwrap();
-    write_frame(
-        &mut writer,
-        &ServiceRequest::TrustedLoginProve {
-            signature: create_challenge_response(&challenge, &private),
-        },
-    )
-    .await
-    .unwrap();
-    assert!(matches!(
-        read_response(&mut reader).await,
-        ServiceResponse::TrustedLoginOk
-    ));
-    write_frame(
-        &mut writer,
-        &ServiceRequest::AuthenticatedDb(Box::new(
-            eidetica::service::protocol::AuthenticatedDbRequest {
-                root_id: db.root_id().clone(),
-                identity: SigKey::from_pubkey(&key),
-                op: eidetica::service::protocol::DatabaseOp::GetEntry {
-                    id: entry_id_for_shutdown,
-                },
-            },
-        )),
-    )
-    .await
-    .unwrap();
+    .await;
     use tokio::io::AsyncReadExt;
     let mut prefix = [0; 4];
     tokio::time::timeout(Duration::from_secs(60), reader.read_exact(&mut prefix))
@@ -169,4 +140,64 @@ async fn configured_frame_limit_roundtrips_entry_above_64_mib() {
         partial.len() < count.0 as usize,
         "orphaned writer completed a response after shutdown"
     );
+}
+
+/// Raw old/new peers use the same authenticated request, differing only in the
+/// optional framing opt-in. Authentication and the operation itself do not change.
+async fn request_large_entry(
+    path: &std::path::Path,
+    capable: bool,
+    root: ID,
+    identity: SigKey,
+    id: ID,
+    private: &PrivateKey,
+) -> ReadHalf<UnixStream> {
+    let stream = UnixStream::connect(path).await.unwrap();
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    write_frame(
+        &mut writer,
+        &Handshake {
+            protocol_version: 0,
+            learns_frame_policy: capable,
+        },
+    )
+    .await
+    .unwrap();
+    let ack: HandshakeAck = read_frame(&mut reader).await.unwrap().unwrap();
+    assert_eq!(ack.max_frame_bytes, capable.then_some(1024 * 1024 * 1024));
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginAccount {
+            username: "admin".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("unexpected login response: {other:?}"),
+    };
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, private),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    write_frame(
+        &mut writer,
+        &ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+            root_id: root,
+            identity,
+            op: DatabaseOp::GetEntry { id },
+        })),
+    )
+    .await
+    .unwrap();
+    reader
 }

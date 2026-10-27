@@ -1,5 +1,6 @@
 //! The actual daemon entry point must apply the same policy as the library.
 use eidetica::service::{RemoteConnection, ServiceConfig};
+use eidetica::{Instance, crdt::Doc, store::DocStore};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -35,9 +36,41 @@ async fn daemon_entry_point_applies_cli_and_env_frame_limits() {
         "{}",
         String::from_utf8_lossy(&init.stderr)
     );
-    for (index, (bytes, env)) in [(128, false), (128, true), (1073741824, false)]
-        .into_iter()
-        .enumerate()
+    // Disposable SQLite data written through the public API, not a live backend.
+    let (root, entry_id) = {
+        let local = Instance::connect(format!("sqlite://{}", data.join("eidetica.db").display()))
+            .await
+            .unwrap();
+        let mut admin = local.login_account("admin", None).await.unwrap();
+        let key = admin.get_default_key().unwrap();
+        let db = admin.create_database(Doc::new(), &key).await.unwrap();
+        db.with_transaction(|tx| async move {
+            tx.get_store::<DocStore>("data")
+                .await?
+                .set("large", "x".repeat(17 * 1024 * 1024))
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let id = db
+            .snapshot()
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .clone();
+        (db.root_id().clone(), id)
+    };
+    for (index, (bytes, env)) in [
+        (128, false),
+        (128, true),
+        (16384, false),
+        (1073741824, false),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let socket = dir.path().join(format!("daemon-{index}.sock"));
         let mut cmd = binary();
@@ -74,6 +107,40 @@ async fn daemon_entry_point_applies_cli_and_env_frame_limits() {
             assert!(response.is_err(), "CLI limit was ignored");
         } else {
             assert!(response.unwrap().is_some());
+            let client = Instance::connect(format!("unix://{}", socket.display()))
+                .await
+                .unwrap();
+            if bytes == 16384 {
+                // A client ignoring the advertised cap would send this to the
+                // daemon and get disconnected instead of a local encode error.
+                let error = client
+                    .login_account(&"x".repeat(32768), None)
+                    .await
+                    .err()
+                    .unwrap();
+                assert!(error.to_string().contains("frame too large"), "{error}");
+            } else {
+                let admin = client.login_account("admin", None).await.unwrap();
+                let db = admin.open_database(&root).await.unwrap();
+                let entry = tokio::time::timeout(Duration::from_secs(60), db.get_entry(&entry_id))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(entry.id(), entry_id);
+                assert!(serde_json::to_vec(&entry).unwrap().len() > 64 * 1024 * 1024);
+                assert!(
+                    client
+                        .remote_connection()
+                        .unwrap()
+                        .get_instance_metadata()
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
+                eprintln!(
+                    "Actual CLI daemon: ordinary authenticated client read an entry above 64 MiB; small follow-up succeeded"
+                );
+            }
         }
         drop(conn);
         drop(daemon);

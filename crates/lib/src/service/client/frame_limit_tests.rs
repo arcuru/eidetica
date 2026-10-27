@@ -6,7 +6,7 @@ use tokio::io::AsyncReadExt;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-async fn server(
+pub(super) async fn server(
     config: ServiceConfig,
 ) -> (
     std::path::PathBuf,
@@ -39,15 +39,27 @@ fn assert_disconnected<T: std::fmt::Debug>(result: crate::Result<T>) {
 #[tokio::test]
 async fn configured_response_limits_complete_multiple_pending_calls() {
     // A metadata response exceeds 128 bytes, but the handshake/requests fit.
-    // Cover server-side encode refusal and client-side inbound mismatch.
-    for (server_config, client_config) in [
-        (ServiceConfig::new(128).unwrap(), ServiceConfig::default()),
-        (ServiceConfig::default(), ServiceConfig::new(128).unwrap()),
-    ] {
-        let (path, shutdown, task, _dir) = server(server_config).await;
-        let conn = RemoteConnection::connect_with_config(&path, client_config)
-            .await
-            .unwrap();
+    for malicious_reply in [false, true] {
+        let (path, shutdown, task, _dir) = server(ServiceConfig::new(128).unwrap()).await;
+        let (conn, peer_task) = if malicious_reply {
+            let (conn, mut peer) =
+                super::tests::connect_peer_with_config(ServiceConfig::new(128).unwrap()).await;
+            let task = tokio::spawn(async move {
+                for _ in 0..3 {
+                    let _: ServiceRequest = read_frame(&mut peer).await.unwrap().unwrap();
+                }
+                // Deliberately violate the policy the peer advertised.
+                write_frame(
+                    &mut peer,
+                    &ServerFrame::Response(Box::new(ServiceResponse::Token("x".repeat(256)))),
+                )
+                .await
+                .unwrap();
+            });
+            (conn, Some(task))
+        } else {
+            (RemoteConnection::connect(&path).await.unwrap(), None)
+        };
         let mut calls = (0..3)
             .map(|_| Box::pin(conn.get_instance_metadata()))
             .collect::<Vec<_>>();
@@ -67,6 +79,9 @@ async fn configured_response_limits_complete_multiple_pending_calls() {
         }
         assert_disconnected(conn.get_instance_metadata().await);
         assert!(conn.inner.pending_lock().is_empty());
+        if let Some(task) = peer_task {
+            task.await.unwrap();
+        }
 
         // Another connection is unaffected. Unknown v0 operations get a small
         // Unsupported reply even when this server's metadata cannot fit.
@@ -75,6 +90,7 @@ async fn configured_response_limits_complete_multiple_pending_calls() {
             &mut peer,
             &Handshake {
                 protocol_version: 0,
+                learns_frame_policy: false,
             },
         )
         .await
@@ -109,8 +125,10 @@ async fn configured_request_mismatch_disconnects_caller() {
         }),
     )
     .await
-    .expect("server prefix rejection stranded caller");
-    assert_disconnected(result);
+    .expect("learned request policy stranded caller");
+    assert!(
+        matches!(result, Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidData)
+    );
     assert_disconnected(conn.get_instance_metadata().await);
     drop(shutdown);
     tokio::time::timeout(TIMEOUT, task)
@@ -177,35 +195,31 @@ async fn peer_shutdown_releases_multiple_pending_calls() {
 }
 
 #[tokio::test]
-async fn default_and_configured_instances_preserve_small_calls_and_shutdown() {
-    let (path, shutdown, task, _dir) = server(ServiceConfig::default()).await;
-    let url = format!("unix://{}", path.display());
-    let default = crate::Instance::connect(&url).await.unwrap();
-    let configured = crate::Instance::connect_with_service_config(
-        &url,
+async fn default_instances_preserve_small_calls_and_shutdown() {
+    for config in [
+        ServiceConfig::default(),
         ServiceConfig::new(1024 * 1024 * 1024).unwrap(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(default.id(), configured.id());
-    assert!(
-        crate::Instance::connect_with_service_config("memory://", ServiceConfig::default())
+    ] {
+        let (path, shutdown, task, _dir) = server(config).await;
+        let url = format!("unix://{}", path.display());
+        let first = crate::Instance::connect(&url).await.unwrap();
+        let second = crate::Instance::connect(&url).await.unwrap();
+        assert_eq!(first.id(), second.id());
+        let conn = RemoteConnection::connect(&path).await.unwrap();
+        assert_eq!(conn.inner.config, config);
+        assert!(conn.get_instance_metadata().await.unwrap().is_some());
+        drop(shutdown);
+        tokio::time::timeout(TIMEOUT, task)
             .await
-            .is_err()
-    );
-    let conn = RemoteConnection::connect(&path).await.unwrap();
-    assert!(conn.get_instance_metadata().await.unwrap().is_some());
-    drop(shutdown);
-    tokio::time::timeout(TIMEOUT, task)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert_disconnected(
-        tokio::time::timeout(TIMEOUT, conn.get_instance_metadata())
-            .await
-            .unwrap(),
-    );
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_disconnected(
+            tokio::time::timeout(TIMEOUT, conn.get_instance_metadata())
+                .await
+                .unwrap(),
+        );
+    }
 }
 
 #[tokio::test]

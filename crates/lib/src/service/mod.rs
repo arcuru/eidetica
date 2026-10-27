@@ -85,9 +85,9 @@ pub use server::ServiceServer;
 
 use std::path::PathBuf;
 
-/// Local frame policy for one service or client endpoint.
+/// Daemon frame policy, learned automatically by capable clients at connection.
 ///
-/// Limits are not negotiated: configure both endpoints to accept large frames.
+/// Legacy clients use at most 64 MiB, or the daemon's smaller limit.
 /// This does not change record chunk/page budgets or queue sizes. A larger limit
 /// permits larger allocations per frame; it is not an aggregate memory budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

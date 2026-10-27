@@ -30,9 +30,10 @@ use crate::instance::{CallbackId, WriteSource};
 use crate::service::ServiceConfig;
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, IncomingRequest, MergeState, Notification,
-    PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, TicketBootstrapOutcome,
-    TicketBootstrapRequest, read_frame_with_config, write_frame_with_config,
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingRequest, MAX_FRAME_SIZE,
+    MAX_HANDSHAKE_BYTES, MergeState, Notification, PROTOCOL_VERSION, ServerFrame, ServiceRequest,
+    ServiceResponse, TicketBootstrapOutcome, TicketBootstrapRequest, read_frame_with_config,
+    write_frame_with_config,
 };
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
 
@@ -248,7 +249,7 @@ impl ServiceServer {
         Self::bind_with_config(instance, socket_path, ServiceConfig::default()).await
     }
 
-    /// Bind with an explicit local frame policy for every accepted connection.
+    /// Bind with an explicit daemon frame policy; legacy peers use at most 64 MiB.
     pub async fn bind_with_config(
         instance: Instance,
         socket_path: impl Into<PathBuf>,
@@ -628,19 +629,21 @@ async fn handle_connection(
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
-    // 1. Read and validate handshake (inline writer, no channel yet).
-    let handshake: crate::service::protocol::Handshake =
-        match read_frame_with_config(&mut reader, config).await? {
-            Some(h) => h,
-            None => return Ok(()), // Client disconnected before handshake
-        };
+    // 1. Bound bootstrap before learning whether this client supports policy.
+    let bootstrap =
+        ServiceConfig::new(u64::from(config.max_frame_bytes().min(MAX_HANDSHAKE_BYTES)))?;
+    let handshake: Handshake = match read_frame_with_config(&mut reader, bootstrap).await? {
+        Some(h) => h,
+        None => return Ok(()), // Client disconnected before handshake
+    };
 
     if handshake.protocol_version != PROTOCOL_VERSION {
         // Send error ack and close
         let ack = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
+            max_frame_bytes: None,
         };
-        write_frame_with_config(&mut writer, &ack, config).await?;
+        write_frame_with_config(&mut writer, &ack, bootstrap).await?;
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
@@ -650,11 +653,20 @@ async fn handle_connection(
         )));
     }
 
-    // Send handshake ack
+    // Old clients ignore extra fields but cannot accept larger frames. Only an
+    // explicit opt-in permits raising the connection's policy above legacy.
+    let config = if handshake.learns_frame_policy {
+        config
+    } else {
+        ServiceConfig::new(u64::from(config.max_frame_bytes().min(MAX_FRAME_SIZE)))?
+    };
     let ack = HandshakeAck {
         protocol_version: PROTOCOL_VERSION,
+        max_frame_bytes: handshake
+            .learns_frame_policy
+            .then_some(u64::from(config.max_frame_bytes())),
     };
-    write_frame_with_config(&mut writer, &ack, config).await?;
+    write_frame_with_config(&mut writer, &ack, bootstrap).await?;
 
     // 2. Prepare the per-connection writer future.
     //
@@ -2205,6 +2217,7 @@ mod tests {
         // Send a version that remains wrong when the protocol is bumped.
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION.saturating_add(1),
+            learns_frame_policy: false,
         };
         write_frame(&mut writer, &handshake).await.unwrap();
 
@@ -2320,6 +2333,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                learns_frame_policy: false,
             },
         )
         .await
@@ -2368,6 +2382,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                learns_frame_policy: false,
             },
         )
         .await

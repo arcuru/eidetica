@@ -325,6 +325,7 @@ async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHal
         &mut writer,
         &Handshake {
             protocol_version: PROTOCOL_VERSION,
+            learns_frame_policy: false,
         },
     )
     .await

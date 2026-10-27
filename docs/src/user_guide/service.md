@@ -36,7 +36,7 @@ The daemon prints its socket path on startup and runs until interrupted (SIGINT/
 
 The default is **exactly 64 MiB (67108864 bytes)** per encoded JSON frame,
 excluding the four-byte length prefix.
-To allow larger local responses, configure both the daemon and each client:
+To allow larger local responses, configure the daemon only:
 
 ```bash
 eidetica daemon --max-frame-bytes 1073741824
@@ -49,17 +49,24 @@ eidetica daemon --max-frame-bytes 1073741824
 use eidetica::{Instance, service::{ServiceConfig, ServiceServer}};
 
 let config = ServiceConfig::new(1024 * 1024 * 1024)?; // 1 GiB
-let client = Instance::connect_with_service_config("unix:///run/eidetica/service.sock", config).await?;
+let client = Instance::connect("unix:///run/eidetica/service.sock").await?;
 // For a programmatic daemon:
 let server = ServiceServer::bind_with_config(instance, socket_path, config).await?;
 ```
 
-Low-level clients use `RemoteConnection::connect_with_config(path, config)`.
-Existing constructors retain the 64 MiB default.
+Ordinary `Instance::connect` and `RemoteConnection::connect` clients automatically
+learn the daemon's policy on each new connection, with no application setting or
+additional client ceiling. Legacy clients use at most 64 MiB (or the daemon's
+smaller cap); new clients connecting to legacy daemons retain 64 MiB.
 The limit must be positive and fit both the u32 wire prefix and local allocation
 size; zero is not an unlimited setting.
-Limits are local, not negotiated, and apply to the handshake, requests, responses
-and notifications.
+The version-0 handshake opts into learning the daemon's limit and is bounded to
+1024 encoded bytes before applying it (the daemon also enforces a smaller configured
+cap during bootstrap). Missing legacy fields remain compatible; malformed policies
+fail the connection. The learned cap applies to requests, responses and notifications.
+A limit too small for bootstrap or required metadata prevents connection.
+This trusts only the existing owner-protected local-socket model; it does not
+authenticate a network server.
 An oversized frame or mismatched limit disconnects the affected connection and
 fails pending calls; reconnect explicitly and reconcile any ambiguous write
 before retrying it.
