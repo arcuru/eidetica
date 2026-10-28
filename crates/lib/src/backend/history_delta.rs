@@ -371,6 +371,7 @@ pub(crate) fn validate_delta(
     }
     if page.covered != Snapshot::from(covered.into_iter().collect::<Vec<_>>())
         || page.complete != query.target.iter().all(|id| seen.contains(id))
+        || (page.complete && page.covered.iter().any(|id| !query.target.contains(id)))
     {
         return Err(invalid("delta covered frontier or completion"));
     }

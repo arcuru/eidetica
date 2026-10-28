@@ -346,3 +346,40 @@ async fn history_delta_one_page_enforces_complete_encoded_response_limit() {
     assert!(result.is_err());
     assert!(conn.has_feature(FEATURE_HISTORY_DELTA));
 }
+
+#[tokio::test]
+async fn history_delta_collector_terminal_frontier_is_target_local() {
+    for empty in [false, true] {
+        let (conn, mut peer) = delta_peer().await;
+        let (tree, original, entries) = fixtures();
+        let target = if empty { Snapshot::EMPTY } else { original };
+        let call = conn.get_store_entries(
+            tree.clone(),
+            SigKey::default(),
+            "s".into(),
+            target.tips().to_vec(),
+            ReadScope::AllowUnverified,
+        );
+        let server = async {
+            is_delta(request(&mut peer).await, &target, &Snapshot::EMPTY);
+            let mut p = page(&tree, &target, &entries, true);
+            if !empty {
+                let extra = Entry::builder(tree.clone())
+                    .add_parent(tree.clone())
+                    .set_subtree_data("s", "outside target")
+                    .set_subtree_height("s", Some(2))
+                    .add_subtree_parent("s", entries[0].id())
+                    .build()
+                    .unwrap();
+                p.covered = Snapshot::from([entries[1].id(), extra.id()]);
+                p.entries.push(extra);
+            }
+            response(&mut peer, ServiceResponse::HistoryDelta(p)).await;
+        };
+        let (result, ()) = tokio::join!(call, server);
+        assert!(
+            result.is_err(),
+            "accepted extraneous terminal branch for empty={empty}"
+        );
+    }
+}
