@@ -119,7 +119,7 @@ pub enum DbKind {
 pub struct SqlxBackend {
     pool: Option<AnyPool>,
     kind: DbKind,
-    /// Directory for the on-disk blob tier (§5.2), or `None` to keep every blob
+    /// Directory for the on-disk blob tier, or `None` to keep every blob
     /// inline in the SQL `data` column. Orthogonal to [`kind`](Self::kind): the
     /// blob storage is local to the owning `Instance` (one backend = its
     /// database + blob dir + cache), so it applies equally to SQLite and
@@ -330,7 +330,7 @@ impl SqlxBackend {
         self.blob_dir.as_deref()
     }
 
-    /// Attach an on-disk blob tier (§5.2) rooted at `dir`, regardless of
+    /// Attach an on-disk blob tier rooted at `dir`, regardless of
     /// database kind. Blobs larger than the inline threshold are then stored as
     /// content-addressed files under `dir` (read via `pread`), while the
     /// database keeps the metadata; smaller blobs stay inline. The directory is
@@ -581,7 +581,7 @@ impl SqlxBackend {
     /// Connect to a SQLite database using a connection URL.
     ///
     /// Blobs are stored inline in SQL (no on-disk tier); use [`open_sqlite`] for
-    /// a file-based database with the hybrid inline/disk tier (§5.2).
+    /// a file-based database with the hybrid inline/disk tier.
     ///
     /// # Arguments
     ///

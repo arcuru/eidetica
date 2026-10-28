@@ -76,18 +76,15 @@ pub(crate) struct InMemoryInner {
     pub(crate) verified: HashMap<ID, VerifiedState>,
     /// Content-addressed blob storage, keyed by raw-codec (`0x55`) BLAKE3 CID.
     ///
-    /// Durable owned content stored out-of-band from the entry DAG (see the
-    /// `put_blob`/`get_blob`/`has_blob` backend methods). Evicted only by an
-    /// explicit GC pass (§6), and even then only when unpinned. Persisted by
-    /// the snapshot path.
+    /// Stored outside the Entry DAG and persisted by snapshots. Only explicit
+    /// GC removes unpinned bytes; derived-cache clearing leaves them intact.
     pub(crate) blobs: HashMap<ID, Vec<u8>>,
-    /// Last-access time (epoch ms) per blob CID — drives LRU eviction (§6).
+    /// Last-access time (epoch ms) per blob CID — drives LRU eviction.
     /// Stamped on put and on every local read hit.
     pub(crate) blob_accessed: HashMap<ID, i64>,
-    /// Blob pins (Phase 1.5, §6): the local GC root set. Each entry is a
-    /// `(user_id, database_id, blob_cid)` triple; `database_id` is the empty
-    /// string for a pin not tied to a specific database. A blob is retained
-    /// while any pin names its CID.
+    /// Trusted engine retention roots, keyed by `(owner, database, blob_cid)`.
+    /// The database string may be empty. Any root keeps its CID alive in GC;
+    /// these records are not an application ownership API.
     pub(crate) blob_pins: HashSet<(String, String, ID)>,
 }
 

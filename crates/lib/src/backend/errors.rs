@@ -223,9 +223,8 @@ pub enum BackendError {
 
     /// A blob exceeded the configured maximum size.
     ///
-    /// Phase 1 handles small/bounded blobs only; a hard cap guards against
-    /// memory-DoS from an address that does not bound its payload. GB-scale
-    /// payloads are a later (verified-streaming) capability.
+    /// Whole-blob operations buffer bytes in memory, so a content address
+    /// alone is not a sufficient resource bound.
     #[error("Blob size {size} bytes exceeds maximum {max} bytes")]
     BlobTooLarge {
         /// The size of the offending blob in bytes.
@@ -276,7 +275,7 @@ pub enum BackendError {
     /// A content address pins a blob's *identity* (its bytes hash to the CID)
     /// but not its declared length; a reference may carry a `size` that lets a
     /// reader budget the transfer and decide fetch-or-not before the bytes
-    /// arrive (§5.4). Resolving such a reference checks the delivered length
+    /// arrive. Resolving such a reference checks the delivered length
     /// against the declared one and rejects a mismatch here.
     #[error("Blob {cid} length {actual} bytes does not match declared size {declared} bytes")]
     BlobSizeMismatch {

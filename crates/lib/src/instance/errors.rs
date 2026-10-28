@@ -97,12 +97,9 @@ pub enum InstanceError {
     )]
     SnapshotNotSupported,
 
-    /// A blob pin/GC operation was attempted on an instance with no local
-    /// storage engine (a thin remote client). Pins and GC are local-engine
-    /// concerns — the daemon owns its own blobs, pins, and collection.
-    #[error(
-        "blob pinning/GC requires a local storage engine; this is a remote client whose daemon owns its blobs"
-    )]
+    /// A local blob operation requires a storage engine. Connected clients
+    /// must route these operations through their daemon instead.
+    #[error("local blob operation requires a storage engine")]
     BlobOpRequiresLocalEngine,
 
     /// Entry does not belong to the specified database.

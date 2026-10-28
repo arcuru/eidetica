@@ -477,7 +477,7 @@ pub struct Instance {
     inner: Arc<InstanceInternal>,
 }
 
-/// Options for [`Instance::gc_blobs`](Instance::gc_blobs) (Phase 1.5, §6).
+/// Options for [`Instance::gc_blobs`](Instance::gc_blobs).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GcOptions {
     /// Evict least-recently-used unpinned blobs until total blob bytes are at
@@ -485,7 +485,7 @@ pub struct GcOptions {
     pub max_total_bytes: Option<u64>,
     /// Grace window (ms): never evict a blob accessed within this many
     /// milliseconds of now. Protects a just-written-but-not-yet-pinned blob
-    /// from a concurrent sweep (the iroh "temp tag" role). Default 60_000.
+    /// from a concurrent sweep. Default 60_000.
     pub min_age_ms: u64,
 }
 
@@ -499,7 +499,7 @@ impl Default for GcOptions {
 }
 
 /// Outcome of a [`Instance::gc_blobs`](Instance::gc_blobs) pass — aggregate
-/// counts only; the swept CID list is never returned (§10.1).
+/// counts only; the swept CID list is never returned.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GcReport {
     /// Number of blobs evicted.
@@ -1256,7 +1256,6 @@ impl Instance {
     ///
     /// Rejects blobs larger than [`DEFAULT_MAX_BLOB_BYTES`](crate::backend::DEFAULT_MAX_BLOB_BYTES)
     /// ([`BackendError::BlobTooLarge`](crate::backend::errors::BackendError::BlobTooLarge));
-    /// Phase 1 is scoped to small/bounded blobs.
     ///
     /// Routes through the backend seam, so it works on both local and remote
     /// (daemon-backed) instances. On a remote instance the bytes are submitted
@@ -1280,9 +1279,8 @@ impl Instance {
     /// both the content address and the size.
     ///
     /// Identical to [`put_blob`](Self::put_blob) except for the return type: the
-    /// reference is ready to embed in a store value where a reader will want
-    /// size-before-fetch (the transfer cap and partial-replica decisions both
-    /// need the size before the bytes arrive). Resolve it with
+    /// reference is ready to embed in a Store value, with a declared size that
+    /// readers can check before reading bytes. Resolve it with
     /// [`get_blob_ref`](Self::get_blob_ref).
     pub async fn put_blob_ref(&self, data: impl Into<Vec<u8>>) -> Result<crate::blob::BlobRef> {
         let data = data.into();
@@ -1339,7 +1337,7 @@ impl Instance {
 
     /// The single blob-persist path: write bytes through the seam (which
     /// re-verifies the content address) and stamp `last_accessed` to *now* so
-    /// LRU/GC (§6) see a fresh blob and the grace window protects it. Used by
+    /// LRU/GC see a fresh blob and the grace window protects it. Used by
     /// local put and the daemon `PutBlob` handler. The
     /// stamp is a no-op on a remote backend (no local engine) — there the
     /// daemon stamps when it persists.
@@ -1362,7 +1360,7 @@ impl Instance {
         crate::backend::validate_blob_cid(cid)?;
         let _guard = self.inner.blob_lock.lock().await;
         let blob = self.inner.backend.get_blob(cid).await?;
-        // Stamp last-access on a local hit so LRU eviction (§6) reflects reads.
+        // Stamp last-access on a local hit so LRU eviction reflects reads.
         // Range reads stamp in `encode_blob_range_local` too. On a remote
         // backend the daemon stamps its own reads.
         if blob.is_some()
@@ -1384,7 +1382,7 @@ impl Instance {
     /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
     /// for a non-raw `cid`.
     ///
-    /// An in-process engine reads only the requested window from storage (§7),
+    /// An in-process engine reads only the requested window from storage,
     /// and a connected Instance asks its daemon for just that window.
     pub async fn get_blob_range(
         &self,
@@ -1404,7 +1402,7 @@ impl Instance {
     /// Windowed blob range read from **local storage only** (the in-process
     /// engine; never sync peers, never the whole blob). `Ok(None)` if this
     /// instance has no local engine or the blob is absent. Stamps last-access on
-    /// a hit so LRU eviction (§6) reflects reads. This is the daemon's serve
+    /// a hit so LRU eviction reflects reads. This is the daemon's serve
     /// path for a client's [`get_blob_range`](Self::get_blob_range).
     pub(crate) async fn get_blob_range_local(
         &self,
@@ -1441,6 +1439,15 @@ impl Instance {
         let Some((size, outboard)) = engine.get_blob_header(cid).await? else {
             return Ok(None);
         };
+        // Check persisted metadata before it controls the storage read, not
+        // only when the Bao encoder receives the resulting window.
+        if size > crate::backend::DEFAULT_MAX_BLOB_BYTES as u64 {
+            return Err(crate::backend::BackendError::BlobTooLarge {
+                size: size.try_into().unwrap_or(usize::MAX),
+                max: crate::backend::DEFAULT_MAX_BLOB_BYTES,
+            }
+            .into());
+        }
         // Read only the chunk-aligned window the encoder needs, not the blob.
         let window = crate::blob::bao::serve_window(size, range.clone());
         let window_bytes = engine
@@ -1461,12 +1468,10 @@ impl Instance {
         Ok(Some(encoded))
     }
 
-    // === Blob pinning / garbage collection (Phase 1.5, §6) ===
+    // === Local blob garbage collection ===
 
-    /// The in-process storage engine. Used by the local leg of pin/GC, which
-    /// operate directly on this node's store; a remote instance routes those
-    /// ops to its daemon instead of reaching here. The error is a guard for a
-    /// degenerate instance with neither a local engine nor a connection.
+    /// Storage for local range verification and GC. Connected clients route
+    /// those operations to their daemon before reaching this helper.
     fn local_blob_engine(&self) -> Result<std::sync::Arc<dyn crate::backend::BackendImpl>> {
         self.inner
             .backend
@@ -1487,7 +1492,7 @@ impl Instance {
     ///
     /// Deletion is complete-only (a blob is removed whole). Returns a
     /// [`GcReport`] of aggregate counts/bytes — never the list of swept CIDs
-    /// (§10.1: no enumeration is exposed). On a remote instance the pass runs on
+    /// (no enumeration is exposed). On a remote instance the pass runs on
     /// the daemon, which owns the blobs and evaluates the grace window against
     /// its own clock.
     pub async fn gc_blobs(&self, opts: GcOptions) -> Result<GcReport> {

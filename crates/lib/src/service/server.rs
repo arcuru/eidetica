@@ -806,7 +806,7 @@ async fn dispatch_inner(
             handle_ticket_bootstrap(instance, state, *request).await
         }
 
-        // === Post-auth: global content-addressed blobs (design §10.1) ===
+        // === Post-auth: global content-addressed blobs ===
         //
         // Gate: an authenticated connection, nothing more. Blobs are global and
         // unscoped — no per-tree permission gate, no acting identity — and

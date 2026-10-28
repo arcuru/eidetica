@@ -85,7 +85,7 @@ async fn test_instance_get_blob_ref_over_cap_rejected_before_fetch() {
 }
 
 /// End-to-end through the public `Instance` API against a file-based SQLite
-/// backend, so a large blob travels the full hybrid disk tier (§5.2): stored on
+/// backend, so a large blob travels the full hybrid disk tier: stored on
 /// disk, then whole-read and windowed-read back through `Instance::get_blob` /
 /// `get_blob_range` (which dispatch to the local engine and stamp LRU). The
 /// per-tier mechanics are unit-tested at the backend layer; this proves the
@@ -253,7 +253,7 @@ async fn test_instance_get_blob_range_rejects_non_raw_codec() {
 async fn test_instance_put_blob_size_cap() {
     let instance = blob_instance().await;
 
-    // Exceeding the Phase-1 hard cap is rejected up front (a content address
+    // Exceeding the byte cap is rejected up front (a content address
     // does not bound its payload size).
     let too_big = vec![0u8; eidetica::backend::DEFAULT_MAX_BLOB_BYTES + 1];
     let err = instance

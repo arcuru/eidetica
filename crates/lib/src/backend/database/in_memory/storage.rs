@@ -508,8 +508,8 @@ pub(crate) fn store_at(
 // === Blob Storage (content-addressed, durable) ===
 
 /// Store a blob under its content address. Idempotent: re-inserting identical
-/// bytes is a harmless overwrite (content addressing guarantees equality). CID
-/// verification happens in the trait impl before this is called.
+/// bytes leaves the same content. CID verification happens in the trait impl
+/// before this is called.
 pub(crate) fn put_blob(inner: &mut InMemoryInner, cid: &ID, data: Vec<u8>) {
     inner.blobs.insert(cid.clone(), data);
 }

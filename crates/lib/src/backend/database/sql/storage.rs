@@ -1101,12 +1101,9 @@ pub async fn set_instance_secrets(backend: &SqlxBackend, secrets: &InstanceSecre
 }
 // === Blob Storage (content-addressed, durable) ===
 
-/// Inline/disk split point for the hybrid blob tier (§5.2): blobs of at most
-/// this many bytes stay inline in the SQL `data` column; larger ones go to a
-/// content-addressed file on disk (when the backend has a blob dir). 16 KiB is
-/// iroh's figure — small enough that a DB row stays cheap, large enough that the
-/// vast majority of small blobs never touch the filesystem. This is a §4.3
-/// throwaway internal: changing it only changes where *new* blobs land.
+/// Blobs up to 16 KiB stay inline in SQL. Larger blobs use a content-addressed
+/// file when a blob directory is configured. This internal threshold affects
+/// new writes only; reads follow each row's recorded location.
 const INLINE_BLOB_THRESHOLD: u64 = 16 * 1024;
 
 /// Where a blob's bytes live — the meaning of the `blobs.location` column. This
@@ -1117,7 +1114,7 @@ const INLINE_BLOB_THRESHOLD: u64 = 16 * 1024;
 enum BlobLocation {
     /// Bytes inline in the SQL `data` column (small blobs).
     Inline,
-    /// Bytes in a content-addressed file under the backend's blob dir (§5.2).
+    /// Bytes in a content-addressed file under the backend's blob dir.
     OnDisk,
 }
 
@@ -1142,12 +1139,12 @@ impl BlobLocation {
 }
 
 /// Store a blob under its content address. Idempotent: a row already present
-/// for `cid` is left untouched (the bytes are identical by content addressing),
-/// so re-storing is a cheap no-op. The caller
+/// for `cid` is left untouched. Disk bytes are atomically republished so a
+/// successful write does not rely on an earlier file's durability. The caller
 /// ([`super::SqlxBackend::put_blob`]) verifies `cid` matches the bytes before
 /// this runs.
 ///
-/// Hybrid tier (§5.2): a blob larger than [`INLINE_BLOB_THRESHOLD`] is written
+/// Hybrid tier: a blob larger than [`INLINE_BLOB_THRESHOLD`] is written
 /// to a file on disk (`location = 1`, `data` NULL) when the backend has a blob
 /// dir; everything else stays inline (`location = 0`). The file is written
 /// *before* the row so a crash never leaves a row pointing at a missing file —
@@ -1155,7 +1152,7 @@ impl BlobLocation {
 pub async fn put_blob(backend: &SqlxBackend, cid: &ID, data: Vec<u8>) -> Result<()> {
     let pool = backend.pool();
     let size = data.len() as i64;
-    // Persist the bao outboard alongside the metadata (§7) so a later range
+    // Persist the bao outboard alongside the metadata so a later range
     // serve reads only the requested window plus this ~0.4% sidecar instead of
     // whole-loading and re-hashing. Computed once, here, on the write path. The
     // outboard stays in SQL for both tiers (it is small; the data is what's big).
@@ -1280,7 +1277,7 @@ fn blob_file_missing(cid: &ID) -> crate::Error {
 }
 
 /// Fetch a blob's `(size, pre-order outboard)` without materializing its data —
-/// the input a verified range serve needs before reading the window (§7).
+/// the input a verified range serve needs before reading the window.
 /// Returns `Ok(None)` if the blob is not held.
 pub async fn get_blob_header(backend: &SqlxBackend, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
     let pool = backend.pool();
@@ -1290,7 +1287,13 @@ pub async fn get_blob_header(backend: &SqlxBackend, cid: &ID) -> Result<Option<(
             .fetch_optional(pool)
             .await
             .sql_context("Failed to read blob header")?;
-    Ok(row.map(|(size, outboard)| (size.max(0) as u64, outboard)))
+    row.map(|(size, outboard)| {
+        let size = u64::try_from(size).map_err(|_| BackendError::StateInconsistency {
+            reason: format!("negative size for blob {cid}"),
+        })?;
+        Ok((size, outboard))
+    })
+    .transpose()
 }
 
 /// Fetch a blob's bytes by content address, or `None` if not held locally.
@@ -1339,7 +1342,7 @@ pub async fn has_blob(backend: &SqlxBackend, cid: &ID) -> Result<bool> {
 
 /// Stamp a blob's `last_accessed` to `now_ms` (epoch ms). No-op if the blob is
 /// not held locally. Called on every put and every local read hit so LRU
-/// eviction (§6) reflects recency.
+/// eviction reflects recency.
 pub async fn touch_blob_accessed(backend: &SqlxBackend, cid: &ID, now_ms: i64) -> Result<()> {
     let pool = backend.pool();
     sqlx::query("UPDATE blobs SET last_accessed = $1 WHERE cid = $2")
@@ -1358,8 +1361,7 @@ pub async fn touch_blob_accessed(backend: &SqlxBackend, cid: &ID, now_ms: i64) -
 /// already unlinked — would read back as a hard error via `get_blob`, whereas
 /// an orphan file is inert). Note an orphan file is *not* currently reclaimed by
 /// GC, which sweeps rows only (`all_blob_meta`); a crash between the row delete
-/// and the unlink leaks the file. Acceptable for now (rare, bounded by the
-/// content-addressed name so it cannot duplicate), tracked as a GC follow-up.
+/// and the unlink can leave an orphan file.
 pub async fn delete_blob(backend: &SqlxBackend, cid: &ID) -> Result<bool> {
     let pool = backend.pool();
     // Learn the tier before deleting so we know whether a file backs this blob.
@@ -1389,9 +1391,8 @@ pub async fn delete_blob(backend: &SqlxBackend, cid: &ID) -> Result<bool> {
 }
 
 /// Enumerate every locally-held blob's `(cid, size, last_accessed)` — the GC
-/// sweep input. Engine-internal: NOT exposed as a callable wire/local API
-/// (the §10.1 no-enumeration invariant is about callable surfaces; the
-/// collector derives reachability here, where the design says it should).
+/// sweep input. This trusted engine substrate is not exposed as an Instance
+/// method or service inventory operation.
 pub async fn all_blob_meta(backend: &SqlxBackend) -> Result<Vec<BlobMeta>> {
     let pool = backend.pool();
     let rows: Vec<(String, i64, i64)> =
@@ -1411,7 +1412,7 @@ pub async fn all_blob_meta(backend: &SqlxBackend) -> Result<Vec<BlobMeta>> {
 }
 
 /// Pin a blob for `(user, database)`. Idempotent. A pin keeps the blob from
-/// being GC'd while it exists (§6).
+/// being GC'd while it exists.
 pub async fn pin_blob(
     backend: &SqlxBackend,
     user_id: &str,

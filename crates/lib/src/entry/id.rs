@@ -135,9 +135,7 @@ impl ID {
     /// Returns the codec byte that distinguishes how the addressed bytes are
     /// interpreted: raw `0x55` (opaque blob bytes) vs dag-cbor `0x71`
     /// (DAG-CBOR encoded content such as an `Entry`). `None` for an empty ID.
-    /// This is the dispatch key for
-    /// content-addressed storage (see the backend's codec-branched blob
-    /// methods), not a global object-type tag.
+    /// The codec describes the addressed encoding, not an application type.
     pub fn codec(&self) -> Option<u64> {
         self.0.as_ref().map(|cid| cid.codec())
     }

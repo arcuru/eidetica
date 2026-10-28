@@ -1313,3 +1313,55 @@ async fn blob_current_missing_table_refuses_without_recreating_content() {
     assert_eq!(db.catalog().await, before);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn blob_corrupt_range_metadata_returns_error() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    let (instance, admin) = crate::Instance::create_backend(
+        Box::new(backend),
+        crate::NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let bytes = vec![7u8; 100_000];
+    let cid = instance.put_blob(bytes.clone()).await.unwrap();
+    assert_eq!(
+        instance.get_blob_range(&cid, 40_000..40_123).await.unwrap(),
+        Some(bytes[40_000..40_123].to_vec())
+    );
+    sqlx::query("UPDATE blobs SET outboard = $1 WHERE cid = $2")
+        .bind(vec![0u8])
+        .bind(cid.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        matches!(instance.get_blob_range(&cid, 40_000..40_123).await,
+        Err(crate::Error::Backend(e)) if matches!(*e, BackendError::BlobStreamInvalid { .. }))
+    );
+
+    // Invalid persisted sizes are rejected before they select a byte window.
+    // Point at an unavailable disk tier so an attempted read cannot hide this
+    // guard behind the encoder's later size check.
+    sqlx::query("UPDATE blobs SET size = $1, location = 1 WHERE cid = $2")
+        .bind(crate::backend::DEFAULT_MAX_BLOB_BYTES as i64 + 1)
+        .bind(cid.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(instance.get_blob_range(&cid, 0..u64::MAX).await,
+        Err(crate::Error::Backend(e)) if matches!(*e, BackendError::BlobTooLarge { .. })));
+    sqlx::query("UPDATE blobs SET size = -1 WHERE cid = $1")
+        .bind(cid.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(instance.get_blob_range(&cid, 0..1).await,
+        Err(crate::Error::Backend(e)) if matches!(*e, BackendError::StateInconsistency { .. })));
+    drop(admin);
+    drop(instance);
+    db.cleanup().await;
+}

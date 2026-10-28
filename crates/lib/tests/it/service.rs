@@ -3247,7 +3247,7 @@ async fn zero_budget_daemon_keeps_client_history_reads_available() {
         .unwrap();
 }
 
-// === Content-addressed blob storage over the service wire (design §5.4/§10.1) ===
+// === Content-addressed blob storage over the service wire ===
 
 #[tokio::test]
 async fn test_blob_round_trip_over_service() {
@@ -3266,29 +3266,11 @@ async fn test_blob_round_trip_over_service() {
     // The store is global/unscoped: the daemon holds it under the same CID.
     let server_side = server.get_blob_local(&cid).await.unwrap();
     assert_eq!(server_side.as_deref(), Some(data.as_slice()));
-}
 
-#[tokio::test]
-async fn test_blob_absent_over_service_is_none() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let (client, _root, _identity) = setup_db(&server, &socket_path, "blobuser").await;
-
-    let missing = eidetica::entry::ID::from_bytes(b"never stored");
-    assert!(client.get_blob(&missing).await.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn test_blob_put_locally_then_fetched_over_service() {
-    // Blob reads are unauthorized: a blob the daemon holds (put locally) is
-    // fetchable by any authenticated client that names its CID.
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let (client, _root, _identity) = setup_db(&server, &socket_path, "blobuser").await;
-
-    let data = b"stored on the daemon first".to_vec();
-    let cid = server.put_blob(data.clone()).await.unwrap();
-
-    let got = client.get_blob(&cid).await.unwrap();
-    assert_eq!(got.as_deref(), Some(data.as_slice()));
+    // Known-CID reads also work for bytes put directly on the daemon.
+    let local_data = b"stored on the daemon first".to_vec();
+    let local_cid = server.put_blob(local_data.clone()).await.unwrap();
+    assert_eq!(client.get_blob(&local_cid).await.unwrap(), Some(local_data));
 }
 
 #[tokio::test]

@@ -436,7 +436,7 @@ pub enum ServiceRequest {
     /// `cid == hash(data)` and enforces the size cap; a mismatch is rejected.
     PutBlob { cid: ID, data: Vec<u8> },
     /// Read a half-open byte range `[start, end)` of a blob by content address.
-    /// The daemon reads only the requested window from its store (§7), so a
+    /// The daemon reads only the requested window from its store, so a
     /// thin client gets a true windowed read instead of fetch-whole-and-slice.
     /// `None` on miss; the range is clamped to the blob's length.
     GetBlobRange { cid: ID, start: u64, end: u64 },
@@ -571,7 +571,7 @@ pub enum ServiceResponse {
     /// hash to the requested CID; a range is the verified window of that blob.
     Blob(Option<Vec<u8>>),
     /// Aggregate outcome of a blob GC pass (response to
-    /// `ServiceRequest::GcBlobs`). Counts only — never the swept CID list (§10.1).
+    /// `ServiceRequest::GcBlobs`). Counts only — never the swept CID list.
     GcReport(GcReport),
     /// Error response
     Error(ServiceError),

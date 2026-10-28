@@ -27,9 +27,8 @@ serde_json = "1"
 sha2 = "0.10"
 hex = "0.4"
 blake3 = "1.8"
-# bao verified streaming over our existing BLAKE3 CIDs. Sync core only — no
-# tokio/iroh/redb (default-features = false); pinned (pre-1.0), wrapped behind
-# one adapter module (crates/lib/src/blob/bao.rs).
+# Synchronous Bao verification for BLAKE3 CIDs; no optional runtime or storage.
+# Keep the pre-1.0 dependency behind crates/lib/src/blob/bao.rs.
 bao-tree = { version = "0.16", default-features = false }
 cid = { version = "0.11", features = ["serde", "std"] }
 multihash-codetable = { version = "0.2", features = ["sha2", "blake3"] }

@@ -47,7 +47,7 @@ Clearing derived Store-state caches does not delete blobs or Entry data.
 ## Explicit cache collection
 
 A local put creates unowned cache bytes.
-There is no application retention API in this foundation: storing a reference in a Store does not pin the content.
+There is no application retention API: storing a reference in a Store does not pin the content.
 Trusted backend retention records are internal GC substrate, not another application ownership registry.
 GC keeps the union of those backend roots and recently accessed blobs.
 

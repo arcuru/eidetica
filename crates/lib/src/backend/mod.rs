@@ -381,7 +381,7 @@ impl VerificationStatus {
 pub const DEFAULT_MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
 
 /// Metadata for one locally-held blob — the per-blob input to GC's LRU sweep
-/// (§6). Carries no bytes; `size`/`last_accessed` are the cached columns.
+///. Carries no bytes; `size`/`last_accessed` are the cached columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlobMeta {
     /// The blob's content address (raw-codec `0x55` CID).
@@ -1048,19 +1048,19 @@ pub trait BackendImpl: Send + Sync + Any {
     /// serving, without materializing its data. Returns `Ok(None)` if absent.
     /// The outboard lets a range serve encode a verified window after reading
     /// only that window via [`get_blob_range`](Self::get_blob_range) — no
-    /// whole-blob re-hash (§7).
+    /// whole-blob re-hash.
     async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>>;
 
     /// Cheap existence check for a blob, without materializing its bytes.
     async fn has_blob(&self, cid: &ID) -> Result<bool>;
 
-    // === Blob pinning / GC (Phase 1.5, §6) ===
+    // === Blob pinning / GC ===
     //
     // All local-engine concerns: pins are instance-LOCAL retention assertions
     // (they do not replicate), and GC runs against this engine's own store.
-    // None of these cross the `Backend` seam — a remote/thin client does not
-    // pin or GC; its daemon owns its blobs. `all_blob_meta` is engine-internal
-    // sweep input, never a callable wire/local enumeration API (§10.1).
+    // Retention records and sweep inputs stay below the `Backend` seam. A
+    // remote client may request GC, but its daemon performs the sweep. No
+    // Instance or wire API enumerates blobs or exposes application pinning.
 
     /// Stamp a blob's last-access time to `now_ms` (epoch ms). No-op if absent.
     /// Called on every put and every local read hit to drive LRU eviction.
@@ -1071,7 +1071,7 @@ pub trait BackendImpl: Send + Sync + Any {
     async fn delete_blob(&self, cid: &ID) -> Result<bool>;
 
     /// Enumerate `(cid, size, last_accessed)` for every locally-held blob — the
-    /// GC sweep input. Engine-internal; not exposed over the wire (§10.1).
+    /// GC sweep input. Engine-internal; not exposed over the wire.
     async fn all_blob_meta(&self) -> Result<Vec<BlobMeta>>;
 
     /// Pin a blob for `(user_id, database_id)`. Idempotent. `database_id` is the

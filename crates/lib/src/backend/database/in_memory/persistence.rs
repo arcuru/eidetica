@@ -83,11 +83,11 @@ struct SerializableDatabase {
     /// rebuilt on load; persisted since v2.
     #[serde(default)]
     verified: HashMap<ID, VerifiedState>,
-    /// Content-addressed blobs. Durable owned content (unlike the CRDT cache),
-    /// so it IS persisted. `#[serde(default)]` keeps pre-blob snapshots loading.
+    /// Blob bytes cannot be rebuilt from Entries, so snapshots include them.
+    /// Defaults keep pre-blob snapshots readable.
     #[serde(default)]
     blobs: HashMap<ID, Vec<u8>>,
-    /// Per-blob last-access time (epoch ms) for LRU eviction (§6).
+    /// Per-blob last-access time (epoch ms) for LRU eviction.
     #[serde(default)]
     blob_accessed: HashMap<ID, i64>,
     /// Blob pins (`(user_id, database_id, blob_cid)`): the local GC root set.

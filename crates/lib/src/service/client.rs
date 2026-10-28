@@ -1506,7 +1506,7 @@ impl RemoteConnection {
 
     /// Fetch a global blob by content address from the daemon (`GetBlob`).
     ///
-    /// Blobs are global/unscoped (§10.1): no `root_id`, no identity hint — the
+    /// Blobs are global/unscoped: no `root_id`, no identity hint — the
     /// authenticated connection is the whole gate. `None` on miss.
     pub(crate) async fn get_blob_remote(&self, cid: ID) -> crate::Result<Option<Vec<u8>>> {
         let resp = self.request_ok(ServiceRequest::GetBlob { cid }).await?;

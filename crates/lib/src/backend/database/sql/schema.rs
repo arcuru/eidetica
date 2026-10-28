@@ -137,19 +137,19 @@ pub const CREATE_TABLES: &[&str] = &[
     // A blob is keyed by `cid` (the raw-codec `0x55` BLAKE3 CIDv1 of its
     // bytes), giving global dedup for free. `size` caches the byte length so
     // callers don't have to materialize the blob to learn how big it is.
-    // `location` is the hybrid inline/disk split (§5.2): `location = 0` keeps
+    // `location` is the hybrid inline/disk split: `location = 0` keeps
     // the bytes inline in `data`; `location = 1` means `data` is NULL and the
     // bytes live in a content-addressed file under the backend's blob dir (the
     // tier is enabled per-backend via `with_blob_dir`, for SQLite and Postgres
     // alike). See `BlobLocation` in `storage.rs` for the encoding.
     //
-    // `last_accessed` (epoch ms) drives LRU eviction in `gc_blobs` (§6). It is
-    // stamped to *now* on every put and every local read hit. A blob is durable
-    // owned content and is evicted ONLY by an explicit GC pass, and even then
+    // `last_accessed` (epoch ms) drives LRU eviction in `gc_blobs`. It is
+    // stamped on Instance puts and successful reads. Blob bytes are removed
+    // only by an explicit GC pass, and even then
     // only when it is not pinned (see `blob_pins`). This column is part of the
     // v4 additive blob tables; earlier supported layouts gain them atomically.
     //
-    // `outboard` holds the pre-order bao hash tree (§7) — the interior BLAKE3
+    // `outboard` holds the pre-order bao hash tree — the interior BLAKE3
     // nodes, ~0.4% of `size` at the 16 KiB block size. Persisting it means a
     // verified range *serve* reads only the requested window of `data` (via a
     // ranged read) plus this small sidecar, instead of whole-loading and
@@ -163,17 +163,10 @@ pub const CREATE_TABLES: &[&str] = &[
         data          BLOB,
         outboard      BLOB NOT NULL
     )",
-    // Blob pins (Phase 1.5, §6) — the local GC root set.
-    //
-    // A pin is an instance-LOCAL retention assertion (it does NOT replicate as
-    // an entry, so it is not a frozen wire surface). Keyed by
-    // `(user_id, database_id, blob_cid)`: a blob is retained while ANY row names
-    // its CID, and the `(user, database)` decomposition lets us un-pin and
-    // attribute pinned size per user (`pinned_size_by_user`, for provenance /
-    // quota). `database_id` uses the empty-string sentinel for "not tied to a
-    // specific database" (PostgreSQL disallows NULL in a PK column; database IDs
-    // are CIDs and never empty, matching the `tips` convention). GC's root set
-    // is `SELECT DISTINCT blob_cid FROM blob_pins`.
+    // Trusted engine retention roots; not a separate application registry.
+    // Any row naming a CID keeps it alive. The legacy `user_id` column is an
+    // opaque owner key, not a login label. Empty database_id denotes a root
+    // without a database (PostgreSQL disallows NULL in a primary key).
     "CREATE TABLE IF NOT EXISTS blob_pins (
         user_id      TEXT NOT NULL,
         database_id  TEXT NOT NULL DEFAULT '',

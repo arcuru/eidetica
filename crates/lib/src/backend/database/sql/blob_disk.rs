@@ -25,19 +25,12 @@ fn blob_path(dir: &Path, cid: &ID) -> PathBuf {
 
 /// Write a blob's bytes to its content-addressed file atomically.
 ///
-/// Existence-check first: a present file already holds the identical bytes
-/// (content addressing), and creating file metadata dwarfs writing a few bytes
-/// (iroh's note), so re-storing is a cheap no-op. Otherwise write to a unique
-/// temp file in the same directory, fsync it, and rename into place — the
-/// rename is atomic on a single device, which a same-directory temp guarantees.
+/// Always publish the verified bytes, even if the final path already exists:
+/// an earlier write may have been cancelled before syncing its rename, or the
+/// existing file may be corrupt. A same-directory temporary file keeps the
+/// rename on one device.
 pub async fn write_atomic(dir: &Path, cid: &ID, data: &[u8]) -> Result<()> {
     let final_path = blob_path(dir, cid);
-    // Cheap idempotency / dedup: the file is named by content, so if it exists
-    // it is already exactly these bytes.
-    if tokio::fs::try_exists(&final_path).await.map_err(io_err)? {
-        return Ok(());
-    }
-
     tokio::fs::create_dir_all(dir).await.map_err(io_err)?;
 
     // Unique temp name so concurrent writers of the same (or different) blobs

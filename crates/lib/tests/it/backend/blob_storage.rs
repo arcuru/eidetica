@@ -189,14 +189,13 @@ async fn test_blobs_are_independent_keys() {
     assert_eq!(backend.get_blob(&cid_b).await.unwrap(), Some(b));
 }
 
-/// Hybrid inline/disk tier (§5.2): on a file-based SQLite backend, blobs larger
+/// Hybrid inline/disk tier: on a file-based SQLite backend, blobs larger
 /// than the 16 KiB threshold are stored as content-addressed files on disk
 /// (`location = 1`, `data` NULL) while small blobs stay inline — and both tiers
 /// round-trip, range-read, and delete through the same `BackendImpl` surface.
 ///
-/// This is the one §4.3 test that reaches *past* the trait to the filesystem,
-/// so it constructs the backend directly (a file DB in a tempdir) instead of
-/// going through `test_backend()`.
+/// Constructs a file-backed SQLite database to check the actual disk tier,
+/// rather than the inline-only backend returned by `test_backend()`.
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn test_blob_hybrid_disk_tier() {
@@ -264,9 +263,15 @@ async fn test_blob_hybrid_disk_tier() {
     );
     assert_eq!(backend.get_blob(&small_cid).await.unwrap(), Some(small));
 
-    // --- Dedup: re-storing the large blob is a cheap no-op ---
+    // Re-storing uses the same CID and file.
     backend.put_blob(&big_cid, big.clone()).await.unwrap();
     assert!(big_file.exists());
+    assert_eq!(backend.get_blob(&big_cid).await.unwrap(), Some(big.clone()));
+
+    // An existing file is not proof of a completed durable publication. A put
+    // must publish its verified input even if the prior file was damaged.
+    std::fs::write(&big_file, b"damaged earlier publication").unwrap();
+    backend.put_blob(&big_cid, big.clone()).await.unwrap();
     assert_eq!(backend.get_blob(&big_cid).await.unwrap(), Some(big));
 
     // --- Delete unlinks the on-disk file ---

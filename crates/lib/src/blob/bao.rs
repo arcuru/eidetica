@@ -2,9 +2,9 @@
 //!
 //! BLAKE3's hash is the root of a Merkle tree over the content, so the bao root
 //! is **identical** to our raw-codec (`0x55`) BLAKE3-256 CID digest — verified
-//! range streaming needs no address change (see the Object Storage Design §7).
+//! range streaming needs no address change.
 //!
-//! This is the *only* place the pinned, pre-1.0 `bao-tree` crate is touched, so
+//! This is the only module using the pre-1.0 `bao-tree` crate, so
 //! a version bump is contained to one file. The encoded wire form is
 //! self-describing: an 8-byte little-endian total blob size, followed by the
 //! bao range encoding (interleaved parent hashes + leaf data) for the
@@ -18,7 +18,7 @@ use std::ops::Range;
 use bao_tree::{
     BaoTree, BlockSize, ByteRanges, ChunkRanges,
     io::{
-        outboard::PreOrderMemOutboard,
+        outboard::{PreOrderMemOutboard, PreOrderOutboard},
         round_up_to_chunks,
         sync::{DecodeResponseIter, ReadAt, encode_ranges_validated},
     },
@@ -51,7 +51,7 @@ fn cid_to_hash(cid: &ID) -> Result<bao_tree::blake3::Hash> {
 
 /// Compute the pre-order bao outboard (interior hash-tree nodes) for `data`.
 ///
-/// This is the sidecar persisted alongside a blob (§7): ~0.4% of `data` at the
+/// This is the sidecar persisted alongside a blob: ~0.4% of `data` at the
 /// 16 KiB block size, and the input to [`encode_range_with_outboard`] so a range
 /// serve never re-hashes the whole blob. The returned bytes carry no length
 /// prefix — the size is stored separately (the `blobs.size` column).
@@ -71,6 +71,9 @@ pub(crate) fn serve_window(size: u64, range: Range<u64>) -> Range<u64> {
     let block = BLOCK_SIZE.bytes() as u64;
     let start = range.start.min(size);
     let end = range.end.clamp(start, size);
+    if start == end {
+        return start..start;
+    }
     let win_start = (start / block) * block;
     let win_end = end.div_ceil(block).saturating_mul(block).min(size);
     win_start..win_end
@@ -134,10 +137,12 @@ pub(crate) fn encode_range_with_outboard(
         .into());
     }
     let tree = BaoTree::new(size, BLOCK_SIZE);
-    let outboard = PreOrderMemOutboard {
+    // The I/O-backed reader returns an error for a truncated persisted
+    // outboard; PreOrderMemOutboard assumes a complete buffer and can panic.
+    let outboard = PreOrderOutboard {
         root,
         tree,
-        data: outboard.to_vec(),
+        data: outboard,
     };
 
     let start = range.start.min(size);
@@ -307,9 +312,7 @@ mod tests {
         let encoded = encode_range(&data, 0..data.len() as u64);
         let n = data.len() as u64;
 
-        // Empty interior range (start == end > 0) previously tripped the
-        // "stream did not cover the requested range" guard; it now returns empty
-        // bytes, matching the local-slice readers.
+        // Empty interior ranges match local-slice readers.
         assert_eq!(
             decode_range(&cid, 10..10, &encoded).unwrap(),
             Vec::<u8>::new()
@@ -332,11 +335,26 @@ mod tests {
         let encoded = encode_range(&data, 0..data.len() as u64);
         assert!(decode_range(&other, 0..data.len() as u64, &encoded).is_err());
     }
-}
 
-#[cfg(test)]
-mod hardening_tests {
-    use super::*;
+    #[test]
+    fn blob_truncated_outboard_is_rejected() {
+        let data = blob(100_000);
+        let cid = ID::from_bytes(&data);
+        let mut outboard = compute_outboard(&data);
+        outboard.truncate(1);
+        let range = 40_000..40_123;
+        let window = serve_window(data.len() as u64, range.clone());
+        let result = encode_range_with_outboard(
+            &cid,
+            data.len() as u64,
+            &outboard,
+            window.start,
+            &data[window.start as usize..window.end as usize],
+            range,
+        );
+        assert!(matches!(result, Err(crate::Error::Backend(e))
+            if matches!(*e, BackendError::BlobStreamInvalid { .. })));
+    }
 
     #[test]
     fn blob_stream_rejects_a_retagged_hash_algorithm() {
@@ -359,11 +377,7 @@ mod hardening_tests {
         let encoded = (crate::backend::DEFAULT_MAX_BLOB_BYTES as u64 + 1).to_le_bytes();
         assert!(decode_range(&cid, u64::MAX..u64::MAX, &encoded).is_err());
     }
-}
 
-#[cfg(test)]
-mod envelope_tests {
-    use super::*;
     #[test]
     fn blob_range_rejects_wrong_codec_and_digest_length() {
         let data = b"verified local range";
