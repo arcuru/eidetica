@@ -303,6 +303,7 @@ async fn history_delta_exhaustive_four_vertex_set_oracle() {
 async fn history_delta_equal_height_uses_full_cid_order_and_fixed_target() {
     let b = test_backend().await;
     let root = Entry::root_builder()
+        .set_metadata("equal-height-delta-fixture")
         .set_subtree_data(STORE, "root")
         .build()
         .unwrap();
