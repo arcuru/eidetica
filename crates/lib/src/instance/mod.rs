@@ -1255,7 +1255,7 @@ impl Instance {
     /// store value and commits that entry normally.
     ///
     /// Rejects blobs larger than [`DEFAULT_MAX_BLOB_BYTES`](crate::backend::DEFAULT_MAX_BLOB_BYTES)
-    /// ([`BackendError::BlobTooLarge`](crate::backend::errors::BackendError::BlobTooLarge));
+    /// ([`BackendError::BlobTooLarge`]);
     ///
     /// Routes through the backend seam, so it works on both local and remote
     /// (daemon-backed) instances. On a remote instance the bytes are submitted
