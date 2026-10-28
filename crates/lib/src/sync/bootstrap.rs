@@ -408,8 +408,8 @@ impl Sync {
     /// Result indicating success or failure of the approval operation.
     ///
     /// # Errors
-    /// Returns `SyncError::InsufficientPermission` if the approving key does not have
-    /// Admin permission on the target database.
+    /// Returns `SyncError::InsufficientPermission` if the approving key lacks current
+    /// Admin permission or a new grant would exceed its permission/priority ceiling.
     pub async fn approve_bootstrap_request_with_key(
         &self,
         request_id: &str,

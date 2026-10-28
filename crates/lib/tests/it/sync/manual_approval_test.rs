@@ -2009,4 +2009,33 @@ async fn bootstrap_approval_cannot_create_a_higher_priority_admin() {
     user.reject_bootstrap_request(&sync, &id, &key)
         .await
         .unwrap();
+
+    // The ceiling must still allow equal or lower authority, including Write
+    // priorities that are numerically smaller than this Admin key's priority.
+    for permission in [
+        AuthPermission::Admin(5),
+        AuthPermission::Admin(6),
+        AuthPermission::Write(0),
+        AuthPermission::Read,
+    ] {
+        let requester = PrivateKey::generate();
+        let id = create_pending_bootstrap_request(
+            &create_test_sync_handler(&sync),
+            &tree,
+            &requester,
+            "requester",
+            permission,
+            &instance.id(),
+        )
+        .await;
+        user.approve_bootstrap_request(&sync, &id, &key)
+            .await
+            .unwrap_or_else(|e| panic!("Admin(5) should be able to grant {permission:?}: {e}"));
+        assert!(
+            Database::can_access(&instance, &tree, &requester.public_key(), &permission)
+                .await
+                .unwrap(),
+            "approved request did not grant {permission:?}"
+        );
+    }
 }

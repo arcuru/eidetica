@@ -1013,7 +1013,9 @@ impl AccountSession {
 
     /// Approve a bootstrap request and add the requesting key to the target database.
     ///
-    /// The approving key must have Admin permission on the target database.
+    /// The approving key must have current Admin permission on the target database.
+    /// Creating a grant also requires authority at least as high as the requested
+    /// permission and priority; lower priority numbers have higher authority.
     ///
     /// # Arguments
     /// * `sync` - Mutable reference to the Instance's Sync object
@@ -1334,9 +1336,9 @@ impl AccountSession {
     /// the lock held and re-acquire it only for this cheap, local mapping write,
     /// so a slow or hung peer never blocks the rest of the session. The mapping
     /// semantics are identical to `request_database_access`. The split form
-    /// treats supplied preferences as current explicit intent; use `join` or
-    /// `request_database_access` to preserve preferences changed during their
-    /// network wait.
+    /// treats supplied preferences as current explicit intent; use
+    /// [`record_database_access_if_unchanged`](Self::record_database_access_if_unchanged)
+    /// to preserve a tracked row changed during the network wait.
     ///
     /// The `bootstrap_result` is consumed and its outcome re-raised unchanged so
     /// callers can react to [`SyncError::BootstrapPending`] et al.
