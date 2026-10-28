@@ -68,6 +68,14 @@ pub enum BackendError {
     #[error("Bounded Store history pages are not supported by this backend")]
     HistoryPageUnsupported,
 
+    /// The backend does not implement strict forward history deltas.
+    #[error("Store history deltas are not supported by this backend")]
+    HistoryDeltaUnsupported,
+
+    /// Incomplete, wrongly scoped or non-forward history, or invalid progress.
+    #[error("Invalid Store history delta: {reason}")]
+    InvalidHistoryDelta { reason: String },
+
     /// A history cursor was not minted for this exact query and Snapshot,
     /// or uses an unsupported cursor version. Never an empty page.
     #[error("History cursor does not match this query")]

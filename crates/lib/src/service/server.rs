@@ -764,7 +764,8 @@ async fn handle_connection(
 
 /// Dispatch a service request to the appropriate Instance/Backend method.
 /// Reserve the complete response frame around a negotiated history page.
-fn history_page_limits(
+fn history_limits(
+    delta: bool,
     max_entries: u32,
     max_encoded_bytes: u32,
     allow_large_singleton: bool,
@@ -772,14 +773,27 @@ fn history_page_limits(
     use crate::backend::{HistoryPage, MAX_HISTORY_PAGE_ENCODING, MAX_HISTORY_PAGE_ENTRIES};
     use crate::encoding::json_encoded_len;
     let limit = (max_encoded_bytes as usize).min(MAX_HISTORY_PAGE_ENCODING);
-    let empty_frame = ServerFrame::Response(Box::new(ServiceResponse::HistoryPage(
-        HistoryPage::default(),
-    )));
+    let response = if delta {
+        ServiceResponse::HistoryDelta(crate::backend::HistoryDelta {
+            entries: Vec::new(),
+            covered: crate::Snapshot::EMPTY,
+            binding: [0; 32],
+            complete: false,
+        })
+    } else {
+        ServiceResponse::HistoryPage(HistoryPage::default())
+    };
+    let page_size = match &response {
+        ServiceResponse::HistoryDelta(page) => json_encoded_len(page, limit)?,
+        ServiceResponse::HistoryPage(page) => json_encoded_len(page, limit)?,
+        _ => unreachable!(),
+    };
+    let empty_frame = ServerFrame::Response(Box::new(response));
     let too_large = || crate::backend::BackendError::RecordTooLarge {
         encoded_bytes: limit + 1,
     };
     let frame_size = json_encoded_len(&empty_frame, limit)?.ok_or_else(too_large)?;
-    let page_size = json_encoded_len(&HistoryPage::default(), limit)?.ok_or_else(too_large)?;
+    let page_size = page_size.ok_or_else(too_large)?;
     // A singleton may use the backend's hard page cap; that plus the fixed
     // response tags stays below the immutable frame cap.
     debug_assert!(
@@ -1346,6 +1360,42 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Entries(entries))
         }
 
+        DatabaseOp::GetStoreHistoryDelta {
+            store,
+            target,
+            known,
+            scope: _,
+            max_entries,
+            max_encoded_bytes,
+            allow_large_singleton,
+        } => {
+            if !ctx
+                .features
+                .iter()
+                .any(|f| f == crate::service::protocol::FEATURE_HISTORY_DELTA)
+            {
+                return Ok(ServiceResponse::Unsupported);
+            }
+            let limits =
+                history_limits(true, max_entries, max_encoded_bytes, allow_large_singleton)?;
+            let db = Database::open(instance, &root_id).await?;
+            match db
+                .ops()
+                .store_history_delta(&root_id, &store, &target, &known, limits)
+                .await
+            {
+                Err(crate::Error::Backend(error))
+                    if matches!(
+                        *error,
+                        crate::backend::BackendError::HistoryDeltaUnsupported
+                    ) =>
+                {
+                    Ok(ServiceResponse::Unsupported)
+                }
+                page => Ok(ServiceResponse::HistoryDelta(page?)),
+            }
+        }
+
         DatabaseOp::GetStoreHistoryPage {
             store,
             tips,
@@ -1364,7 +1414,7 @@ async fn dispatch_database_op(
                 return Ok(ServiceResponse::Unsupported);
             }
             let limits =
-                history_page_limits(max_entries, max_encoded_bytes, allow_large_singleton)?;
+                history_limits(false, max_entries, max_encoded_bytes, allow_large_singleton)?;
             // Same read semantics as GetStoreEntries: the caller-supplied
             // Snapshot is captured once and bound into every cursor.
             let db = Database::open(instance, &root_id).await?;
@@ -2635,6 +2685,68 @@ mod history_envelope_tests {
     use super::*;
     use crate::backend::{BackendImpl, HistoryPageLimits};
     #[tokio::test]
+    async fn history_delta_response_envelope_exact_boundary() {
+        let backend = crate::backend::database::InMemory::new();
+        let root = crate::Entry::root_builder()
+            .set_subtree_data("s", "\"\\\n")
+            .build()
+            .unwrap();
+        let tree = root.id();
+        backend.put(root).await.unwrap();
+        let child = crate::Entry::builder(tree.clone())
+            .add_parent(tree.clone())
+            .set_subtree_data("s", "next")
+            .add_subtree_parent("s", tree.clone())
+            .set_subtree_height("s", Some(1))
+            .build()
+            .unwrap();
+        let target = crate::Snapshot::from([child.id()]);
+        backend.put(child).await.unwrap();
+        let page = backend
+            .store_history_delta(
+                &tree,
+                "s",
+                &target,
+                &crate::Snapshot::EMPTY,
+                HistoryPageLimits {
+                    max_entries: 2,
+                    max_encoded_bytes: 1 << 20,
+                    allow_large_singleton: false,
+                },
+            )
+            .await
+            .unwrap();
+        let size = serde_json::to_vec(&ServerFrame::Response(Box::new(
+            ServiceResponse::HistoryDelta(page.clone()),
+        )))
+        .unwrap()
+        .len();
+        assert_eq!(
+            crate::service::protocol::history_delta_frame_len(&page, size).unwrap(),
+            Some(size)
+        );
+        assert!(
+            crate::service::protocol::history_delta_frame_len(&page, size - 1)
+                .unwrap()
+                .is_none()
+        );
+        for cap in [size - 1, size, size + 1] {
+            let limits = history_limits(true, 2, cap as u32, false).unwrap();
+            let page = backend
+                .store_history_delta(&tree, "s", &target, &crate::Snapshot::EMPTY, limits)
+                .await
+                .unwrap();
+            assert_eq!(page.entries.len(), if cap < size { 1 } else { 2 });
+            let actual = serde_json::to_vec(&ServerFrame::Response(Box::new(
+                ServiceResponse::HistoryDelta(page),
+            )))
+            .unwrap()
+            .len();
+            assert!(actual <= cap);
+        }
+    }
+
+    #[tokio::test]
     async fn history_response_envelope_exact_boundary() {
         let backend = crate::backend::database::InMemory::new();
         let root = crate::Entry::root_builder()
@@ -2669,7 +2781,7 @@ mod history_envelope_tests {
         let frame = ServerFrame::Response(Box::new(ServiceResponse::HistoryPage(page)));
         let size = serde_json::to_vec(&frame).unwrap().len();
         for cap in [size - 1, size, size + 1] {
-            let limits = history_page_limits(2, cap as u32, false).unwrap();
+            let limits = history_limits(false, 2, cap as u32, false).unwrap();
             let page = backend
                 .store_history_page(&tree, "s", &tips, None, limits)
                 .await

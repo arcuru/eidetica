@@ -10,6 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWrite};
 #[derive(Default)]
 struct Observed {
     pages: AtomicUsize,
+    deltas: AtomicUsize,
     whole: AtomicUsize,
     prefixes: Mutex<Vec<u32>>,
 }
@@ -33,6 +34,9 @@ async fn forward<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         if requests {
             let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
             if let Some(op) = request.get("AuthenticatedDb").and_then(|r| r.get("op")) {
+                if op.get("GetStoreHistoryDelta").is_some() {
+                    stats.deltas.fetch_add(1, Ordering::Relaxed);
+                }
                 if op.get("GetStoreHistoryPage").is_some() {
                     stats.pages.fetch_add(1, Ordering::Relaxed);
                 }
@@ -153,20 +157,23 @@ async fn ordinary_sdk_many_small_entries_exceed_legacy_frame_via_pages() {
             .is_some()
     );
     let pages = stats.pages.load(Ordering::Relaxed);
+    let deltas = stats.deltas.load(Ordering::Relaxed);
+    assert!(deltas > 1, "new/new collector did not select v2: {deltas}");
+    assert_eq!(pages, 0, "new/new fell back to v1");
     let whole = stats.whole.load(Ordering::Relaxed);
     let prefixes = stats.prefixes.lock().unwrap().clone();
-    assert!(pages > 1, "collector sent {pages} page calls");
+    assert!(deltas > 1, "collector sent {deltas} delta calls");
     assert_eq!(
         whole, 0,
         "negotiated collector used legacy whole-history RPC"
     );
     assert!(prefixes.iter().all(|size| *size <= MAX_FRAME_SIZE));
     eprintln!(
-        "AGGREGATE PROOF entries={} max_individual={} legacy_frame={} page_calls={} legacy_calls={} physical_prefixes={prefixes:?}",
+        "AGGREGATE PROOF entries={} max_individual={} legacy_frame={} v2_calls={} legacy_calls={} physical_prefixes={prefixes:?}",
         entries.len(),
         max_entry,
         count.0,
-        pages,
+        deltas,
         whole
     );
     proxy.abort();

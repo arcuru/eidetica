@@ -557,3 +557,38 @@ pub(crate) fn store_history_page(
     }
     Ok(page.finish())
 }
+
+pub(crate) fn store_history_delta(
+    inner: &InMemoryInner,
+    query: &crate::backend::history_delta::DeltaQuery<'_>,
+    limits: crate::backend::HistoryPageLimits,
+) -> Result<crate::backend::HistoryDelta> {
+    use crate::backend::{
+        history_delta::{DeltaWalk, invalid},
+        history_page::Workspace,
+    };
+    let mut walk = DeltaWalk::new(query, &limits, Workspace::new())?;
+    while let Some(id) = walk.next()? {
+        let entry = inner
+            .entries
+            .get(&id)
+            .ok_or_else(|| invalid("unavailable Store ancestry"))?;
+        if !entry.in_tree(query.tree) || !entry.in_subtree(query.store) {
+            return Err(invalid("wrong Store scope"));
+        }
+        walk.member(&id, entry.subtree_height(query.store).unwrap_or(0))?;
+        for parent in entry.subtree_parents_ref(query.store) {
+            walk.parent(&id, parent.clone())?;
+        }
+    }
+    let mut page = walk.finish(limits)?;
+    for i in 0..page.selected.len() {
+        if page.is_full() {
+            break;
+        }
+        if !page.push(i, &inner.entries[&page.selected[i].1])? {
+            break;
+        }
+    }
+    page.finish()
+}

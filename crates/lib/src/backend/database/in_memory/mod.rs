@@ -890,6 +890,20 @@ impl BackendImpl for InMemory {
         storage::store_at(&inner, tree, subtree, snapshot.tips())
     }
 
+    async fn store_history_delta(
+        &self,
+        tree: &ID,
+        store: &str,
+        target: &Snapshot,
+        known: &Snapshot,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> Result<crate::backend::HistoryDelta> {
+        let query = crate::backend::history_delta::DeltaQuery::new(tree, store, target, known)?;
+        let _permit = crate::backend::history_page::admit()?;
+        let inner = self.inner.read().unwrap();
+        storage::store_history_delta(&inner, &query, limits)
+    }
+
     async fn store_history_page(
         &self,
         tree: &ID,

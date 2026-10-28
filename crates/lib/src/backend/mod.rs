@@ -8,6 +8,8 @@
 //!
 //! Instance wraps BackendImpl in a `Backend` struct that provides a layer for future development.
 
+pub(crate) mod history_delta;
+pub use history_delta::HistoryDelta;
 pub(crate) mod history_page;
 mod record_page;
 pub use history_page::{
@@ -945,6 +947,18 @@ pub trait BackendImpl: Send + Sync + Any {
 
     /// Read a native bounded canonical page without collecting whole history.
     /// Custom backends explicitly opt in; the default is Unsupported.
+    /// Strict forward A(target) minus A(known); unsupported backends must not slice store_at.
+    async fn store_history_delta(
+        &self,
+        _tree: &ID,
+        _store: &str,
+        _target: &Snapshot,
+        _known: &Snapshot,
+        _limits: crate::backend::HistoryPageLimits,
+    ) -> Result<crate::backend::HistoryDelta> {
+        Err(BackendError::HistoryDeltaUnsupported.into())
+    }
+
     async fn store_history_page(
         &self,
         _tree: &ID,

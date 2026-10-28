@@ -296,6 +296,27 @@ impl Backend for RemoteBackend {
             .await
     }
 
+    async fn store_history_delta(
+        &self,
+        tree: &ID,
+        store: &str,
+        target: &Snapshot,
+        known: &Snapshot,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> Result<crate::backend::HistoryDelta> {
+        self.conn
+            .get_store_history_delta(
+                tree.clone(),
+                self.identity(),
+                store.into(),
+                target.clone(),
+                known.clone(),
+                ReadScope::Verified,
+                limits,
+            )
+            .await
+    }
+
     async fn store_history_page(
         &self,
         tree: &ID,

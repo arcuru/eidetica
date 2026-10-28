@@ -128,6 +128,18 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     /// Every entry of `store` reachable from `snapshot`.
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>>;
 
+    /// Strict forward A(target) minus A(known); unsupported backends must not slice store_at.
+    async fn store_history_delta(
+        &self,
+        _tree: &ID,
+        _store: &str,
+        _target: &Snapshot,
+        _known: &Snapshot,
+        _limits: crate::backend::HistoryPageLimits,
+    ) -> Result<crate::backend::HistoryDelta> {
+        Err(BackendError::HistoryDeltaUnsupported.into())
+    }
+
     async fn store_history_page(
         &self,
         _tree: &ID,

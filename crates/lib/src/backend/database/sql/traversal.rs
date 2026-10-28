@@ -806,6 +806,33 @@ async fn history_statement_deadline(
     Ok(())
 }
 
+async fn history_begin(
+    backend: &SqlxBackend,
+    deadline: tokio::time::Instant,
+) -> Result<sqlx::Transaction<'_, sqlx::Any>> {
+    let mut tx = if backend.kind == super::DbKind::Postgres {
+        backend
+            .pool()
+            .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .await
+    } else {
+        backend.pool().begin().await
+    }
+    .map_err(history_sql_error)?;
+    history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+    if backend.kind == super::DbKind::Postgres {
+        sqlx::query("SET LOCAL work_mem = '64kB'")
+            .execute(&mut *tx)
+            .await
+            .map_err(history_sql_error)?;
+        sqlx::query("SET LOCAL enable_bitmapscan = off")
+            .execute(&mut *tx)
+            .await
+            .map_err(history_sql_error)?;
+    }
+    Ok(tx)
+}
+
 async fn history_page_until(
     backend: &SqlxBackend,
     query: &crate::backend::history_page::HistoryQuery<'_>,
@@ -833,26 +860,7 @@ async fn history_page_until(
     if query.tips.is_empty() {
         return Ok(page.finish());
     }
-    let mut tx = if backend.kind == super::DbKind::Postgres {
-        backend
-            .pool()
-            .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            .await
-    } else {
-        backend.pool().begin().await
-    }
-    .map_err(history_sql_error)?;
-    history_statement_deadline(&mut tx, backend.kind, deadline).await?;
-    if backend.kind == super::DbKind::Postgres {
-        sqlx::query("SET LOCAL work_mem = '64kB'")
-            .execute(&mut *tx)
-            .await
-            .map_err(history_sql_error)?;
-        sqlx::query("SET LOCAL enable_bitmapscan = off")
-            .execute(&mut *tx)
-            .await
-            .map_err(history_sql_error)?;
-    }
+    let mut tx = history_begin(backend, deadline).await?;
     for tip in query.tips {
         history_statement_deadline(&mut tx, backend.kind, deadline).await?;
         let member: Option<(i64,)> = sqlx::query_as(HISTORY_START)
@@ -1229,3 +1237,112 @@ mod atomic_tips_tests {
 
 #[cfg(test)]
 mod history_tests;
+
+/// Strict v2 shares v1's native transaction/deadline/driver limits, but not its
+/// permissive membership predicates. No recursive CTE or full body collection.
+pub async fn store_history_delta(
+    backend: &SqlxBackend,
+    query: &crate::backend::history_delta::DeltaQuery<'_>,
+    limits: crate::backend::HistoryPageLimits,
+) -> Result<crate::backend::HistoryDelta> {
+    use crate::backend::history_page::{MAX_HISTORY_QUERY_DURATION, Workspace, resource};
+    let deadline = tokio::time::Instant::now() + MAX_HISTORY_QUERY_DURATION;
+    tokio::time::timeout_at(
+        deadline,
+        history_delta_until(backend, query, limits, deadline, Workspace::new()),
+    )
+    .await
+    .map_err(|_| {
+        resource(
+            "history query seconds",
+            MAX_HISTORY_QUERY_DURATION.as_secs() as usize,
+        )
+    })?
+}
+
+async fn history_delta_until(
+    backend: &SqlxBackend,
+    query: &crate::backend::history_delta::DeltaQuery<'_>,
+    limits: crate::backend::HistoryPageLimits,
+    deadline: tokio::time::Instant,
+    mut workspace: crate::backend::history_page::Workspace,
+) -> Result<crate::backend::HistoryDelta> {
+    use crate::backend::{
+        history_delta::{DeltaWalk, invalid},
+        history_page::{MAX_ENTRY_RAW_BYTES, Visits, resource},
+    };
+    use futures_util::TryStreamExt;
+    workspace.charge(HISTORY_DRIVER_SLACK)?;
+    let mut walk = DeltaWalk::new(query, &limits, workspace)?;
+    let max_ids = (walk.workspace.limit() - walk.workspace.used) / Visits::<ID>::COST;
+    let mut tx = history_begin(backend, deadline).await?;
+    while let Some(id) = walk.next()? {
+        history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+        let (height,) = sqlx::query_as::<_, (i64,)>(HISTORY_START)
+            .bind(id.to_string())
+            .bind(query.store)
+            .bind(query.tree.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(history_sql_error)?
+            .ok_or_else(|| invalid("unavailable or wrong-scope Store ancestry"))?;
+        walk.member(&id, history_height(height)?)?;
+        #[cfg(test)]
+        pause_history_metadata(query.tree).await;
+        history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+        let mut rows = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+            if backend.kind == super::DbKind::Sqlite {
+                HISTORY_PARENTS_SQLITE
+            } else {
+                HISTORY_PARENTS_POSTGRES
+            },
+        )
+        .bind(query.store)
+        .bind(id.to_string())
+        .bind(HISTORY_ID_TEXT_BYTES as i64)
+        .bind((max_ids + 1) as i64)
+        .fetch(&mut *tx);
+        let mut count = 0;
+        while let Some((text, bytes)) = rows.try_next().await.map_err(history_sql_error)? {
+            count += 1;
+            if count > max_ids {
+                return Err(resource("history parent IDs", max_ids));
+            }
+            let text = text
+                .filter(|_| bytes.is_some_and(|n| n > 0 && n <= HISTORY_ID_TEXT_BYTES as i64))
+                .ok_or_else(|| invalid("NULL, empty or oversized Store parent ID"))?;
+            walk.parent(&id, ID::parse(&text)?)?;
+        }
+    }
+    let mut page = walk.finish(limits)?;
+    for index in 0..page.selected.len() {
+        if page.is_full() {
+            break;
+        }
+        let id = page.selected[index].1.clone();
+        history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+        let (body, raw_size): (Option<Vec<u8>>, i64) = sqlx::query_as(
+            "SELECT CASE WHEN length(entry_cbor) <= $2 THEN entry_cbor ELSE NULL END,
+             CAST(length(entry_cbor) AS BIGINT) FROM entries WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .bind(MAX_ENTRY_RAW_BYTES as i64)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(history_sql_error)?
+        .ok_or_else(|| invalid("unavailable Store Entry body"))?;
+        if raw_size > MAX_ENTRY_RAW_BYTES as i64 {
+            page.raw_too_large(&id)?;
+            break;
+        }
+        let body = body.ok_or_else(|| invalid("NULL Store Entry body"))?;
+        let entry: Entry = serde_ipld_dagcbor::from_slice(&body)
+            .map_err(|_| invalid("invalid Store Entry body"))?;
+        drop(body);
+        if !page.push(index, &entry)? {
+            break;
+        }
+    }
+    tx.commit().await.map_err(history_sql_error)?;
+    page.finish()
+}

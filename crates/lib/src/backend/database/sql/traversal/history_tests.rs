@@ -22,6 +22,9 @@ async fn backend() -> Arc<SqlxBackend> {
     concurrent_snapshot_test_backend().await
 }
 async fn graph(b: &SqlxBackend) -> (ID, Snapshot) {
+    graph_length(b, 12).await
+}
+async fn graph_length(b: &SqlxBackend, count: u64) -> (ID, Snapshot) {
     let root = Entry::root_builder()
         .set_subtree_data("h", "root")
         .build()
@@ -29,7 +32,7 @@ async fn graph(b: &SqlxBackend) -> (ID, Snapshot) {
     let tree = root.id();
     b.put(root).await.unwrap();
     let mut parent = tree.clone();
-    for n in 1..=12u64 {
+    for n in 1..=count {
         let entry = Entry::builder(tree.clone())
             .add_parent(parent.clone())
             .set_subtree_data("h", n.to_string())
@@ -788,4 +791,268 @@ async fn native_history_high_fanout_missing_plans_and_v_plus_one_refusal() {
         eprintln!("NATIVE FANOUT/MISSING {:?}: {plan:?}", b.kind);
     }
     tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_history_delta_capacity_strictness_deadline_and_cleanup() {
+    use crate::backend::history_delta::DeltaQuery;
+    let b = backend().await;
+    let (tree, target) = graph(&b).await;
+    let legacy = b.store_at(&tree, "h", &target).await.unwrap();
+    let known = Snapshot::from([legacy[6].id()]);
+    let q = DeltaQuery::new(&tree, "h", &target, &known).unwrap();
+    let run = |budget| {
+        history_delta_until(
+            &b,
+            &q,
+            limits(),
+            tokio::time::Instant::now() + Duration::from_secs(30),
+            Workspace::with_limit(budget),
+        )
+    };
+    let mut low = 0;
+    let mut high = crate::backend::history_page::MAX_HISTORY_WORKSPACE_BYTES;
+    while low < high {
+        let mid = (low + high) / 2;
+        if run(mid).await.is_ok() {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    assert!(run(low - 1).await.is_err());
+    let page = run(low).await.unwrap();
+    assert_eq!(page.entries, legacy[7..11]);
+    let mut v1 = Workspace::new();
+    v1.charge(4 + HISTORY_DRIVER_SLACK).unwrap();
+    let hq = HistoryQuery::new(&tree, "h", &target, None).unwrap();
+    let _ = TopK::new(&hq, &limits(), &mut v1).unwrap();
+    let v1_min = v1.used + legacy.len() * Visits::<ID>::COST;
+    eprintln!(
+        "NATIVE DELTA CAPACITY: target_nodes={} known_nodes=7 v1_accounted_bytes={} v2_min_accounted_bytes={} added_bytes={} backend={:?}",
+        legacy.len(),
+        v1_min,
+        low,
+        low - v1_min,
+        b.kind
+    );
+    assert!(
+        history_delta_until(
+            &b,
+            &q,
+            limits(),
+            tokio::time::Instant::now(),
+            Workspace::new()
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        b.store_history_delta(&tree, "h", &target, &known, limits())
+            .await
+            .is_ok()
+    );
+    // Strict v2 rejects observable metadata scope corruption that v1 permits.
+    sqlx::query("UPDATE entries SET tree_id=$1 WHERE id=$2")
+        .bind(ID::from_bytes("foreign").to_string())
+        .bind(legacy[3].id().to_string())
+        .execute(b.pool())
+        .await
+        .unwrap();
+    assert!(
+        b.store_history_delta(&tree, "h", &target, &known, limits())
+            .await
+            .is_err()
+    );
+    assert!(
+        b.store_history_page(&tree, "h", &target, None, limits())
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn native_history_delta_captured_transaction_and_cancel_reuse() {
+    #[cfg(feature = "sqlite")]
+    let dir = tempfile::tempdir().unwrap();
+    let b = if std::env::var("TEST_BACKEND").as_deref() == Ok("postgres") {
+        backend().await
+    } else {
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(
+                SqlxBackend::open_sqlite(dir.path().join("delta-snapshot.db"))
+                    .await
+                    .unwrap(),
+            )
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            return;
+        }
+    };
+    let (tree, target) = graph(&b).await;
+    let expected = b.store_at(&tree, "h", &target).await.unwrap();
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    let (resume, resume_rx) = tokio::sync::oneshot::channel();
+    *HISTORY_PAUSE.get_or_init(Default::default).lock().unwrap() =
+        Some((tree.clone(), (entered, resume_rx)));
+    let reader = b.clone();
+    let rt = tree.clone();
+    let rs = target.clone();
+    let task = tokio::spawn(async move {
+        reader
+            .store_history_delta(&rt, "h", &rs, &Snapshot::EMPTY, limits())
+            .await
+            .unwrap()
+    });
+    entered_rx.await.unwrap();
+    sqlx::query("DELETE FROM store_parents WHERE store_name=$1 AND child_id=$2")
+        .bind("h")
+        .bind(target.tips()[0].to_string())
+        .execute(b.pool())
+        .await
+        .unwrap();
+    resume.send(()).unwrap();
+    assert_eq!(task.await.unwrap().entries, expected[..4]);
+    // Fresh page sees new metadata and body inconsistency, not a lifetime lease.
+    assert!(
+        b.store_history_delta(&tree, "h", &target, &Snapshot::EMPTY, limits())
+            .await
+            .is_err()
+    );
+    // Hold all but one pool slot and cancel a real v2 operation after its read.
+    let mut held = Vec::new();
+    for _ in 1..b.pool().options().get_max_connections() {
+        held.push(b.pool().acquire().await.unwrap());
+    }
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    let (_resume, resume_rx) = tokio::sync::oneshot::channel();
+    *HISTORY_PAUSE.get_or_init(Default::default).lock().unwrap() =
+        Some((tree.clone(), (entered, resume_rx)));
+    let reader = b.clone();
+    let rt = tree.clone();
+    let rs = target.clone();
+    let task = tokio::spawn(async move {
+        reader
+            .store_history_delta(&rt, "h", &rs, &Snapshot::EMPTY, limits())
+            .await
+    });
+    entered_rx.await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), b.pool().acquire())
+            .await
+            .is_err()
+    );
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let mut reused = tokio::time::timeout(Duration::from_secs(5), b.pool().acquire())
+        .await
+        .unwrap()
+        .unwrap();
+    let (one,): (i64,) = sqlx::query_as("SELECT CAST(1 AS BIGINT)")
+        .fetch_one(&mut *reused)
+        .await
+        .unwrap();
+    assert_eq!(one, 1);
+    if b.kind == super::super::DbKind::Postgres {
+        let (timeout,): (String,) = sqlx::query_as("SELECT current_setting('statement_timeout')")
+            .fetch_one(&mut *reused)
+            .await
+            .unwrap();
+        assert_eq!(timeout, "0");
+    }
+}
+
+#[tokio::test]
+async fn native_history_delta_representative_metadata_cost() {
+    use crate::backend::history_delta::DeltaQuery;
+    let b = backend().await;
+    // Same node count as the signed many-sub-1MiB Entry transfer fixture.
+    // Body sizes do not affect metadata admission; no RSS claim is made.
+    let (tree, target) = graph_length(&b, 95).await;
+    let entries = b.store_at(&tree, "h", &target).await.unwrap();
+    let known = Snapshot::from([entries[94].id()]);
+    let q = DeltaQuery::new(&tree, "h", &target, &known).unwrap();
+    let mut low = 0;
+    let mut high = crate::backend::history_page::MAX_HISTORY_WORKSPACE_BYTES;
+    while low < high {
+        let mid = (low + high) / 2;
+        let result = history_delta_until(
+            &b,
+            &q,
+            limits(),
+            tokio::time::Instant::now() + Duration::from_secs(30),
+            Workspace::with_limit(mid),
+        )
+        .await;
+        if result.is_ok() {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    let page = history_delta_until(
+        &b,
+        &q,
+        limits(),
+        tokio::time::Instant::now() + Duration::from_secs(30),
+        Workspace::with_limit(low),
+    )
+    .await
+    .unwrap();
+    assert!(page.complete);
+    assert_eq!(page.entries, entries[95..]);
+    let mut v1 = Workspace::new();
+    v1.charge(4 + HISTORY_DRIVER_SLACK).unwrap();
+    let hq = HistoryQuery::new(&tree, "h", &target, None).unwrap();
+    let _ = TopK::new(&hq, &limits(), &mut v1).unwrap();
+    let v1_min = v1.used + entries.len() * Visits::<ID>::COST;
+    assert!(low > v1_min && low < crate::backend::history_page::MAX_HISTORY_WORKSPACE_BYTES);
+    eprintln!(
+        "REPRESENTATIVE METADATA target_nodes=96 known_nodes=95 v1_accounted_bytes={v1_min} v2_min_accounted_bytes={low} extra_accounted_bytes={} (not RSS)",
+        low - v1_min
+    );
+}
+
+#[tokio::test]
+async fn native_history_delta_eight_nonqueued_operations_release_on_cancel() {
+    let b = backend().await;
+    let (tree, target) = graph(&b).await;
+    let empty = Snapshot::EMPTY;
+    let mut held = Vec::new();
+    for _ in 0..b.pool().options().get_max_connections() {
+        held.push(b.pool().acquire().await.unwrap());
+    }
+    let mut calls = Vec::new();
+    for _ in 0..8 {
+        let mut call = Box::pin(b.store_history_delta(&tree, "h", &target, &empty, limits()));
+        assert!(futures_util::poll!(call.as_mut()).is_pending());
+        calls.push(call);
+    }
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        b.store_history_delta(&tree, "h", &target, &empty, limits()),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(
+        matches!(error,crate::Error::Backend(e) if matches!(*e,BackendError::HistoryResourceLimit{..}))
+    );
+    drop(calls.pop());
+    let mut replacement = Box::pin(b.store_history_delta(&tree, "h", &target, &empty, limits()));
+    assert!(futures_util::poll!(replacement.as_mut()).is_pending());
+    drop(replacement);
+    drop(calls);
+    drop(held);
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            b.store_history_delta(&tree, "h", &target, &empty, limits())
+        )
+        .await
+        .unwrap()
+        .is_ok()
+    );
 }

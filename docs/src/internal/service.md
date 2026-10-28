@@ -41,7 +41,7 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 
 Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. The maximum is fixed at exactly 64 MiB (`MAX_FRAME_SIZE`), including JSON tags, escaping and punctuation but excluding the prefix. Inbound prefixes are checked before allocation. Outbound capped serialization stops before producing an oversized payload and writes no prefix on refusal. An invalid frame retires the affected connection and all pending calls. `read_frame` returns `None` only on EOF before any prefix byte; a partial prefix or body is an error.
 
-`PROTOCOL_VERSION` remains `0`. Version mismatches and malformed known handshake fields fail. The optional `features` list is bounded to 32 names of at most 64 bytes; missing means none. The server acknowledges only the supported intersection and clients reject unoffered acknowledgments. Only `eidetica.history-pages.v1` is offered here. Legacy serde peers ignore the added field. No maximum frame size is advertised or learned; old larger-policy advertisements confer no authority. This remains the owner-protected local-socket trust model, not network-server authentication.
+`PROTOCOL_VERSION` remains `0`. Version mismatches and malformed known handshake fields fail. The optional `features` list is bounded to 32 names of at most 64 bytes; missing means none. The server acknowledges only the supported intersection and clients reject unoffered acknowledgments. Both `eidetica.history-pages.v1` and `eidetica.history-pages.v2` are offered here. Legacy serde peers ignore the added field. No maximum frame size is advertised or learned; old larger-policy advertisements confer no authority. This remains the owner-protected local-socket trust model, not network-server authentication.
 
 Updated service peers tolerate additions at these named operation extension points:
 
@@ -52,6 +52,54 @@ Updated service peers tolerate additions at these named operation extension poin
 These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix, operation wire shapes and fixed 64 MiB cap are unchanged.
 
 This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no generic silent operation downgrade. The optional history extension is sent only after acknowledgment, including when talking to pre-tolerance v0 peers. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
+
+### Forward Store snapshot deltas (v2)
+
+`eidetica.history-pages.v2` adds the authenticated Read operation
+`GetStoreHistoryDelta { store, target, known, scope, max_entries,
+max_encoded_bytes, allow_large_singleton }`. The public complete-history SDK
+signature is unchanged. New peers prefer v2; v1 types, cursor semantics and
+operations remain available unchanged.
+
+For Store-parent ancestor closures T=A(target) and K=A(known), a reply contains
+an ordered prefix B of T−K, `covered`, a domain-separated binding to the exact
+canonical target input/database/Store, and `complete`. Its maximal covered
+frontier represents (T∩K)∪B, and completion means that set equals T. Redundant
+input ancestors are accepted; unrelated known branches are projected out, not
+returned as progress. Empty target is empty, not capture-latest. The ordinary
+collector fixes the caller's target once and continues with covered as known.
+Known asserts possession of its ancestor closure, not authority or Verified
+status. Both native methods preserve opaque Entry bytes and ReadScope's existing
+meaning; neither promises per-entry verification filtering.
+
+v2 requires available, canonically scoped Store ancestry. Unknown/wrong-scope
+nodes and Store edges incompatible with height-then-Rust-ID ordering fail
+explicitly, even if an Entry is Verified. v1's more permissive missing-node and
+ordering behavior remains separate. Metadata membership is checked on both
+walks; selected bodies are cross-checked against scoped metadata. This is not an
+exhaustive body/index corruption scanner or support for sparse replicas.
+
+Both walks, owned IDs, target edges/heights, candidate heap, frontier copies,
+arguments and SQL driver slack consume the existing 16 MiB operation workspace.
+The complete changing frontier/binding/completion and transport envelope are
+sized before admission. Input Snapshots and returned covered have at most 4096
+tips; a frontier that cannot fit fails, never truncates. A later merge might
+shrink it, but there is no maximal-packing search. Existing Entry count, preferred
+4 MiB response, fitting-singleton, 63 MiB inner page, 64 MiB frame, eight
+nonqueued operations and 120-second SQL deadline limits remain. Selected bodies
+are fetched individually, in the same captured read transaction/lock as metadata.
+Finite limits can reject a valid DAG. Extra metadata reduces supported capacity;
+there is no constant-workspace or database-engine/RSS bound.
+
+Only the empty-known complete-history collector may choose v2→v1→legacy, before
+any successful page, on capability absence or explicit Unsupported. Arbitrary
+known one-page calls cannot substitute v1. Errors, incomplete ancestry,
+malformed replies and post-progress Unsupported never restart or downgrade a
+transfer. The collector checks binding, strict order, duplicates, delivered
+Store-parent coverage, maximal progress and terminal target coverage; this is
+structural validation, not a cryptographic proof against a malicious daemon.
+It returns an all-or-error Vec with O(total history) client memory. Every page
+rechecks Read authorization; progress is not a long-lived snapshot lease.
 
 ### Bounded raw Store history
 

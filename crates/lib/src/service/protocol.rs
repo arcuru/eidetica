@@ -69,8 +69,11 @@ pub const MAX_RECORD_PAGE_BYTES: u32 = 4 * 1024 * 1024;
 /// ([`DatabaseOp::GetStoreHistoryPage`]).
 pub const FEATURE_HISTORY_PAGES: &str = "eidetica.history-pages.v1";
 
-/// Implemented history extension.
-pub const SUPPORTED_FEATURES: &[&str] = &[FEATURE_HISTORY_PAGES];
+/// Strict forward snapshot deltas ([`DatabaseOp::GetStoreHistoryDelta`]).
+pub const FEATURE_HISTORY_DELTA: &str = "eidetica.history-pages.v2";
+
+/// Implemented optional history extensions.
+pub const SUPPORTED_FEATURES: &[&str] = &[FEATURE_HISTORY_PAGES, FEATURE_HISTORY_DELTA];
 
 /// Bounds on an advertised feature list; a larger list is malformed.
 const MAX_FEATURES: usize = 32;
@@ -231,6 +234,16 @@ pub enum DatabaseOp {
         max_records: u32,
         max_encoded_bytes: u32,
     },
+    /// Strict forward snapshot delta; requires [`FEATURE_HISTORY_DELTA`]. Gate Read.
+    GetStoreHistoryDelta {
+        store: String,
+        target: Snapshot,
+        known: Snapshot,
+        scope: ReadScope,
+        max_entries: u32,
+        max_encoded_bytes: u32,
+        allow_large_singleton: bool,
+    },
     /// One canonical bounded page of `GetStoreEntries` order. Sent only after
     /// [`FEATURE_HISTORY_PAGES`] is negotiated; otherwise the server answers
     /// [`ServiceResponse::Unsupported`]. Gate Read.
@@ -356,6 +369,7 @@ impl DatabaseOp {
             DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetVerifiedTips
             | DatabaseOp::GetStoreState { .. }
+            | DatabaseOp::GetStoreHistoryDelta { .. }
             | DatabaseOp::GetStoreHistoryPage { .. }
             | DatabaseOp::GetStoreEntries { .. }
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
@@ -591,6 +605,8 @@ pub enum ServerFrame {
 pub enum ServiceResponse {
     /// One canonical bounded history page.
     HistoryPage(crate::backend::HistoryPage),
+    /// One strict forward snapshot delta.
+    HistoryDelta(crate::backend::HistoryDelta),
     /// Single entry
     Entry(Entry),
     /// Multiple entries
@@ -688,6 +704,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "GetVerifiedTips",
     "GetStoreState",
     "GetStoreHistoryPage",
+    "GetStoreHistoryDelta",
     "GetStoreEntries",
     "GetStoreTipsUpToEntries",
     "ComputeMergeState",
@@ -701,6 +718,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
 const RESPONSE_VARIANTS: &[&str] = &[
     "Entry",
     "HistoryPage",
+    "HistoryDelta",
     "Entries",
     "Ids",
     "Ok",
@@ -882,6 +900,29 @@ pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     let mut payload = vec![0u8; len as usize];
     reader.read_exact(&mut payload).await?;
     Ok(Some(serde_json::from_slice(&payload)?))
+}
+
+/// Size the actual tagged response without cloning Entry bodies.
+pub(crate) fn history_delta_frame_len(
+    page: &crate::backend::HistoryDelta,
+    cap: usize,
+) -> crate::Result<Option<usize>> {
+    #[derive(Serialize)]
+    struct Frame<'a> {
+        #[serde(rename = "Response")]
+        response: Reply<'a>,
+    }
+    #[derive(Serialize)]
+    struct Reply<'a> {
+        #[serde(rename = "HistoryDelta")]
+        page: &'a crate::backend::HistoryDelta,
+    }
+    Ok(crate::encoding::json_encoded_len(
+        &Frame {
+            response: Reply { page },
+        },
+        cap,
+    )?)
 }
 
 #[cfg(test)]

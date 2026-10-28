@@ -105,6 +105,19 @@ impl Backend for LocalBackend {
         self.0.store_at(tree, store, snapshot).await
     }
 
+    async fn store_history_delta(
+        &self,
+        tree: &ID,
+        store: &str,
+        target: &Snapshot,
+        known: &Snapshot,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> Result<crate::backend::HistoryDelta> {
+        self.0
+            .store_history_delta(tree, store, target, known, limits)
+            .await
+    }
+
     async fn store_history_page(
         &self,
         tree: &ID,

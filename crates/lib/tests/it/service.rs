@@ -3388,3 +3388,128 @@ async fn history_pages_capture_frontier_ciphertext_and_reauthorize_every_page() 
         "authorization error retired an aligned connection"
     );
 }
+
+#[tokio::test]
+async fn history_delta_capture_ciphertext_and_fresh_read_authorization() {
+    use eidetica::{Snapshot, backend::HistoryPageLimits};
+    let (path, _shutdown, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &path, "delta-reader").await;
+    let user = server.login_account("delta-reader", None).await.unwrap();
+    let key = user.get_default_key().unwrap();
+    let db = eidetica::Database::open(&server, &root)
+        .await
+        .unwrap()
+        .with_key(user.get_signing_key(&key).unwrap());
+    for n in 0..3 {
+        db.with_transaction(|tx| async move {
+            let mut store = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+            if n == 0 {
+                store.initialize("synthetic-password", Doc::new()).await?;
+            } else {
+                store.open("synthetic-password")?;
+            }
+            store
+                .inner()
+                .await?
+                .set("secret", format!("synthetic-{n}"))
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+    let target = db.snapshot().await.unwrap();
+    let expected = server
+        .backend()
+        .store_at(&root, "secrets", &target)
+        .await
+        .unwrap();
+    let conn = remote_conn(&instance);
+    let limits = HistoryPageLimits {
+        max_entries: 1,
+        max_encoded_bytes: 1 << 20,
+        allow_large_singleton: false,
+    };
+    let first = conn
+        .get_store_history_delta(
+            root.clone(),
+            identity.clone(),
+            "secrets".into(),
+            target.clone(),
+            Snapshot::EMPTY,
+            ReadScope::Verified,
+            limits,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.entries, expected[..1]);
+    assert!(!first.complete);
+    db.with_transaction(|tx| async move {
+        let mut store = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+        store.open("synthetic-password")?;
+        store.inner().await?.set("secret", "later").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let mut known = first.covered;
+    let mut entries = first.entries;
+    loop {
+        let page = conn
+            .get_store_history_delta(
+                root.clone(),
+                identity.clone(),
+                "secrets".into(),
+                target.clone(),
+                known,
+                ReadScope::Verified,
+                limits,
+            )
+            .await
+            .unwrap();
+        entries.extend(page.entries);
+        known = page.covered;
+        if page.complete {
+            break;
+        }
+    }
+    assert_eq!(
+        entries, expected,
+        "fixed target preserves opaque encrypted Entry bytes"
+    );
+    let stranger = PrivateKey::generate().public_key();
+    assert!(
+        conn.get_store_history_delta(
+            root.clone(),
+            SigKey::from_pubkey(&stranger),
+            "secrets".into(),
+            target.clone(),
+            known.clone(),
+            ReadScope::Verified,
+            limits
+        )
+        .await
+        .is_err()
+    );
+    let revoke = key.clone();
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?.revoke_auth_key(&revoke).await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(
+        conn.get_store_history_delta(
+            root,
+            identity,
+            "secrets".into(),
+            target,
+            known,
+            ReadScope::Verified,
+            limits
+        )
+        .await
+        .is_err()
+    );
+    assert!(conn.get_instance_metadata().await.unwrap().is_some());
+}

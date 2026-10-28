@@ -49,7 +49,7 @@ pub(crate) const MAX_HISTORY_TIPS: usize = 4096;
 /// Bounds for one canonical history page.
 ///
 /// `max_encoded_bytes` covers compact JSON of the entire [`HistoryPage`],
-/// including its continuation. Counts and byte budgets are clamped to the hard
+/// including its continuation (or the complete [`super::HistoryDelta`] metadata). Counts and byte budgets are clamped to the hard
 /// caps. These are application payload limits, not database or RSS quotas.
 #[derive(Debug, Clone, Copy)]
 pub struct HistoryPageLimits {

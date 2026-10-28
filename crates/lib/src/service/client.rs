@@ -204,6 +204,7 @@ enum SubRole {
 struct RemoteConnectionInner {
     features: Vec<String>,
     history_disabled: AtomicBool,
+    delta_disabled: AtomicBool,
     /// A duplicate descriptor allows synchronous shutdown of both directions
     /// even while a frame write holds the async writer lock.
     shutdown_socket: std::os::unix::net::UnixStream,
@@ -577,6 +578,7 @@ impl RemoteConnection {
         let inner = Arc::new(RemoteConnectionInner {
             features,
             history_disabled: AtomicBool::new(false),
+            delta_disabled: AtomicBool::new(false),
             shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
@@ -1276,9 +1278,12 @@ impl RemoteConnection {
 
     /// Whether the history extension was negotiated and has not opted out.
     pub fn has_feature(&self, feature: &str) -> bool {
-        feature == crate::service::protocol::FEATURE_HISTORY_PAGES
-            && !self.inner.history_disabled.load(Ordering::Acquire)
-            && self.inner.features.iter().any(|name| name == feature)
+        let disabled = match feature {
+            crate::service::protocol::FEATURE_HISTORY_PAGES => &self.inner.history_disabled,
+            crate::service::protocol::FEATURE_HISTORY_DELTA => &self.inner.delta_disabled,
+            _ => return false,
+        };
+        !disabled.load(Ordering::Acquire) && self.inner.features.iter().any(|name| name == feature)
     }
 
     /// Fetch one bounded canonical history page. Missing support is explicit;
@@ -1353,6 +1358,80 @@ impl RemoteConnection {
         }
     }
 
+    /// Fetch a single strict forward delta. No v1 or legacy substitution is
+    /// valid for arbitrary known ancestry. Authorizes every request afresh.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn get_store_history_delta(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        target: Snapshot,
+        known: Snapshot,
+        scope: ReadScope,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> crate::Result<crate::backend::HistoryDelta> {
+        use crate::backend::{
+            BackendError, MAX_HISTORY_PAGE_ENTRIES,
+            history_delta::{DeltaQuery, invalid},
+            history_page::MAX_HISTORY_TIPS,
+        };
+        if !self.has_feature(crate::service::protocol::FEATURE_HISTORY_DELTA) {
+            return Err(BackendError::HistoryDeltaUnsupported.into());
+        }
+        let binding = DeltaQuery::new(&root_id, &store, &target, &known)?.binding;
+        let initial = known.is_empty();
+        let max_entries = limits.max_entries.clamp(1, MAX_HISTORY_PAGE_ENTRIES);
+        let response = self
+            .optional_page_request(
+                root_id,
+                identity,
+                DatabaseOp::GetStoreHistoryDelta {
+                    store,
+                    target,
+                    known,
+                    scope,
+                    max_entries: max_entries as u32,
+                    max_encoded_bytes: u32::try_from(limits.max_encoded_bytes).unwrap_or(u32::MAX),
+                    allow_large_singleton: limits.allow_large_singleton,
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::HistoryDelta(page)
+                if page.binding == binding
+                    && page.entries.len() <= max_entries
+                    && page.covered.len() <= MAX_HISTORY_TIPS
+                    && (page.complete || !page.entries.is_empty()) =>
+            {
+                let cap = if limits.allow_large_singleton && page.entries.len() == 1 {
+                    crate::service::protocol::MAX_FRAME_SIZE as usize
+                } else {
+                    limits
+                        .max_encoded_bytes
+                        .min(crate::backend::MAX_HISTORY_PAGE_ENCODING)
+                };
+                if crate::encoding::json_encoded_len(
+                    &page,
+                    crate::backend::MAX_HISTORY_PAGE_ENCODING,
+                )?
+                .is_none()
+                    || crate::service::protocol::history_delta_frame_len(&page, cap)?.is_none()
+                {
+                    return Err(invalid("delta exceeded encoded response limit"));
+                }
+                Ok(page)
+            }
+            ServiceResponse::Unsupported => {
+                if initial {
+                    self.inner.delta_disabled.store(true, Ordering::Release);
+                }
+                Err(BackendError::HistoryDeltaUnsupported.into())
+            }
+            _ => Err(invalid("invalid delta response")),
+        }
+    }
+
     /// Fetch complete opaque Store history at exactly the supplied frontier.
     /// Negotiated peers transfer bounded pages internally. The returned Vec is
     /// still O(total history); no partial result, reconnect or replay is used.
@@ -1364,6 +1443,53 @@ impl RemoteConnection {
         tips: Vec<ID>,
         scope: ReadScope,
     ) -> crate::Result<Vec<Entry>> {
+        if self.has_feature(crate::service::protocol::FEATURE_HISTORY_DELTA) {
+            use crate::backend::{
+                BackendError, HistoryPageLimits, MAX_HISTORY_PAGE_ENTRIES,
+                history_delta::{DeltaQuery, validate_delta},
+            };
+            let target = Snapshot::from(tips.clone());
+            let mut known = Snapshot::EMPTY;
+            let mut entries = Vec::new();
+            let mut seen = HashSet::new();
+            let mut previous = None;
+            let mut progressed = false;
+            loop {
+                let query = DeltaQuery::new(&root_id, &store, &target, &known)?;
+                let page = self
+                    .get_store_history_delta(
+                        root_id.clone(),
+                        identity.clone(),
+                        store.clone(),
+                        target.clone(),
+                        known.clone(),
+                        scope,
+                        HistoryPageLimits {
+                            max_entries: MAX_HISTORY_PAGE_ENTRIES,
+                            max_encoded_bytes: crate::service::protocol::MAX_RECORD_PAGE_BYTES
+                                as usize,
+                            allow_large_singleton: true,
+                        },
+                    )
+                    .await;
+                let page = match page {
+                    Err(crate::Error::Backend(error))
+                        if !progressed
+                            && matches!(*error, BackendError::HistoryDeltaUnsupported) =>
+                    {
+                        break;
+                    }
+                    page => page?,
+                };
+                validate_delta(&query, &page, &mut previous, &mut seen)?;
+                progressed = true;
+                entries.extend(page.entries);
+                if page.complete {
+                    return Ok(entries);
+                }
+                known = page.covered;
+            }
+        }
         if self.has_feature(crate::service::protocol::FEATURE_HISTORY_PAGES) {
             use crate::backend::{
                 BackendError, HistoryPageLimits, MAX_HISTORY_PAGE_ENTRIES,
@@ -2049,6 +2175,8 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
 mod compatibility_tests;
 
 #[cfg(test)]
+mod delta_tests;
+#[cfg(test)]
 mod frame_limit_tests;
 #[cfg(test)]
 mod handshake_tests;
@@ -2117,6 +2245,7 @@ mod tests {
         let inner = Arc::new(RemoteConnectionInner {
             features: Vec::new(),
             history_disabled: AtomicBool::new(false),
+            delta_disabled: AtomicBool::new(false),
             shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
