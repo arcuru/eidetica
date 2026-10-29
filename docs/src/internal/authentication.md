@@ -34,6 +34,9 @@ Delegations live in `_settings.auth.delegations`, indexed by database root ID.
 At each delegation step permission is clamped to its configured minimum/maximum;
 the final hint must resolve a concrete key, not the wildcard.
 Priority authorizes administrative actions; it does not change Doc merge ordering.
+A settings write is valid only if the signer's effective permission is at least the
+old and new permission of every key, delegation (by bounds) or global grant whose
+value the entry's `_settings` delta changes relative to the pre-write auth state.
 
 ## Validation Seams
 
@@ -44,6 +47,8 @@ Priority authorizes administrative actions; it does not change Doc merge orderin
 - `auth/validation/floors.rs`: join Verified parent projections, derive effective
   resulting settings, preserve separate direct/nested root observations, prove
   complete delegated ancestry, and rebuild cold derived state.
+- `auth/validation/permissions.rs`: operation checks and the auth-change priority
+  requirement (`required_auth_change_permission`) applied by the shared validator.
 - `auth/validation/delegation.rs`: declaration lookup at historical snapshots,
   coverage of configured/inherited floors, bounds and key resolution.
 - `service/server.rs`: store submitted entries Unverified and verify server-side;

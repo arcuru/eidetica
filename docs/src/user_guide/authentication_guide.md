@@ -679,10 +679,10 @@ Clearing only the derived cache is not a substitute.
 - Returns KeyNameConflict error if key name exists with different public key
 - Use `get_auth_key()` to check existing key before deciding action
 
-**"Cannot modify key"**: Admin operations require:
+**Settings commit rejected with `EntryValidationFailed`**: Changing a key, delegation or global permission requires:
 
 - Admin-level permissions
-- Equal or higher priority than the target key
+- Equal or higher priority than the grant being changed, both before and after the change (you cannot grant more than you hold)
 
 **Multi-device conflicts**: During bootstrap sync between devices:
 

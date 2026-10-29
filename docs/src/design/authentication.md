@@ -348,6 +348,14 @@ Priority values are u32 integers where lower values indicate higher priority:
 - Higher numbers = lower priority
 - Keys can only modify other keys with equal or lower priority (equal or higher number)
 
+Entry validation enforces this for every `_settings` write, on both local commit and remote verification.
+The validator applies the entry's `_settings` delta to its causal pre-write auth state and compares the two.
+Each grant whose stored value changes — added, removed, revoked, renamed, replaced, or dropped by a whole-map or tombstone write — requires the signer's effective permission to be at least both the grant's old and new permission.
+Delegations count at their permission bounds and the global `*` grant at its permission.
+So a signer can neither weaken or remove a stronger grant nor create one above its own level; delegated signers are judged at their clamped permission.
+Genesis is unchanged: it validates against its own settings, so it has no prior grants to compare.
+Regression coverage: `crates/lib/tests/it/auth/priority_enforcement.rs` (local raw/typed writes, positive controls, remote ingest) and `test_delegated_admin_respects_priority` in `crates/lib/tests/it/auth/delegated_trees.rs`.
+
 **Important**: Priority **only** affects administrative operations (key management). It does **not** influence CRDT merge conflict resolution, which uses Last Write Wins semantics based on the DAG structure.
 
 ### Key Naming and Aliasing
@@ -919,6 +927,7 @@ AuthKey {
 2. **Delegated Databases**: ✅ Fully implemented with comprehensive test coverage
 3. **Permission Clamping**: ✅ Functional for delegation chains
 4. **Delegation Depth Limits**: ✅ Implemented with MAX_DELEGATION_STEPS=10 — a delegation path is a flat list, so its length is the chain depth, and it is bounded before any delegated database is loaded
+5. **Admin Priority Enforcement**: ✅ Checked per entry against its causal pre-write auth state (see §Priority System). This judges each write in isolation: concurrent branches still merge by Last Write Wins, so a permitted lower-priority write can win a merge over a concurrent higher-priority one (see §Conflict Resolution and Merging)
 
 ### Future Enhancements
 
