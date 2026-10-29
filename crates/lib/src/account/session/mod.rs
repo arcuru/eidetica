@@ -27,6 +27,7 @@
 //! - **`databases()`** - List all tracked databases
 //! - **`database()`** - Get a specific tracked database
 //! - **`track_database()`** - Add or update a tracked database (upsert)
+//! - **`set_sync_preferences()`** - Update preferences without changing tracking or key mappings
 //! - **`untrack_database()`** - Remove a database from your tracked list
 //! - **`is_sync_enabled()`** - Check this account's sync preference for a database
 //!
