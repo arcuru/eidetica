@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::{
     Error, Result, Store, Transaction,
     crdt::{
-        CRDT, CRDTError, Doc,
+        CRDT, CRDTError, Codec, Doc,
         doc::{List, Path, PathBuf, PathError, Value},
     },
     store::{Registered, errors::StoreError},
@@ -155,8 +155,8 @@ impl DocStore {
 
     /// Stages the setting of a key-value pair within the associated `Transaction`.
     ///
-    /// This method updates the `Map` data held within the `Transaction` for this
-    /// `Doc` instance's subtree name. The change is **not** persisted to the backend
+    /// This method updates the `Doc` data held within the `Transaction` for this
+    /// store's subtree name. The change is **not** persisted to the backend
     /// until the `Transaction::commit()` method is called.
     ///
     /// # Arguments
@@ -166,18 +166,7 @@ impl DocStore {
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
     pub async fn set(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
-        let key = key.into();
-        let value = value.into();
-
-        // Get current data from the transaction, or create new if not existing
-        let mut data = self.local_data()?.unwrap_or_default();
-
-        // Update the data using unified path interface
-        data.set(&key, value);
-
-        // Serialize and update the transaction
-        let serialized = serde_json::to_vec(&data)?;
-        self.txn.update_subtree(&self.name, serialized).await
+        self.set_path(key.into(), value).await
     }
 
     /// Sets a key-value pair (HashMap-like API).
@@ -212,7 +201,7 @@ impl DocStore {
         data.set(&key, value);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_vec(&data)?;
+        let serialized = data.encode()?;
         self.txn.update_subtree(&self.name, serialized).await?;
 
         Ok(previous)
@@ -760,7 +749,7 @@ impl DocStore {
         data.set(&path, value);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_vec(&data)?;
+        let serialized = data.encode()?;
         self.txn.update_subtree(&self.name, serialized).await
     }
 
@@ -887,7 +876,7 @@ impl DocStore {
         data.remove(key_str);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_vec(&data)?;
+        let serialized = data.encode()?;
         self.txn.update_subtree(&self.name, serialized).await?;
         Ok(true)
     }
@@ -1058,7 +1047,7 @@ impl DocStore {
 ///
 /// Each Store module ships its own extension trait so the builder's core API
 /// stays minimal — only the generic
-/// [`DatabaseBuilder::initialize_store`](crate::user::DatabaseBuilder::initialize_store)
+/// [`DatabaseBuilder::initialize_store`](crate::account::DatabaseBuilder::initialize_store)
 /// primitive. User-defined Stores follow the same pattern.
 pub trait DocStoreInit<'u> {
     /// Register a DocStore prepopulated with the contents of `doc`.
@@ -1068,14 +1057,22 @@ pub trait DocStoreInit<'u> {
     /// a single `set_json("data", ...)` blob, nested values, whatever the
     /// downstream use case wants — by how they build the Doc before passing
     /// it in.
-    fn initialize_doc(self, name: impl Into<String>, doc: Doc) -> crate::user::DatabaseBuilder<'u>;
+    fn initialize_doc(
+        self,
+        name: impl Into<String>,
+        doc: Doc,
+    ) -> crate::account::DatabaseBuilder<'u>;
 
     /// Register an empty DocStore.
-    fn empty_doc(self, name: impl Into<String>) -> crate::user::DatabaseBuilder<'u>;
+    fn empty_doc(self, name: impl Into<String>) -> crate::account::DatabaseBuilder<'u>;
 }
 
-impl<'u> DocStoreInit<'u> for crate::user::DatabaseBuilder<'u> {
-    fn initialize_doc(self, name: impl Into<String>, doc: Doc) -> crate::user::DatabaseBuilder<'u> {
+impl<'u> DocStoreInit<'u> for crate::account::DatabaseBuilder<'u> {
+    fn initialize_doc(
+        self,
+        name: impl Into<String>,
+        doc: Doc,
+    ) -> crate::account::DatabaseBuilder<'u> {
         self.initialize_store::<DocStore, _, _>(name, move |s| async move {
             for (key, value) in doc.iter() {
                 s.set(key.clone(), value.clone()).await?;
@@ -1084,7 +1081,7 @@ impl<'u> DocStoreInit<'u> for crate::user::DatabaseBuilder<'u> {
         })
     }
 
-    fn empty_doc(self, name: impl Into<String>) -> crate::user::DatabaseBuilder<'u> {
+    fn empty_doc(self, name: impl Into<String>) -> crate::account::DatabaseBuilder<'u> {
         self.initialize_store::<DocStore, _, _>(name, |_| async { Ok(()) })
     }
 }

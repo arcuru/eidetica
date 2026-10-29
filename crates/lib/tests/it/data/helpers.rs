@@ -19,8 +19,8 @@ type Node = Doc;
 /// Create a database with a test key and return both Instance and tree
 pub async fn setup_db_and_tree() -> Result<(Instance, Database)> {
     let instance = test_instance().await;
-    crate::helpers::create_user(&instance, "test_user", None).await?;
-    let mut user = instance.login_user("test_user", None).await?;
+    crate::helpers::create_account(&instance, "test_user", None).await?;
+    let mut user = instance.login_account("test_user", None).await?;
     let default_key = user.get_default_key()?;
 
     let mut settings = Doc::new();
@@ -141,7 +141,7 @@ pub fn create_mixed_map() -> Node {
 }
 
 /// Test serialization roundtrip for a Node
-pub fn test_serialization_roundtrip(map: &Node) -> Result<()> {
+pub fn test_serialization_roundtrip(map: &Node) -> Result<Doc> {
     let serialized = serde_json::to_string(map).expect("Serialization failed");
     let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
@@ -160,7 +160,7 @@ pub fn test_serialization_roundtrip(map: &Node) -> Result<()> {
         );
     }
 
-    Ok(())
+    Ok(deserialized)
 }
 
 /// Assert that a value is a Map with expected content

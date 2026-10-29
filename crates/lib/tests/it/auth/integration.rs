@@ -110,7 +110,7 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         .await
         .expect("Failed to commit settings change");
 
-    // Now reload the database with KEY2 to use it (User API pattern)
+    // Now reload the database with KEY2 to use it (AccountSession API pattern)
     let key2_signing_key = user
         .get_signing_key(&key2_id)
         .expect("Failed to get KEY2 signing key")

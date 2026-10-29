@@ -29,7 +29,7 @@ use yrs::{Doc, ReadTxn, Transact, Update, updates::decoder::Decode};
 
 use crate::{
     Result, Store, Transaction,
-    crdt::{CRDT, Data},
+    crdt::{CRDT, Codec},
     store::{Registered, errors::StoreError},
 };
 
@@ -60,7 +60,7 @@ impl From<YDocError> for StoreError {
 
 /// A CRDT wrapper for Y-CRDT binary update data.
 ///
-/// This wrapper implements the required `Data` and `CRDT` traits to allow
+/// This wrapper implements the required `Codec` and `CRDT` traits to allow
 /// Y-CRDT binary updates to be stored and merged within the Eidetica system.
 ///
 /// ## Design
@@ -80,7 +80,15 @@ pub struct YrsBinary {
     data: Vec<u8>,
 }
 
-impl Data for YrsBinary {}
+impl Codec for YrsBinary {
+    fn encode(&self) -> crate::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    fn decode(bytes: &[u8]) -> crate::Result<Self> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+}
 
 impl CRDT for YrsBinary {
     /// Merges two Y-CRDT binary updates by applying both to a new document
@@ -437,7 +445,7 @@ impl YDoc {
         let update = txn.encode_state_as_update_v1(&yrs::StateVector::default());
 
         let yrs_binary = YrsBinary::new(update);
-        let serialized = serde_json::to_vec(&yrs_binary)?;
+        let serialized = yrs_binary.encode()?;
         self.txn.update_subtree(&self.name, serialized).await
     }
 
@@ -480,7 +488,7 @@ impl YDoc {
         // Only save if there are actual changes
         if !diff_update.is_empty() {
             let yrs_binary = YrsBinary::new(diff_update);
-            let serialized = serde_json::to_vec(&yrs_binary)?;
+            let serialized = yrs_binary.encode()?;
             self.txn.update_subtree(&self.name, serialized).await?;
         }
 

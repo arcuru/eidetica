@@ -1,9 +1,9 @@
 //! Database management tests
 //!
-//! This module contains tests for User-level database discovery operations including
+//! This module contains tests for AccountSession-level database discovery operations including
 //! finding databases by name and handling multiple databases.
 //!
-//! Note: Instance-level database listing is internal. Use User::find_database for discovery.
+//! Note: Instance-level database listing is internal. Use AccountSession::find_database for discovery.
 
 use eidetica::crdt::Doc;
 
@@ -163,7 +163,7 @@ async fn test_tree_metadata_management() {
     // Create tree and update metadata
     let key_id = user
         .get_default_key()
-        .expect("User should have default key");
+        .expect("AccountSession should have default key");
     let tree = user
         .create_database(Doc::new(), &key_id)
         .await
@@ -216,7 +216,7 @@ async fn test_tree_listing_and_searching() {
 
     let key_id = user
         .get_default_key()
-        .expect("User should have default key");
+        .expect("AccountSession should have default key");
     let _tree4 = user
         .create_database(Doc::new(), &key_id)
         .await

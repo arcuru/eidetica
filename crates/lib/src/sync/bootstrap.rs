@@ -1,14 +1,20 @@
 //! Bootstrap sync operations and request management.
 
-use tracing::info;
+use tracing::{Instrument, info};
 
+use super::protocol::{SyncRequestAuth, SyncTreeRequest};
 use super::{
     Address, BootstrapRequest, DatabaseTicket, RequestStatus, Sync, SyncError,
-    bootstrap_request_manager::BootstrapRequestManager,
+    bootstrap_request_manager::BootstrapRequestManager, operation::SyncOperation,
 };
 use crate::{
-    Database, Result,
-    auth::{Permission, crypto::PrivateKey, types::AuthKey},
+    Database, Result, Snapshot,
+    auth::{
+        Permission,
+        crypto::{PrivateKey, PublicKey},
+        types::AuthKey,
+    },
+    constants::SETTINGS,
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
@@ -22,7 +28,7 @@ impl Sync {
     // permission level to the peer, creating a pending bootstrap request that
     // an administrator can approve or reject.
     //
-    // Use `sync_with_peer_for_bootstrap_with_key()` with User API managed keys.
+    // Use `sync_with_peer_for_bootstrap_with_key()` with AccountSession API managed keys.
 
     /// Internal helper for bootstrap sync operations.
     ///
@@ -43,6 +49,7 @@ impl Sync {
     /// # Errors
     /// * `SyncError::InvalidPublicKey` if the public key is empty or malformed
     /// * `SyncError::InvalidKeyName` if the key name is empty
+    #[tracing::instrument(skip_all, fields(tree = %tree_id, address = ?address))]
     async fn sync_with_peer_for_bootstrap_internal(
         &self,
         address: &Address,
@@ -52,32 +59,41 @@ impl Sync {
         requested_permission: Permission,
         metadata: Option<Doc>,
     ) -> Result<()> {
-        // Validate key name is not empty
-        if requesting_key_name.is_empty() {
-            return Err(SyncError::InvalidKeyName {
-                reason: "Key name cannot be empty".to_string(),
+        let mut operation = SyncOperation::new("bootstrap_address");
+        let span = operation.span();
+        let result = async {
+            // Validate key name is not empty
+            if requesting_key_name.is_empty() {
+                return Err(SyncError::InvalidKeyName {
+                    reason: "Key name cannot be empty".to_string(),
+                }
+                .into());
             }
-            .into());
+
+            // Connect to peer if not already connected
+            let peer_pubkey = self.connect_for_operation(address, &mut operation).await?;
+
+            // Store the address for this peer
+            self.add_peer_address(&peer_pubkey, address.clone()).await?;
+
+            // Sync tree with authentication
+            self.sync_tree_with_peer_auth_in_operation(
+                &peer_pubkey,
+                tree_id,
+                Some(requesting_key),
+                Some(requesting_key_name),
+                Some(requested_permission),
+                metadata,
+                &mut operation,
+            )
+            .await?;
+
+            Ok(())
         }
-
-        // Connect to peer if not already connected
-        let peer_pubkey = self.connect_to_peer(address).await?;
-
-        // Store the address for this peer
-        self.add_peer_address(&peer_pubkey, address.clone()).await?;
-
-        // Sync tree with authentication
-        self.sync_tree_with_peer_auth(
-            &peer_pubkey,
-            tree_id,
-            Some(requesting_key),
-            Some(requesting_key_name),
-            Some(requested_permission),
-            metadata,
-        )
-        .await?;
-
-        Ok(())
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
     }
 
     /// Sync with a peer for bootstrap using a user-provided public key.
@@ -86,7 +102,7 @@ impl Sync {
     /// device doesn't have access to the target tree yet and needs to request
     /// permission during the initial sync. The public key is provided directly
     /// rather than looked up from backend storage, making it compatible with
-    /// User API managed keys.
+    /// AccountSession API managed keys.
     ///
     /// # Arguments
     /// * `address` - The transport address of the peer to sync with
@@ -100,7 +116,7 @@ impl Sync {
     ///
     /// # Example
     /// ```rust,ignore
-    /// // With User API managed keys:
+    /// // With AccountSession API managed keys:
     /// let signing_key = user.get_signing_key(user_key_id)?;
     /// sync.sync_with_peer_for_bootstrap_with_key(
     ///     &Address::http("127.0.0.1:8080"),
@@ -147,6 +163,7 @@ impl Sync {
     /// # Errors
     /// Returns [`SyncError::InvalidAddress`] if the ticket has no address hints.
     /// Returns the last sync error if no address succeeded.
+    #[tracing::instrument(skip_all, fields(tree = %ticket.database_id()))]
     pub async fn bootstrap_with_ticket(
         &self,
         ticket: &DatabaseTicket,
@@ -155,21 +172,175 @@ impl Sync {
         requested_permission: Permission,
         metadata: Option<Doc>,
     ) -> Result<()> {
-        let database_id = ticket.database_id().clone();
-        let signing_key = requesting_key.clone();
-        let key_name = requesting_key_name.to_string();
-        let (address, peer_pubkey) = self.select_address(ticket.addresses(), None).await?;
-        self.add_peer_address(&peer_pubkey, address.clone()).await?;
-        self.sync_tree_with_peer_auth_at(
-            &address,
-            &peer_pubkey,
-            &database_id,
-            Some(&signing_key),
-            Some(&key_name),
-            Some(requested_permission),
-            metadata,
-        )
-        .await
+        let mut operation = SyncOperation::new("bootstrap_ticket");
+        let span = operation.span();
+        let result = async {
+            let database_id = ticket.database_id().clone();
+            let instance = self.instance()?;
+            // Held/unreadable acquisition remains fail-closed. Empty tips protect
+            // confidentiality; they do not settle native competing grant/revoke rules.
+            if !instance.backend().snapshot(&database_id).await?.is_empty()
+                && !Database::can_access(
+                    &instance,
+                    &database_id,
+                    &requesting_key.public_key(),
+                    &Permission::Read,
+                )
+                .await?
+            {
+                return Err(SyncError::AuthenticationFailed(
+                    "held database is not readable by the requesting key".to_string(),
+                )
+                .into());
+            }
+            if requesting_key_name.is_empty() {
+                return Err(SyncError::InvalidKeyName {
+                    reason: "Key name cannot be empty".to_string(),
+                }
+                .into());
+            }
+            let (address, peer_pubkey) = self
+                .select_address(ticket.addresses(), None, &mut operation)
+                .await?;
+            let tips = Snapshot::EMPTY;
+            let auth = SyncRequestAuth::sign(
+                requesting_key,
+                &peer_pubkey,
+                &database_id,
+                &tips,
+                instance.clock().now_millis(),
+            );
+            self.add_peer_address(&peer_pubkey, address.clone()).await?;
+            let result = self
+                .exchange_tree_request_at(
+                    &address,
+                    &peer_pubkey,
+                    SyncTreeRequest {
+                        tree_id: database_id,
+                        our_tips: tips,
+                        peer_pubkey: self.get_device_pubkey().ok(),
+                        requesting_key: Some(requesting_key.public_key()),
+                        requesting_key_name: Some(requesting_key_name.to_string()),
+                        requested_permission: Some(requested_permission),
+                        metadata,
+                        auth: Some(auth),
+                    },
+                )
+                .await;
+            operation.tree_result(&result);
+            result
+        }
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
+    }
+
+    /// Select a ticket route and report what a remote signer must bind.
+    ///
+    /// A request proof is bound to the answering peer and to the tips the
+    /// request advertises, so a signer outside this process (a service client
+    /// holding its own key) needs both before it can sign. Returns the chosen
+    /// address, the identity that answered on it, and an empty tip set.
+    /// Preparation never reads or discloses local database state.
+    #[tracing::instrument(skip_all, fields(tree = %ticket.database_id()))]
+    pub(crate) async fn prepare_ticket_bootstrap(
+        &self,
+        ticket: &DatabaseTicket,
+    ) -> Result<(Address, PublicKey, Snapshot)> {
+        let mut operation = SyncOperation::new("prepare_ticket");
+        let span = operation.span();
+        let result = async {
+            let (address, peer_pubkey) = self
+                .select_address(ticket.addresses(), None, &mut operation)
+                .await?;
+            Ok((address, peer_pubkey, Snapshot::EMPTY))
+        }
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
+    }
+
+    /// Bootstrap a database with a request whose proof was signed elsewhere.
+    ///
+    /// The counterpart of [`Self::bootstrap_with_ticket`] for a requester
+    /// whose private key never enters this process: the caller supplies the
+    /// complete named-key request, including its [`SyncRequestAuth`] proof.
+    /// The proof is checked here before anything is sent, so this instance
+    /// never relays a request the peer would reject for a mismatched key,
+    /// peer, database, or tip set. Pending and rejected outcomes surface as
+    /// [`SyncError::BootstrapPending`] and [`SyncError::BootstrapRejected`].
+    #[tracing::instrument(skip_all, fields(peer = %peer_pubkey, tree = %request.tree_id))]
+    pub(crate) async fn bootstrap_with_signed_request(
+        &self,
+        address: &Address,
+        peer_pubkey: &PublicKey,
+        mut request: SyncTreeRequest,
+    ) -> Result<()> {
+        let mut operation = SyncOperation::new("bootstrap_signed");
+        let span = operation.span();
+        let result = async {
+            if !request.our_tips.is_empty() {
+                return Err(SyncError::SyncProtocolError(
+                    "ticket bootstrap must advertise empty tips".to_string(),
+                )
+                .into());
+            }
+            let auth = request
+                .auth
+                .as_ref()
+                .ok_or_else(|| SyncError::AuthenticationRequired(request.tree_id.to_string()))?;
+            if request.requesting_key.as_ref() != Some(&auth.key) {
+                return Err(SyncError::InvalidPublicKey {
+                    reason: "requesting key does not match the request proof".to_string(),
+                }
+                .into());
+            }
+            if request
+                .requesting_key_name
+                .as_deref()
+                .is_none_or(str::is_empty)
+            {
+                return Err(SyncError::InvalidKeyName {
+                    reason: "Key name cannot be empty".to_string(),
+                }
+                .into());
+            }
+            if request.requested_permission.is_none() {
+                return Err(SyncError::SyncProtocolError(
+                    "bootstrap request must name a permission".to_string(),
+                )
+                .into());
+            }
+            auth.verify(peer_pubkey, &request.tree_id, &request.our_tips)
+                .map_err(|_| {
+                    SyncError::AuthenticationFailed(
+                        "request proof does not cover this peer, database, and tip set".to_string(),
+                    )
+                })?;
+
+            // The route arrives from outside this process, so prove the address
+            // answers as `peer_pubkey` before recording it in the shared peer
+            // store; otherwise a caller could attach any address to a real peer.
+            self.select_address(
+                std::slice::from_ref(address),
+                Some(peer_pubkey),
+                &mut operation,
+            )
+            .await?;
+            request.peer_pubkey = self.get_device_pubkey().ok();
+            self.add_peer_address(peer_pubkey, address.clone()).await?;
+            let result = self
+                .exchange_tree_request_at(address, peer_pubkey, request)
+                .await;
+            operation.tree_result(&result);
+            result
+        }
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
     }
 
     // === Bootstrap Request Management Methods ===
@@ -246,10 +417,12 @@ impl Sync {
     ) -> Result<()> {
         let instance = self.instance()?;
         let lock = instance.tree_lock(self.sync_tree.root_id());
+        self.sync_tree.snapshot().await?;
         let guard = lock.lock_owned().await;
 
         // Load the request from sync database
-        let sync_op = self.sync_tree.new_transaction().await?;
+        let sync_snapshot = Snapshot::from(self.sync_tree.verified_frontier().await?);
+        let sync_op = self.sync_tree.new_transaction_at(&sync_snapshot).await?;
         let manager = BootstrapRequestManager::new(&sync_op);
 
         let request = manager
@@ -257,8 +430,7 @@ impl Sync {
             .await?
             .ok_or_else(|| SyncError::RequestNotFound(request_id.to_string()))?;
 
-        // Validate request is still pending
-        if !matches!(request.status, RequestStatus::Pending) {
+        if matches!(request.status, RequestStatus::Rejected { .. }) {
             return Err(SyncError::InvalidRequestState {
                 request_id: request_id.to_string(),
                 current_status: format!("{:?}", request.status),
@@ -284,28 +456,60 @@ impl Sync {
             .into());
         }
 
-        // Create transaction - this will use the provided signing key
-        let tx = database.new_transaction().await?;
-
-        // Get settings store and update auth configuration
-        let settings_store = tx.get_settings()?;
-
-        // Create the auth key for the requesting device
-        // Keys are stored by pubkey, with name as optional metadata
-        let auth_key = AuthKey::active(
-            Some(&request.requesting_key_name), // name metadata
-            request.requested_permission,
-        );
-
-        // Add the new key to auth settings using SettingsStore API
-        // Store by pubkey (this provides proper upsert behavior and validation)
-        settings_store
-            .set_auth_key(&request.requesting_pubkey, auth_key)
-            .await?;
-
-        // Commit will validate that the user's key has Admin permission
-        // If this fails, it means the user lacks the necessary permission
-        tx.commit().await?;
+        // A completed decision acknowledges its history, not a new grant.
+        if matches!(request.status, RequestStatus::Approved { .. }) {
+            return Ok(());
+        }
+        if !Database::can_access(
+            &instance,
+            &request.tree_id,
+            &request.requesting_pubkey,
+            &request.requested_permission,
+        )
+        .await?
+        {
+            let target_guard = instance.tree_lock(database.root_id()).lock_owned().await;
+            let snapshot = Snapshot::from(database.verified_frontier().await?);
+            let tx = database.new_transaction_at(&snapshot).await?;
+            let settings = tx.get_settings()?;
+            let auth = settings.auth_snapshot().await?;
+            let key_path = format!("auth.keys.{}", request.requesting_pubkey);
+            // Missing current authority is not proof it was never granted.
+            // Reuse signed history; uncertain/reduced/removed authority needs a
+            // fresh explicit settings decision, not replay of this Pending row.
+            let mut seen_authority = auth.get_key_by_pubkey(&request.requesting_pubkey).is_ok();
+            for entry in instance
+                .backend()
+                .store_at(database.root_id(), SETTINGS, &snapshot)
+                .await?
+            {
+                let delta: Doc = serde_json::from_slice(entry.data(SETTINGS)?)?;
+                if delta.get(&key_path).is_some()
+                    || delta.is_tombstone(&key_path)
+                    || delta.get("auth.global").is_some()
+                    || delta.is_tombstone("auth.global")
+                    || delta.get("auth.delegations").is_some()
+                    || delta.is_tombstone("auth.delegations")
+                {
+                    seen_authority = true;
+                    break;
+                }
+            }
+            if seen_authority || snapshot != instance.backend().snapshot(database.root_id()).await?
+            {
+                return Err(SyncError::PermissionDenied("approval retry cannot restore reduced, revoked, removed or uncertain authority; explicitly grant access before finalizing".to_string()).into());
+            }
+            settings
+                .set_auth_key(
+                    &request.requesting_pubkey,
+                    AuthKey::active(
+                        Some(&request.requesting_key_name),
+                        request.requested_permission,
+                    ),
+                )
+                .await?;
+            tx.commit_under_tree_lock(target_guard).await?;
+        }
 
         // Update request status to approved
         let approver_id = key.identity().display_id();
@@ -359,10 +563,12 @@ impl Sync {
     ) -> Result<()> {
         let instance = self.instance()?;
         let lock = instance.tree_lock(self.sync_tree.root_id());
+        self.sync_tree.snapshot().await?;
         let guard = lock.lock_owned().await;
 
         // Load the request from sync database
-        let sync_op = self.sync_tree.new_transaction().await?;
+        let sync_snapshot = Snapshot::from(self.sync_tree.verified_frontier().await?);
+        let sync_op = self.sync_tree.new_transaction_at(&sync_snapshot).await?;
         let manager = BootstrapRequestManager::new(&sync_op);
 
         let request = manager
@@ -371,7 +577,7 @@ impl Sync {
             .ok_or_else(|| SyncError::RequestNotFound(request_id.to_string()))?;
 
         // Validate request is still pending
-        if !matches!(request.status, RequestStatus::Pending) {
+        if matches!(request.status, RequestStatus::Approved { .. }) {
             return Err(SyncError::InvalidRequestState {
                 request_id: request_id.to_string(),
                 current_status: format!("{:?}", request.status),
@@ -396,7 +602,10 @@ impl Sync {
             .into());
         }
 
-        // User has Admin permission, proceed with rejection
+        if matches!(request.status, RequestStatus::Rejected { .. }) {
+            return Ok(());
+        }
+        // AccountSession has Admin permission, proceed with rejection
         let rejecter_id = key.identity().display_id();
         let rejection_time = self
             .instance

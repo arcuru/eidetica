@@ -2,6 +2,7 @@
 {
   craneLib,
   debugArgs,
+  docApiArgs,
   pkgs,
   lib,
 }: let
@@ -22,9 +23,9 @@
   # The header is referenced as its own store path rather than pulled in via docSrc,
   # so editing the book doesn't invalidate rustdoc.
   # TODO: --workspace docs are broken: eidetica-bin's binary is also named "eidetica", so its docs overwrite the library's in the output directory
-  doc-api = craneLib.cargoDoc (debugArgs
+  doc-api = craneLib.cargoDoc (docApiArgs
     // {
-      cargoDocExtraArgs = "-p eidetica --all-features --no-deps";
+      cargoDocExtraArgs = "--no-deps";
       RUSTDOCFLAGS = "--html-in-header ${../../docs/rustdoc-header.html}";
     });
 

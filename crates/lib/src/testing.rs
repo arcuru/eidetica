@@ -15,7 +15,7 @@
 //!   transport (deliver / reorder / drop / single-step — Tier 1) is a drop-in
 //!   here, which is the point: Tier 1 extends this, it doesn't replace it.
 //! - **Auth is the test's.** The harness never grants keys or permissions for
-//!   you. A peer exposes its `User`, key id, and key name; the test creates its
+//!   you. A peer exposes its `AccountSession`, key id, and key name; the test creates its
 //!   database with whatever auth posture it's exercising. [`add_auth_keys`] and
 //!   [`set_global_auth_key`] are policy-neutral *tools* the test composes — they
 //!   apply the keys you pass, they don't choose them.
@@ -39,7 +39,7 @@
 //!     auth::{Permission, types::AuthKey},
 //!     crdt::Doc,
 //!     testing::{Cluster, set_global_auth_key},
-//!     user::types::SyncSettings,
+//!     account::types::SyncSettings,
 //! };
 //!
 //! let mut net = Cluster::builder().peers(2).build().await?;
@@ -48,14 +48,14 @@
 //! let key0 = net.peer(0).key_id().clone();
 //! let mut settings = Doc::new();
 //! settings.set("name", "chat");
-//! let db = net.peer_mut(0).user_mut().create_database(settings, &key0).await?;
+//! let db = net.peer_mut(0).account_session_mut().create_database(settings, &key0).await?;
 //! let room = db.root_id().clone();
 //! set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await?;
 //! net.peer_mut(0).serve(&room).await?;
 //!
 //! // Peer 1 bootstraps with its own key, then converges against peer 0.
 //! let key1 = net.peer(1).key_id().clone();
-//! let signing_key1 = net.peer(1).user().get_signing_key(&key1)?;
+//! let signing_key1 = net.peer(1).account_session().get_signing_key(&key1)?;
 //! let name1 = net.peer(1).key_name().to_string();
 //! let addr0 = net.peer(0).address().clone();
 //! net.peer(1)
@@ -69,7 +69,7 @@
 //!     )
 //!     .await?;
 //! net.peer_mut(1)
-//!     .user_mut()
+//!     .account_session_mut()
 //!     .track_database(room.clone(), &key1, SyncSettings::disabled())
 //!     .await?;
 //!
@@ -86,7 +86,8 @@ use std::sync::{
 use async_trait::async_trait;
 
 use crate::{
-    Database, Entry, Instance, NewUser, Result, Snapshot,
+    Database, Entry, Instance, NewAccount, Result, Snapshot,
+    account::{AccountSession, types::SyncSettings},
     auth::{Permission, crypto::PublicKey, types::AuthKey},
     backend::{BackendImpl, VerificationStatus, database::InMemory},
     clock::{Clock, FixedClock},
@@ -99,7 +100,6 @@ use crate::{
         protocol::{RequestContext, SyncRequest, SyncResponse},
         transports::{SyncTransport, TransportBuilder, http::HttpTransport},
     },
-    user::{User, types::SyncSettings},
 };
 
 /// Display name given to every peer's signing key. Exposed per peer via
@@ -172,7 +172,7 @@ impl ClusterBuilder {
             let (instance, mut user) = Instance::create_backend_with_clock(
                 Box::new(InMemory::new()),
                 clock,
-                NewUser::passwordless(format!("peer{i}")),
+                NewAccount::passwordless(format!("peer{i}")),
             )
             .await?;
             let key_id = user.add_private_key(Some(KEY_NAME)).await?;
@@ -229,7 +229,7 @@ impl Cluster {
     }
 
     /// Mutable access to a peer, for `create_database` / `open_database` on its
-    /// `User`.
+    /// `AccountSession`.
     pub fn peer_mut(&mut self, i: usize) -> &mut Peer {
         &mut self.peers[i]
     }
@@ -595,7 +595,7 @@ impl Cluster {
 /// test opens and keeps those.
 pub struct Peer {
     instance: Instance,
-    user: User,
+    user: AccountSession,
     key_id: PublicKey,
     sync: Arc<Sync>,
     address: Address,
@@ -608,12 +608,12 @@ impl Peer {
     }
 
     /// This peer's logged-in user session.
-    pub fn user(&self) -> &User {
+    pub fn account_session(&self) -> &AccountSession {
         &self.user
     }
 
     /// Mutable user session, for `create_database` / `open_database` directly.
-    pub fn user_mut(&mut self) -> &mut User {
+    pub fn account_session_mut(&mut self) -> &mut AccountSession {
         &mut self.user
     }
 
@@ -1151,7 +1151,7 @@ mod tests {
         settings.set("name", "chat");
         let db0 = net
             .peer_mut(0)
-            .user_mut()
+            .account_session_mut()
             .create_database(settings, &key0)
             .await?;
         let room = db0.root_id().clone();
@@ -1172,7 +1172,11 @@ mod tests {
         write(&db0, "a", "from-peer-0").await?;
 
         net.bootstrap(0, 1, &room, Permission::Write(10)).await?;
-        let db1 = net.peer_mut(1).user_mut().open_database(&room).await?;
+        let db1 = net
+            .peer_mut(1)
+            .account_session_mut()
+            .open_database(&room)
+            .await?;
         assert_eq!(
             read(&db1, "a").await?,
             "from-peer-0",

@@ -16,7 +16,7 @@ use eidetica::sync::transports::http::HttpTransport;
 let backend = Box::new(Sqlite::in_memory().await?);
 let (instance, mut user) = Instance::create_backend(
     backend,
-    eidetica::NewUser::passwordless("alice"),
+    eidetica::NewAccount::passwordless("alice"),
 ).await?;
 instance.enable_sync().await?;
 
@@ -41,7 +41,7 @@ sync.accept_connections().await?;
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (db, _) = Instance::connect_or_create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("admin"),
+#     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # db.enable_sync().await?;
 #
@@ -79,12 +79,12 @@ Declare sync intent with automatic background synchronization:
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, _) = Instance::connect_or_create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("admin"),
+#     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_user("admin", None).await?;
-# admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let admin = instance.login_account("admin", None).await?;
+# admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
+# let mut user = instance.login_account("alice", None).await?;
 # let default_key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &default_key).await?;
 # let tree_id = db.root_id().clone();
@@ -133,13 +133,13 @@ handle.add_address(Address {
 <!-- Code block ignored: Requires network connectivity and authentication flow -->
 
 ```rust,ignore
-use eidetica::{sync::DatabaseTicket, user::types::SyncSettings};
+use eidetica::{sync::DatabaseTicket, account::types::SyncSettings};
 
 // For new devices joining existing databases with authentication.
 user.request_database_access(
     &sync,
     &ticket,
-    &key_id,                         // User's key ID from user.add_private_key()
+    &key_id,                         // Account's key ID from user.add_private_key()
     eidetica::auth::Permission::Write, // Requested permission level
     SyncSettings::on_commit(),
     None,
@@ -254,15 +254,15 @@ db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, _) = Instance::connect_or_create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("admin"),
+#     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # instance.enable_sync().await?;
 # let sync = instance.sync().expect("Sync enabled");
 # sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 # sync.accept_connections().await?;
-# let admin = instance.login_user("admin", None).await?;
-# admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let admin = instance.login_account("admin", None).await?;
+# admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
+# let mut user = instance.login_account("alice", None).await?;
 // Create a database to share
 let mut settings = Doc::new();
 settings.set("name", "My Chat Room");
@@ -285,7 +285,7 @@ println!("Share this locator with peers: {ticket}");
 # }
 ```
 
-For failure handling and migration from the removed ID-based `User` helpers, see
+For failure handling and migration from the removed ID-based `AccountSession` helpers, see
 [Database Sharing](database_management.md).
 
 ### Bootstrap from Shared Database
@@ -620,7 +620,7 @@ async fn test_sync_between_peers() -> Result<()> {
     // Setup first peer (Instance::create_backend bootstraps the first user as admin)
     let (instance1, mut user1) = Instance::create_backend(
         Box::new(Sqlite::in_memory().await?),
-        eidetica::NewUser::passwordless("peer1"),
+        eidetica::NewAccount::passwordless("peer1"),
     ).await?;
     instance1.enable_sync().await?;
     instance1.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
@@ -631,7 +631,7 @@ async fn test_sync_between_peers() -> Result<()> {
     // Setup second peer
     let (instance2, mut user2) = Instance::create_backend(
         Box::new(Sqlite::in_memory().await?),
-        eidetica::NewUser::passwordless("peer2"),
+        eidetica::NewAccount::passwordless("peer2"),
     ).await?;
     instance2.enable_sync().await?;
     instance2.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;

@@ -86,7 +86,7 @@ let backend = Box::new(Sqlite::in_memory().await?);
 // Initialise with alice as the first/admin user — this logs at INFO level.
 let (instance, mut user) = Instance::create_backend(
     backend,
-    eidetica::NewUser::passwordless("alice"),
+    eidetica::NewAccount::passwordless("alice"),
 ).await?;
 
 // Create a database - this will log at INFO level
@@ -100,6 +100,45 @@ let database = user.create_database(settings, &default_key).await?;
 # Ok(())
 # }
 ```
+
+## Following a Sync Operation
+
+With `RUST_LOG=eidetica::sync=debug`, outbound sync logs include a
+`sync_operation` span with an `operation_id` and `kind`.
+The ID is a process-local sequence number, not a database ID or a wire-protocol
+field. Use the process identity as well when combining logs from several peers.
+Address races, engine-served handshakes and requests, and the subsequent
+`sync_tree` lifecycle retain the same operation span. Incoming requests belong
+to the remote peer's operation and do not receive its ID.
+
+Each completed outbound operation emits one INFO-level `Sync route outcome`
+event. A peer round can exchange several trees under one ID; a new round or
+retry gets a new ID. Ticket-route preparation for a remote signer is a separate
+operation from submitting the signed request.
+
+The summary reports:
+
+- `routes` and `attempted`: address hints considered and handshake tasks submitted.
+  Background selection skips hints with no matching transport (`unsupported`).
+- `route_failures`, `route_timeouts`, and `wrong_peer`: results consumed before
+  selection or total failure. Timeouts are included in failures.
+- `unobserved`: submitted results not consumed when selection ended, including
+  cancelled dials and queued results. These are **not** counted as failures.
+- `selected`: the route used for the exchange, if any.
+- `trees_ok` and `trees_failed`: completed tree exchanges. `outcome` is `partial`
+  when a peer round has both successes and failures, and `failed` when all
+  attempted trees fail, even if the background round itself returns `Ok`.
+- `error` or `last_tree_error`: the operation failure or last failed tree.
+  `timeout_phase` and `peer_reachable` retain the transport's timeout distinction.
+  An address-race deadline covers the whole handshake attempt, including engine
+  queuing and peer registration, so it counts as a timeout without claiming a
+  transport phase or reachability. Silence is not an authorization refusal.
+
+Transport errors remain typed at the public sync API: `SyncError::Timeout`
+keeps its phase, while a rejected bootstrap is `SyncError::BootstrapRejected`.
+Applications should classify the returned error rather than describing every
+failure as a refusal. The summary adds diagnostics; it does not change routing,
+retry policy, authentication, or the on-disk database.
 
 ## Performance Considerations
 

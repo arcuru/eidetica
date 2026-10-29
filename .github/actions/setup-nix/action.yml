@@ -37,7 +37,8 @@ runs:
         # Only push if a signing key is provided
         if [ -n "$SIGNING_KEY" ]; then
           echo "$SIGNING_KEY" > /tmp/nix-cache-key.pem
-          S3_URL='s3://cache-eidetica-dev?region=auto&endpoint=https://ab01ccd7fce6ab984e4c956734085680.r2.cloudflarestorage.com'
+          # Cargo artifacts are already compressed; avoid expensive outer XZ.
+          S3_URL='s3://cache-eidetica-dev?region=auto&endpoint=https://ab01ccd7fce6ab984e4c956734085680.r2.cloudflarestorage.com&compression=zstd'
           echo "args=--copy-to '$S3_URL' --option secret-key-files /tmp/nix-cache-key.pem" >> "$GITHUB_OUTPUT"
         else
           echo "args=" >> "$GITHUB_OUTPUT"

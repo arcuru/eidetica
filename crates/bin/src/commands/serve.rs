@@ -16,6 +16,7 @@ use tracing_subscriber::EnvFilter;
 
 use eidetica::{
     Instance,
+    account::SyncSettings,
     auth::Permission,
     backend::database::{DbKind, InMemory, SqlxBackend},
     entry::ID,
@@ -26,7 +27,6 @@ use eidetica::{
         protocol::{RequestContext, SyncRequest, SyncResponse},
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
-    user::SyncSettings,
 };
 
 use crate::backend::create_backend;
@@ -140,9 +140,9 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!("  GET  /             - Redirect to login or dashboard");
     println!("  GET  /login        - Login page");
     println!("  POST /login        - Login submission");
-    println!("  GET  /register     - User registration page");
-    println!("  POST /register     - User registration submission");
-    println!("  GET  /dashboard    - User dashboard (requires login)");
+    println!("  GET  /register     - Account registration page");
+    println!("  POST /register     - Account registration submission");
+    println!("  GET  /dashboard    - Account dashboard (requires login)");
     println!("  POST /dashboard/track - Request database access (requires login)");
     println!("  GET  /stats        - Server statistics");
     println!("  POST /api/v0       - Eidetica sync protocol endpoint");
@@ -313,13 +313,13 @@ async fn handle_login_submit(
     let username = form.username.clone();
     let password = form.password.clone();
 
-    let result = match instance.login_user(&username, password.as_deref()).await {
+    let result = match instance.login_account(&username, password.as_deref()).await {
         Ok(user) => {
             // Enable background sync for this user's databases
             if let Some(sync) = instance.sync() {
-                let user_uuid = user.user_uuid();
-                let user_db_id = user.user_database().root_id().clone();
-                if let Err(e) = sync.sync_user(user_uuid, &user_db_id).await {
+                let login_id = user.login_id();
+                let user_db_id = user.account().id().clone();
+                if let Err(e) = sync.sync_account(login_id, &user_db_id).await {
                     tracing::warn!(
                         "Failed to enable background sync for user {}: {}",
                         username,
@@ -418,7 +418,7 @@ async fn handle_register_submit(
     let _username = form.username.clone();
 
     // TODO: Self-service registration needs an admin session on the server
-    // side to drive `InstanceAdmin::create_user`. The previous
+    // side to drive `InstanceAdmin::create_account`. The previous
     // `admin/admin` auto-bootstrap is gone; until `serve` accepts admin
     // credentials via flags/env vars (a follow-up task), web-form
     // registration is disabled. Operators should create users via

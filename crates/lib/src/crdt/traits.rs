@@ -1,33 +1,45 @@
 //! Core traits for CRDT (Conflict-free Replicated Data Type) implementations.
 //!
-//! This module defines the fundamental traits that all CRDT implementations must satisfy:
-//! - `Data`: A marker trait for types that can be stored in Eidetica
+//! Encoding and merging are independent contracts:
+//! - `Codec`: Explicit byte encoding at persistence boundaries
 //! - `CRDT`: The core trait defining merge semantics for conflict resolution
 
 use crate::Result;
 
-/// Marker trait for data types that can be stored in Eidetica.
+/// Explicit byte encoding for data at a Store's persistence boundary.
 ///
-/// This trait requires serialization capabilities and cloning for data structures
-/// that can be stored in the Eidetica database. All storable types must support
-/// JSON serialization/deserialization and cloning for efficient data operations.
+/// Encoding is independent of merging, cloning and Serde. Implementations must
+/// preserve all state needed by future merges, including tombstones, and decode
+/// one complete value rather than silently accepting malformed or trailing data.
+/// Existing Store formats must remain readable; changing a durable format needs
+/// a separate compatibility decision.
 ///
-/// Implementing this trait signifies that a type can be safely used as the data component
-/// of an Entry in the database.
-///
-/// # Examples
+/// There is no blanket Serde implementation. A type can use JSON explicitly:
 ///
 /// ```
-/// use eidetica::crdt::Data;
+/// use eidetica::{crdt::Codec, Result};
 ///
-/// #[derive(Clone, serde::Serialize, serde::Deserialize)]
-/// struct MyData {
-///     value: String,
+/// #[derive(serde::Serialize, serde::Deserialize)]
+/// struct MyData { value: String }
+///
+/// impl Codec for MyData {
+///     fn encode(&self) -> Result<Vec<u8>> {
+///         Ok(serde_json::to_vec(self)?)
+///     }
+///     fn decode(bytes: &[u8]) -> Result<Self> {
+///         Ok(serde_json::from_slice(bytes)?)
+///     }
 /// }
-///
-/// impl Data for MyData {}
+/// let data = MyData { value: "example".into() };
+/// assert_eq!(MyData::decode(&data.encode()?)?.value, data.value);
+/// # Ok::<(), eidetica::Error>(())
 /// ```
-pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
+pub trait Codec: Sized {
+    /// Encode a complete value, including all merge-relevant state.
+    fn encode(&self) -> Result<Vec<u8>>;
+    /// Decode one complete value, rejecting malformed or trailing data.
+    fn decode(bytes: &[u8]) -> Result<Self>;
+}
 
 /// A trait for Conflict-free Replicated Data Types (CRDTs).
 ///
@@ -35,13 +47,14 @@ pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
 /// resolve conflicts without requiring coordination between nodes. They guarantee that
 /// concurrent updates can be merged deterministically, ensuring eventual consistency.
 ///
-/// All CRDT types must also implement the `Data` trait, ensuring they can be stored
-/// and serialized within the Eidetica database.
+/// This trait only defines merging. Store data also implements [`Codec`] and
+/// `Default` where persistence and history reconstruction require them; merging
+/// alone does not require encoding, Serde, cloning or a default value.
 ///
 /// # Examples
 ///
 /// ```
-/// use eidetica::crdt::{CRDT, Data, Doc};
+/// use eidetica::crdt::{CRDT, Doc};
 /// use eidetica::Result;
 ///
 /// let mut kv1 = Doc::new();
@@ -53,7 +66,7 @@ pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
 /// let merged = kv1.merge(&kv2).unwrap();
 /// // Doc uses last-write-wins semantics for scalar values
 /// ```
-pub trait CRDT: Data + Default {
+pub trait CRDT: Sized {
     /// Merge this CRDT with another instance, returning a new merged instance.
     ///
     /// This operation must be:
@@ -72,7 +85,5 @@ pub trait CRDT: Data + Default {
     /// # Returns
     ///
     /// A new CRDT instance representing the merged state, or an error if the merge fails.
-    fn merge(&self, other: &Self) -> Result<Self>
-    where
-        Self: Sized;
+    fn merge(&self, other: &Self) -> Result<Self>;
 }

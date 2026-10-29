@@ -7,7 +7,7 @@
 //! we test the observable behavior: that enable_sync() works and doesn't crash when commits occur.
 
 use crate::helpers::test_local_instance as test_instance;
-use eidetica::{crdt::Doc, store::DocStore, user::types::SyncSettings};
+use eidetica::{account::types::SyncSettings, crdt::Doc, store::DocStore};
 
 /// Test that commits work correctly when sync is enabled
 /// This verifies the callback doesn't break normal operation
@@ -17,11 +17,11 @@ async fn test_commits_work_with_sync_enabled() {
     instance.enable_sync().await.expect("Enable sync");
 
     // Create user and database
-    crate::helpers::create_user(&instance, "testuser", None)
+    crate::helpers::create_account(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
-        .login_user("testuser", None)
+        .login_account("testuser", None)
         .await
         .expect("Login user");
 
@@ -41,7 +41,7 @@ async fn test_commits_work_with_sync_enabled() {
 
     // Register user with sync
     let sync = instance.sync().expect("Sync should exist");
-    sync.sync_user(user.user_uuid(), user.user_database().root_id())
+    sync.sync_account(user.login_id(), user.account().id())
         .await
         .expect("Register user");
 
@@ -67,11 +67,11 @@ async fn test_multiple_commits_with_sync_enabled() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    crate::helpers::create_user(&instance, "testuser", None)
+    crate::helpers::create_account(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
-        .login_user("testuser", None)
+        .login_account("testuser", None)
         .await
         .expect("Login user");
 
@@ -102,11 +102,11 @@ async fn test_commits_with_sync_disabled() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    crate::helpers::create_user(&instance, "testuser", None)
+    crate::helpers::create_account(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
-        .login_user("testuser", None)
+        .login_account("testuser", None)
         .await
         .expect("Login user");
 
@@ -146,11 +146,11 @@ async fn test_commits_with_sync_on_commit_disabled() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    crate::helpers::create_user(&instance, "testuser", None)
+    crate::helpers::create_account(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
-        .login_user("testuser", None)
+        .login_account("testuser", None)
         .await
         .expect("Login user");
 
@@ -183,11 +183,11 @@ async fn test_commits_before_transport_enabled() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    crate::helpers::create_user(&instance, "testuser", None)
+    crate::helpers::create_account(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
-        .login_user("testuser", None)
+        .login_account("testuser", None)
         .await
         .expect("Login user");
 
@@ -216,11 +216,11 @@ async fn test_commits_with_multiple_databases() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    crate::helpers::create_user(&instance, "testuser", None)
+    crate::helpers::create_account(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
-        .login_user("testuser", None)
+        .login_account("testuser", None)
         .await
         .expect("Login user");
     let key_id = user.get_default_key().expect("Get default key");

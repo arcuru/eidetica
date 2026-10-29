@@ -1,6 +1,6 @@
 //! Integration tests simulating chat app sync behavior.
 //!
-//! These tests verify bootstrap and sync patterns using the User API:
+//! These tests verify bootstrap and sync patterns using the AccountSession API:
 //!
 //! - `test_chat_app_authenticated_bootstrap`: Manual approval flow where the server
 //!   requires explicit admin approval before granting access. Client uses their

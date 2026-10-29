@@ -39,11 +39,19 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 └──────────────────┴──────────────────────┘
 ```
 
-Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF.
+Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF (before any length-prefix byte) and an `UnexpectedEof` I/O error when the stream ends mid-prefix or mid-payload.
 
-`PROTOCOL_VERSION` is currently `0`, indicating an unstable protocol that may change without notice. Version mismatches fail the handshake.
+`PROTOCOL_VERSION` remains `0`, an unstable protocol. Version mismatches fail the handshake; the handshake and acknowledgment still advertise only the version, with no feature-capability negotiation.
 
-`#[non_exhaustive]` does not protect wire compatibility — it only covers Rust source compatibility (exhaustive `match` arms in downstream code). Serialized enums like `WriteSource` (carried by `Notification::DatabaseWrite`) are versioned by `PROTOCOL_VERSION`: a peer on an older version fails to deserialize an unknown variant, so adding a variant is a version bump, not a backward-compatible addition.
+Updated service peers tolerate additions at four named extension points:
+
+- An unknown top-level request operation or nested `DatabaseOp` receives `{"Response":"Unsupported"}`. The server performs no operation and does not change login or session-key state. A database envelope must still have a valid `root_id` and `identity`.
+- An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. There is no retry or execution fallback.
+- An unknown optional variant inside `Notification` is ignored without consuming a response slot or invoking callbacks. Known notifications retain their behavior.
+
+These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix and 64 MiB cap are unchanged.
+
+This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no silent downgrade, capability advertisement, or legacy execution fallback. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
 
 ### Connection Lifecycle
 
@@ -58,12 +66,12 @@ sequenceDiagram
 
     Note over C,S: Connection state: PreAuth
 
-    C->>S: TrustedLoginUser { username }
-    S->>C: TrustedLoginChallenge { challenge, user_uuid, user_info }
+    C->>S: TrustedLoginAccount { username }
+    S->>C: TrustedLoginChallenge { challenge, login_id, account_info }
     Note over S: state → AwaitingProof
     C->>S: TrustedLoginProve { signature over challenge }
     S->>C: TrustedLoginOk
-    Note over S: state → Authenticated { login_pubkey, session_keyset, user_uuid }
+    Note over S: state → Authenticated { login_pubkey, session_keyset, login_id }
 
     opt Register additional per-DB keys
         C->>S: SessionKeyChallenge { pubkey }
@@ -84,14 +92,30 @@ sequenceDiagram
 1. **Handshake**: client sends `Handshake { protocol_version }`; server validates and acks. On mismatch the server acks with its own version and closes the connection.
 2. **Trusted login** (see Security Model below): a challenge-response over the user's root key. `GetInstanceMetadata` is the only other request permitted before login.
 3. **Optional session-key registration**: once authenticated, the client may prove possession of additional pubkeys via `SessionKeyChallenge`/`SessionKeyRegister`. Each successfully proven pubkey joins the connection's `session_keyset` and can then act as the identity on subsequent ops. See [Session Keyset](#session-keyset) below.
-4. **Authenticated request loop**: every storage operation travels inside `ServiceRequest::AuthenticatedDb`. One response per request, strictly sequential per connection (`RemoteConnection` serializes all I/O through a mutex).
+4. **Authenticated request loop**: every storage operation travels inside `ServiceRequest::AuthenticatedDb`. The server handles requests in connection order. `RemoteConnection` serializes frame writes, not response waits; its background reader associates responses with pending callers in FIFO order and dispatches notifications separately.
 5. **Termination**: client closes its write half (EOF); the server detects EOF and cleans up.
+
+### Cancellation and frame integrity
+
+The pending response slot is enqueued under the writer lock before sending the
+frame, preserving request/response order even if a response arrives immediately.
+Cancellation or failure during the frame write retires the **whole connection**:
+the client drops its write half, marks the connection dead, and clears pending
+waiters. A subsequent request cannot append bytes to an incomplete JSON frame.
+Callers must reconnect rather than reuse that stream.
+
+Once the frame is completely written, dropping only the response wait leaves its
+FIFO slot in place. The reader consumes that response even when its caller is gone,
+so the next response cannot be delivered to the wrong request. Other requests can
+continue using the connection. Neither case rolls back already-dispatched server
+work or proves that a remote operation did not commit; retry must reconcile
+persisted state rather than assume cancellation undid it.
 
 ## Security Model
 
 Client-side signing over the Unix service socket. In socket-only mode the daemon stores and serves encrypted key material and signed entries but **never holds plaintext user signing keys or passwords**. When the optional dashboard is enabled, web logins decrypt signing keys in the daemon process for their in-memory sessions; the socket protocol remains client-side signing.
 
-- **User keys stay client-side**: `TrustedLoginUser` returns the user's full record (`user_info`, including the encrypted `UserCredentials`) in the same round-trip as the challenge. The client derives the key-encryption-key locally (Argon2id over the password), decrypts the root signing key in-process, signs the challenge, and builds its `User` session from the already-returned record — no second wire read of `_users`. The signing key never crosses the socket.
+- **AccountSession keys stay client-side**: `TrustedLoginAccount` returns the user's full record (`account_info`, including the encrypted `AccountCredentials`) in the same round-trip as the challenge. The client derives the key-encryption-key locally (Argon2id over the password), decrypts the root signing key in-process, signs the challenge, and builds its `AccountSession` session from the already-returned record — no second wire read of `_users`. The signing key never crosses the socket.
 - **Authentication via challenge-response**: the daemon issues fresh random challenge bytes per login attempt. Successful decryption of the user's signing key on the client _is_ password verification; the daemon verifies the returned signature against the user's stored public key. No password is sent over the wire.
 - **`TrustedLogin` naming is load-bearing**: the flow assumes the caller is already trusted by the socket's filesystem permissions. Over a network transport this would need a PAKE instead — the name flags that gap deliberately.
 - **Encrypted stores remain opaque to the daemon**: per-database encrypted CRDTs merge as `Vec<EncryptedBlob>`; the daemon participates in storage and sync without ever holding a content encryption key.
@@ -113,11 +137,13 @@ The top-level request enum is intentionally flat, keeping the pre-auth surface v
 
 | Variant                                        | When                                                                                               |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `TrustedLoginUser { username }`                | Pre-auth step 1 — request a login challenge                                                        |
+| `TrustedLoginAccount { username }`             | Pre-auth step 1 — request a login challenge                                                        |
 | `TrustedLoginProve { signature }`              | Pre-auth step 2 — return the signed login challenge                                                |
 | `GetInstanceMetadata`                          | Pre-auth — fetch server identity (used by `Instance::connect`)                                     |
 | `SessionKeyChallenge { pubkey }`               | Post-auth — request a challenge bound to `pubkey` so the client can prove possession               |
 | `SessionKeyRegister { pubkey, signature }`     | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset |
+| `TicketBootstrapPrepare { ticket }`            | Post-auth — select a ticket route; see [Ticket Bootstrap](#ticket-bootstrap)                       |
+| `TicketBootstrap(Box<TicketBootstrapRequest>)` | Post-auth — send a client-signed bootstrap request through the daemon's sync engine                |
 | `AuthenticatedDb(Box<AuthenticatedDbRequest>)` | A `DatabaseOp` — the single envelope for every storage operation                                   |
 
 `AuthenticatedDbRequest` carries an identity claim that the server validates against the connection's session keyset before dispatch:
@@ -144,11 +170,18 @@ Every storage operation rides a single `DatabaseOp` enum carried in `Authenticat
 | `GetStoreTipsUpToEntries { store, .. }`         | Store tips reachable from given main-tree entry IDs. Read.                                                                                                                       |
 | `ComputeMergeState { store, .. }`               | Lowest common ancestor + path to tip entries in a store DAG, fused into one RPC. Read.                                                                                           |
 | `GetEntry { id }`                               | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                  |
+| `VerifyEntrySignature { id }`                   | Re-run native historical authentication for one Entry; target and delegated-proof Read gates apply.                                                                              |
 | `CreateTicket`                                  | Build a point-in-time database locator after the request is gated for Read on the target database.                                                                               |
 | Store-state resolve / staging / record get/scan | Resolve, build, and lazily read cached state through opaque server-issued views onto published record sets. Read for reads, Write for staging.                                   |
 | `SetInstanceMetadata { metadata }`              | Rewrite daemon-level pointers to its own system DBs. Special-cased server-side to gate `Admin` on `_databases` (a daemon-global system tree) instead of the request's `root_id`. |
 
-Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
+`VerifyEntrySignature` runs the existing historical validator on the daemon, preserving pinned settings, inherited floors, permission bounds and incomplete-evidence errors.
+The Entry must belong to the requested database; the session-keyset-validated acting identity needs current Read on that database and every claimed delegated tree.
+The 10-step/64-tip bounds are checked before delegated Read queries.
+The verdict does not set verification status, acquire missing evidence or fall back to privileged reads; access gates may still perform their normal opportunistic verification.
+Older v0 peers follow the compatibility limits above.
+
+Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and raw verification-status/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
 
 `update_verification_status` is off-wire **by design, not just for tidiness**: verification is a local trust decision. If a client could set it over the socket, a client (or anything that reached the socket) could assert "this entry is `Verified`" without the server having validated it — exactly the caller-asserted-status hole the storage API was hardened to close. So the daemon's Instance owns verification: it stores everything `Unverified` and runs `Database::verify()` itself. The frontier/`allow_unverified` distinction is applied by the daemon-side `Database`, and every client connected to the same daemon therefore observes the same verified view.
 
@@ -158,22 +191,57 @@ Published views and private builds use opaque random tokens stored only in the c
 
 ### ServiceResponse
 
-| Variant                                                     | Payload                                                            |
-| ----------------------------------------------------------- | ------------------------------------------------------------------ |
-| `Entry(Entry)` / `Entries(Vec<Entry>)`                      | One or many entries                                                |
-| `Ids(Vec<ID>)`                                              | One or many IDs                                                    |
-| `Ok`                                                        | Success with no data                                               |
-| `Token(String)`                                             | Opaque server-issued staging capability                            |
-| `Record` / `RecordPage` / `RecordView`                      | Lazy point, bounded page, and published-record-set responses       |
-| `TransactionContext(TransactionContext)`                    | Parent tips + settings, response to `DatabaseOp::BeginTransaction` |
-| `CrdtValue(WireCrdtValue)`                                  | Materialized merged state, response to `DatabaseOp::GetStoreState` |
-| `MergeState(MergeState)`                                    | LCA + path, response to `DatabaseOp::ComputeMergeState`            |
-| `DatabaseTicket(DatabaseTicket)`                            | Point-in-time locator, response to `DatabaseOp::CreateTicket`      |
-| `InstanceMetadata(Option<InstanceMetadata>)`                | Optional instance metadata                                         |
-| `TrustedLoginChallenge { challenge, user_uuid, user_info }` | Challenge bytes + the user's full record (login)                   |
-| `TrustedLoginOk`                                            | Login succeeded; connection now authenticated                      |
-| `SessionKeyChallenge { challenge }`                         | Challenge bytes the client signs to register an additional key     |
-| `Error(ServiceError)`                                       | Error response                                                     |
+| Variant                                                       | Payload                                                            |
+| ------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `Entry(Entry)` / `Entries(Vec<Entry>)`                        | One or many entries                                                |
+| `EntrySignatureValid(bool)`                                   | Historical signature verdict, not verification status              |
+| `Ids(Vec<ID>)`                                                | One or many IDs                                                    |
+| `Ok`                                                          | Success with no data                                               |
+| `Unsupported`                                                 | Unknown operation; no action performed                             |
+| `Token(String)`                                               | Opaque server-issued staging capability                            |
+| `Record` / `RecordPage` / `RecordView`                        | Lazy point, bounded page, and published-record-set responses       |
+| `TransactionContext(TransactionContext)`                      | Parent tips + settings, response to `DatabaseOp::BeginTransaction` |
+| `CrdtValue(WireCrdtValue)`                                    | Materialized merged state, response to `DatabaseOp::GetStoreState` |
+| `MergeState(MergeState)`                                      | LCA + path, response to `DatabaseOp::ComputeMergeState`            |
+| `DatabaseTicket(DatabaseTicket)`                              | Point-in-time locator, response to `DatabaseOp::CreateTicket`      |
+| `InstanceMetadata(Option<InstanceMetadata>)`                  | Optional instance metadata                                         |
+| `TrustedLoginChallenge { challenge, login_id, account_info }` | Challenge bytes + the user's full record (login)                   |
+| `TrustedLoginOk`                                              | Login succeeded; connection now authenticated                      |
+| `SessionKeyChallenge { challenge }`                           | Challenge bytes the client signs to register an additional key     |
+| `TicketBootstrapRoute { address, peer, tips }`                | Selected route, answering peer, and empty tips                     |
+| `TicketBootstrapOutcome(TicketBootstrapOutcome)`              | `Complete`, `Pending { .. }`, or `Rejected { .. }`                 |
+| `Error(ServiceError)`                                         | Error response                                                     |
+
+## Ticket Bootstrap
+
+`AccountSession::join` on a connected instance joins a database from a ticket without a client-side sync engine and without sending the account's private key to the daemon.
+A bootstrap request proof (`SyncRequestAuth`) is bound to the answering peer and the requester's advertised tips, so the exchange takes two requests:
+
+1. The client registers the requesting key in the session keyset, then sends `TicketBootstrapPrepare { ticket }`.
+   The daemon races the ticket's address hints with its own transports and returns the chosen `address`, the `peer` that answered, and empty `tips`; Prepare does not read or disclose local database state.
+2. The client signs a proof over `peer`, the database, and `tips` with the requesting key, and sends it with the requested permission, key name, and optional approver metadata in `TicketBootstrap`.
+   The daemon requires the proof's key to be in the session keyset and the proof to cover that exact empty-tip request, then sends it through its own sync engine.
+   The response must be confined to the requested database and every supplied Entry must verify; current requested permission is checked before publishing the tree/peer relationship.
+   Incremental send-back is refused on this path.
+   It re-handshakes the route before recording it, so the address must answer as `peer`; and if the daemon already holds the database, the proof's key must already be able to read it there, because the peer store is shared by every user of the daemon.
+
+Pending and rejected results travel as `TicketBootstrapOutcome` data rather than as `ServiceError`s, so the client rebuilds `SyncError::BootstrapPending` and `SyncError::BootstrapRejected` exactly.
+Neither outcome creates Account state or a new serving relationship; existing legacy Account rows are preserved.
+Only after a successful exchange does the client discover the valid SigKey and record mapping and preferences atomically in its Account database, publishing cache from acknowledged or read-back verified state.
+An identical retry does not append equivalent configuration history, and preferences changed during the network wait are not overwritten.
+Success returns an opened `Database` only after those client-side writes finish.
+Pending requires an explicit `join` retry after approval; rejection is terminal for the request.
+Requests on a connection are handled in order, so the join occupies its connection until the peer answers.
+A dropped future or disconnected caller may leave peer-side effects, replicated data or a committed Account Entry without its acknowledgement.
+Already-dispatched daemon work may continue after client EOF, but daemon/process death can interrupt it.
+Reconnect and retry explicitly; there is no cancellation API or automatic restart-safe completion.
+The shared [frame cancellation rules](#cancellation-and-frame-integrity) apply: an interrupted frame retires the connection, while cancelling only its response wait retains FIFO response association.
+Held/unreadable acquisition and native conflicting-authority/delegated-history recovery remain incomplete; see [current recovery limits](../user_guide/bootstrap.md#current-recovery-limits).
+
+Continuing replication is the daemon's, and its sync requests are signed with the daemon's device key.
+A database that grants only the joining user key, with no global grant, therefore needs separate device-key authorization for later pulls.
+`join` does not enroll a device or promise ongoing private background authority.
+The wildcard-authorized replication test covers global access, not private device enrollment.
 
 ## Session Keyset
 
@@ -188,7 +256,7 @@ enum ConnectionState {
         login_pubkey: PublicKey,
         session_keyset: HashSet<PublicKey>,           // includes login_pubkey
         pending_key_challenges: HashMap<PublicKey, Vec<u8>>,
-        user_uuid: String,
+        login_id: String,
         ..
     },
 }
@@ -198,7 +266,7 @@ No `ConnectionState` variant holds a `PrivateKey` (enforced by a structural test
 
 ### Why a keyset, not a single pubkey?
 
-A `User` has many pubkeys — a root key, a device key, per-DB keys created via `User::add_private_key`, etc. Writes signed by a per-DB key produce entries whose tree auth grants that key, not the login key. With a single-pubkey session, reads of those trees would be denied (the login key isn't a member of the tree the per-DB key authored). The keyset model lets the same connection drive ops on every tree the user actually has a key for, without forcing one connection per key.
+An `AccountSession` has many pubkeys — a root key, a device key, per-DB keys created via `AccountSession::add_private_key`, etc. Writes signed by a per-DB key produce entries whose tree auth grants that key, not the login key. With a single-pubkey session, reads of those trees would be denied (the login key isn't a member of the tree the per-DB key authored). The keyset model lets the same connection drive ops on every tree the user actually has a key for, without forcing one connection per key.
 
 ### Registration handshake
 
@@ -213,7 +281,7 @@ The handle constructors that need per-DB identities register on the caller's beh
 
 - `Database::create(instance, signing_key, settings)` registers `signing_key` before constructing the returned `RemoteBackend`-backed handle.
 - `Database::open_remote(.., identity)` is paired by `Instance::open_system_db_for_session(root, signing_key)`, which registers `signing_key` before opening.
-- `User::open_database_with_key(root, key_id)` registers the user-held signing key for `key_id` before routing through `Database::open_remote` on a connected instance.
+- `AccountSession::open_database_with_key(root, key_id)` registers the user-held signing key for `key_id` before routing through `Database::open_remote` on a connected instance.
 
 ## Access Control: the three gates
 
@@ -272,7 +340,7 @@ Historical current state is materialized into derived record sets in the shared 
 Cached state is scoped by [`CacheScope`](crate::backend::CacheScope):
 
 - `CacheScope::Shared` — daemon-computed state (visible to every authorized user; the bytes were produced by the trusted server-side merge).
-- `CacheScope::User(uuid)` — client-computed state (scoped to the submitting user's uuid; only that user can poison their own future reads).
+- `CacheScope::AccountSession(uuid)` — client-computed state (scoped to the submitting user's uuid; only that user can poison their own future reads).
 
 Every client-supplied `StoreStateRequest` is rebound to the session before it reaches the backend: its database must be the one the request was gated against, a shared-scope request is narrowed to the session user, and a request naming another user's scope is refused. Resolution then falls back from the user scope to the shared one, so a daemon materialization is reused instead of rebuilt per user, while a client can never publish into shared cached state or another user's cached state.
 
@@ -330,9 +398,9 @@ The encrypted-store-over-service tests cover both paths: `test_database_encrypte
 `ReadScope` controls the DAG snapshot exposed over the wire:
 
 - **`Verified`** (default) — only the maximal all-`Verified` ancestor-closed prefix of the DAG (the "Verified frontier"). Tips that are still `Unverified` are replaced by their nearest `Verified` ancestors; `Failed` entries are always dropped.
-- **`AllowUnverified`** — open against the raw DAG (only `Failed` dropped). The caller must explicitly opt in via `Database::allow_unverified()`.
+- **`AllowUnverified`** — select raw tips with `Failed` tips dropped, not a recursively sanitized accepted prefix. The caller must explicitly opt in via `Database::allow_unverified()`.
 
-`BeginTransaction` carries the caller's `ReadScope`: write parents are drawn from the _same_ snapshot the caller reads, so a write built under `AllowUnverified` uses unverified tips as parents and a write built under the `Verified` default uses only verified ancestors. This ensures the write's parent snapshot is self-consistent with the caller's read posture.
+`BeginTransaction` carries the caller's `ReadScope`: selected parents come from the same snapshot as its reads. Selection is not permission to commit against unsettled ancestry: signed local commit validation requires Verified parents, and server-side verification defers a submitted Entry with Unverified parents. `GetVerifiedTips` itself always returns the server's Verified frontier, even for a client handle with `.allow_unverified()`. The [verification contract](../design/verification.md#writes-inherit-the-selected-boundary-not-weaker-validation) defines the distinction.
 
 ### Gate scope for `AuthenticatedDb`
 
@@ -373,13 +441,16 @@ just test service
 nix build .#test.service
 ```
 
-The full suite passes 1:1 against the service backend. Tests that exercise _process-local_ subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), client-side delegation validation that reads delegated trees via `backend.get_tree`, the CRDT merge cache, and multi-`User`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
+The full suite passes 1:1 against the service backend. Tests that exercise _process-local_ subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), low-level delegation resolution that needs local verification evidence, the CRDT merge cache, and multi-`AccountSession`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
 
 - `test_local_instance()` — like `test_instance()` but always builds an in-memory local `Instance`.
 - `test_local_instance_with_user(username)` and `test_local_instance_with_user_and_key(username, key_name)` — counterparts to the wire-aware versions.
 - `setup_tree_with_user_key_local()` and `TestContext::with_local_database()` — for tests that poke at local-only backend state.
 
-The architectural seam — wire-path tests vs. subsystem tests — is explicit at the helper level. The test harness bootstraps the server-side Instance with a passwordless `admin` user via `Instance::create_backend(..., NewUser::passwordless("admin"))`, then logs in over the wire as that user. (The old `admin`/`admin` auto-bootstrap is gone; production deployments now run `eidetica daemon init --username <NAME>` with explicit credentials, and the test harness mirrors that shape.)
+`service::historical_signatures` uses a shared fixture for local/socket parity, concrete-key attribution, invalid/incomplete proof, inherited floors and revocation.
+Its non-admin, Read-only client checks bound acting identity and current Read on every delegation hop, including already-open handles.
+
+The architectural seam — wire-path tests vs. subsystem tests — is explicit at the helper level. The test harness bootstraps the server-side Instance with a passwordless `admin` user via `Instance::create_backend(..., NewAccount::passwordless("admin"))`, then logs in over the wire as that user. (The old `admin`/`admin` auto-bootstrap is gone; production deployments now run `eidetica daemon init --username <NAME>` with explicit credentials, and the test harness mirrors that shape.)
 
 ## V1 Limitations
 
@@ -388,12 +459,12 @@ This is a **fully trusted local-client** v1. Filesystem access to the socket gra
 - **Lock-poisoning posture**: the per-connection session `RwLock` and the `RemoteBackend` per-connection cache mutex are poison-tolerant (handlers recover the guard from a poisoned lock rather than panicking), but other `std::sync::Mutex` sites in the service path still use `lock().unwrap()`. Documented at the lock sites; the remaining ones must be audited before serving multiple or untrusted clients.
 - **Verification status is never asserted over the wire**: the service protocol carries no way for a client to assert a verification status; entries arriving over the wire are stored `Unverified` and earn `Verified` only via the daemon's own validation pass. The status model, the pinned-settings validation that makes it staleness-free, the disclosure posture, and the unbuilt authority-_reduction_ (revocation) gap are documented in the [Verification Model](../design/verification.md) design doc.
 - **`snapshot()` on a connected Database delegates to `self.ops()`**: handles built via `Database::create` or `Database::open_remote` carry a `RemoteBackend` bound to a per-DB identity; reads use that identity (not the connection's login pubkey). Handles built via plain `Database::open` on a connected instance share the `Instance`'s `RemoteBackend` (which uses the connection's default session identity) — appropriate for code that wants the connection's login pubkey to drive reads. The previous heuristic remote-detection in `Database::snapshot` was replaced with an explicit ops delegation.
-- **No sync delegation**: `enable_sync()` on a remote Instance is a silent no-op (sync runs daemon-side; the client can't enable it from over the wire). A future admin-gated `EnableSync` RPC would let a client ask the daemon to enable its sync subsystem, parallel to how `InstanceAdmin::create_user` reaches `_users` today.
+- **No sync delegation**: `enable_sync()` on a remote Instance is a silent no-op (sync runs daemon-side; the client can't enable it from over the wire). A future admin-gated `EnableSync` RPC would let a client ask the daemon to enable its sync subsystem, parallel to how `InstanceAdmin::create_account` reaches `_users` today.
 
 ## Future Work
 
 - **PAKE for network transport**: `TrustedLogin` is safe only because the socket is filesystem-gated. A network transport must replace it with a password-authenticated key exchange.
 - **Sync delegation**: as above.
-- **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier needs an incremental frontier first; `Database::verified_frontier` is an O(N) walk, too expensive on the per-commit path.
+- **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier can now read the retained frontier (`BackendImpl::verified_snapshot`); wiring it into the per-commit path is still future work.
 - **Notification backpressure**: the per-connection writer channel is `mpsc::unbounded_channel`; a stalled client reader buffers notifications in memory. Switch to a bounded channel with a documented drop-oldest policy if memory growth becomes measurable.
 - **Derived-key caching**: cache the Argon2id-derived encryption key in an OS secret store with a TTL, evolving the daemon into an ssh-agent-like key agent to eliminate repeated password prompts for CLI tools.

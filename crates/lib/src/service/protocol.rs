@@ -6,7 +6,7 @@
 //! ## Request shape
 //!
 //! `ServiceRequest` is a flat enum holding pre-authentication lifecycle messages
-//! (`TrustedLoginUser`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
+//! (`TrustedLoginAccount`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
 //! query, and an `AuthenticatedDb` wrapper that carries every storage operation
 //! (including any user-management writes against `_users`). The wrapper
 //! bundles the `(root_id, identity)` scope so the server can validate each
@@ -31,9 +31,11 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
+use serde_json::value::RawValue;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::account::AccountInfo;
 use crate::auth::crypto::PublicKey;
 use crate::auth::types::{Permission, SigKey};
 use crate::backend::{InstanceMetadata, RecordPage, RecordRange, StoreStateRequest};
@@ -41,17 +43,17 @@ use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
-use crate::user::UserInfo;
+use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
 /// without notice between releases.
 ///
-/// This constant is the compatibility gate for serialized types in this
-/// protocol. `#[non_exhaustive]` does **not** protect wire compatibility: a
-/// peer on an older version fails to deserialize an unknown variant. Adding a
-/// variant to a serialized enum (e.g. [`WriteSource`](crate::instance::WriteSource)
-/// inside [`Notification::DatabaseWrite`]) is therefore a protocol version
-/// bump, not a backward-compatible addition.
+/// Updated peers reject unknown operations with [`ServiceResponse::Unsupported`],
+/// fail one call for unknown responses, and ignore unknown optional notification
+/// variants. Known payloads and required nested types remain strict. There is no
+/// capability negotiation or downgrade. Pre-change v0 peers still disconnect on
+/// unknown variants; keeping v0 does not retroactively make them extensible.
+/// `#[non_exhaustive]` protects Rust source compatibility, not the wire.
 pub const PROTOCOL_VERSION: u32 = 0;
 
 /// Maximum frame size: 64 MiB.
@@ -209,6 +211,10 @@ pub enum DatabaseOp {
     /// Read.
     GetEntry { id: ID },
 
+    /// Re-run native historical authentication for an entry in this database.
+    /// Read-gated; never accepts client-supplied verification status.
+    VerifyEntrySignature { id: ID },
+
     /// Rewrite the daemon's instance metadata (system-DB pointers). Gated by
     /// `Admin` on `_databases` (a daemon-global system tree, resolved
     /// server-side — *not* the request's `root_id`), so the per-tree gate is
@@ -280,6 +286,7 @@ impl DatabaseOp {
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
             | DatabaseOp::ComputeMergeState { .. }
             | DatabaseOp::GetEntry { .. }
+            | DatabaseOp::VerifyEntrySignature { .. }
             | DatabaseOp::ResolveStoreState { .. }
             | DatabaseOp::StoreStateRecordGet { .. }
             | DatabaseOp::StoreStateRecordScan { .. }
@@ -308,6 +315,46 @@ pub struct AuthenticatedDbRequest {
     pub op: DatabaseOp,
 }
 
+/// Payload of a [`ServiceRequest::TicketBootstrap`] request.
+///
+/// `address`, `peer`, and `tips` are the values the daemon returned from
+/// [`ServiceRequest::TicketBootstrapPrepare`]; `auth` must be signed over
+/// exactly `peer`, `database_id`, and `tips` by the key it names.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TicketBootstrapRequest {
+    /// Database the ticket names.
+    pub database_id: ID,
+    /// Route the daemon selected.
+    pub address: Address,
+    /// Peer identity that answered on `address`.
+    pub peer: PublicKey,
+    /// Empty bootstrap tips the proof covers.
+    pub tips: Snapshot,
+    /// Requester-chosen name for the key, shown to approvers.
+    pub requesting_key_name: String,
+    /// Permission requested for the key.
+    pub requested_permission: Permission,
+    /// Optional context for the approver.
+    pub metadata: Option<crate::crdt::Doc>,
+    /// Client-signed proof of possession of the requesting key.
+    pub auth: SyncRequestAuth,
+}
+
+/// Outcome of a [`ServiceRequest::TicketBootstrap`] request.
+///
+/// Pending and rejected are ordinary protocol outcomes, not transport
+/// failures, so they travel as data: the client rebuilds the exact
+/// [`SyncError`](crate::sync::SyncError) variant callers match on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TicketBootstrapOutcome {
+    /// The database is available on the daemon.
+    Complete,
+    /// The peer stored the request for manual approval.
+    Pending { request_id: String, message: String },
+    /// An administrator rejected the request.
+    Rejected { request_id: String, message: String },
+}
+
 /// Top-level request from client to server.
 ///
 /// The shape is intentionally flat: pre-auth lifecycle and queries sit beside
@@ -322,9 +369,10 @@ pub enum ServiceRequest {
     /// sign. The "Trusted" qualifier is a load-bearing reminder that this flow
     /// assumes the caller is already trusted by the socket's filesystem
     /// permissions — over a network transport this would need PAKE instead.
-    TrustedLoginUser { username: String },
+    #[serde(rename = "TrustedLoginUser")]
+    TrustedLoginAccount { username: String },
     /// Step 2 of the trusted login flow. Client returns a signature over the
-    /// challenge from `TrustedLoginUser`, computed with the user's root key.
+    /// challenge from `TrustedLoginAccount`, computed with the user's root key.
     /// Server verifies against the stored pubkey and, on success, marks the
     /// connection authenticated.
     TrustedLoginProve { signature: Vec<u8> },
@@ -354,6 +402,19 @@ pub enum ServiceRequest {
         pubkey: PublicKey,
         signature: Vec<u8>,
     },
+
+    // === Post-auth: ticket bootstrap through the daemon's sync engine ===
+    /// Step 1 of joining a database from a ticket. The daemon races the
+    /// ticket's address hints with its own transports and returns the route,
+    /// the identity that answered on it, and empty tips (no local disclosure).
+    /// The client needs the last two to sign a peer-bound request proof with
+    /// a key that never leaves the client process.
+    TicketBootstrapPrepare { ticket: DatabaseTicket },
+    /// Step 2 of joining a database from a ticket. The daemon checks the
+    /// client-signed proof, then sends the named-key bootstrap request
+    /// through its own sync engine. The proof's key must already be in the
+    /// connection's session keyset (see `SessionKeyRegister`).
+    TicketBootstrap(Box<TicketBootstrapRequest>),
 
     // === Authenticated wrapper for every storage operation ===
     /// All storage ops travel inside this wrapper. The inner
@@ -439,7 +500,7 @@ pub enum Notification {
 /// dispatcher.
 ///
 /// `Response` boxes its payload because `ServiceResponse` is large (the
-/// `TrustedLoginChallenge` variant carries a full `UserInfo`), and an
+/// `TrustedLoginChallenge` variant carries a full `AccountInfo`), and an
 /// unboxed enum would force every `Notification` frame to carry that
 /// stack footprint too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -461,6 +522,10 @@ pub enum ServiceResponse {
     Ids(Snapshot),
     /// Success with no data
     Ok,
+    /// The requested operation is not supported; no operation was performed.
+    Unsupported,
+    /// Native historical signature/permission verdict, not a stored status.
+    EntrySignatureValid(bool),
     /// One optional opaque record.
     Record(Option<Vec<u8>>),
     /// One bounded, ordered record page.
@@ -482,24 +547,26 @@ pub enum ServiceResponse {
     Error(ServiceError),
     /// Point-in-time locator for one authorized database.
     DatabaseTicket(crate::sync::DatabaseTicket),
-    /// Challenge bytes returned in response to `TrustedLoginUser`, plus the
+    /// Challenge bytes returned in response to `TrustedLoginAccount`, plus the
     /// user's full record so the client can derive the password→key, decrypt
     /// the root signing key locally, sign the challenge in a single
-    /// round-trip, and then build the `User` session from data the daemon
+    /// round-trip, and then build the `AccountSession` session from data the daemon
     /// already returned — no second wire read of `_users` is required.
     ///
-    /// `user_info.credentials` carries the (encrypted) root private key, its
+    /// `account_info.credentials` carries the (encrypted) root private key, its
     /// `KeyStorage` envelope (algorithm/ciphertext/nonce for password-protected
     /// users, raw `PrivateKey` for passwordless users), and the Argon2id salt
-    /// when password-protected. The non-credential fields (user_database_id,
-    /// status, timestamps) are what `User::new` consumes after the proof
+    /// when password-protected. The non-credential fields (account_id,
+    /// status, timestamps) are what `AccountSession::new` consumes after the proof
     /// step succeeds. See § Trusted login threat model in the Service
     /// Architecture doc for why this is safe to ship to anyone who can
     /// reach the socket.
     TrustedLoginChallenge {
         challenge: Vec<u8>,
-        user_uuid: String,
-        user_info: UserInfo,
+        #[serde(rename = "user_uuid")]
+        login_id: String,
+        #[serde(rename = "user_info")]
+        account_info: AccountInfo,
     },
     /// Trusted login succeeded; the connection is now authenticated.
     TrustedLoginOk,
@@ -507,6 +574,191 @@ pub enum ServiceResponse {
     /// client signs these with the named pubkey's private key and returns the
     /// signature in `SessionKeyRegister`.
     SessionKeyChallenge { challenge: Vec<u8> },
+    /// Route selected for a ticket bootstrap (response to
+    /// `TicketBootstrapPrepare`).
+    TicketBootstrapRoute {
+        address: Address,
+        peer: PublicKey,
+        tips: Snapshot,
+    },
+    /// Result of a ticket bootstrap (response to `TicketBootstrap`).
+    TicketBootstrapOutcome(TicketBootstrapOutcome),
+}
+
+// These names classify only the four optional extension points. Keep them in
+// step with the wire enums above. Recognized payloads go through their original
+// serde decoders; a malformed known message must never become Unsupported.
+const REQUEST_VARIANTS: &[&str] = &[
+    "TrustedLoginUser",
+    "TrustedLoginProve",
+    "GetInstanceMetadata",
+    "SessionKeyChallenge",
+    "SessionKeyRegister",
+    "TicketBootstrapPrepare",
+    "TicketBootstrap",
+    "AuthenticatedDb",
+];
+const DATABASE_OP_VARIANTS: &[&str] = &[
+    "ResolveStoreState",
+    "BeginStoreStateStaging",
+    "StageStoreStateRecords",
+    "PublishStoreState",
+    "AbortStoreState",
+    "StoreStateRecordGet",
+    "StoreStateRecordScan",
+    "BeginTransaction",
+    "SubmitSignedEntry",
+    "GetVerifiedTips",
+    "GetStoreState",
+    "GetStoreEntries",
+    "GetStoreTipsUpToEntries",
+    "ComputeMergeState",
+    "GetEntry",
+    "VerifyEntrySignature",
+    "SetInstanceMetadata",
+    "SubscribeWrites",
+    "UnsubscribeWrites",
+    "CreateTicket",
+];
+const RESPONSE_VARIANTS: &[&str] = &[
+    "Entry",
+    "Entries",
+    "Ids",
+    "Ok",
+    "Unsupported",
+    "EntrySignatureValid",
+    "Record",
+    "RecordPage",
+    "RecordView",
+    "Token",
+    "TransactionContext",
+    "CrdtValue",
+    "MergeState",
+    "InstanceMetadata",
+    "Error",
+    "DatabaseTicket",
+    "TrustedLoginChallenge",
+    "TrustedLoginOk",
+    "SessionKeyChallenge",
+    "TicketBootstrapRoute",
+    "TicketBootstrapOutcome",
+];
+
+/// Read an externally tagged JSON enum's name without erasing duplicate keys
+/// or changing its payload. RawValue preserves the original known-wire decoder.
+/// Only a string or a single-key object can represent an optional variant.
+fn variant_name(raw: &RawValue) -> serde_json::Result<String> {
+    struct VariantName;
+    impl<'de> de::Visitor<'de> for VariantName {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an enum name or single-key enum object")
+        }
+
+        fn visit_str<E: de::Error>(self, name: &str) -> Result<String, E> {
+            Ok(name.to_owned())
+        }
+
+        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<String, A::Error> {
+            let name = map
+                .next_key::<String>()?
+                .ok_or_else(|| de::Error::custom("empty enum object"))?;
+            map.next_value::<de::IgnoredAny>()?;
+            if map.next_key::<de::IgnoredAny>()?.is_some() {
+                return Err(de::Error::custom("enum object must have exactly one key"));
+            }
+            Ok(name)
+        }
+    }
+    let mut decoder = serde_json::Deserializer::from_str(raw.get());
+    let name = de::Deserializer::deserialize_any(&mut decoder, VariantName)?;
+    decoder.end()?;
+    Ok(name)
+}
+
+/// Inbound-only classification: unsupported operations never reach dispatch,
+/// including its auth transitions and private-build expiry cleanup.
+pub(crate) enum IncomingRequest {
+    Known(Box<ServiceRequest>),
+    Unsupported,
+}
+
+impl<'de> Deserialize<'de> for IncomingRequest {
+    fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        let raw = Box::<RawValue>::deserialize(decoder)?;
+        let decode = || -> serde_json::Result<Self> {
+            let name = variant_name(&raw)?;
+            if !REQUEST_VARIANTS.contains(&name.as_str()) {
+                return Ok(Self::Unsupported);
+            }
+            if name == "AuthenticatedDb" {
+                #[derive(Deserialize)]
+                enum Envelope {
+                    AuthenticatedDb(Scope),
+                }
+                #[derive(Deserialize)]
+                struct Scope {
+                    root_id: ID,
+                    identity: SigKey,
+                    op: Box<RawValue>,
+                }
+                let Envelope::AuthenticatedDb(scope) = serde_json::from_str(raw.get())?;
+                let name = variant_name(&scope.op)?;
+                if !DATABASE_OP_VARIANTS.contains(&name.as_str()) {
+                    return Ok(Self::Unsupported);
+                }
+                let request = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+                    root_id: scope.root_id,
+                    identity: scope.identity,
+                    op: serde_json::from_str(scope.op.get())?,
+                }));
+                return Ok(Self::Known(Box::new(request)));
+            }
+            serde_json::from_str(raw.get()).map(Self::Known)
+        };
+        decode().map_err(de::Error::custom)
+    }
+}
+
+/// Outer envelopes and known nested types remain required. Only an unknown
+/// Response variant maps to Unsupported; only an unknown Notification is ignored.
+pub(crate) enum IncomingServerFrame {
+    Response(Box<ServiceResponse>),
+    Notification(Option<Notification>),
+}
+
+impl<'de> Deserialize<'de> for IncomingServerFrame {
+    fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        enum Envelope {
+            Response(Box<RawValue>),
+            Notification(Box<RawValue>),
+        }
+        let envelope = Envelope::deserialize(decoder)?;
+        let decode = || -> serde_json::Result<Self> {
+            match envelope {
+                Envelope::Response(raw) => {
+                    let name = variant_name(&raw)?;
+                    let response = if RESPONSE_VARIANTS.contains(&name.as_str()) {
+                        serde_json::from_str(raw.get())?
+                    } else {
+                        ServiceResponse::Unsupported
+                    };
+                    Ok(Self::Response(Box::new(response)))
+                }
+                Envelope::Notification(raw) => {
+                    let notification = if variant_name(&raw)? == "DatabaseWrite" {
+                        Some(serde_json::from_str(raw.get())?)
+                    } else {
+                        None
+                    };
+                    Ok(Self::Notification(notification))
+                }
+            }
+        };
+        decode().map_err(de::Error::custom)
+    }
 }
 
 /// Write a length-prefixed JSON frame to an async writer.
@@ -530,16 +782,16 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
 
 /// Read a length-prefixed JSON frame from an async reader.
 ///
-/// Returns `None` on clean EOF (connection closed).
+/// Returns `None` only on EOF before any length-prefix bytes are read.
+/// EOF within the length prefix or payload returns an `UnexpectedEof` I/O error.
 pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> crate::Result<Option<T>> {
     let mut len_buf = [0u8; 4];
-    match reader.read_exact(&mut len_buf).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
+    if reader.read(&mut len_buf[..1]).await? == 0 {
+        return Ok(None);
     }
+    reader.read_exact(&mut len_buf[1..]).await?;
     let len = u32::from_be_bytes(len_buf);
     if len > MAX_FRAME_SIZE {
         return Err(crate::Error::Io(std::io::Error::new(
@@ -568,6 +820,134 @@ mod tests {
             identity: SigKey::default(),
             op,
         }))
+    }
+
+    #[test]
+    fn v0_classifier_names_match_derived_wire_variants() {
+        #[derive(Debug)]
+        struct VariantNames(Option<&'static [&'static str]>);
+
+        impl std::fmt::Display for VariantNames {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("expected an unknown enum variant")
+            }
+        }
+
+        impl std::error::Error for VariantNames {}
+
+        impl de::Error for VariantNames {
+            fn custom<T: std::fmt::Display>(_message: T) -> Self {
+                Self(None)
+            }
+
+            fn unknown_variant(_variant: &str, expected: &'static [&'static str]) -> Self {
+                Self(Some(expected))
+            }
+        }
+
+        fn derived_names<T: for<'de> Deserialize<'de>>() -> &'static [&'static str] {
+            // Serde's derive supplies the complete wire-name table to this hook.
+            // Do not duplicate it here or parse a formatted error message.
+            match T::deserialize(de::value::StrDeserializer::<VariantNames>::new(
+                "__unknown_classifier_test_variant",
+            )) {
+                Err(VariantNames(Some(names))) => names,
+                _ => panic!("derived decoder did not report its variant names"),
+            }
+        }
+
+        for (classifier, derived) in [
+            (REQUEST_VARIANTS, derived_names::<ServiceRequest>()),
+            (DATABASE_OP_VARIANTS, derived_names::<DatabaseOp>()),
+            (RESPONSE_VARIANTS, derived_names::<ServiceResponse>()),
+        ] {
+            let mut classifier = classifier.to_vec();
+            let mut derived = derived.to_vec();
+            classifier.sort_unstable();
+            derived.sort_unstable();
+            // Comparing lists (not sets) also rejects stale extras and duplicates.
+            assert_eq!(classifier, derived);
+        }
+    }
+
+    #[test]
+    fn v0_known_wire_fixtures_are_unchanged() {
+        assert_eq!(
+            serde_json::to_string(&Handshake {
+                protocol_version: 0
+            })
+            .unwrap(),
+            r#"{"protocol_version":0}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&HandshakeAck {
+                protocol_version: 0
+            })
+            .unwrap(),
+            r#"{"protocol_version":0}"#
+        );
+        for fixture in [
+            r#""GetInstanceMetadata""#,
+            r#"{"TrustedLoginUser":{"username":"alice"}}"#,
+            r#"{"TrustedLoginProve":{"signature":[1,2,3]}}"#,
+            r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"BeginTransaction":{"stores":["data"],"scope":"Verified"}}}}"#,
+            r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":"GetVerifiedTips"}}"#,
+            r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"VerifyEntrySignature":{"id":""}}}}"#,
+        ] {
+            let IncomingRequest::Known(request) = serde_json::from_str(fixture).unwrap() else {
+                panic!("known fixture was classified Unsupported: {fixture}");
+            };
+            assert_eq!(serde_json::to_string(&request).unwrap(), fixture);
+        }
+        for fixture in [
+            r#"{"Response":"Ok"}"#,
+            r#"{"Response":{"Ids":[]}}"#,
+            r#"{"Response":{"EntrySignatureValid":true}}"#,
+            r#"{"Response":{"EntrySignatureValid":false}}"#,
+            r#"{"Response":{"InstanceMetadata":null}}"#,
+            r#"{"Response":{"SessionKeyChallenge":{"challenge":[1,2,3]}}}"#,
+            r#"{"Response":{"Error":{"module":"instance","kind":"AuthenticationRequired","message":"authentication required"}}}"#,
+            r#"{"Notification":{"DatabaseWrite":{"root_id":"","previous_tips":[],"post_tips":[],"source":"Remote"}}}"#,
+        ] {
+            let frame = match serde_json::from_str::<IncomingServerFrame>(fixture).unwrap() {
+                IncomingServerFrame::Response(response) => ServerFrame::Response(response),
+                IncomingServerFrame::Notification(Some(notification)) => {
+                    ServerFrame::Notification(notification)
+                }
+                IncomingServerFrame::Notification(None) => panic!("known notification was ignored"),
+            };
+            assert_eq!(serde_json::to_string(&frame).unwrap(), fixture);
+        }
+        assert_eq!(
+            serde_json::to_string(&ServerFrame::Response(Box::new(
+                ServiceResponse::Unsupported
+            )))
+            .unwrap(),
+            r#"{"Response":"Unsupported"}"#
+        );
+    }
+
+    #[test]
+    fn historical_signature_query_rejects_malformed_known_payloads() {
+        for op in [
+            r#""VerifyEntrySignature""#,
+            r#"{"VerifyEntrySignature":{}}"#,
+        ] {
+            let request = format!(
+                r#"{{"AuthenticatedDb":{{"root_id":"","identity":{{"Direct":{{"hint":{{}}}}}},"op":{op}}}}}"#
+            );
+            assert!(
+                serde_json::from_str::<IncomingRequest>(&request).is_err(),
+                "{request}"
+            );
+        }
+        for verdict in ["null", "1", r#""true""#] {
+            let response = format!(r#"{{"Response":{{"EntrySignatureValid":{verdict}}}}}"#);
+            assert!(
+                serde_json::from_str::<IncomingServerFrame>(&response).is_err(),
+                "{response}"
+            );
+        }
     }
 
     /// Extract the inner `DatabaseOp` from a deserialised request, panicking if
@@ -620,13 +1000,14 @@ mod tests {
 
     #[test]
     fn test_request_trusted_login_user_serde() {
-        let req = ServiceRequest::TrustedLoginUser {
+        let req = ServiceRequest::TrustedLoginAccount {
             username: "alice".to_string(),
         };
         let json = serde_json::to_string(&req).unwrap();
+        assert_eq!(json, r#"{"TrustedLoginUser":{"username":"alice"}}"#);
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
         match req2 {
-            ServiceRequest::TrustedLoginUser { username } => assert_eq!(username, "alice"),
+            ServiceRequest::TrustedLoginAccount { username } => assert_eq!(username, "alice"),
             _ => panic!("wrong variant"),
         }
     }
@@ -696,14 +1077,14 @@ mod tests {
 
     #[test]
     fn test_response_trusted_login_challenge_serde() {
+        use crate::account::{AccountCredentials, AccountInfo, AccountStatus, KeyStorage};
         use crate::auth::crypto::generate_keypair;
-        use crate::user::{KeyStorage, UserCredentials, UserInfo, UserStatus};
 
         let (_signing, pubkey) = generate_keypair();
-        let user_info = UserInfo {
+        let account_info = AccountInfo {
             username: "alice".to_string(),
-            user_database_id: ID::from_bytes("alice-db"),
-            credentials: UserCredentials {
+            account_id: ID::from_bytes("alice-db"),
+            credentials: AccountCredentials {
                 root_key_id: pubkey.clone(),
                 root_key: KeyStorage::Encrypted {
                     algorithm: "aes-256-gcm".to_string(),
@@ -713,26 +1094,49 @@ mod tests {
                 password_salt: Some("salt-string".to_string()),
             },
             created_at: 1_700_000_000,
-            status: UserStatus::Active,
+            status: AccountStatus::Active,
         };
 
         let resp = ServiceResponse::TrustedLoginChallenge {
             challenge: b"random-bytes".to_vec(),
-            user_uuid: "uuid-alice".to_string(),
-            user_info: user_info.clone(),
+            login_id: "uuid-alice".to_string(),
+            account_info: account_info.clone(),
         };
         let json = serde_json::to_string(&resp).unwrap();
+        // API vocabulary must not silently rewrite stored credentials or the
+        // trusted-login envelope. Mask only the randomly generated public key.
+        let mut encoded: serde_json::Value = serde_json::from_str(&json).unwrap();
+        encoded["TrustedLoginChallenge"]["user_info"]["credentials"]["root_key_id"] =
+            serde_json::json!("PUBLIC_KEY");
+        assert_eq!(
+            encoded,
+            serde_json::json!({"TrustedLoginChallenge": {
+                "challenge": b"random-bytes".to_vec(),
+                "user_uuid": "uuid-alice",
+                "user_info": {
+                    "username": "alice",
+                    "user_database_id": account_info.account_id,
+                    "credentials": {
+                        "root_key_id": "PUBLIC_KEY",
+                        "root_key": {"type": "encrypted", "algorithm": "aes-256-gcm",
+                            "ciphertext": b"ct".to_vec(), "nonce": b"123456789012".to_vec()},
+                        "password_salt": "salt-string"
+                    },
+                    "created_at": 1_700_000_000, "status": "Active"
+                }
+            }})
+        );
         let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
         match resp2 {
             ServiceResponse::TrustedLoginChallenge {
                 challenge,
-                user_uuid,
-                user_info: ui2,
+                login_id,
+                account_info: ui2,
             } => {
                 assert_eq!(challenge, b"random-bytes");
-                assert_eq!(user_uuid, "uuid-alice");
-                assert_eq!(ui2.username, user_info.username);
-                assert_eq!(ui2.user_database_id, user_info.user_database_id);
+                assert_eq!(login_id, "uuid-alice");
+                assert_eq!(ui2.username, account_info.username);
+                assert_eq!(ui2.account_id, account_info.account_id);
                 assert_eq!(ui2.credentials.root_key_id, pubkey);
                 assert_eq!(
                     ui2.credentials.password_salt.as_deref(),
@@ -873,6 +1277,60 @@ mod tests {
         let (mut reader, _writer) = tokio::io::split(client);
         let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut reader).await;
         assert!(result.unwrap().is_none());
+    }
+
+    async fn assert_truncated_header(header: &[u8]) {
+        let mut reader = header;
+        let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut reader).await;
+        assert!(matches!(
+            result,
+            Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_frame_truncated_header_one_byte() {
+        assert_truncated_header(&[0]).await;
+    }
+
+    #[tokio::test]
+    async fn test_frame_truncated_header_two_bytes() {
+        assert_truncated_header(&[0, 0]).await;
+    }
+
+    #[tokio::test]
+    async fn test_frame_truncated_header_three_bytes() {
+        assert_truncated_header(&[0, 0, 0]).await;
+    }
+
+    #[tokio::test]
+    async fn test_frame_complete_then_clean_eof() {
+        let payload = br#"{"protocol_version":0}"#;
+        let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(payload);
+        let mut reader = frame.as_slice();
+        let handshake: Handshake = read_frame(&mut reader).await.unwrap().unwrap();
+        assert_eq!(handshake.protocol_version, 0);
+        assert!(
+            read_frame::<_, Handshake>(&mut reader)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_frame_truncated_body() {
+        let payload = br#"{"protocol_version":0}"#;
+        for received in 0..payload.len() {
+            let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+            frame.extend_from_slice(&payload[..received]);
+            let result: crate::Result<Option<Handshake>> = read_frame(&mut frame.as_slice()).await;
+            assert!(matches!(
+                result,
+                Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof
+            ));
+        }
     }
 
     #[tokio::test]

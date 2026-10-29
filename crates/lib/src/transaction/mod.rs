@@ -21,7 +21,7 @@ pub mod errors;
 mod tests;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -32,7 +32,7 @@ pub use errors::TransactionError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Database, Result, Snapshot, Store,
+    Database, Error, Result, Snapshot, Store,
     auth::{
         AuthSettings,
         crypto::{PrivateKey, sign_entry},
@@ -41,7 +41,7 @@ use crate::{
     },
     backend::{RecordMutations, RecordRange, RecordView, VerificationStatus},
     constants::{INDEX, ROOT, SETTINGS},
-    crdt::{CRDT, Data, Doc, doc::Value},
+    crdt::{CRDT, Codec, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
     height::HeightStrategy,
     instance::WriteSource,
@@ -53,24 +53,6 @@ type SnapshotPause = (
     tokio::sync::oneshot::Sender<()>,
     tokio::sync::oneshot::Receiver<()>,
 );
-
-/// Creates a synthetic entry ID for multi-tip merged CRDT state caching.
-///
-/// Tips are sorted to ensure deterministic keys regardless of input order.
-/// The resulting ID has format `merge:{tip1}:{tip2}:...` which is distinct
-/// from real content-addressed entry IDs.
-fn create_merge_cache_id(tip_ids: &[ID]) -> ID {
-    let mut sorted_tips = tip_ids.to_vec();
-    sorted_tips.sort();
-
-    // Create a deterministic cache key by hashing the sorted tip IDs
-    let mut key = String::from("merge");
-    for tip in &sorted_tips {
-        key.push(':');
-        key.push_str(&tip.to_string());
-    }
-    ID::from_bytes(key.as_bytes())
-}
 
 /// Trait for encrypting/decrypting subtree data transparently
 ///
@@ -203,6 +185,8 @@ pub struct Transaction {
     record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     logical_record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     record_views: Arc<Mutex<HashMap<String, RecordView>>>,
+    /// Captured Store boundaries which declined optional retention.
+    record_bypass: Arc<Mutex<HashSet<String>>>,
     #[cfg(test)]
     snapshot_pause: Arc<Mutex<Option<SnapshotPause>>>,
 }
@@ -274,6 +258,7 @@ impl Transaction {
             record_mutations: Arc::new(Mutex::new(HashMap::new())),
             logical_record_mutations: Arc::new(Mutex::new(HashMap::new())),
             record_views: Arc::new(Mutex::new(HashMap::new())),
+            record_bypass: Arc::new(Mutex::new(HashSet::new())),
             #[cfg(test)]
             snapshot_pause: Arc::new(Mutex::new(None)),
         })
@@ -308,7 +293,7 @@ impl Transaction {
     /// decrypted and ready to use, eliminating the need for backend key lookup.
     ///
     /// # Arguments
-    /// * `signing_key` - The decrypted signing key from UserKeyManager
+    /// * `signing_key` - The decrypted signing key from AccountKeyManager
     /// * `identity` - The SigKey identity used in database auth settings
     pub(crate) fn set_provided_key(&mut self, signing_key: PrivateKey, identity: SigKey) {
         self.provided_signing_key = Some((signing_key, identity));
@@ -535,8 +520,8 @@ impl Transaction {
     /// name within the transaction's internal `EntryBuilder`.
     ///
     /// If this is the first modification to the named subtree within this transaction,
-    /// it also fetches and records the current tips of that subtree from the backend
-    /// to set the correct `subtree_parents` for the new entry.
+    /// it also fetches and records the tips reachable from this transaction's parent
+    /// snapshot to set the correct `subtree_parents` for the new entry.
     ///
     /// # Arguments
     /// * `subtree` - The name of the subtree to update.
@@ -552,22 +537,8 @@ impl Transaction {
         let subtree = subtree.as_ref();
         let data = data.into();
 
-        let main_parents = {
-            let builder_ref = self.entry_builder.lock().unwrap();
-            let builder = builder_ref
-                .as_ref()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            (!builder.subtrees().contains(&subtree.to_string()))
-                .then(|| builder.parents().unwrap_or_default())
-        };
-
-        // The signed settings DAG must be scoped to this entry's main parents,
-        // not to a newer live sibling on a historical branch.
-        let tips = if let Some(parents) = main_parents {
-            Some(self.get_subtree_tips(subtree, &parents).await?)
-        } else {
-            None
-        };
+        // Use the transaction's immutable parent boundary, never the current tips.
+        self.init_subtree_parents(subtree).await?;
 
         // Now update the builder
         let mut builder_ref = self.entry_builder.lock().unwrap();
@@ -576,10 +547,6 @@ impl Transaction {
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
         builder.set_subtree_data_mut(subtree.to_string(), data);
-        if let Some(tips) = tips {
-            builder.set_subtree_parents_mut(subtree, tips);
-        }
-
         Ok(())
     }
 
@@ -641,49 +608,30 @@ impl Transaction {
             }
         }
         let physical_key = self.physical_record_key(store, &key)?;
-        let view = match self.record_view(store, projection).await {
-            Err(err) if err.is_unsupported_store_state() => {
-                return self.record_get_from_history(store, &key).await;
-            }
-            result => result?,
-        };
-        match self
-            .db
-            .ops()
-            .store_state_record_get(&view, &physical_key)
-            .await
-        {
-            Err(err) if err.is_unsupported_store_state() => {
-                self.record_get_from_history(store, &key).await
-            }
-            Err(err) if err.is_invalid_store_state_view() => {
-                self.record_views.lock().unwrap().remove(store);
-                let view = match self.record_view(store, projection).await {
-                    Err(err) if err.is_unsupported_store_state() => {
-                        return self.record_get_from_history(store, &key).await;
-                    }
-                    result => result?,
-                };
-                match self
-                    .db
+        for _ in 0..2 {
+            let result = async {
+                let view = self.record_view(store, projection).await?;
+                self.db
                     .ops()
                     .store_state_record_get(&view, &physical_key)
                     .await
-                {
-                    Err(err) if err.is_unsupported_store_state() => {
-                        self.record_get_from_history(store, &key).await
-                    }
-                    result => result?.map_or(Ok(None), |value| {
+            }
+            .await;
+            match result {
+                Err(error) if error.is_invalid_store_state_view() => {
+                    self.record_views.lock().unwrap().remove(store);
+                }
+                Err(error) if error.is_optional_store_state_unavailable() => break,
+                result => {
+                    return result?.map_or(Ok(None), |value| {
                         self.decrypt_record(store, &physical_key, &value)
                             .map(|(_, value)| Some(value))
-                    }),
+                    });
                 }
             }
-            result => result?.map_or(Ok(None), |value| {
-                self.decrypt_record(store, &physical_key, &value)
-                    .map(|(_, value)| Some(value))
-            }),
         }
+        self.record_bypass.lock().unwrap().insert(store.to_string());
+        self.record_get_from_history(store, &key).await
     }
 
     pub(crate) fn record_has_staged_descendant(
@@ -717,14 +665,36 @@ impl Transaction {
         if limit == 0 {
             return Ok(crate::backend::RecordPage::default());
         }
-        let view = match self.record_view(store, projection).await {
-            Err(err) if err.is_unsupported_store_state() => {
-                return self
-                    .record_scan_from_history(store, projection, after, limit)
-                    .await;
+        for _ in 0..2 {
+            let result = async {
+                let view = self.record_view(store, projection).await?;
+                self.record_scan_with_view(store, projection, &view, after, limit)
+                    .await
             }
-            result => result?,
-        };
+            .await;
+            match result {
+                Err(error) if error.is_invalid_store_state_view() => {
+                    // Discard the entire partially collected page; retry from
+                    // the caller's original cursor, never splice generations.
+                    self.record_views.lock().unwrap().remove(store);
+                }
+                Err(error) if error.is_optional_store_state_unavailable() => break,
+                result => return result,
+            }
+        }
+        self.record_bypass.lock().unwrap().insert(store.to_string());
+        self.record_scan_from_history(store, projection, after, limit)
+            .await
+    }
+
+    async fn record_scan_with_view(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<Doc>,
+        view: &RecordView,
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<crate::backend::RecordPage> {
         let logical_mutations = self
             .logical_record_mutations
             .lock()
@@ -749,53 +719,16 @@ impl Transaction {
         let mut backend_after = after.map(ToOwned::to_owned);
         let mut backend_has_more = true;
         while backend_has_more {
-            let page = match self
+            let page = self
                 .db
                 .ops()
                 .store_state_record_scan(
-                    &view,
+                    view,
                     &RecordRange::default(),
                     backend_after.as_deref(),
                     limit.max(1),
                 )
-                .await
-            {
-                Err(err) if err.is_unsupported_store_state() => {
-                    return self
-                        .record_scan_from_history(store, projection, after, limit)
-                        .await;
-                }
-                Err(err) if err.is_invalid_store_state_view() => {
-                    self.record_views.lock().unwrap().remove(store);
-                    match self.record_view(store, projection).await {
-                        Err(err) if err.is_unsupported_store_state() => {
-                            return self
-                                .record_scan_from_history(store, projection, after, limit)
-                                .await;
-                        }
-                        Ok(view) => match self
-                            .db
-                            .ops()
-                            .store_state_record_scan(
-                                &view,
-                                &RecordRange::default(),
-                                backend_after.as_deref(),
-                                limit.max(1),
-                            )
-                            .await
-                        {
-                            Err(err) if err.is_unsupported_store_state() => {
-                                return self
-                                    .record_scan_from_history(store, projection, after, limit)
-                                    .await;
-                            }
-                            result => result?,
-                        },
-                        Err(err) => return Err(err),
-                    }
-                }
-                result => result?,
-            };
+                .await?;
             for (physical_key, value) in page.records {
                 let (logical_key, _) = self.decrypt_record(store, &physical_key, &value)?;
                 if !logical_mutations.keys().any(|staged_key| {
@@ -828,8 +761,29 @@ impl Transaction {
         Ok(crate::backend::RecordPage { records, next })
     }
 
+    /// The corrective fallback deliberately folds captured history directly.
+    /// It must not re-enter opaque caching after a row-cache refusal. This is
+    /// not the bounded-history/streaming implementation.
+    async fn record_history_doc(&self, store: &str) -> Result<Doc> {
+        self.init_subtree_parents(store).await?;
+        let parents = self
+            .entry_builder
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?
+            .subtree_parents(store)
+            .unwrap_or_default();
+        let entries = self
+            .db
+            .ops()
+            .store_at(self.db.root_id(), store, &Snapshot::from(parents))
+            .await?;
+        self.fold_store_entries(store, &entries)
+    }
+
     async fn record_get_from_history(&self, store: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let state: Doc = self.get_full_state(store).await?;
+        let state = self.record_history_doc(store).await?;
         Ok(state
             .get(std::str::from_utf8(key).map_err(|error| {
                 TransactionError::StoreDeserializationFailed {
@@ -848,7 +802,7 @@ impl Transaction {
         after: Option<&[u8]>,
         limit: usize,
     ) -> Result<crate::backend::RecordPage> {
-        let state: Doc = self.get_full_state(store).await?;
+        let state = self.record_history_doc(store).await?;
         let mut projected = RecordMutations::new();
         projection.project_delta(&state, &mut projected)?;
         let mutations = self
@@ -939,7 +893,7 @@ impl Transaction {
             for entry in entries {
                 if let Ok(bytes) = entry.data(store) {
                     let plaintext = self.decrypt_if_needed(store, bytes)?;
-                    let delta: Doc = serde_json::from_slice(&plaintext)?;
+                    let delta = Doc::decode(&plaintext)?;
                     projection.project_delta(&delta, &mut logical)?;
                 }
             }
@@ -973,6 +927,12 @@ impl Transaction {
         store: &str,
         projection: &dyn RecordProjection<Doc>,
     ) -> Result<RecordView> {
+        if self.record_bypass.lock().unwrap().contains(store) {
+            return Err(crate::backend::BackendError::StoreStateNotRetained {
+                reason: "transaction history bypass".into(),
+            }
+            .into());
+        }
         if let Some(view) = self.record_views.lock().unwrap().get(store).cloned() {
             return Ok(view);
         }
@@ -985,7 +945,8 @@ impl Transaction {
             .ok_or(TransactionError::TransactionAlreadyCommitted)?
             .subtree_parents(store)
             .unwrap_or_default();
-        let source_key = create_merge_cache_id(&parents).to_string().into_bytes();
+        let boundary = Snapshot::from(&parents);
+        let source_key = boundary.cache_key_bytes();
         let descriptor = self.encrypted_projection_descriptor(store, projection.descriptor());
         let request = state::records_request(
             self.db.root_id(),
@@ -997,7 +958,6 @@ impl Transaction {
         let view = if let Some(view) = self.db.ops().resolve_store_state(&request).await? {
             view
         } else {
-            let boundary = Snapshot::from(parents);
             let entries = self
                 .db
                 .ops()
@@ -1031,6 +991,12 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the `Store` handle.
+    ///
+    /// For non-system Stores, only a missing named `_index` entry triggers
+    /// registration. Malformed metadata and registry read errors are returned
+    /// without loading or registering the Store. Existing registrations must
+    /// pass [`Registered::supports_type_id`](crate::Registered::supports_type_id)
+    /// before loading.
     pub async fn get_store<T>(&self, subtree_name: impl Into<String> + Send) -> Result<T>
     where
         T: Store + Send,
@@ -1055,24 +1021,28 @@ impl Transaction {
 
         // Check _index to determine if this is a new or existing subtree
         let index_store = self.get_index().await?;
-        if index_store.contains(&subtree_name).await {
-            // Type validation for existing subtree
-            let subtree_info = index_store.get_entry(&subtree_name).await?;
-
-            if !T::supports_type_id(&subtree_info.type_id) {
-                return Err(StoreError::TypeMismatch {
-                    store: subtree_name,
-                    expected: T::type_id().to_string(),
-                    actual: subtree_info.type_id,
+        match index_store.get_entry(&subtree_name).await {
+            Ok(subtree_info) => {
+                if !T::supports_type_id(&subtree_info.type_id) {
+                    return Err(StoreError::TypeMismatch {
+                        store: subtree_name,
+                        expected: T::type_id().to_string(),
+                        actual: subtree_info.type_id,
+                    }
+                    .into());
                 }
-                .into());
-            }
 
-            // Type supported - create the Store
-            T::load(self, subtree_name).await
-        } else {
-            // New subtree - register adds it to _index
-            T::register(self, subtree_name).await
+                T::load(self, subtree_name).await
+            }
+            // Only a missing named registration permits creation, not malformed
+            // metadata or a missing resource encountered while reading history.
+            Err(Error::Store(error))
+                if matches!(error.as_ref(), StoreError::KeyNotFound { store, key }
+                    if store == INDEX && key == &subtree_name) =>
+            {
+                T::register(self, subtree_name).await
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -1102,6 +1072,14 @@ impl Transaction {
             builder.parents().unwrap_or_default()
         };
 
+        #[cfg(test)]
+        {
+            let pause = self.snapshot_pause.lock().unwrap().take();
+            if let Some((entered, resume)) = pause {
+                let _ = entered.send(());
+                let _ = resume.await;
+            }
+        }
         let tips = self.get_subtree_tips(subtree_name, &main_parents).await?;
 
         let mut builder_ref = self.entry_builder.lock().unwrap();
@@ -1123,7 +1101,7 @@ impl Transaction {
     /// it with historical data.
     ///
     /// # Type Parameters
-    /// * `T` - The data type (expected to be a CRDT) to deserialize the staged data into.
+    /// * `T` - The `Codec` type to decode the staged data into; merging is not required.
     ///
     /// # Arguments
     /// * `subtree_name` - The name of the subtree whose staged data is needed.
@@ -1133,15 +1111,15 @@ impl Transaction {
     ///
     /// # Behavior
     /// - If the subtree doesn't exist or has no data, returns `Ok(None)`
-    /// - If the subtree exists but has empty data (empty string or whitespace), returns `Ok(None)`
-    /// - Otherwise deserializes the JSON data to type `T` and returns `Ok(Some(T))`
+    /// - If the subtree exists but has zero bytes, returns `Ok(None)`
+    /// - Otherwise decodes the bytes using `T::decode` and returns `Ok(Some(T))`
     ///
     /// # Errors
     /// Returns an error if the transaction has already been committed or if the
     /// subtree data exists but cannot be deserialized to type `T`.
     pub fn get_local_data<T>(&self, subtree_name: impl AsRef<str>) -> Result<Option<T>>
     where
-        T: Data,
+        T: Codec,
     {
         let subtree_name = subtree_name.as_ref();
         let builder_ref = self.entry_builder.lock().unwrap();
@@ -1153,10 +1131,14 @@ impl Transaction {
             if data.is_empty() {
                 Ok(None)
             } else {
-                serde_json::from_slice(data).map(Some).map_err(|e| {
+                T::decode(data).map(Some).map_err(|e| {
                     TransactionError::StoreDeserializationFailed {
                         store: subtree_name.to_string(),
-                        reason: e.to_string(),
+                        // Keep the existing JSON decoder's message unchanged.
+                        reason: match e {
+                            crate::Error::Serialize(error) => error.to_string(),
+                            error => error.to_string(),
+                        },
                     }
                     .into()
                 })
@@ -1188,7 +1170,7 @@ impl Transaction {
     /// if the subtree has no history prior to this transaction.
     pub(crate) async fn get_full_state<T>(&self, subtree_name: impl AsRef<str> + Send) -> Result<T>
     where
-        T: CRDT + Send,
+        T: CRDT + Codec + Default + Send,
     {
         self.get_full_state_with_descriptor::<T>(
             subtree_name,
@@ -1206,50 +1188,11 @@ impl Transaction {
         descriptor: ProjectionDescriptor,
     ) -> Result<T>
     where
-        T: CRDT + Send,
+        T: CRDT + Codec + Default + Send,
     {
         let subtree_name = subtree_name.as_ref();
 
-        // Check if we need to initialize subtree tips (get data from RefCell before await)
-        let (needs_init, main_parents) = {
-            let builder_ref = self.entry_builder.lock().unwrap();
-            let builder = builder_ref
-                .as_ref()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-
-            let subtrees = builder.subtrees();
-            if subtrees.contains(&subtree_name.to_string()) {
-                (false, Vec::new())
-            } else {
-                (true, builder.parents().unwrap_or_default())
-            }
-        };
-
-        // Initialize subtree tips if needed (async operations)
-        if needs_init {
-            let parents_snapshot = Snapshot::from(main_parents);
-            #[cfg(test)]
-            {
-                let pause = self.snapshot_pause.lock().unwrap().take();
-                if let Some((entered, resume)) = pause {
-                    let _ = entered.send(());
-                    let _ = resume.await;
-                }
-            }
-            let tips = self
-                .db
-                .ops()
-                .store_snapshot_at(self.db.root_id(), subtree_name, &parents_snapshot)
-                .await?
-                .into_tips();
-
-            // Update RefCell after async operations
-            let mut builder_ref = self.entry_builder.lock().unwrap();
-            let builder = builder_ref
-                .as_mut()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            builder.set_subtree_parents_mut(subtree_name, tips);
-        }
+        self.init_subtree_parents(subtree_name).await?;
 
         // Get the parent pointers for this subtree
         let parents = {
@@ -1293,7 +1236,7 @@ impl Transaction {
         descriptor: &ProjectionDescriptor,
     ) -> Result<T>
     where
-        T: CRDT + Send,
+        T: CRDT + Codec + Default + Send,
     {
         // Base case: no entries
         if entry_ids.is_empty() {
@@ -1309,19 +1252,19 @@ impl Transaction {
                 .await;
         }
 
-        // Multiple entries: check multi-tip cache first
-        let cache_id = create_merge_cache_id(entry_ids);
-
+        // Multiple entries: check the Snapshot-native cache first. The key is
+        // the canonical tip set itself — no synthetic merge ID.
+        let boundary = Snapshot::from(entry_ids);
         let cache_request = state::opaque_request(
             self.db.root_id(),
             subtree_name,
             descriptor.clone(),
-            cache_id.to_string().into_bytes(),
+            boundary.cache_key_bytes(),
             crate::backend::CacheScope::Shared,
         );
         if let Some(bytes) = state::load_cached(self.db.ops(), &cache_request).await? {
             let decrypted = self.decrypt_if_needed(subtree_name, &bytes)?;
-            let result: T = serde_json::from_slice(&decrypted)?;
+            let result = T::decode(&decrypted)?;
             return Ok(result);
         }
 
@@ -1361,10 +1304,10 @@ impl Transaction {
         };
 
         // Cache the computed merge result
-        let bytes = self.encrypt_if_needed(subtree_name, &serde_json::to_vec(&result)?)?;
-        state::store_cached(self.db.ops(), cache_request, bytes).await?;
-
-        Ok(result)
+        state::store_cached(self.db.ops(), cache_request, result, |result| {
+            self.encrypt_if_needed(subtree_name, &result.encode()?)
+        })
+        .await
     }
 
     /// Computes the CRDT state for a single entry using batch fetching.
@@ -1391,25 +1334,27 @@ impl Transaction {
         descriptor: &'a ProjectionDescriptor,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>
     where
-        T: CRDT + Send + 'a,
+        T: CRDT + Codec + Default + Send + 'a,
     {
         Box::pin(async move {
+            // One logical cache namespace for single-tip and multi-tip
+            // states: a single entry is a one-element Snapshot.
+            let boundary = Snapshot::from([entry_id.clone()]);
             let request = state::opaque_request(
                 self.db.root_id(),
                 subtree_name,
                 descriptor.clone(),
-                entry_id.to_string().into_bytes(),
+                boundary.cache_key_bytes(),
                 crate::backend::CacheScope::Shared,
             );
             if let Some(bytes) = state::load_cached(self.db.ops(), &request).await? {
                 let decrypted = self.decrypt_if_needed(subtree_name, &bytes)?;
-                let result: T = serde_json::from_slice(&decrypted)?;
+                let result = T::decode(&decrypted)?;
                 return Ok(result);
             }
 
             // Step 2: Batch fetch all ancestors sorted by height (root first)
             // This single query replaces N recursive queries
-            let boundary = Snapshot::from([entry_id.clone()]);
             let entries = self
                 .db
                 .ops()
@@ -1420,10 +1365,10 @@ impl Transaction {
             let result: T = self.fold_store_entries(subtree_name, &entries)?;
 
             // Step 4: Cache only the final result (encrypted if encryptor is registered)
-            let bytes = self.encrypt_if_needed(subtree_name, &serde_json::to_vec(&result)?)?;
-            state::store_cached(self.db.ops(), request, bytes).await?;
-
-            Ok(result)
+            state::store_cached(self.db.ops(), request, result, |result| {
+                self.encrypt_if_needed(subtree_name, &result.encode()?)
+            })
+            .await
         })
     }
 
@@ -1433,14 +1378,14 @@ impl Transaction {
     /// `store_at` returns them.
     fn fold_store_entries<T>(&self, subtree_name: &str, entries: &[Entry]) -> Result<T>
     where
-        T: CRDT,
+        T: CRDT + Codec + Default,
     {
         let mut result = T::default();
         for entry in entries {
             let local_data = if let Ok(data) = entry.data(subtree_name) {
                 // Decrypt before deserializing
                 let plaintext = self.decrypt_if_needed(subtree_name, data)?;
-                serde_json::from_slice::<T>(&plaintext)?
+                T::decode(&plaintext)?
             } else {
                 T::default()
             };
@@ -1465,7 +1410,7 @@ impl Transaction {
         entry_ids: &[ID],
     ) -> Result<T>
     where
-        T: CRDT,
+        T: CRDT + Codec + Default,
     {
         for entry_id in entry_ids {
             let entry = self.db.ops().get(entry_id).await?;
@@ -1474,7 +1419,7 @@ impl Transaction {
             let local_data = if let Ok(data) = entry.data(subtree_name) {
                 // Decrypt before deserializing
                 let plaintext = self.decrypt_if_needed(subtree_name, data)?;
-                serde_json::from_slice::<T>(&plaintext)?
+                T::decode(&plaintext)?
             } else {
                 T::default()
             };
@@ -1524,8 +1469,7 @@ impl Transaction {
             let staged = self.logical_record_mutations.lock().unwrap().clone();
             for (store, mutations) in staged {
                 let delta = crate::store::table::encode_entry_delta(&mutations)?;
-                self.update_subtree(store, serde_json::to_vec(&delta)?)
-                    .await?;
+                self.update_subtree(store, delta.encode()?).await?;
             }
         }
 
@@ -1599,7 +1543,7 @@ impl Transaction {
 
             // Find missing subtrees
             let missing = if let Some(ref index_data) = index_data_opt
-                && let Ok(index_doc) = serde_json::from_slice::<Doc>(index_data)
+                && let Ok(index_doc) = Doc::decode(index_data)
             {
                 index_doc
                     .keys()
@@ -1676,7 +1620,7 @@ impl Transaction {
         // Use provided signing key
         let signing_key = if let Some((ref provided_key, ref identity)) = self.provided_signing_key
         {
-            // Use provided signing key directly (already decrypted from UserKeyManager or device key)
+            // Use provided signing key directly (already decrypted from AccountKeyManager or device key)
             let key_clone = provided_key.clone();
 
             // Build AuthInfo from the already-typed SigKey identity

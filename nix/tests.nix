@@ -232,8 +232,8 @@ in {
       name = "eidetica-mdns-sync";
 
       nodes.machine = _: {
-        # The debug nextest archive expands to about 3 GiB; use disk, not /tmp's tmpfs.
-        virtualisation.diskSize = 4096;
+        # The workspace debug archive expands to about 5 GiB; use disk, not /tmp's tmpfs.
+        virtualisation.diskSize = 8192;
         networking = {
           dhcpcd.enable = false;
           nameservers = ["127.0.0.1"];
@@ -251,11 +251,21 @@ in {
       testScript = ''
         machine.start()
         machine.wait_for_unit("multi-user.target")
-        machine.succeed("mkdir -p /var/lib/nextest && cp -r ${testPkgs.src} /tmp/src && chmod -R u+w /tmp/src")
+        machine.succeed(
+          "mkdir -p /var/lib/nextest && cp -r ${testPkgs.src} /tmp/src && chmod -R u+w /tmp/src",
+          timeout=300,
+        )
+        # Archive extraction is setup, not part of the sync behavior deadline.
+        machine.succeed(
+          "tar --use-compress-program=${pkgs.zstd}/bin/zstd "
+          "-xf ${testPkgs.archive}/archive.tar.zst -C /var/lib/nextest",
+          timeout=300,
+        )
         result = machine.succeed(
           "cargo-nextest nextest run "
-          "--archive-file ${testPkgs.archive}/archive.tar.zst "
-          "--extract-to /var/lib/nextest --workspace-remap /tmp/src "
+          "--cargo-metadata /var/lib/nextest/target/nextest/cargo-metadata.json "
+          "--binaries-metadata /var/lib/nextest/target/nextest/binaries-metadata.json "
+          "--target-dir-remap /var/lib/nextest/target --workspace-remap /tmp/src "
           "--show-progress=none --run-ignored only --no-tests fail "
           "-E 'test(=sync::iroh_e2e_test::test_iroh_mdns_same_host_sync)'",
           timeout=60,
@@ -363,7 +373,7 @@ in {
         # Only the dashboard routes are exposed; no trusted service RPC on HTTP.
         PORT=$(sed -n 's/.*Dashboard listening on http:\/\/127.0.0.1:\([0-9]*\).*/\1/p' "$DAEMON_LOG" | head -1)
         test -n "$PORT"
-        curl -fsS "http://127.0.0.1:$PORT/health" | grep -q '"backend":"sqlite"'
+        curl -fsS "http://127.0.0.1:$PORT/health" | grep '"backend":"sqlite"' >/dev/null
         test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/api/v0")" = 404
         test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'username=admin' "http://127.0.0.1:$PORT/login")" = 403
         curl -fsS -D "$TMPDIR/login-headers" -c "$TMPDIR/admin-cookies" -o /dev/null -X POST \
@@ -399,7 +409,7 @@ in {
           --archive-file ${testPkgs.archive}/archive.tar.zst \
           --workspace-remap "$TMPDIR/src" \
           --show-progress=none \
-          -E 'test(=user::user_lifecycle_tests::test_complete_lifecycle_passwordless)'
+          -E 'test(=account::account_lifecycle_tests::test_complete_lifecycle_passwordless)'
 
         # A separate process writes through the *external* daemon socket.
         export EIDETICA_EXTERNAL_SOCKET="$SOCKET"
@@ -446,7 +456,7 @@ in {
         # /proc/net/tcp records the kernel listener address in hex.
         awk -v port="$(printf '%04X' "$PORT")" \
           '$2 == "00000000:" port && $4 == "0A" { found=1 } END { exit !found }' /proc/net/tcp
-        curl -fsS -H "Host: db.example:$PORT" "http://127.0.0.1:$PORT/health" | grep -q '"backend":"sqlite"'
+        curl -fsS -H "Host: db.example:$PORT" "http://127.0.0.1:$PORT/health" | grep '"backend":"sqlite"' >/dev/null
         test "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: db.example:$PORT" \
           -H "Origin: http://attacker.invalid" -d 'username=admin' "http://127.0.0.1:$PORT/login")" = 403
         curl -fsS -D "$TMPDIR/public-login-headers" -c "$TMPDIR/public-cookies" -o /dev/null \
@@ -457,7 +467,7 @@ in {
         curl -fsS -c "$TMPDIR/public-cookies" -o /dev/null -H "Host: db.example:$PORT" \
           -H "Origin: http://db.example:$PORT" -d 'username=admin' "http://127.0.0.1:$PORT/login"
         curl -fsS -b "$TMPDIR/public-cookies" -H "Host: db.example:$PORT" \
-          "http://127.0.0.1:$PORT/dashboard" | grep -q "$(cat "$EIDETICA_EXTERNAL_DB_ID_FILE")"
+          "http://127.0.0.1:$PORT/dashboard" | grep "$(cat "$EIDETICA_EXTERNAL_DB_ID_FILE")" >/dev/null
         kill -TERM "$DAEMON_PID"
         wait "$DAEMON_PID"
         DAEMON_PID=""

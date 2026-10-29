@@ -4,7 +4,7 @@
 
 use eidetica::{
     Database,
-    user::{TrackedDatabase, User},
+    account::{AccountSession, TrackedDatabase},
 };
 
 /// Common CSS styles for all pages
@@ -215,7 +215,7 @@ pub fn register_page(error: Option<&str>) -> String {
 }
 
 /// Render the dashboard page
-pub fn dashboard_page(user: &User, databases: Vec<DatabaseInfo>) -> String {
+pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> String {
     let databases_html = if databases.is_empty() {
         r#"<p style="color: #666; font-style: italic;">No databases tracked yet.</p>"#.to_string()
     } else {
@@ -278,13 +278,13 @@ pub fn dashboard_page(user: &User, databases: Vec<DatabaseInfo>) -> String {
             </form>
         </h1>
 
-        <h2>User Information</h2>
+        <h2>Account Information</h2>
         <div class="info-row">
             <span class="label">Username:</span>
             <span class="value">{}</span>
         </div>
         <div class="info-row">
-            <span class="label">User UUID:</span>
+            <span class="label">Login ID:</span>
             <span class="value code">{}</span>
         </div>
 
@@ -319,13 +319,17 @@ pub fn dashboard_page(user: &User, databases: Vec<DatabaseInfo>) -> String {
 </html>"#,
         COMMON_STYLES,
         html_escape(user.username()),
-        html_escape(user.user_uuid()),
+        html_escape(user.login_id()),
         databases_html
     )
 }
 
 /// Render the database detail page
-pub fn database_detail_page(_user: &User, db_info: DatabaseInfo, entries: Vec<String>) -> String {
+pub fn database_detail_page(
+    _user: &AccountSession,
+    db_info: DatabaseInfo,
+    entries: Vec<String>,
+) -> String {
     let entries_html = if entries.is_empty() {
         r#"<p style="color: #666; font-style: italic;">No entries in this database yet.</p>"#
             .to_string()

@@ -10,7 +10,7 @@ A `Transaction` bundles multiple Store operations (which affect individual subtr
 
 Transactions provide several key benefits:
 
-- **Atomicity**: Changes made to multiple `Store`s within a single `Transaction` are committed together as one atomic unit. If the `commit()` fails, no changes are persisted. This is similar to transactions in traditional databases.
+- **Atomicity**: Changes made to multiple `Store`s within a single `Transaction` are encoded together in one signed Entry. A failure before persistence writes nothing, but storage, verification, callbacks and acknowledgement are separate steps: an error or lost acknowledgement can follow persistence. Read back verified state before retrying; a failed `commit()` does not imply rollback.
 - **Consistency**: A `Transaction` captures a snapshot of the `Database`'s state (specifically, the tips of the relevant `Store`s) when it's created or when a `Store` is first accessed within it. All reads and writes within that `Transaction` occur relative to this consistent state.
 - **Change Staging**: Modifications made via `Store` handles are staged within the `Transaction` object itself, not written directly to the database until `commit()` is called.
 - **Authentication**: All transactions are automatically authenticated using the database's default signing key, ensuring data integrity and access control.
@@ -33,7 +33,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # let backend = Sqlite::in_memory().await?;
     # let (instance, mut user) = Instance::create_backend(
     #     Box::new(backend),
-    #     eidetica::NewUser::passwordless("alice"),
+    #     eidetica::NewAccount::passwordless("alice"),
     # ).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
@@ -65,7 +65,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # let backend = Sqlite::in_memory().await?;
     # let (instance, mut user) = Instance::create_backend(
     #     Box::new(backend),
-    #     eidetica::NewUser::passwordless("alice"),
+    #     eidetica::NewAccount::passwordless("alice"),
     # ).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
@@ -103,7 +103,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # let backend = Sqlite::in_memory().await?;
     # let (instance, mut user) = Instance::create_backend(
     #     Box::new(backend),
-    #     eidetica::NewUser::passwordless("alice"),
+    #     eidetica::NewAccount::passwordless("alice"),
     # ).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
@@ -140,7 +140,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # let backend = Sqlite::in_memory().await?;
     # let (instance, mut user) = Instance::create_backend(
     #     Box::new(backend),
-    #     eidetica::NewUser::passwordless("alice"),
+    #     eidetica::NewAccount::passwordless("alice"),
     # ).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
@@ -178,7 +178,7 @@ For the common pattern of "create a transaction, do some work, commit," `Databas
 # let backend = Sqlite::in_memory().await?;
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(backend),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test");
@@ -222,7 +222,7 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 # // Setup database for testing
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "settings_example");
@@ -242,12 +242,12 @@ let settings_store = transaction.get_settings()?;
 settings_store.set_name("Production Database").await?;
 
 // Generate keypairs for new users (hidden in production code)
-# let (_new_user_signing_key, new_user_public_key) = generate_keypair();
+# let (_new_account_signing_key, new_account_public_key) = generate_keypair();
 # let (_alice_signing_key, alice_public_key) = generate_keypair();
 
 // Add authentication keys (indexed by pubkey, name is optional metadata)
-let new_user_key = AuthKey::active(Some("new_device"), Permission::Write(10));
-settings_store.set_auth_key(&new_user_public_key, new_user_key).await?;
+let new_account_key = AuthKey::active(Some("new_device"), Permission::Write(10));
+settings_store.set_auth_key(&new_account_public_key, new_account_key).await?;
 
 // Set auth keys directly
 let alice_key = AuthKey::active(Some("alice_laptop"), Permission::Write(5));
@@ -285,7 +285,7 @@ Configure the height strategy for the entire database via `SettingsStore`:
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "height_example");
@@ -315,7 +315,7 @@ Individual stores can override the database strategy for independent height trac
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "per_subtree_example");
@@ -368,7 +368,7 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 # let backend = Sqlite::in_memory().await?;
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(backend),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test");

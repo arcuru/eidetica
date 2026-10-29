@@ -47,6 +47,13 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
         ("backend", "InvalidStoreStateStagingToken") => {
             BackendError::InvalidStoreStateStagingToken.into()
         }
+        ("backend", "StoreStateNotRetained") => BackendError::StoreStateNotRetained {
+            reason: err.message,
+        }
+        .into(),
+        ("backend", "StoreStateStorageUnsupported") => {
+            BackendError::StoreStateStorageUnsupported.into()
+        }
         ("backend", "InvalidStoreStateView") => BackendError::InvalidStoreStateView.into(),
         ("backend", "RecordTooLarge") => BackendError::RecordTooLarge { encoded_bytes: 0 }.into(),
         ("backend", "EntryNotFound") => BackendError::EntryNotFound {
@@ -132,7 +139,7 @@ fn error_kind_name(err: &crate::Error) -> String {
         crate::Error::Id(e) => format!("{e:?}")
             .split_once(|c: char| !c.is_alphanumeric())
             .map_or_else(|| format!("{e:?}"), |(name, _)| name.to_string()),
-        crate::Error::User(e) => format!("{e:?}")
+        crate::Error::Account(e) => format!("{e:?}")
             .split_once(|c: char| !c.is_alphanumeric())
             .map_or_else(|| format!("{e:?}"), |(name, _)| name.to_string()),
     }
@@ -290,7 +297,7 @@ mod tests {
             crate::Error::Sync(_) => {}
             crate::Error::Entry(_) => {}
             crate::Error::Id(_) => {}
-            crate::Error::User(_) => {}
+            crate::Error::Account(_) => {}
         }
     }
 

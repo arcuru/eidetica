@@ -10,58 +10,143 @@ on:
 permissions:
   contents: read
 
-# A new PR revision supersedes older checks; main pushes must each complete
-# independently because Publish follows a successful main CI run.
+# Main CI and its dependent dev publisher share one native queue: finish the
+# active pipeline and keep one replaceable pending pipeline. PRs only supersede
+# their own checks; other branches cannot displace main.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: >-
+    ${{ github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+        'ci-dev-main' ||
+        format('ci-{0}-{1}', github.event_name, github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Every event checks on the persistent native ARM64 runner registered to this
+  # repository. Its one listener runs one job at a time and its Nix store
+  # persists across jobs, so unchanged outputs are reused rather than rebuilt.
+  # Its preinstalled daemon owns substituters and build limits; jobs are
+  # untrusted clients with no publishing credentials, and nothing built there
+  # is signed or uploaded.
+  ci-arm:
+    name: CI (aarch64-linux)
+    runs-on: [self-hosted, Linux, ARM64, zinc, nix]
+    # Room for a cold store; later runs reuse its outputs.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # PRs use the existing lean SQLite-only target. Main pushes and manual
+      # runs build every ARM check, including documentation.
+      - name: Checks
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          target=checks.aarch64-linux
+          if [[ "$CI_EVENT_NAME" == pull_request ]]; then
+            target=legacyPackages.aarch64-linux.ci-pr
+          fi
+          bash .github/scripts/ci-checks.sh "$target"
+
+  # Manual runs of other branches keep full x86 coverage without credentials.
   ci:
     name: CI (x86_64-linux)
+    if: >-
+      ${{ github.event_name != 'pull_request' &&
+        !(github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) }}
     runs-on: ubicloud-standard-8
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
 
-      # On PRs: build the checks only — fast feedback, integration is push-only.
-      - name: Checks
-        if: github.event_name == 'pull_request'
-        run: |
-          nix-fast-build --skip-cached --no-nom --no-link
-
-      # On push/dispatch: build checks + integration in ONE nix-fast-build
-      # invocation. nix-fast-build only takes a single target, so we point it at
-      # the `.#legacyPackages.x86_64-linux.ci` aggregate (checks + integration).
-      # A single dependency graph shares testCheckArtifacts (built once) and lets
-      # the integration VM's serial boot/run overlap the check compiles, instead
-      # of the two running back-to-back as separate steps.
+      # One graph: checks and integration share testCheckArtifacts, and the
+      # integration VMs' serial boot/run overlaps the check compiles.
       - name: Checks + integration
-        if: github.event_name != 'pull_request'
-        run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.ci'
+        run: bash .github/scripts/ci-checks.sh legacyPackages.x86_64-linux.ci
 
-  ci-arm:
-    name: CI (aarch64-linux)
-    if: github.event_name != 'pull_request'
-    runs-on: ubicloud-standard-16-arm
-    timeout-minutes: 30
+  # Trusted main checks x86 only after ARM succeeds, then publishes the outputs
+  # it checked from the same hosted store instead of rebuilding them elsewhere.
+  main:
+    name: Main (x86_64-linux) and cache publish
+    # Default success() blocks on failed, skipped or cancelled ARM checks.
+    needs: [ci-arm]
+    if: |
+      github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    environment: publish
+    runs-on: ubicloud-standard-8
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
 
-      - name: Checks
+      - name: Checks + integration
+        timeout-minutes: 30
+        run: bash .github/scripts/ci-checks.sh legacyPackages.x86_64-linux.ci
+
+      # List only outputs the checks above realized: path-info never builds or
+      # fetches. The test archive is the reusable nextest runtime. Its Cargo
+      # targets exist only when this job compiled the tests; when the tests
+      # were substituted they are not rebuilt just to publish them. Resolve
+      # the paths before secrets enter the environment; publication only signs
+      # and copies.
+      - name: Prepare checked outputs
         run: |
-          nix-fast-build --skip-cached --no-nom --no-link
+          names=$(nix eval --raw .#checks.x86_64-linux --apply 's: builtins.concatStringsSep "\n" (builtins.attrNames s)')
+          checked=('.#legacyPackages.x86_64-linux.test.artifacts.archive')
+          while IFS= read -r name; do
+            checked+=(".#checks.x86_64-linux.$name")
+          done <<<"$names"
+          nix path-info "${checked[@]}" > "$RUNNER_TEMP/eidetica-publish-paths"
+          if targets=$(nix path-info '.#legacyPackages.x86_64-linux.test.artifacts.out'); then
+            echo "$targets" >> "$RUNNER_TEMP/eidetica-publish-paths"
+          else
+            echo '::notice::Tests were substituted, not compiled here; their Cargo targets are not rebuilt for publication'
+          fi
+
+      - name: Publish checked outputs
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_SECRET_ACCESS_KEY }}
+          NIX_CACHE_SIGNING_KEY: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
+        run: bash .github/scripts/publish-cache.sh
+
+  publish:
+    name: Publish
+    needs: [main]
+    if: |
+      github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/publish.yml
+    with:
+      dev: true
+    permissions:
+      contents: read
+      packages: write
+    # Naming environment secrets is required for reusable workflows; their
+    # values are resolved inside the callee's protected publish/release jobs.
+    secrets:
+      BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+      NIX_CACHE_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_ACCESS_KEY_ID }}
+      NIX_CACHE_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_SECRET_ACCESS_KEY }}
+      NIX_CACHE_SIGNING_KEY: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}

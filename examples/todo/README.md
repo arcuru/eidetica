@@ -113,7 +113,7 @@ The unique ID for each task is provided by the Eidetica Table, which automatical
 
 User information is stored in Y-CRDT Maps within the YDoc store:
 
-- **user_info**: Contains name, email, bio fields
+- **account_info**: Contains name, email, bio fields
 - **preferences**: Contains user preference key-value pairs
 
 The Y-CRDT structure allows for eventual consistency and conflict-free merging in collaborative scenarios.
@@ -150,3 +150,11 @@ chmod +x test.sh
 ```
 
 The test script provides a complete demonstration of both Table and YDoc functionality, showing how different CRDT types can be used together in a single application.
+
+## Account root reference
+
+The app stores its todo database ID as the `todo`/`list` reference in its Account only on first embedded-instance creation.
+Returning sessions open that ID directly: display-name changes do not affect discovery and unrelated databases are not scanned.
+Missing or invalid metadata, missing keys, unavailable targets and permission failures are errors, not permission to create another database.
+Setup uses the embedded backend's exclusive ownership; this is not a distributed uniqueness protocol.
+Old example files without the reference require explicit setup/repair; this example does not migrate or overwrite them.

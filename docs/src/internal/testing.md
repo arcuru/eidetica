@@ -43,7 +43,7 @@ The test suite runs against multiple storage backends via the `TEST_BACKEND` env
 | `postgres` | PostgreSQL            | Requires `postgres` feature      |
 | `service`  | RemoteBackend via RPC | Requires `service` feature, unix |
 
-The `service` backend starts a fresh in-process daemon with an InMemory backend for each `test_backend()` call, routing all operations through the Unix socket RPC layer. This maintains the same isolation semantics as other backends. The full integration suite passes 1:1 against `TEST_BACKEND=service`; see the [Service Architecture § Testing](./service.md#testing) chapter for the local/wire test-helper split and the rationale for routing subsystem tests (sync internals, raw-backend listings, delegation validation) through always-local helpers regardless of `TEST_BACKEND`.
+The `service` backend starts a fresh in-process daemon with an InMemory backend for each `test_backend()` call, routing all operations through the Unix socket RPC layer. This maintains the same isolation semantics as other backends. The full integration suite passes 1:1 against `TEST_BACKEND=service`; see the [Service Architecture § Testing](./service.md#testing) chapter for the local/wire test-helper split and the rationale for routing subsystem tests (sync internals, raw-backend listings, low-level delegation resolution) through always-local helpers regardless of `TEST_BACKEND`.
 
 Backend conformance tests cover Store-state record-set separation, private
 build invisibility, atomic publication failure, concurrent publication of one
@@ -58,8 +58,13 @@ rebuild that follows it, plus the reclaim of the unlinked generation.
 Store-state service tests cover publication, reconnect durability,
 publication immutability, session scope binding with a refused foreign scope,
 shared-cache fallback, byte-verbatim ciphertext, and idle private-build
-expiry. The service Table test asserts that a first point read publishes
-individual row records rather than falling back to a whole-`Doc` response.
+expiry. Published-view expiry tests use a short view lifetime and keep staging
+at its normal five-minute idle lifetime, so a scheduling pause during upload
+cannot expire a private build before the view assertions. A separate test checks
+that an idle build still publishes while its published view expires. Production
+uses the same five-minute idle lifetime for both.
+The service Table test asserts that a first point read publishes individual row
+records rather than falling back to a whole-`Doc` response.
 
 ## Writing Tests
 

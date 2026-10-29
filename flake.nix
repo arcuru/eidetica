@@ -84,6 +84,9 @@
           releaseCargoExtraArgs
           benchArgs
           debugArgs
+          minimalDebugArgs
+          binDebugArgs
+          docApiArgs
           debugArgsNightly
           asanArgs
           lsanArgs
@@ -96,12 +99,12 @@
         };
 
         # Import package groups
-        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs releaseCargoExtraArgs debugArgs;};
+        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs releaseCargoExtraArgs binDebugArgs;};
 
-        testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
+        testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs minimalDebugArgs baseArgs pkgs lib;};
         coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLibNightly baseArgsNightly fenixNightly toolChainNightly eidLib pkgs lib;};
         sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLibNightly debugArgsNightly asanArgs lsanArgs fenixNightly pkgs lib;};
-        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs pkgs lib;};
+        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs docApiArgs pkgs lib;};
         lintPkgs = import ./nix/packages/lint.nix {
           inherit craneLib craneLibNightly baseArgs baseArgsNightly debugArgs releaseCargoExtraArgs eidLib pkgs lib;
           treefmtWrapper = config.treefmt.build.wrapper;
@@ -122,11 +125,13 @@
           homeManagerModule = import ./nix/home-manager.nix;
         };
 
-        # Helper to create aggregate packages
+        # Helper to create aggregate packages. An aggregate has no build log
+        # of its own, so CI replays its named constituents' logs instead.
         mkAggregate = name: packages:
           pkgs.symlinkJoin {
             inherit name;
             paths = builtins.attrValues packages;
+            passthru.constituents = packages;
           };
         mkAll = name: mkAggregate "${name}-all";
       in {
@@ -217,6 +222,16 @@
             // {
               default = mkAll "eval" nixTests.eval;
               all = mkAll "eval" nixTests.eval;
+            };
+
+          # Fast PR feedback: keep formatting, lint, eval and the debug build,
+          # but leave documentation and minimal-feature tests to full CI.
+          ci-pr =
+            builtins.removeAttrs config.checks ["doc"]
+            // {
+              test = mkAggregate "test-pr" {
+                inherit (testPkgs.builds) sqlite;
+              };
             };
 
           # Combined push-CI target: the full check set (including the

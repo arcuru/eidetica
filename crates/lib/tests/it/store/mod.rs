@@ -8,5 +8,6 @@ pub mod helpers;
 mod index_store;
 mod integration;
 mod password_store;
+mod registration_boundary;
 mod table_operations;
 mod ydoc_operations;

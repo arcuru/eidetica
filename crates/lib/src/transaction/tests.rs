@@ -1,21 +1,37 @@
 //! Tests for the transaction module.
 
 use super::*;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     Instance,
     auth::crypto::generate_keypair,
     backend::database::InMemory,
-    backend::{CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest},
-    crdt::{CRDT, Data},
+    backend::{
+        BackendError, CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest,
+    },
+    crdt::{CRDT, Codec},
+    snapshot::Snapshot,
     store::{DocStore, Registered},
 };
 
-#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, PartialEq, Eq)]
 struct MaxCounter(u64);
 
-impl Data for MaxCounter {}
+impl Codec for MaxCounter {
+    fn encode(&self) -> Result<Vec<u8>> {
+        Ok(self.0.to_le_bytes().to_vec())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let bytes =
+            bytes
+                .try_into()
+                .map_err(|_| crate::crdt::CRDTError::DeserializationFailed {
+                    reason: "expected exactly eight counter bytes".into(),
+                })?;
+        Ok(Self(u64::from_le_bytes(bytes)))
+    }
+}
 
 impl CRDT for MaxCounter {
     fn merge(&self, other: &Self) -> Result<Self> {
@@ -54,6 +70,20 @@ impl Store for CounterStore {
     }
 }
 
+async fn test_database() -> (Instance, Database) {
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (private_key, _) = generate_keypair();
+    let database = Database::create(&instance, private_key, Doc::new())
+        .await
+        .unwrap();
+    (instance, database)
+}
+
 /// Test that corrupted auth configuration prevents commit
 ///
 /// Validates that transactions reject changes that would corrupt the auth configuration,
@@ -62,7 +92,7 @@ impl Store for CounterStore {
 async fn test_prevent_auth_corruption() {
     let backend = InMemory::new();
     let (instance, _admin) =
-        Instance::create_backend(Box::new(backend), crate::NewUser::passwordless("admin"))
+        Instance::create_backend(Box::new(backend), crate::NewAccount::passwordless("admin"))
             .await
             .unwrap();
     let (private_key, _) = generate_keypair();
@@ -124,7 +154,7 @@ async fn test_prevent_auth_corruption() {
 async fn test_docstore_set_preserves_malformed_staged_data() {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -158,21 +188,26 @@ async fn test_docstore_set_preserves_malformed_staged_data() {
 
 #[tokio::test]
 async fn opaque_non_doc_state_materializes_cold_warm_and_after_clear() {
-    let backend = InMemory::new();
-    let (instance, _admin) =
-        Instance::create_backend(Box::new(backend), crate::NewUser::passwordless("admin"))
-            .await
-            .unwrap();
-    let (private_key, _) = generate_keypair();
-    let database = Database::create(&instance, private_key, Doc::new())
-        .await
-        .unwrap();
+    let (_instance, database) = test_database().await;
 
     let tx = database.new_transaction().await.unwrap();
-    tx.update_subtree("counter", serde_json::to_vec(&MaxCounter(7)).unwrap())
+    tx.update_subtree("counter", MaxCounter(7).encode().unwrap())
         .await
         .unwrap();
-    tx.commit().await.unwrap();
+    assert_eq!(
+        tx.get_local_data::<MaxCounter>("counter").unwrap(),
+        Some(MaxCounter(7))
+    );
+    let id = tx.commit().await.unwrap();
+    assert_eq!(
+        database
+            .get_entry(id)
+            .await
+            .unwrap()
+            .data("counter")
+            .unwrap(),
+        &7u64.to_le_bytes()
+    );
 
     let tx = database.new_transaction().await.unwrap();
     let cold = tx.get_full_state::<MaxCounter>("counter").await.unwrap();
@@ -197,14 +232,19 @@ async fn opaque_non_doc_state_materializes_cold_warm_and_after_clear() {
             name: "eidetica/opaque".to_string(),
             version: 0,
         },
-        source_key: entry_id.to_string().into_bytes(),
+        source_key: Snapshot::from([entry_id]).cache_key_bytes(),
     };
-    assert!(
+    let view = backend
+        .resolve_store_state(&request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
         backend
-            .resolve_store_state(&request)
+            .store_state_record_get(&view, crate::store::OPAQUE_STATE_KEY)
             .await
-            .unwrap()
-            .is_some()
+            .unwrap(),
+        Some(7u64.to_le_bytes().to_vec())
     );
     backend.clear_derived_store_state().await.unwrap();
     assert!(
@@ -232,16 +272,7 @@ async fn opaque_non_doc_state_materializes_cold_warm_and_after_clear() {
 
 #[tokio::test]
 async fn fixed_parent_subtree_read_ignores_concurrent_live_write() {
-    let (instance, _admin) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
-    )
-    .await
-    .unwrap();
-    let (private_key, _) = generate_keypair();
-    let database = Database::create(&instance, private_key, Doc::new())
-        .await
-        .unwrap();
+    let (_instance, database) = test_database().await;
 
     let reader = database.new_transaction().await.unwrap();
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
@@ -253,7 +284,7 @@ async fn fixed_parent_subtree_read_ignores_concurrent_live_write() {
     entered_rx.await.unwrap();
     let writer = database.new_transaction().await.unwrap();
     writer
-        .update_subtree("counter", serde_json::to_vec(&MaxCounter(7)).unwrap())
+        .update_subtree("counter", MaxCounter(7).encode().unwrap())
         .await
         .unwrap();
     writer.commit().await.unwrap();
@@ -266,7 +297,7 @@ async fn fixed_parent_subtree_read_ignores_concurrent_live_write() {
 async fn fixed_parent_auth_settings_read_ignores_concurrent_grant() {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
+        crate::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -307,4 +338,201 @@ async fn fixed_parent_auth_settings_read_ignores_concurrent_grant() {
     resume_tx.send(()).unwrap();
 
     assert_eq!(read_task.await.unwrap().unwrap(), baseline);
+}
+
+#[tokio::test]
+async fn test_codec_non_clone_counter_multi_tip_cold_and_warm() {
+    let (_instance, database) = test_database().await;
+    let tx = database.new_transaction().await.unwrap();
+    tx.update_subtree("counter", MaxCounter(1).encode().unwrap())
+        .await
+        .unwrap();
+    let base = tx.commit().await.unwrap();
+    let mut tips = Vec::new();
+    for value in [7, 9] {
+        let tx = database
+            .new_transaction_at(&Snapshot::from([base.clone()]))
+            .await
+            .unwrap();
+        tx.update_subtree("counter", MaxCounter(value).encode().unwrap())
+            .await
+            .unwrap();
+        tips.push(tx.commit().await.unwrap());
+    }
+    let tx = database
+        .new_transaction_at(&Snapshot::from(tips))
+        .await
+        .unwrap();
+    assert_eq!(
+        tx.get_full_state::<MaxCounter>("counter").await.unwrap(),
+        MaxCounter(9)
+    );
+    assert_eq!(
+        tx.get_full_state::<MaxCounter>("counter").await.unwrap(),
+        MaxCounter(9)
+    );
+    database
+        .backend()
+        .unwrap()
+        .clear_derived_store_state()
+        .await
+        .unwrap();
+    assert_eq!(
+        tx.get_full_state::<MaxCounter>("counter").await.unwrap(),
+        MaxCounter(9)
+    );
+}
+
+// This encoding-only witness needs neither Clone, Serde, Default nor merging.
+struct CodecOnly(u8);
+impl Codec for CodecOnly {
+    fn encode(&self) -> Result<Vec<u8>> {
+        Ok(vec![self.0])
+    }
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        match bytes {
+            [byte] => Ok(Self(*byte)),
+            _ => Err(crate::crdt::CRDTError::DeserializationFailed {
+                reason: "expected one byte".into(),
+            }
+            .into()),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_codec_only_staged_reads() {
+    let (_instance, database) = test_database().await;
+    let tx = database.new_transaction().await.unwrap();
+    assert!(tx.get_local_data::<CodecOnly>("bytes").unwrap().is_none());
+    tx.update_subtree("bytes", CodecOnly(255).encode().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        tx.get_local_data::<CodecOnly>("bytes").unwrap().unwrap().0,
+        255
+    );
+    tx.update_subtree("bytes", vec![]).await.unwrap();
+    assert!(tx.get_local_data::<CodecOnly>("bytes").unwrap().is_none());
+    tx.update_subtree("bytes", vec![1, 2]).await.unwrap();
+    assert!(
+        matches!(tx.get_local_data::<CodecOnly>("bytes"), Err(crate::Error::Transaction(error))
+        if matches!(error.as_ref(), TransactionError::StoreDeserializationFailed { store, .. } if store == "bytes"))
+    );
+}
+
+#[tokio::test]
+async fn test_codec_staged_json_errors_unchanged() {
+    let (_instance, database) = test_database().await;
+    let tx = database.new_transaction().await.unwrap();
+    for bytes in [b" ".as_slice(), b"not JSON", b"{\"children\":{}} trailing"] {
+        tx.update_subtree("malformed", bytes.to_vec())
+            .await
+            .unwrap();
+        let legacy = serde_json::from_slice::<Doc>(bytes)
+            .unwrap_err()
+            .to_string();
+        match tx.get_local_data::<Doc>("malformed").unwrap_err() {
+            crate::Error::Transaction(error) => match error.as_ref() {
+                TransactionError::StoreDeserializationFailed { store, reason } => {
+                    assert_eq!(store, "malformed");
+                    assert_eq!(reason, &legacy);
+                }
+                error => panic!("changed transaction error: {error}"),
+            },
+            error => panic!("changed error variant: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn subtree_update_without_handle_uses_transaction_parents() {
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (private_key, _) = generate_keypair();
+    let database = Database::create(&instance, private_key, Doc::new())
+        .await
+        .unwrap();
+    let base = database.new_transaction().await.unwrap();
+    base.update_subtree("counter", MaxCounter(7).encode().unwrap())
+        .await
+        .unwrap();
+    let base_id = base.commit().await.unwrap();
+    let old = database.new_transaction().await.unwrap();
+    let writer = database.new_transaction().await.unwrap();
+    writer
+        .update_subtree("counter", MaxCounter(20).encode().unwrap())
+        .await
+        .unwrap();
+    writer.commit().await.unwrap();
+
+    // Neither the lazy historical read nor the first write may attach current tips.
+    assert_eq!(
+        old.get_full_state::<MaxCounter>("counter").await.unwrap(),
+        MaxCounter(7)
+    );
+    let direct = database
+        .new_transaction_at(&Snapshot::from([base_id.clone()]))
+        .await
+        .unwrap();
+    direct
+        .update_subtree("counter", MaxCounter(9).encode().unwrap())
+        .await
+        .unwrap();
+    let id = direct.commit().await.unwrap();
+    let entry = database.ops().get(&id).await.unwrap();
+    assert_eq!(entry.subtree_parents("counter").unwrap(), vec![base_id]);
+}
+
+#[tokio::test]
+async fn get_store_propagates_registry_read_not_found() {
+    // Inject a read failure through the existing decryption seam rather than
+    // implementing an entire backend just to return one not-found error.
+    struct FailedRead(ID);
+    impl Encryptor for FailedRead {
+        fn decrypt(&self, _data: &[u8]) -> Result<Vec<u8>> {
+            Err(BackendError::EntryNotFound { id: self.0.clone() }.into())
+        }
+
+        fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+            Ok(data.to_vec())
+        }
+    }
+
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (private_key, _) = generate_keypair();
+    let database = Database::create(&instance, private_key, Doc::new())
+        .await
+        .unwrap();
+    let base = database.new_transaction().await.unwrap();
+    base.get_store::<DocStore>("data").await.unwrap();
+    base.commit().await.unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let missing = ID::from_bytes(b"missing registry read dependency");
+    tx.register_encryptor(INDEX, Box::new(FailedRead(missing.clone())))
+        .unwrap();
+    let registry = tx.get_index().await.unwrap();
+    let err = registry.get_entry("data").await.unwrap_err();
+    assert!(matches!(
+        err,
+        Error::Backend(ref err)
+            if matches!(err.as_ref(), BackendError::EntryNotFound { id } if id == &missing)
+    ));
+    let err = tx.get_store::<DocStore>("data").await.err().unwrap();
+    assert!(matches!(
+        err,
+        Error::Backend(ref err)
+            if matches!(err.as_ref(), BackendError::EntryNotFound { id } if id == &missing)
+    ));
+    assert!(tx.get_local_data::<Doc>(INDEX).unwrap().is_none());
 }

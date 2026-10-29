@@ -23,7 +23,7 @@ async fn create_test_database_with_clock(clock: Arc<dyn Clock>) -> (Instance, Da
     let (instance, mut user) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         clock,
-        eidetica::NewUser::passwordless("test"),
+        eidetica::NewAccount::passwordless("test"),
     )
     .await
     .expect("Failed to create test instance");

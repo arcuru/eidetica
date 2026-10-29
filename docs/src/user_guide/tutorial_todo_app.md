@@ -19,43 +19,51 @@ async fn load_or_create_instance(path: &Path) -> Result<Instance> {
     // create the database file on first run if it doesn't exist.
     let url = format!("sqlite://{}?mode=rwc", path.display());
     let (instance, _maybe_user) =
-        Instance::connect_or_create(&url, NewUser::passwordless("todo-user")).await?;
+        Instance::connect_or_create(&url, NewAccount::passwordless("todo-user")).await?;
 
     println!("✓ Instance initialized");
     Ok(instance)
 }
 ```
 
-Data is automatically saved to the SQLite file. Authentication is managed through the User system (see below).
+Data is automatically saved to the SQLite file. Authentication is managed through the AccountSession system (see below).
 
-### 2. Users (`User`)
+### 2. Users (`AccountSession`)
 
-Users provide authenticated access to databases. A `User` manages signing keys and database access. The Todo example creates a passwordless user for simplicity, bootstrapping it as the initial admin on a fresh data file via `Instance::connect_or_create`:
+Users provide authenticated access to databases. An `AccountSession` manages signing keys and database access. The Todo example creates a passwordless user for simplicity, bootstrapping it as the initial admin on a fresh data file via `Instance::connect_or_create`:
 
 ```rust,ignore
-async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, User)> {
+async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, AccountSession)> {
+    use eidetica::NewAccount;
+
     let username = "todo-user";
     // SQLite via the URL surface — `sqlite://<path>` is handed through to
     // sqlx, and `mode=rwc` tells sqlx to create the file on first run.
     let url = format!("sqlite://{}?mode=rwc", path.display());
 
-    // connect_or_create returns Some(user) only when bootstrapping a
-    // fresh backend — on subsequent runs it loads the existing instance
-    // and returns None for the user, so we log back in.
     let (instance, maybe_user) =
-        Instance::connect_or_create(&url, NewUser::passwordless(username)).await?;
+        Instance::connect_or_create(&url, NewAccount::passwordless(username)).await?;
 
     let user = match maybe_user {
-        Some(u) => {
+        Some(mut session) => {
+            // Only the first creator initializes application roots. This embedded
+            // SQLite example has exclusive instance storage ownership. Returning
+            // logins never repair missing metadata by creating a replacement.
+            let key = session.get_default_key()?;
+            let mut settings = Doc::new();
+            settings.set("name", "todo");
+            let todos = session.create_database(settings, &key).await?;
+            session.set_reference(TODO_APP, TODO_LIST, todos.root_id()).await?;
             println!("✓ Initialised new instance and bootstrapped {username} as admin");
-            u
+            session
         }
         None => {
-            let u = instance.login_user(username, None).await?;
+            let u = instance.login_account(username, None).await?;
             println!("✓ Logged in as passwordless user: {username}");
             u
         }
     };
+
     Ok((instance, user))
 }
 ```
@@ -64,37 +72,27 @@ async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, User
 
 A `Database` is a primary organizational unit within an `Instance`. Think of it somewhat like a schema or a logical database within a larger instance. It acts as a container for related data, managed through `Stores`. Databases provide versioning and history tracking for the data they contain.
 
-The Todo example uses a single Database named "todo", discovered through the User API:
+The Todo example keeps a reference to its todo database in its Account, independent of the target's display name, and opens it through the session:
 
 ```rust,ignore
-async fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
-    let database_name = "todo";
-
-    // Try to find the database by name
-    let database = match user.find_database(database_name).await {
-        Ok(mut databases) => {
-            databases.pop().unwrap() // unwrap is safe because find_database errors if empty
-        }
-        Err(e) if e.is_not_found() => {
-            // If not found, create a new one
-            println!("No existing todo database found, creating a new one...");
-            let mut settings = Doc::new();
-            settings.set("name", database_name);
-
-            // Get the default key
-            let default_key = user.get_default_key()?;
-
-            // User API automatically configures the database with user's keys
-            user.create_database(settings, &default_key).await?
-        }
-        Err(e) => return Err(e),
-    };
-
-    Ok(database)
+async fn open_todo_database(session: &AccountSession) -> Result<Database> {
+    session
+        .open_reference(TODO_APP, TODO_LIST)
+        .await?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "todo list reference is missing; this data file needs explicit repair",
+            )
+            .into()
+        })
 }
 ```
 
-This shows how `User::find_database()` searches for existing databases by name, and `User::create_database()` creates new authenticated databases.
+Setup runs only for a newly created embedded instance, under exclusive backend ownership.
+A returning login never creates a replacement on missing metadata or lookup failure.
+Partial setup requires explicit repair; ordinary CRDT writes are not distributed create-if-absent locks.
+See [Accounts](../design/accounts.md#initialization-and-concurrency) for the initialization and error contract.
 
 ### 4. Transactions and Stores
 

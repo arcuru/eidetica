@@ -15,7 +15,7 @@ Key responsibilities of a Database:
 
 ## Selecting a Backend via URL
 
-The recommended way to open an Instance is by URL — `Instance::connect(url)` and `Instance::connect_or_create(url, NewUser::…)` dispatch to the right backend based on the URL scheme:
+The recommended way to open an Instance is by URL — `Instance::connect(url)` and `Instance::connect_or_create(url, NewAccount::…)` dispatch to the right backend based on the URL scheme:
 
 | URL form                            | Backend                                                  | Feature flag       |
 | ----------------------------------- | -------------------------------------------------------- | ------------------ |
@@ -42,17 +42,23 @@ A `SqlxBackend` exclusively owns its persistent storage namespace until the back
 
 SQLite uses a cooperative advisory lock on a stable `.eidetica-owner` sidecar next to the canonical database path. The backend retains the nonblocking operating-system lock for its lifetime, and leaves the sidecar in place when released; the file's existence alone does not mean the database is owned. Relative, absolute, and existing symlink aliases that resolve to the same canonical path therefore contend; a final-component symlink whose target does not exist is rejected. This protocol requires a local filesystem with reliable advisory locks. Applications must not use hard-link aliases, rename or replace a live database, or delete or replace its sidecar. Unrelated SQLite tools do not participate and can bypass it.
 
-PostgreSQL stores an ownership token in the active schema: every pooled session holds a shared namespace lock and validates that token, while takeover requires the exclusive namespace lock. A surviving old session therefore blocks takeover, and a stale pool cannot reconnect after ownership changes. The operating system or database server releases the locks when their sessions exit or crash.
+PostgreSQL stores an ownership token in the active schema: every pooled session holds a shared namespace lock and validates that token, while takeover requires the exclusive namespace lock. A surviving old session therefore blocks takeover, and a stale pool cannot reconnect after ownership changes. The operating system or database server releases the locks when their sessions exit or crash. Dropping a PostgreSQL backend closes its sessions without waiting for the server, so an immediate reopen of the same namespace can still briefly fail with `BackendError::StorageAlreadyOwned`.
+
+Both SQL backends use an internal integer schema counter, independent of releases and the InMemory file counter. Mainline schema `0` migrates directly to current `2`; current opens reuse persisted Verified tips. The experimental `1` prefix format is unsupported. See the [migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
+Both SQL backends reject a stored schema version newer than the supported version before creating schema tables or indexes or running migrations.
+Refusal leaves the version marker, Entries, instance metadata and Store-state records unchanged.
+The error names both versions.
+This is not a read-only open: SQLite may still set WAL mode and open its ownership sidecar, and PostgreSQL still performs ownership bookkeeping before checking the schema version.
 
 <!-- Code block ignored: Requires async runtime context -->
 
 ```rust,ignore
-use eidetica::{Instance, NewUser};
+use eidetica::{Instance, NewAccount};
 
 // Recommended: by URL.
 let (instance, _) = Instance::connect_or_create(
     "sqlite://./my_data.db",
-    NewUser::passwordless("alice"),
+    NewAccount::passwordless("alice"),
 ).await?;
 
 // Escape-hatch: build the backend manually for custom configuration.
@@ -68,13 +74,13 @@ PostgreSQL provides production-grade persistent storage for larger deployments. 
 <!-- Code block ignored: Requires PostgreSQL server -->
 
 ```rust,ignore
-use eidetica::{Instance, NewUser};
+use eidetica::{Instance, NewAccount};
 
 // By URL — passed through to sqlx unchanged, so any sqlx-accepted query
 // string works (sslmode, application_name, etc.).
 let (instance, _) = Instance::connect_or_create(
     "postgres://user:pass@localhost/mydb?sslmode=require",
-    NewUser::passwordless("alice"),
+    NewAccount::passwordless("alice"),
 ).await?;
 ```
 
@@ -86,7 +92,7 @@ The in-process backend is intended for tests, examples, and embedded apps that d
 
 **Not for production.** Prefer `sqlite://` (file-backed) or `postgres://` for any deployed workload. Specifically:
 
-- The JSON snapshot format is unstable (`_v: 0`); compatibility may break between versions.
+- JSON snapshots use internal integer format counter `_v` (currently `2`), not a release version or stability promise. Mainline unversioned/`0` files reconstruct Verified tips on load; experimental `1` and future formats are refused. See the [supported migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
 - The snapshot serializes the device signing key **in plaintext**. For `memory:///path.json`, that key ends up on disk in cleartext — fine for tests, unsafe for production.
 - Every `flush()` rewrites the full backend state; there's no incremental persistence, MVCC, or multi-process access.
 
@@ -95,11 +101,11 @@ The ephemeral sqlite form uses `Instance::connect_or_create` like every other UR
 <!-- Code block ignored: Requires async runtime context -->
 
 ```rust,ignore
-use eidetica::{Instance, NewUser};
+use eidetica::{Instance, NewAccount};
 
 let (instance, _) = Instance::connect_or_create(
     "sqlite:file::memory:?cache=shared",
-    NewUser::passwordless("alice"),
+    NewAccount::passwordless("alice"),
 ).await?;
 ```
 
@@ -108,17 +114,17 @@ The `memory://` URL forms remain useful for tests and short-lived embedded scena
 <!-- Code block ignored: Requires file system access during testing -->
 
 ```rust,ignore
-use eidetica::{Instance, NewUser};
+use eidetica::{Instance, NewAccount};
 
 // Ephemeral (state dies with the process).
 let (instance, _) =
-    Instance::connect_or_create("memory://", NewUser::passwordless("alice")).await?;
+    Instance::connect_or_create("memory://", NewAccount::passwordless("alice")).await?;
 
 // With a JSON snapshot — loaded on construction, written by flush() or
 // (best-effort) by Drop. The snapshot path must be absolute.
 let (instance, _) = Instance::connect_or_create(
     "memory:///var/lib/myapp/snap.json",
-    NewUser::passwordless("alice"),
+    NewAccount::passwordless("alice"),
 ).await?;
 // ... do work ...
 instance.flush()?; // checkpoint the snapshot to disk atomically; instance keeps running

@@ -16,6 +16,7 @@ use crate::instance::backend::RemoteBackend;
 use crate::service::client::RemoteConnection;
 use crate::{
     Error, Instance, Result, Snapshot, Transaction, WeakInstance,
+    account::{AccountError, SyncSettings, TrackedDatabase},
     auth::{
         crypto::{PrivateKey, PublicKey},
         errors::AuthError,
@@ -25,12 +26,11 @@ use crate::{
     },
     backend::VerificationStatus,
     constants::{ROOT, SETTINGS},
-    crdt::{CRDT, Doc},
+    crdt::{CRDT, Codec, Doc},
     entry::{Entry, ID},
     instance::{WriteCallback, WriteEvent, WriteSource, backend::Backend, errors::InstanceError},
     store::{SettingsStore, Store, Table},
     sync::DatabaseTicket,
-    user::{SyncSettings, TrackedDatabase, UserError},
 };
 
 #[cfg(test)]
@@ -74,7 +74,7 @@ pub(crate) fn fold_settings_entries(entries: &[Entry]) -> Result<AuthSettings> {
     let mut settings_doc = Doc::default();
     for entry in entries {
         if let Ok(data) = entry.data(SETTINGS) {
-            let part: Doc = serde_json::from_slice(data)?;
+            let part = Doc::decode(data)?;
             settings_doc = settings_doc.merge(&part)?;
         }
     }
@@ -191,9 +191,9 @@ pub struct Database {
     /// Signing key bound to its auth identity for this database
     key: Option<DatabaseKey>,
     /// Private user context carried only by handles opened or created through
-    /// a [`User`](crate::user::User) session. This owns caller-local sharing
+    /// an [`AccountSession`](crate::account::AccountSession) session. This owns caller-local sharing
     /// preferences; ordinary database handles remain context-free.
-    user_database: Option<Box<Database>>,
+    account_database: Option<Box<Database>>,
     /// When `false` (default), reads expose only the maximal all-`Verified`
     /// prefix of the DAG (the "Verified frontier"). When `true`, reads also
     /// include `Unverified` entries. `Failed` entries are dropped regardless.
@@ -208,7 +208,7 @@ impl Database {
             instance,
             ops,
             key: None,
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         }
     }
@@ -216,8 +216,8 @@ impl Database {
     /// Creates a new `Database` instance with a user-provided signing key.
     ///
     /// This constructor creates a new database using a signing key that's already in memory
-    /// (e.g., from UserKeyManager), without requiring the key to be stored in the backend.
-    /// This is the preferred method for creating databases in a User context where keys
+    /// (e.g., from AccountKeyManager), without requiring the key to be stored in the backend.
+    /// This is the preferred method for creating databases in an AccountSession context where keys
     /// are managed separately from the backend.
     ///
     /// The created database will use a `DatabaseKey` for all subsequent operations,
@@ -275,7 +275,7 @@ impl Database {
     /// the genesis transaction.
     ///
     /// This is the underlying constructor used by [`Self::create`] and by
-    /// `User::new_database()` (the builder API). The callback receives the
+    /// `AccountSession::new_database()` (the builder API). The callback receives the
     /// genesis transaction after `_settings` and `_root` have been staged but
     /// before commit, allowing additional subtrees — stores, initial doc data,
     /// records — to be written into the same entry that establishes the
@@ -335,7 +335,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key.clone())),
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         };
 
@@ -347,7 +347,7 @@ impl Database {
         txn.set_entry_root(ID::default())?;
 
         // Populate the SETTINGS and ROOT subtrees for the very first entry
-        txn.update_subtree(SETTINGS, serde_json::to_vec(&initial_settings)?)
+        txn.update_subtree(SETTINGS, initial_settings.encode()?)
             .await?;
         txn.update_subtree(ROOT, serde_json::to_vec("")?).await?; // Standard practice for root entry's _root
 
@@ -397,7 +397,7 @@ impl Database {
                     Some(SigKey::from_pubkey(&pubkey_for_identity)),
                 )),
                 key: Some(DatabaseKey::new(signing_key)),
-                user_database: None,
+                account_database: None,
                 allow_unverified: false,
             });
         }
@@ -407,7 +407,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key)),
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         })
     }
@@ -454,7 +454,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: None,
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         })
     }
@@ -479,7 +479,7 @@ impl Database {
         // The instance-level backend carries no per-handle identity, so it acts
         // as the connection's login pubkey — and a user's login key is not a
         // member of every tree they hold a key for. A database created under a
-        // per-database key (`User::add_private_key` + `create_database`) grants
+        // per-database key (`AccountSession::add_private_key` + `create_database`) grants
         // only that key, so probing as the login identity denies the existence
         // check on a database the caller is authorised to open. `identity` has
         // already been proof-of-possession registered into the connection's
@@ -492,7 +492,7 @@ impl Database {
             instance: instance.downgrade(),
             ops,
             key: None,
-            user_database: None,
+            account_database: None,
             allow_unverified: false,
         })
     }
@@ -515,9 +515,9 @@ impl Database {
         }
     }
 
-    pub(crate) fn with_user_database(self, user_database: Database) -> Self {
+    pub(crate) fn with_account_database(self, account_database: Database) -> Self {
         Self {
-            user_database: Some(Box::new(user_database)),
+            account_database: Some(Box::new(account_database)),
             ..self
         }
     }
@@ -1070,8 +1070,8 @@ impl Database {
     ///
     /// Database settings belong to the replicated database. Synchronization
     /// preferences instead live in the owning user's private database, so only
-    /// handles returned by [`User::create_database`](crate::user::User::create_database)
-    /// or [`User::open_database`](crate::user::User::open_database) carry this
+    /// handles returned by [`AccountSession::create_database`](crate::account::AccountSession::create_database)
+    /// or [`AccountSession::open_database`](crate::account::AccountSession::open_database) carry this
     /// capability.
     pub async fn sync_settings(&self) -> Result<SyncSettings> {
         self.authorize_sharing().await?;
@@ -1090,14 +1090,14 @@ impl Database {
     /// [`Self::sync_settings`] again.
     pub async fn set_shared(&self, shared: bool) -> Result<()> {
         self.authorize_sharing().await?;
-        let user_database = self.user_database()?;
-        let tx = user_database.new_transaction().await?;
+        let account_database = self.account()?;
+        let tx = account_database.new_transaction().await?;
         let table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
         let key = self.root_id().to_string();
         let mut tracked = table
             .get(&key)
             .await
-            .map_err(|_| UserError::DatabaseNotTracked {
+            .map_err(|_| AccountError::DatabaseNotTracked {
                 database_id: self.root_id().clone(),
             })?;
 
@@ -1124,7 +1124,7 @@ impl Database {
     /// Return a point-in-time locator when this handle owner is sharing.
     pub async fn ticket(&self) -> Result<DatabaseTicket> {
         if !self.is_shared().await? {
-            return Err(UserError::DatabaseNotShared {
+            return Err(AccountError::DatabaseNotShared {
                 database_id: self.root_id().clone(),
             }
             .into());
@@ -1140,12 +1140,12 @@ impl Database {
                 .await;
         }
 
-        crate::user::ticket_locator(&self.instance()?, self.root_id()).await
+        crate::account::ticket_locator(&self.instance()?, self.root_id()).await
     }
 
-    fn user_database(&self) -> Result<&Database> {
-        self.user_database.as_deref().ok_or_else(|| {
-            UserError::MissingDatabaseCapability {
+    fn account(&self) -> Result<&Database> {
+        self.account_database.as_deref().ok_or_else(|| {
+            AccountError::MissingDatabaseCapability {
                 database_id: self.root_id().clone(),
             }
             .into()
@@ -1153,14 +1153,14 @@ impl Database {
     }
 
     async fn tracked_database(&self) -> Result<TrackedDatabase> {
-        let user_database = self.user_database()?;
-        user_database
+        let account_database = self.account()?;
+        account_database
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
             .await?
             .get(&self.root_id().to_string())
             .await
             .map_err(|_| {
-                UserError::DatabaseNotTracked {
+                AccountError::DatabaseNotTracked {
                     database_id: self.root_id().clone(),
                 }
                 .into()
@@ -1168,11 +1168,11 @@ impl Database {
     }
 
     async fn authorize_sharing(&self) -> Result<()> {
-        self.user_database()?;
+        self.account()?;
         if self.current_permission().await? >= Permission::Read {
             Ok(())
         } else {
-            Err(UserError::InsufficientPermissions.into())
+            Err(AccountError::InsufficientPermissions.into())
         }
     }
 
@@ -1303,7 +1303,7 @@ impl Database {
     /// # Encrypted stores
     ///
     /// Encrypted stores cannot be materialized this way (the ephemeral
-    /// transaction has no encryptor, so `serde_json::from_slice::<Doc>`
+    /// transaction has no encryptor, so `Doc::decode`
     /// would fail on ciphertext). The caller must use
     /// [`get_store_entries`](Self::get_store_entries) for encrypted
     /// stores and decrypt+merge client-side.
@@ -1443,12 +1443,13 @@ impl Database {
     ///   tip is replaced by its nearest `Verified` ancestors; anything reachable
     ///   only through an `Unverified` entry is excluded.
     /// - **[`allow_unverified`](Self::allow_unverified)** — the raw tips with
-    ///   only `Failed` entries dropped (`Unverified` tips are kept).
+    ///   only `Failed` tips dropped (`Unverified` tips are kept). This is not
+    ///   a recursively sanitized accepted prefix.
     ///
-    /// `Failed` entries are dropped in both cases. While a [`verify`](Self::verify)
-    /// pass is on the stack the frontier is bypassed (its own reads must see the
-    /// raw DAG to reconstruct pinned `_settings`); a remote backend returns its
-    /// raw tips unchanged (the server owns verification).
+    /// While a [`verify`](Self::verify) pass is on the stack the frontier is
+    /// bypassed (its own reads must see the raw DAG to reconstruct pinned
+    /// `_settings`). A remote handle returns the server's Verified frontier;
+    /// the server owns verification, not the client.
     ///
     /// # Returns
     /// A `Result` containing the [`Snapshot`] of tip entries or an error.
@@ -1461,8 +1462,8 @@ impl Database {
         // placeholder root — `EntryNotFound` is mapped to empty to match
         // `Backend::snapshot`'s contract). Return it directly: the local
         // verification machinery below (status probe, auto-verify,
-        // `verified_frontier`) is local-only and would fail on a remote
-        // backend anyway (e.g. `verified_frontier`'s `backend.get_tree(...)`).
+        // retained verified reads) is local-only and would fail on a remote
+        // backend anyway.
         //
         // Delegate to `self.ops()` rather than calling the connection
         // directly: when this handle was built via `Database::create` or
@@ -1485,107 +1486,104 @@ impl Database {
 
         // Local path: verification-status probing needs the concrete engine.
         let backend = instance.require_local_engine()?;
-        let tips = self.ops().snapshot(&self.root).await?.into_tips();
+        let raw = self.ops().snapshot(&self.root).await?;
+
+        // While a verify pass is on the stack its reads must see the raw DAG
+        // to reconstruct pinned `_settings` (the frontier filter itself
+        // depends on verification status, which is exactly what verify is
+        // computing): keep Unverified tips, drop only Failed.
+        if auto_verify_suppressed() {
+            return self.drop_failed(&raw.into_tips()).await;
+        }
+
+        let verified = backend.verified_snapshot(self.root_id()).await?;
+
+        // Hot path: raw and verified agree, so nothing new can need
+        // verification (an Unverified or Failed entry always surfaces a
+        // non-verified raw tip) and there is nothing to cut. Two retained
+        // lookups, no history scan, no per-entry status reads.
+        if raw == verified {
+            return Ok(verified);
+        }
 
         // Verification status ops are local-only. On a remote backend the
         // server owns verification (and stores everything Unverified until
         // it verifies); the client returns verified tips unchanged.
-        if let Some(first) = tips.first()
+        if let Some(first) = raw.tips().first()
             && backend.get_verification_status(first).await.is_err()
         {
-            return Ok(Snapshot::new(tips));
+            return Ok(raw);
         }
 
         // Access-time opportunistic verification: if any tip is still
         // Unverified, attempt to resolve it now. Best-effort — a failure or a
-        // still-incomplete pin must not block the read. Suppressed while a
-        // verify pass is already on the stack (its own reads land here).
-        let tips = if auto_verify_suppressed() {
-            tips
-        } else {
-            let mut any_unverified = false;
-            for t in &tips {
-                if backend
-                    .get_verification_status(t)
-                    .await
-                    .unwrap_or(VerificationStatus::Unverified)
-                    == VerificationStatus::Unverified
-                {
-                    any_unverified = true;
-                    break;
-                }
+        // still-incomplete pin must not block the read.
+        let mut any_unverified = false;
+        for t in raw.tips() {
+            if backend
+                .get_verification_status(t)
+                .await
+                .unwrap_or(VerificationStatus::Unverified)
+                == VerificationStatus::Unverified
+            {
+                any_unverified = true;
+                break;
             }
-            if any_unverified {
-                // Boxed: this call closes a snapshot → verify →
-                // validate_entry → delegation → get_settings → snapshot
-                // async cycle; the box gives it a finite future size.
-                let _ = Box::pin(self.verify()).await;
-                self.ops().snapshot(&self.root).await?.into_tips()
-            } else {
-                tips
+        }
+        if any_unverified {
+            // Boxed: this call closes a snapshot → verify →
+            // validate_entry → delegation → get_settings → snapshot
+            // async cycle; the box gives it a finite future size.
+            let _ = Box::pin(self.verify()).await;
+            if !self.allow_unverified {
+                return backend.verified_snapshot(self.root_id()).await;
             }
-        };
+            return self
+                .drop_failed(&self.ops().snapshot(&self.root).await?.into_tips())
+                .await;
+        }
 
-        // Default view: cut to the Verified frontier. Suppressed while a
-        // verify pass is on the stack — its reads must see the raw DAG to
-        // reconstruct pinned `_settings` (the frontier filter itself depends
-        // on verification status, which is exactly what verify is computing).
-        if !self.allow_unverified && !auto_verify_suppressed() {
-            return self.verified_frontier().await.map(Snapshot::new);
+        // Default view: the retained Verified frontier — a single indexed
+        // lookup maintained incrementally at the status-update boundary.
+        if !self.allow_unverified {
+            return Ok(verified);
         }
 
         // `allow_unverified` view: keep Unverified tips, drop only Failed.
+        self.drop_failed(&raw.into_tips()).await
+    }
+
+    /// Keep every tip except `Failed` ones.
+    async fn drop_failed(&self, tips: &[ID]) -> Result<Snapshot> {
+        let instance = self.instance()?;
+        let backend = instance.require_local_engine()?;
         let mut visible = Vec::with_capacity(tips.len());
         for t in tips {
-            if backend.get_verification_status(&t).await? != VerificationStatus::Failed {
-                visible.push(t);
+            if backend.get_verification_status(t).await? != VerificationStatus::Failed {
+                visible.push(t.clone());
             }
         }
         Ok(Snapshot::new(visible))
     }
 
-    /// Compute the tips of the maximal all-`Verified` prefix of the DAG.
+    /// The retained tips of the maximal all-`Verified` prefix of the DAG.
     ///
     /// An entry is in the prefix iff it is `Verified` **and** every one of its
     /// parents is in the prefix (the prefix is ancestor-closed). The frontier
     /// is the set of prefix entries that are not the parent of any other
     /// prefix entry — i.e. the tips of the verified subgraph.
     ///
+    /// This is an accepted-only read: unlike [`Self::snapshot`] it never runs
+    /// opportunistic verification. It reads the backend's retained frontier,
+    /// maintained atomically with verification status, so it costs no history
+    /// scan or per-entry status reads.
+    ///
     /// Returns an empty vector if the root itself is not `Verified` (nothing
     /// is observable in the default view until verification reaches the root).
-    async fn verified_frontier(&self) -> Result<Vec<ID>> {
+    pub(crate) async fn verified_frontier(&self) -> Result<Vec<ID>> {
         let instance = self.instance()?;
         let backend = instance.require_local_engine()?;
-
-        // Topologically sorted (height then ID): every parent precedes its
-        // children, so a single forward pass can decide prefix membership.
-        let entries = backend.get_tree(self.root_id()).await?;
-
-        let mut in_prefix: std::collections::HashSet<ID> = std::collections::HashSet::new();
-        let mut covered: std::collections::HashSet<ID> = std::collections::HashSet::new();
-
-        for e in &entries {
-            let id = e.id();
-            if backend.get_verification_status(&id).await? != VerificationStatus::Verified {
-                continue;
-            }
-            let parents = e.parents().unwrap_or_default();
-            if parents.iter().all(|p| in_prefix.contains(p)) {
-                in_prefix.insert(id);
-                // Every parent now has a verified child, so it is interior to
-                // the prefix and cannot itself be a frontier tip.
-                for p in parents {
-                    covered.insert(p);
-                }
-            }
-        }
-
-        let frontier: Vec<ID> = entries
-            .into_iter()
-            .map(|e| e.id())
-            .filter(|id| in_prefix.contains(id) && !covered.contains(id))
-            .collect();
-        Ok(frontier)
+        Ok(backend.verified_snapshot(self.root_id()).await?.into_tips())
     }
 
     /// Get the full `Entry` objects for the current tips of the main database branch.
@@ -1626,7 +1624,7 @@ impl Database {
     /// # async fn main() -> Result<()> {
     /// # let (_instance, mut user) = Instance::create_backend(
     /// #     Box::new(InMemory::new()),
-    /// #     NewUser::passwordless("test"),
+    /// #     NewAccount::passwordless("test"),
     /// # ).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
@@ -1645,7 +1643,7 @@ impl Database {
         // their `RemoteBackend`. Going through `instance.get(id)` would
         // use the connection's login pubkey, which on a remote instance is
         // denied by the per-tree gate when the login key isn't a member of
-        // this tree (e.g. user-tree key created via `User::add_private_key`
+        // this tree (e.g. user-tree key created via `AccountSession::add_private_key`
         // and used to author a database that doesn't grant the root key).
         let entry = self.ops().get(&id).await?;
 
@@ -1685,7 +1683,7 @@ impl Database {
     /// # async fn main() -> Result<()> {
     /// # let (_instance, mut user) = Instance::create_backend(
     /// #     Box::new(InMemory::new()),
-    /// #     NewUser::passwordless("test"),
+    /// #     NewAccount::passwordless("test"),
     /// # ).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
@@ -1732,6 +1730,11 @@ impl Database {
     ///
     /// The method uses the entry's metadata to determine which authentication settings were active when the entry was signed,
     /// ensuring that entries remain valid even if keys are later revoked or settings change.
+    /// On a service connection the daemon runs the same native validator, including
+    /// complete delegated ancestry and inherited floors. The handle's acting identity
+    /// needs current Read permission on this database and each claimed delegated tree.
+    /// This is a historical authentication verdict, not current signing authority or
+    /// a substitute for verifying the Entry with a concrete operating public key.
     ///
     /// # Arguments
     /// * `entry_id` - The ID of the entry to verify (accepts anything that converts to ID/String)
@@ -1746,6 +1749,15 @@ impl Database {
     /// - The entry's metadata cannot be parsed
     /// - The historical authentication settings cannot be retrieved
     pub async fn verify_entry_signature<I: Into<ID>>(&self, entry_id: I) -> Result<bool> {
+        let entry_id = entry_id.into();
+        // The daemon owns local verification evidence and derived floors.
+        // Use this handle's acting identity, never the instance's login key.
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.ops().remote_connection() {
+            return conn
+                .verify_entry_signature(self.root.clone(), self.ops().remote_identity(), entry_id)
+                .await;
+        }
         let entry = self.get_entry(entry_id).await?;
 
         // Validate against the `_settings` the entry pins, not current
@@ -2120,6 +2132,7 @@ impl Database {
     /// - an ancestor is still `Unverified`, or not held locally yet (partial
     ///   sync) → left `Unverified` (retried once the ancestor verifies / the
     ///   missing entry arrives);
+    /// - height not strictly greater than a Verified parent's → `Failed`;
     /// - pinned `_settings` not fully held locally → left `Unverified`
     ///   (a later pass retries once the set syncs in);
     /// - signature + permissions valid → promoted to `Verified`;
@@ -2253,7 +2266,11 @@ impl Database {
                         match backend.get_verification_status(p).await {
                             Ok(VerificationStatus::Verified) => {
                                 let parent = backend.get(p).await?;
-                                if !parent.in_tree(self.root_id()) {
+                                // Both height strategies require strict growth; gaps
+                                // are valid, but equal or decreasing heights are not.
+                                if !parent.in_tree(self.root_id())
+                                    || entry.height() <= parent.height()
+                                {
                                     compromised = true;
                                 }
                             }

@@ -17,12 +17,12 @@ use std::{
 
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
+    account::AccountSession,
     auth::crypto::{PrivateKey, PublicKey},
-    backend::{BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus},
+    backend::{BackendError, BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus},
     entry::ID,
     snapshot::Snapshot,
     sync::Sync,
-    user::User,
 };
 #[cfg(all(unix, feature = "service"))]
 use crate::{auth::SigKey, service::client::RemoteConnection};
@@ -30,7 +30,7 @@ use handle_trait::Handle;
 
 pub mod backend;
 pub mod errors;
-pub mod new_user;
+pub mod new_account;
 pub mod settings_merge;
 pub mod url;
 
@@ -42,7 +42,7 @@ mod tests;
 use backend::RemoteBackend;
 use backend::{Backend, LocalBackend};
 pub use errors::InstanceError;
-pub use new_user::NewUser;
+pub use new_account::NewAccount;
 
 /// Indicates whether an entry write originated locally or from a remote source (e.g., sync).
 ///
@@ -54,13 +54,12 @@ pub use new_user::NewUser;
 /// does not break their builds. It does **not** cover wire compatibility —
 /// `WriteSource` is serialized into service-protocol frames
 /// ([`Notification::DatabaseWrite`](crate::service::protocol::Notification::DatabaseWrite)
-/// carries a `source`), and a peer on an older protocol version fails to
-/// deserialize a variant it does not know. Adding a variant is therefore a
-/// protocol change, not a backward-compatible addition: bump
-/// [`crate::service::protocol::PROTOCOL_VERSION`] (and
-/// [`crate::sync::protocol::PROTOCOL_VERSION`], which guards the sync wire)
-/// and treat old peers as incompatible. Always include a wildcard arm when
-/// matching.
+/// carries a `source`). This is a required field in a known notification:
+/// even an updated v0 service peer fails closed on an unknown `WriteSource`,
+/// rather than treating it as an optional notification variant. Adding a source
+/// requires an explicit wire-compatibility decision; service optional-operation
+/// tolerance does not extend to nested content or the peer-to-peer sync protocol.
+/// Always include a wildcard arm when matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum WriteSource {
@@ -440,16 +439,16 @@ impl Drop for InstanceInternal {
 /// Instance manages infrastructure only:
 /// - Backend storage and device identity
 /// - System databases (_users, _databases, _sync)
-/// - User account management (create, login, list)
+/// - Account management (create, login, list)
 ///
-/// All database creation and key operations happen through User after login.
+/// All database creation and key operations happen through AccountSession after login.
 ///
 /// Instance is a cheap-to-clone handle around `Arc<InstanceInternal>`.
 ///
 /// ## Example
 ///
 /// ```
-/// # use eidetica::{Instance, NewUser, crdt::Doc};
+/// # use eidetica::{Instance, NewAccount, crdt::Doc};
 /// # #[tokio::main]
 /// # async fn main() -> eidetica::Result<()> {
 /// // Bootstrap a fresh instance with an initial admin user. The first user
@@ -457,11 +456,11 @@ impl Drop for InstanceInternal {
 /// // databases.
 /// let (instance, maybe_user) = Instance::connect_or_create(
 ///     "memory://",
-///     NewUser::passwordless("alice"),
+///     NewAccount::passwordless("alice"),
 /// ).await?;
 /// let mut user = maybe_user.expect("memory:// is always fresh");
 ///
-/// // Use User API for operations
+/// // Use AccountSession API for operations
 /// let mut settings = Doc::new();
 /// settings.set("name", "my_database");
 /// let default_key = user.get_default_key()?;
@@ -520,7 +519,7 @@ impl Instance {
     /// ```
     /// # #[tokio::main]
     /// # async fn main() -> eidetica::Result<()> {
-    /// use eidetica::{Instance, NewUser};
+    /// use eidetica::{Instance, NewAccount};
     ///
     /// let temp = tempfile::tempdir()?;
     /// let snapshot = temp.path().join("app.json");
@@ -529,14 +528,14 @@ impl Instance {
     /// // First run: bootstrap and flush a snapshot to disk.
     /// {
     ///     let (instance, maybe_user) =
-    ///         Instance::connect_or_create(&url, NewUser::passwordless("alice")).await?;
+    ///         Instance::connect_or_create(&url, NewAccount::passwordless("alice")).await?;
     ///     let _user = maybe_user.expect("fresh bootstrap on first run");
     ///     instance.flush()?;
     /// }
     ///
     /// // Later: strict connect against the persisted snapshot.
     /// let instance = Instance::connect(&url).await?;
-    /// let _user = instance.login_user("alice", None).await?;
+    /// let _user = instance.login_account("alice", None).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -555,24 +554,24 @@ impl Instance {
     /// silently ignored and the second tuple element is `None`.
     ///
     /// On the bootstrap arm: initialises the backend at the URL with the
-    /// supplied [`NewUser`] as the first admin and returns
-    /// `(Instance, Some(User))`. Only embedded backends
+    /// supplied [`NewAccount`] as the first admin and returns
+    /// `(Instance, Some(AccountSession))`. Only embedded backends
     /// (sqlite/postgres/memory) ever take the bootstrap arm — `unix://` URLs
     /// degrade to `connect` (the daemon owns its own initialisation), so the
-    /// returned `Option<User>` is always `None` for `unix://`.
+    /// returned `Option<AccountSession>` is always `None` for `unix://`.
     ///
     /// # Example
     /// ```
-    /// # use eidetica::{Instance, NewUser};
+    /// # use eidetica::{Instance, NewAccount};
     /// # #[tokio::main]
     /// # async fn main() -> eidetica::Result<()> {
     /// let (instance, maybe_user) = Instance::connect_or_create(
     ///     "memory://",
-    ///     NewUser::passwordless("alice"),
+    ///     NewAccount::passwordless("alice"),
     /// ).await?;
     /// let mut user = match maybe_user {
     ///     Some(u) => u,
-    ///     None => instance.login_user("alice", None).await?,
+    ///     None => instance.login_account("alice", None).await?,
     /// };
     /// # let _ = user.get_default_key()?;
     /// # Ok(())
@@ -580,8 +579,8 @@ impl Instance {
     /// ```
     pub async fn connect_or_create(
         url: impl AsRef<str>,
-        initial: NewUser,
-    ) -> Result<(Self, Option<User>)> {
+        initial: NewAccount,
+    ) -> Result<(Self, Option<AccountSession>)> {
         Self::connect_or_create_impl(url.as_ref(), initial, Arc::new(SystemClock)).await
     }
 
@@ -594,8 +593,8 @@ impl Instance {
     /// exposed via a URL scheme.
     pub async fn connect_or_create_backend(
         backend: Box<dyn BackendImpl>,
-        initial: NewUser,
-    ) -> Result<(Self, Option<User>)> {
+        initial: NewAccount,
+    ) -> Result<(Self, Option<AccountSession>)> {
         Self::connect_or_create_backend_impl(
             Arc::from(backend),
             initial,
@@ -637,8 +636,8 @@ impl Instance {
     /// caller doesn't want to choose between load and create up front.
     pub async fn create_backend(
         backend: Box<dyn BackendImpl>,
-        initial: NewUser,
-    ) -> Result<(Self, User)> {
+        initial: NewAccount,
+    ) -> Result<(Self, AccountSession)> {
         Self::create_backend_impl(backend, initial, Arc::new(SystemClock)).await
     }
 
@@ -654,16 +653,16 @@ impl Instance {
     pub async fn create_backend_with_clock(
         backend: Box<dyn BackendImpl>,
         clock: Arc<dyn Clock>,
-        initial: NewUser,
-    ) -> Result<(Self, User)> {
+        initial: NewAccount,
+    ) -> Result<(Self, AccountSession)> {
         Self::create_backend_impl(backend, initial, clock).await
     }
 
     async fn create_backend_impl(
         backend: Box<dyn BackendImpl>,
-        initial: NewUser,
+        initial: NewAccount,
         clock: Arc<dyn Clock>,
-    ) -> Result<(Self, User)> {
+    ) -> Result<(Self, AccountSession)> {
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
         if backend.get_instance_metadata().await?.is_some() {
             return Err(InstanceError::InstanceAlreadyExists.into());
@@ -696,9 +695,9 @@ impl Instance {
 
     async fn connect_or_create_impl(
         url: &str,
-        initial: NewUser,
+        initial: NewAccount,
         clock: Arc<dyn Clock>,
-    ) -> Result<(Self, Option<User>)> {
+    ) -> Result<(Self, Option<AccountSession>)> {
         let parsed = url::parse(url)?;
         match parsed {
             url::ConnectionUrl::Sqlite { url } => {
@@ -781,10 +780,10 @@ impl Instance {
     /// remembering a snapshot path so Drop / flush can write to it.
     async fn connect_or_create_backend_impl(
         backend: Arc<dyn BackendImpl>,
-        initial: NewUser,
+        initial: NewAccount,
         clock: Arc<dyn Clock>,
         snapshot_path: Option<PathBuf>,
-    ) -> Result<(Self, Option<User>)> {
+    ) -> Result<(Self, Option<AccountSession>)> {
         if let Some(metadata) = backend.get_instance_metadata().await? {
             let instance = Self::open_impl_arc_with_metadata(backend, clock, metadata).await?;
             instance.set_snapshot_path(snapshot_path);
@@ -1040,14 +1039,16 @@ impl Instance {
     }
 
     /// Internal create implementation. Returns the new `Instance` along with
-    /// the just-bootstrapped initial `User`, materialised directly from the
+    /// the just-bootstrapped initial `AccountSession`, materialised directly from the
     /// keys we generated (no redundant login round-trip).
     pub(crate) async fn create_internal(
         backend: Arc<dyn BackendImpl>,
         clock: Arc<dyn Clock>,
-        initial: NewUser,
-    ) -> Result<(Self, User)> {
-        use crate::user::system_databases::{create_databases_tracking, create_users_database};
+        initial: NewAccount,
+    ) -> Result<(Self, AccountSession)> {
+        use crate::account::system_databases::{
+            create_accounts_database, create_databases_tracking,
+        };
 
         // 1. Generate device key
         let device_key = PrivateKey::generate();
@@ -1084,7 +1085,7 @@ impl Instance {
                 tree_locks: Mutex::new(HashMap::new()),
             }),
         };
-        let users_db = create_users_database(&temp_instance, &device_key).await?;
+        let users_db = create_accounts_database(&temp_instance, &device_key).await?;
         let databases_db = create_databases_tracking(&temp_instance, &device_key).await?;
 
         // 3. Save metadata and secrets (marks instance as initialized)
@@ -1121,10 +1122,10 @@ impl Instance {
 
         // 5. Bootstrap the initial user. The first user created on an
         // instance is automatically promoted to Admin on the system
-        // databases by `system_databases::create_user`'s
+        // databases by `system_databases::create_account`'s
         // first-user-becomes-admin logic.
         let users_db = instance.users_db().await?;
-        let (user_uuid, user_info, root_key) = crate::user::system_databases::create_user(
+        let (login_id, account_info, root_key) = crate::account::system_databases::create_account(
             &users_db,
             &instance,
             &initial.username,
@@ -1132,13 +1133,13 @@ impl Instance {
         )
         .await?;
 
-        // 6. Materialise the User session directly from the keys we just
-        // generated — skips a redundant `login_user` round-trip that would
+        // 6. Materialise the AccountSession directly from the keys we just
+        // generated — skips a redundant `login_account` round-trip that would
         // otherwise re-derive the encryption key from the password.
-        let user = crate::user::system_databases::build_user_session(
+        let user = crate::account::system_databases::build_account_session(
             &instance,
-            &user_uuid,
-            &user_info,
+            &login_id,
+            &account_info,
             root_key,
             initial.password.as_deref(),
         )
@@ -1240,13 +1241,13 @@ impl Instance {
     ///
     /// This constructs a Database instance on-the-fly to avoid circular references.
     /// On a local instance the device signing key is attached so users-table
-    /// writes (e.g., the local `create_user` path) can sign. On a remote
+    /// writes (e.g., the local `create_account` path) can sign. On a remote
     /// instance the device key lives on the daemon side and isn't available
     /// locally, so no key is attached — the returned handle is read-only.
     /// Write paths on a remote instance must instead go through
     /// [`Instance::users_db_for_session`], which attaches the caller's
     /// session signing key (e.g. admin's key on the `InstanceAdmin`
-    /// `create_user` path) and routes through `Database::open_remote`.
+    /// `create_account` path) and routes through `Database::open_remote`.
     pub(crate) async fn users_db(&self) -> Result<Database> {
         let db = Database::open(self, &self.inner.metadata.users_db).await?;
         #[cfg(all(unix, feature = "service"))]
@@ -1258,7 +1259,7 @@ impl Instance {
 
     /// Open the _users system database with a specific signing key (not the device
     /// key).  Used by the admin-session paths
-    /// ([`InstanceAdmin`](crate::user::InstanceAdmin), `User::admin_check`) on
+    /// ([`InstanceAdmin`](crate::account::InstanceAdmin), `AccountSession::admin_check`) on
     /// remote instances where the device key is unavailable.
     pub(crate) async fn users_db_for_session(&self, signing_key: &PrivateKey) -> Result<Database> {
         self.open_system_db_for_session(&self.inner.metadata.users_db, signing_key)
@@ -1302,7 +1303,7 @@ impl Instance {
     ///
     /// Parallel to `users_db()` — opens the instance's database-registry
     /// system DB with the device signing key attached. Used by the
-    /// instance-admin bootstrap path (`system_databases::create_user`) to add
+    /// instance-admin bootstrap path (`system_databases::create_account`) to add
     /// the first user's pubkey as `Admin(0)` on the registry, so subsequent
     /// admin-gated instance ops (e.g., `SetInstanceMetadata`) can authorize
     /// against the user's key instead of the device key.
@@ -1331,44 +1332,49 @@ impl Instance {
         &self.inner.metadata.users_db
     }
 
-    // === User Management ===
+    // === Account Management ===
 
     /// Login a user with flexible password handling.
     ///
-    /// Returns a User session object that provides access to user operations.
+    /// Returns an AccountSession object that provides access to user operations.
     /// For password-protected users, provide the password. For passwordless users, pass None.
     ///
     /// # Arguments
-    /// * `user_id` - User identifier (username)
+    /// * `user_id` - AccountSession identifier (username)
     /// * `password` - Optional password. None for passwordless users.
     ///
     /// # Returns
-    /// A Result containing the User session
-    pub async fn login_user(&self, user_id: &str, password: Option<&str>) -> Result<User> {
+    /// A Result containing the AccountSession
+    pub async fn login_account(
+        &self,
+        user_id: &str,
+        password: Option<&str>,
+    ) -> Result<AccountSession> {
         // On a remote instance, the `TrustedLogin*` handshake authenticates the
-        // socket connection AND ships back the user's full `UserInfo` plus the
-        // decrypted root signing key. Build the `User` session from those —
+        // socket connection AND ships back the user's full `AccountInfo` plus the
+        // decrypted root signing key. Build the `AccountSession` session from those —
         // the per-tree gate means a freshly-logged-in user with no permissions
         // on `_users` couldn't re-read it over the wire anyway, so we don't try.
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = self.remote_connection() {
-            let (user_uuid, user_info, signing_key) = conn.trusted_login(user_id, password).await?;
-            return crate::user::system_databases::build_user_session(
+            let (login_id, account_info, signing_key) =
+                conn.trusted_login(user_id, password).await?;
+            return crate::account::system_databases::build_account_session(
                 self,
-                &user_uuid,
-                &user_info,
+                &login_id,
+                &account_info,
                 signing_key,
                 password,
             )
             .await;
         }
 
-        use crate::user::system_databases::login_user;
+        use crate::account::system_databases::login_account;
         let users_db = self.users_db().await?;
-        login_user(&users_db, self, user_id, password).await
+        login_account(&users_db, self, user_id, password).await
     }
 
-    // === User-Sync Integration ===
+    // === AccountSession-Sync Integration ===
 
     // === Device Identity Management ===
     //
@@ -1387,7 +1393,7 @@ impl Instance {
     /// but we don't verify that yet. Future versions may add admin permission checks.
     ///
     /// Similar to `Database::open` (without a key), this is a controlled escape hatch
-    /// for internal library operations. Use with care - prefer User API for normal operations.
+    /// for internal library operations. Use with care - prefer AccountSession API for normal operations.
     ///
     /// Returns an error if this is a remote Instance that does not have access to the
     /// device key (e.g., connected via RPC where secrets are never transmitted).
@@ -1402,7 +1408,7 @@ impl Instance {
 
     /// Test-only: Get the device signing key.
     ///
-    /// This is exposed for testing purposes only. In production, use the User API.
+    /// This is exposed for testing purposes only. In production, use the AccountSession API.
     ///
     /// Returns an error if this is a remote Instance that does not have access to the
     /// device key.
@@ -1506,7 +1512,7 @@ impl Instance {
                 if event.source() == WriteSource::Local
                     && sync.is_reconciliation_source(database.root_id()).await?
                 {
-                    sync.reconcile_user_settings().await?;
+                    sync.reconcile_account_settings().await?;
                 }
 
                 if event.source() == WriteSource::Local {
@@ -1795,10 +1801,9 @@ impl Instance {
         // raw backend snapshots, so an Unverified or Failed entry that is
         // a raw tip still falls inside a subsequent event's bracket and
         // `ids_added` will enumerate it. Narrowing that to the Verified
-        // frontier needs an incremental frontier first — `verified_frontier`
-        // is an O(N) walk, too expensive on the per-commit path.
-        // coding: raw-frontier cursors; switch to the Verified frontier
-        // once an incremental one exists.
+        // frontier can read the retained frontier
+        // (`BackendImpl::verified_snapshot`); wiring it into this per-commit
+        // path is future work.
         let joins = if !is_connected && verification == VerificationStatus::Verified {
             // Compute the post-write snapshot for cursor advance. Cheap:
             // just re-read the backend snapshot post-put. Each per-callback
@@ -1844,9 +1849,9 @@ impl Instance {
     /// - Callbacks fire once per sync exchange, not once per entry
     /// - `previous_tips` lets consumers reconstruct exactly what changed
     ///
-    /// Entries that fail to store are logged and skipped — remaining entries
-    /// are still stored and callbacks still fire for whatever was persisted.
-    /// Returns the number of entries that were successfully persisted.
+    /// A storage failure stops ingestion and is returned to the caller. Entries
+    /// already stored remain available to a later retry; this is not rollback.
+    /// Returns the number of supplied entries successfully persisted.
     ///
     /// Serialized per-tree against [`Self::put_entry`] and other concurrent
     /// `put_remote_entries` calls so `previous_tips` is consistent across
@@ -1865,6 +1870,17 @@ impl Instance {
         tree_id: &ID,
         entries: Vec<Entry>,
     ) -> Result<usize> {
+        // Validate the entire envelope before the first write. The backend files
+        // entries under their own root, not under this caller-supplied tree.
+        for entry in &entries {
+            if entry.root().unwrap_or_else(|| entry.id()) != *tree_id {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: entry.id(),
+                    tree_id: tree_id.clone(),
+                }
+                .into());
+            }
+        }
         if entries.is_empty() {
             return Ok(0);
         }
@@ -1874,18 +1890,11 @@ impl Instance {
         let stored_count = {
             let lock = self.tree_lock(tree_id);
             let _guard = lock.lock().await;
-            let mut stored = 0usize;
+            let count = entries.len();
             for entry in entries {
-                match self.backend().put(entry.clone()).await {
-                    Ok(_) => stored += 1,
-                    Err(e) => tracing::error!(
-                        tree_id = %tree_id,
-                        entry_id = %entry.id(),
-                        "Failed to store remote entry: {}", e
-                    ),
-                }
+                self.backend().put(entry).await?;
             }
-            stored
+            count
         };
 
         // Run verify inline. `Database::verify` walks the Unverified
@@ -1919,8 +1928,8 @@ impl Instance {
     /// retroactive settings-change-driven invalidation) it should route
     /// through this method.
     ///
-    /// O(N) per call: walks `get_tree` to build a children index. Cheap
-    /// for the test sizes this targets; not a hot path.
+    /// O(N) maintenance, delegated to one atomic backend status/descendant/frontier
+    /// update. Failed decisions are preserved; not a hot path.
     ///
     /// Exposed publicly under `cfg(test)` and the `testing` feature so
     /// integration tests in the `it` crate can use it; otherwise
@@ -1936,48 +1945,18 @@ impl Instance {
     }
 
     async fn demote_to_unverified_impl(&self, tree_id: &ID, entry_id: &ID) -> Result<()> {
-        use std::collections::{HashMap, HashSet, VecDeque};
         let backend = self.require_local_engine()?;
-        let entries = backend.get_tree(tree_id).await?;
-
-        // Build children index from each entry's parents.
-        let mut children: HashMap<ID, Vec<ID>> = HashMap::new();
-        for entry in &entries {
-            for p in entry.parents().unwrap_or_default() {
-                children.entry(p).or_default().push(entry.id());
+        let entry = backend.get(entry_id).await?;
+        if !entry.in_tree(tree_id) {
+            return Err(crate::backend::errors::BackendError::EntryNotInTree {
+                entry_id: entry_id.clone(),
+                tree_id: tree_id.clone(),
             }
+            .into());
         }
-
-        // BFS from the target. The target itself always gets demoted
-        // (caller's intent); descendants get demoted only if they are
-        // currently `Verified`. `Failed` or `Unverified` descendants
-        // are left as-is — `Failed` is terminal, `Unverified` is
-        // already at the target state.
-        let mut queue: VecDeque<ID> = VecDeque::new();
-        queue.push_back(entry_id.clone());
-        let mut visited: HashSet<ID> = HashSet::new();
-        while let Some(id) = queue.pop_front() {
-            if !visited.insert(id.clone()) {
-                continue;
-            }
-            let status = match backend.get_verification_status(&id).await {
-                Ok(s) => s,
-                Err(e) if e.is_not_found() => continue,
-                Err(e) => return Err(e),
-            };
-            let is_target = id == *entry_id;
-            if is_target || status == VerificationStatus::Verified {
-                backend
-                    .update_verification_status(&id, VerificationStatus::Unverified)
-                    .await?;
-            }
-            if let Some(kids) = children.get(&id) {
-                for kid in kids {
-                    queue.push_back(kid.clone());
-                }
-            }
-        }
-        Ok(())
+        backend
+            .update_verification_status(entry_id, VerificationStatus::Unverified)
+            .await
     }
 
     /// Dispatch callbacks for a write event.
@@ -2200,12 +2179,12 @@ impl WeakInstance {
     ///
     /// # Example
     /// ```
-    /// # use eidetica::{Instance, NewUser};
+    /// # use eidetica::{Instance, NewAccount};
     /// # #[tokio::main]
     /// # async fn main() -> eidetica::Result<()> {
     /// let (instance, maybe_user) = Instance::connect_or_create(
     ///     "memory://",
-    ///     NewUser::passwordless("alice"),
+    ///     NewAccount::passwordless("alice"),
     /// ).await?;
     /// let user = maybe_user.expect("memory:// is always fresh");
     /// let weak = instance.downgrade();
@@ -2213,7 +2192,7 @@ impl WeakInstance {
     /// // Upgrade works while instance exists
     /// assert!(weak.upgrade().is_some());
     ///
-    /// // User holds its own strong handle to the Instance — drop it too so
+    /// // AccountSession holds its own strong handle to the Instance — drop it too so
     /// // the weak upgrade can fail.
     /// drop(user);
     /// drop(instance);

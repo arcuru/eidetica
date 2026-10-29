@@ -1,0 +1,43 @@
+# Source this file from .zshrc after setting SHISTORY_HOST_ID.
+autoload -Uz add-zsh-hook
+zmodload zsh/datetime
+
+typeset -g SHISTORY_BIN=${SHISTORY_BIN:-shistory}
+typeset -g SHISTORY_SESSION=${SHISTORY_SESSION:-"$$-${EPOCHREALTIME//./}"}
+typeset -g SHISTORY_RECORD_ID=
+typeset -gF SHISTORY_STARTED_AT=0
+
+_shistory_preexec() {
+  local command=$1
+  SHISTORY_RECORD_ID=
+
+  [[ $command == ' '* ]] && return 0
+
+  SHISTORY_STARTED_AT=$EPOCHREALTIME
+  local -i started_seconds=${SHISTORY_STARTED_AT%.*}
+  local started_fraction=${SHISTORY_STARTED_AT#*.}
+  local started_at
+  TZ=UTC0 strftime -s started_at '%Y-%m-%dT%H:%M:%S' "$started_seconds"
+  SHISTORY_RECORD_ID=$(print -rn -- "$command" | "$SHISTORY_BIN" start \
+    --session "$SHISTORY_SESSION" \
+    --cwd "$PWD" \
+    --started-at "${started_at}.${started_fraction}Z" 2>/dev/null) || SHISTORY_RECORD_ID=
+  return 0
+}
+
+_shistory_precmd() {
+  local command_status=$?
+  local record_id=$SHISTORY_RECORD_ID
+  local -F elapsed_ms=$(( (EPOCHREALTIME - SHISTORY_STARTED_AT) * 1000 ))
+  SHISTORY_RECORD_ID=
+
+  if [[ -n $record_id ]]; then
+    "$SHISTORY_BIN" finish "$record_id" \
+      --duration-ms "${elapsed_ms%.*}" \
+      --exit-status "$command_status" >/dev/null 2>&1 || true
+  fi
+  return "$command_status"
+}
+
+add-zsh-hook preexec _shistory_preexec
+add-zsh-hook precmd _shistory_precmd

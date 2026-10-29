@@ -460,10 +460,10 @@ async fn test_remote_historical_pin_matches_main_parent_frontier() {
         types::{AuthKey, Permission, SigKey},
     };
     use eidetica::backend::VerificationStatus;
-    use eidetica::{Database, Instance, NewUser};
+    use eidetica::{Database, Instance, NewAccount};
 
     let (instance, _) =
-        Instance::create_backend(test_backend().await, NewUser::passwordless("admin"))
+        Instance::create_backend(test_backend().await, NewAccount::passwordless("admin"))
             .await
             .unwrap();
     let admin = PrivateKey::generate();

@@ -4,7 +4,7 @@
 
 # Key Management Technical Details
 
-This design document describes the technical implementation of key storage, encryption, and discovery within the Eidetica Users system. For the overall architecture and user-centric key management, see [users.md](./users.md).
+This design document describes the technical implementation of key storage, encryption, and discovery within the Eidetica Account system. For the overall architecture and user-centric key management, see [accounts.md](./accounts.md).
 
 ## Overview
 
@@ -60,7 +60,7 @@ Keys are stored in the user's private database in the `keys` subtree as a Table:
 
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UserKey {
+pub struct AccountKey {
     /// Public key identifier
     pub key_id: PublicKey,
 
@@ -105,7 +105,7 @@ pub enum KeyStorage {
 }
 ```
 
-**Storage Location**: User database → `keys` subtree → `Table<UserKey>`
+**Storage Location**: Account database → `keys` subtree → `Table<AccountKey>`
 
 **Table Key**: The `key_id` field (not stored in struct, used as table key)
 
@@ -120,7 +120,7 @@ Local Key: "ed25519:ABC123..."
 └── Database C: SigKey "alice_laptop"
 ```
 
-**Mapping Storage**: The `database_sigkeys` HashMap in `UserKey` stores these mappings as `database_id → Option<SigKey>`, where `None` represents the default pubkey identity and `Some(sigkey)` represents non-default identities.
+**Mapping Storage**: The `database_sigkeys` HashMap in `AccountKey` stores these mappings as `database_id → Option<SigKey>`, where `None` represents the default pubkey identity and `Some(sigkey)` represents non-default identities.
 
 **Lookup**: When creating a transaction, retrieve the appropriate SigKey from the mapping using the database ID.
 
@@ -162,21 +162,21 @@ Decrypted keys are held in memory only during active user sessions:
 
 ## Implementation Details
 
-### UserKeyManager Structure
+### AccountKeyManager Structure
 
 <!-- Code block ignored: Missing HashMap and SigningKey imports -->
 
 ```rust,ignore
-pub struct UserKeyManager {
+pub struct AccountKeyManager {
     /// Decrypted private keys (only in memory during session)
     /// Map: key_id → PrivateKey
     decrypted_keys: HashMap<String, PrivateKey>,
 
     /// Key metadata (including SigKey mappings)
-    /// Map: key_id → UserKey
-    key_metadata: HashMap<String, UserKey>,
+    /// Map: key_id → AccountKey
+    key_metadata: HashMap<String, AccountKey>,
 
-    /// User's password-derived encryption key
+    /// Account's password-derived encryption key
     /// Used for encrypting new keys during session
     encryption_key: Vec<u8>,
 
@@ -201,7 +201,7 @@ When a user changes their password, all keys must be re-encrypted:
 2. **Derive New Encryption Key**: Generate new salt, derive key from new password
 3. **Re-encrypt All Keys**: Iterate through decrypted keys, encrypt each with new key
 4. **Update Password Hash**: Hash new password with new salt
-5. **Store Updates**: Write all updated UserKey records and password hash in transaction
+5. **Store Updates**: Write all updated AccountKey records and password hash in transaction
 6. **Update In-Memory State**: Replace session encryption key with new one
 
 ## Security Properties
@@ -285,4 +285,4 @@ This key management implementation provides:
 - Efficient key discovery for database operations
 - Memory security through session-based decryption
 
-For the overall architecture and user management, see the [Users design](./users.md).
+For the overall architecture and user management, see the [Account design](./accounts.md).

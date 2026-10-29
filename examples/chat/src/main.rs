@@ -61,9 +61,9 @@ async fn main() -> Result<()> {
     // `sqlite://./chat.db` or `memory:///abs/path/snapshot.json` to keep
     // history across runs; this example deliberately stays stateless so
     // each launch is its own room.
-    use eidetica::NewUser;
+    use eidetica::NewAccount;
     let (instance, maybe_user) =
-        Instance::connect_or_create("memory://", NewUser::passwordless(&username)).await?;
+        Instance::connect_or_create("memory://", NewAccount::passwordless(&username)).await?;
     instance.enable_sync().await?;
 
     // `memory://` is always a fresh backend

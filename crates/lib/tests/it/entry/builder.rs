@@ -78,6 +78,138 @@ fn test_entrybuilder_api_consistency() {
 }
 
 #[test]
+fn test_subtree_mutation_api_equivalence() {
+    let base = Entry::builder(ID::from_bytes("root"))
+        .add_parent(ID::from_bytes("main_parent"))
+        .set_height(9);
+    let parent = ID::from_bytes("parent");
+    let other = ID::from_bytes("other");
+    let mut parents = vec![parent.clone(), other.clone()];
+    parents.sort();
+
+    // Missing, present without data, empty data, and populated subtrees.
+    for initial in [
+        base.clone(),
+        base.clone().set_subtree_height("subtree", Some(3)),
+        base.clone().set_subtree_data("subtree", b""),
+        base.set_subtree_data("subtree", b"payload")
+            .set_subtree_height("subtree", Some(5))
+            .add_subtree_parent("subtree", ID::from_bytes("old_parent")),
+    ] {
+        let original = initial.clone().build().unwrap();
+        let inherited_height = original.subtree_height("subtree").unwrap_or(9);
+        let replacement = vec![other.clone(), parent.clone(), other.clone()];
+        let mut mutable = initial.clone();
+        mutable.set_subtree_parents_mut("subtree", replacement.clone());
+        let fluent = initial
+            .clone()
+            .set_subtree_parents("subtree", replacement)
+            .build()
+            .unwrap();
+        let mut cases = vec![(
+            fluent,
+            mutable.build().unwrap(),
+            parents.clone(),
+            inherited_height,
+        )];
+
+        let mut accumulated = original.subtree_parents("subtree").unwrap_or_default();
+        accumulated.extend([other.clone(), parent.clone(), other.clone()]);
+        accumulated.sort();
+        accumulated.dedup();
+        let mut mutable = initial.clone();
+        mutable
+            .add_subtree_parent_mut("subtree", other.clone())
+            .add_subtree_parent_mut("subtree", parent.clone())
+            .add_subtree_parent_mut("subtree", other.clone());
+        let fluent = initial
+            .clone()
+            .add_subtree_parent("subtree", other.clone())
+            .add_subtree_parent("subtree", parent.clone())
+            .add_subtree_parent("subtree", other.clone())
+            .build()
+            .unwrap();
+        cases.push((
+            fluent,
+            mutable.build().unwrap(),
+            accumulated,
+            inherited_height,
+        ));
+
+        for height in [None, Some(0), Some(7)] {
+            let mut mutable = initial.clone();
+            mutable.set_subtree_height_mut("subtree", height);
+            let fluent = initial
+                .clone()
+                .set_subtree_height("subtree", height)
+                .build()
+                .unwrap();
+            cases.push((
+                fluent,
+                mutable.build().unwrap(),
+                original.subtree_parents("subtree").unwrap_or_default(),
+                height.unwrap_or(9),
+            ));
+        }
+
+        for (fluent, mutable, expected_parents, expected_height) in cases {
+            assert_eq!(fluent, mutable);
+            assert_same_id(&fluent, &mutable);
+            assert_eq!(fluent.to_dagcbor().unwrap(), mutable.to_dagcbor().unwrap());
+            assert_eq!(fluent.subtrees(), ["subtree"]);
+            assert_eq!(fluent.data("subtree").ok(), original.data("subtree").ok());
+            assert_eq!(fluent.subtree_parents("subtree").unwrap(), expected_parents);
+            assert_eq!(fluent.subtree_height("subtree").unwrap(), expected_height);
+        }
+    }
+}
+
+#[test]
+fn test_subtree_mutation_api_chains() {
+    let base = Entry::builder(ID::from_bytes("root"))
+        .add_parent(ID::from_bytes("main_parent"))
+        .set_height(9);
+    let parent = ID::from_bytes("parent");
+    let fluent = base
+        .clone()
+        .set_subtree_height("z", Some(3))
+        .add_subtree_parent("z", ID::from_bytes("replaced"))
+        .set_subtree_parents("z", vec![parent.clone(), parent.clone()])
+        .set_subtree_data("z", b"payload")
+        .set_subtree_height("z", None)
+        .set_subtree_parents("a", vec![])
+        .add_subtree_parent("a", parent.clone())
+        .set_subtree_height("a", Some(0))
+        .build()
+        .unwrap();
+    let mut mutable = base;
+    mutable
+        .set_subtree_height_mut("z", Some(3))
+        .add_subtree_parent_mut("z", ID::from_bytes("replaced"))
+        .set_subtree_parents_mut("z", vec![parent.clone(), parent.clone()])
+        .set_subtree_data_mut("z", b"payload")
+        .set_subtree_height_mut("z", None)
+        .set_subtree_parents_mut("a", vec![])
+        .add_subtree_parent_mut("a", parent.clone())
+        .set_subtree_height_mut("a", Some(0));
+    let mutable = mutable.build().unwrap();
+
+    assert_eq!(fluent, mutable);
+    assert_same_id(&fluent, &mutable);
+    assert_eq!(fluent.to_dagcbor().unwrap(), mutable.to_dagcbor().unwrap());
+    assert_eq!(fluent.subtrees(), ["a", "z"]);
+    assert!(fluent.data("a").is_err());
+    assert_eq!(fluent.data("z").unwrap(), b"payload");
+    assert_eq!(
+        fluent.subtree_parents("a").unwrap(),
+        std::slice::from_ref(&parent)
+    );
+    assert_eq!(fluent.subtree_parents("z").unwrap(), [parent]);
+    assert_eq!(fluent.subtree_height("a").unwrap(), 0);
+    assert_eq!(fluent.subtree_height("z").unwrap(), 9);
+}
+
+#[test]
 fn test_entrybuilder_empty_subtree_removal() {
     // Test the behavior of removing empty subtrees
 
