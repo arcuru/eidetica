@@ -140,6 +140,21 @@ impl AuthValidator {
             Operation::WriteData
         };
 
+        // Auth changes additionally require the signer to outrank every grant
+        // they touch, judged against this entry's pre-write auth state.
+        let required_auth = match (&operation, entry.data(SETTINGS)) {
+            (Operation::WriteSettings, Ok(delta)) => {
+                match super::permissions::required_auth_change_permission(auth_settings, delta) {
+                    Ok(required) => required,
+                    Err(e) => {
+                        debug!("Undecodable settings delta: {:?}", e);
+                        return Ok(false);
+                    }
+                }
+            }
+            _ => None,
+        };
+
         // Try signature verification + permission check against each candidate
         for resolved_auth in resolved_auths {
             // Skip keys that do not currently grant access
@@ -152,7 +167,9 @@ impl AuthValidator {
             if verify_entry_signature(entry, &resolved_auth.public_key).is_ok() {
                 debug!("Signature verified, checking permissions");
                 // Signature verified - now check permissions
-                if self.check_permissions(&resolved_auth, &operation)? {
+                if self.check_permissions(&resolved_auth, &operation)?
+                    && required_auth.is_none_or(|r| resolved_auth.effective_permission >= r)
+                {
                     debug!("Entry valid: signature verified with sufficient permissions");
                     if let Some(floors) = floors.as_mut() {
                         floors.finish(entry).await?;
