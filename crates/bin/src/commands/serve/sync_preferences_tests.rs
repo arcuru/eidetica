@@ -193,8 +193,7 @@ impl TestApp {
     }
 }
 
-// Inspection/fault setup holds the test account's own signing key, never a
-// production-only escape hatch or a test feature in the released binary.
+// Inspect persisted Account state using this test account's own signing key.
 async fn open_account(instance: &Instance, user: &AccountSession) -> Database {
     Database::open(instance, user.account().id())
         .await
