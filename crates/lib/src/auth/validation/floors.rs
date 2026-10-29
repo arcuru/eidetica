@@ -129,13 +129,16 @@ impl DerivedFloors {
                 name: "auth-frontier".to_string(),
                 version: 2,
             },
-            source_key: id.to_string().into_bytes(),
+            source_key: Snapshot::from([id.clone()]).cache_key_bytes(),
         }
     }
 
     async fn cached(&self, id: &ID) -> Result<Option<State>> {
-        match self.backend.resolve_store_state(&self.request(id)).await {
-            Ok(Some(view)) => {
+        for _ in 0..2 {
+            let result: Result<Option<State>> = async {
+                let Some(view) = self.backend.resolve_store_state(&self.request(id)).await? else {
+                    return Ok(None);
+                };
                 let bytes = self
                     .backend
                     .store_state_record_get(&view, b"state")
@@ -143,12 +146,14 @@ impl DerivedFloors {
                     .ok_or(BackendError::InvalidStoreStateView)?;
                 Ok(Some(serde_json::from_slice(&bytes)?))
             }
-            Ok(None) => Ok(None),
-            Err(Error::Backend(e)) if matches!(*e, BackendError::StoreStateStorageUnsupported) => {
-                Ok(None)
+            .await;
+            match result {
+                Err(error) if error.is_invalid_store_state_view() => continue,
+                Err(error) if error.is_optional_store_state_unavailable() => return Ok(None),
+                result => return result,
             }
-            Err(e) => Err(e),
         }
+        Ok(None)
     }
 
     async fn publish(&self, id: &ID, state: &State) -> Result<()> {
@@ -158,14 +163,14 @@ impl DerivedFloors {
             .await
         {
             Ok(token) => token,
-            Err(Error::Backend(e)) if matches!(*e, BackendError::StoreStateStorageUnsupported) => {
+            Err(e) if e.is_optional_store_state_unavailable() => {
                 return Ok(());
             }
             Err(e) => return Err(e),
         };
         let mut records = RecordMutations::new();
         records.insert(b"state".to_vec(), Some(serde_json::to_vec(state)?));
-        let result = async {
+        let result: Result<()> = async {
             self.backend
                 .stage_store_state_records(&token, records)
                 .await?;
@@ -174,9 +179,12 @@ impl DerivedFloors {
         }
         .await;
         if result.is_err() {
-            self.backend.abort_store_state(token).await?;
+            let _ = self.backend.abort_store_state(token).await;
         }
-        result
+        match result {
+            Err(error) if error.is_optional_store_state_unavailable() => Ok(()),
+            result => result,
+        }
     }
 
     fn unsynced(&self, missing: Vec<ID>) -> Error {
@@ -538,5 +546,57 @@ impl DerivedFloors {
     pub(crate) async fn finish(&mut self, entry: &Entry) -> Result<()> {
         Self::apply_claims(entry, &mut self.state);
         self.publish(&entry.id(), &self.state).await
+    }
+}
+
+#[cfg(test)]
+mod cache_bypass_tests {
+    use super::*;
+    use crate::backend::{DerivedCachePolicy, database::InMemory};
+
+    #[tokio::test]
+    async fn disabled_floor_cache_preserves_proof_requirements() {
+        let backend = std::sync::Arc::new(InMemory::new_with_cache_policy(DerivedCachePolicy {
+            max_namespaces: 0,
+            max_bytes: 0,
+        }));
+        let root = Entry::root_builder().build().unwrap();
+        backend.put(root.clone()).await.unwrap();
+        let floors = DerivedFloors::for_entry(backend.clone(), &root);
+        floors.publish(&root.id(), &State::default()).await.unwrap();
+        assert!(floors.cached(&root.id()).await.unwrap().is_none());
+        let boundary = Snapshot::from([root.id()]);
+        let error = DerivedFloors::proof_on(backend.as_ref(), &root.id(), &boundary)
+            .await
+            .unwrap_err();
+        assert!(!error.is_optional_store_state_unavailable());
+        assert!(
+            matches!(error, Error::Auth(ref e) if matches!(**e, AuthError::DelegatedTreeUnsynced { .. }))
+        );
+        backend
+            .update_verification_status(&root.id(), VerificationStatus::Verified)
+            .await
+            .unwrap();
+        DerivedFloors::proof_on(backend.as_ref(), &root.id(), &boundary)
+            .await
+            .unwrap();
+        let foreign = Entry::root_builder()
+            .set_subtree_data("foreign", b"other")
+            .build()
+            .unwrap();
+        backend.put(foreign.clone()).await.unwrap();
+        backend
+            .update_verification_status(&foreign.id(), VerificationStatus::Verified)
+            .await
+            .unwrap();
+        assert!(
+            DerivedFloors::proof_on(
+                backend.as_ref(),
+                &root.id(),
+                &Snapshot::from([foreign.id()])
+            )
+            .await
+            .is_err()
+        );
     }
 }

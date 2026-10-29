@@ -30,6 +30,15 @@ pub enum BackendError {
     #[error("Store-state records are not supported by this backend")]
     StoreStateStorageUnsupported,
 
+    /// Optional derived materialization was not published. History is intact.
+    /// Never used for an uncertain commit or a failed data/proof read.
+    #[error("Derived Store state was not retained: {reason}")]
+    StoreStateNotRetained { reason: String },
+
+    /// Atomic verification repair is not implemented by this custom backend.
+    #[error("Atomic verification repair is not supported by this backend")]
+    VerificationRepairUnsupported,
+
     /// A staging token does not identify a private unpublished build.
     #[error("Invalid or expired Store-state staging token")]
     InvalidStoreStateStagingToken,
@@ -280,6 +289,11 @@ impl BackendError {
     /// and must propagate, never fall back.
     pub fn is_unsupported_store_state(&self) -> bool {
         matches!(self, BackendError::StoreStateStorageUnsupported)
+    }
+
+    /// Known optional-cache refusal, safe to recompute from history.
+    pub fn is_store_state_not_retained(&self) -> bool {
+        matches!(self, BackendError::StoreStateNotRetained { .. })
     }
 
     /// Whether this error means a Store-state view no longer identifies a

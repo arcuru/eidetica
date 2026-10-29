@@ -14,7 +14,7 @@ use crate::helpers::test_backend;
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
-async fn existing_schema_v0_database_gets_store_state_tables() {
+async fn bare_v0_marker_without_application_tables_is_refused() {
     use eidetica::backend::database::Sqlite;
 
     sqlx::any::install_default_drivers();
@@ -32,22 +32,32 @@ async fn existing_schema_v0_database_gets_store_state_tables() {
         .unwrap();
     pool.close().await;
 
-    let backend = Sqlite::open(&path).await.unwrap();
-    let request = request("db", "store", StoreStateLifecycle::Derived);
-    let view = publish(
-        &backend,
-        request.clone(),
-        [(b"key".to_vec(), b"value".to_vec())],
-    )
-    .await;
-    assert_eq!(
-        backend.store_state_record_get(&view, b"key").await.unwrap(),
-        Some(b"value".to_vec())
+    // A bare marker is not an actual supported mainline layout. Literal v0
+    // upgrade coverage lives in the SQL schema tests; do not invent its data.
+    let error = match Sqlite::open(&path).await {
+        Ok(_) => panic!("bare v0 marker accepted as a database"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("Malformed SQL layout"),
+        "{error}"
     );
+    let pool = sqlx::AnyPool::connect(&url).await.unwrap();
+    let (version,): (i64,) = sqlx::query_as("SELECT version FROM schema_version")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(version, 0);
+    let (tables,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
-        backend.resolve_store_state(&request).await.unwrap(),
-        Some(view)
+        tables, 1,
+        "refusal must not synthesize missing application tables"
     );
+    pool.close().await;
 }
 
 fn request(database: &str, store: &str, lifecycle: StoreStateLifecycle) -> StoreStateRequest {

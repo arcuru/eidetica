@@ -4,12 +4,13 @@ use std::future::Future;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use super::{
     Address, DatabaseTicket, PeerId, Sync, SyncError,
     account_sync_manager::AccountSyncManager,
     background::SyncCommand,
+    operation::SyncOperation,
     peer_manager::PeerManager,
     peer_types,
     protocol::{self, SyncRequest, SyncRequestAuth, SyncResponse, SyncTreeRequest},
@@ -53,29 +54,42 @@ impl Sync {
     /// key, which is right when the device itself holds the access (directly or
     /// through a delegated tree). A database that instead granted a *user* key —
     /// the usual outcome of bootstrapping with one — needs that key here.
+    #[tracing::instrument(skip_all, fields(peer = %peer_pubkey, tree = %tree_id))]
     pub async fn sync_tree_with_peer_as(
         &self,
         peer_pubkey: &PublicKey,
         tree_id: &ID,
         signing_key: Option<&PrivateKey>,
     ) -> Result<()> {
+        let mut operation = SyncOperation::new("sync_tree");
+        let span = operation.span();
+
+        let result = self
+            .sync_tree_with_peer_as_in_operation(peer_pubkey, tree_id, signing_key, &mut operation)
+            .instrument(span)
+            .await;
+        operation.finish(&result);
+        result
+    }
+
+    /// Continue a caller-owned diagnostic operation through route selection.
+    pub(super) async fn sync_tree_with_peer_as_in_operation(
+        &self,
+        peer_pubkey: &PublicKey,
+        tree_id: &ID,
+        signing_key: Option<&PrivateKey>,
+        operation: &mut SyncOperation,
+    ) -> Result<()> {
         let addresses = self.peer_addresses(peer_pubkey).await?;
-        let peer = peer_pubkey.clone();
-        let tree = tree_id.clone();
-        let key = signing_key.cloned();
-        self.with_selected_address(&addresses, peer_pubkey, move |sync, addr| {
-            let peer = peer.clone();
-            let tree = tree.clone();
-            let key = key.clone();
-            async move {
-                sync.sync_tree_with_peer_at(&addr, &peer, &tree, key.as_ref())
-                    .await
-            }
+        self.with_selected_address(&addresses, peer_pubkey, operation, |address| async move {
+            self.sync_tree_with_peer_at(&address, peer_pubkey, tree_id, signing_key)
+                .await
         })
         .await
     }
 
     /// One address's attempt at [`Self::sync_tree_with_peer_as`].
+    #[tracing::instrument(name = "sync_tree", skip_all, fields(peer = %peer_pubkey, tree = %tree_id, address = ?address), err)]
     async fn sync_tree_with_peer_at(
         &self,
         address: &Address,
@@ -83,6 +97,7 @@ impl Sync {
         tree_id: &ID,
         signing_key: Option<&PrivateKey>,
     ) -> Result<()> {
+        debug!("Starting tree synchronization");
         // Get our current tips for this tree (empty if tree doesn't exist)
         let our_tips = self.tree_pull_tips(tree_id).await?;
 
@@ -115,6 +130,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
+                span: tracing::Span::current(),
                 address: address.clone(),
                 request: Box::new(request),
                 response: tx,
@@ -124,8 +140,7 @@ impl Sync {
 
         let response = rx
             .await
-            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
-            .map_err(|e| SyncError::Network(format!("Request failed: {e}")))?;
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))??;
 
         match response {
             SyncResponse::Bootstrap(bootstrap_response) => {
@@ -151,6 +166,7 @@ impl Sync {
         // This allows on_local_write() to find this peer when queueing entries
         self.add_tree_sync(peer_pubkey, tree_id).await?;
 
+        debug!("Completed tree synchronization");
         Ok(())
     }
 
@@ -269,6 +285,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
+                span: tracing::Span::current(),
                 address: peer_address.clone(),
                 request: Box::new(request),
                 response: tx,
@@ -279,8 +296,7 @@ impl Sync {
         // Wait for acknowledgment
         let response = rx
             .await
-            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
-            .map_err(|e| SyncError::Network(format!("Request failed: {e}")))?;
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))??;
 
         match response {
             protocol::SyncResponse::Ack | protocol::SyncResponse::Count(_) => {
@@ -578,6 +594,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
+                span: tracing::Span::current(),
                 address: address.clone(),
                 request: Box::new(request.clone()),
                 response: tx,
@@ -637,30 +654,44 @@ impl Sync {
     ///
     /// See [`sync_tree_with_peer_as`](Self::sync_tree_with_peer_as) for which
     /// key to pass.
+    #[tracing::instrument(skip_all, fields(address = ?address, tree = ?tree_id))]
     pub async fn sync_with_peer_as(
         &self,
         address: &Address,
         tree_id: Option<&ID>,
         signing_key: Option<&PrivateKey>,
     ) -> Result<()> {
-        // Connect to peer if not already connected
-        let peer_pubkey = self.connect_to_peer(address).await?;
+        let mut operation = SyncOperation::new("sync_address");
+        let span = operation.span();
+        let result = async {
+            // Connect to peer if not already connected
+            let peer_pubkey = self.connect_for_operation(address, &mut operation).await?;
 
-        // Store the address for this peer (needed for sync_tree_with_peer)
-        self.add_peer_address(&peer_pubkey, address.clone()).await?;
+            // Store the address for this peer (needed for sync_tree_with_peer)
+            self.add_peer_address(&peer_pubkey, address.clone()).await?;
 
-        if let Some(tree_id) = tree_id {
-            // Sync specific tree
-            self.sync_tree_with_peer_as(&peer_pubkey, tree_id, signing_key)
+            if let Some(tree_id) = tree_id {
+                // Sync specific tree
+                self.sync_tree_with_peer_as_in_operation(
+                    &peer_pubkey,
+                    tree_id,
+                    signing_key,
+                    &mut operation,
+                )
                 .await?;
-        } else {
-            // TODO: Sync all available trees
-            tracing::warn!(
-                "Syncing all trees not yet implemented - need to enhance discover_peer_trees first"
-            );
-        }
+            } else {
+                // TODO: Sync all available trees
+                tracing::warn!(
+                    "Syncing all trees not yet implemented - need to enhance discover_peer_trees first"
+                );
+            }
 
-        Ok(())
+            Ok(())
+        }
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
     }
 
     /// Sync with a peer using a [`DatabaseTicket`].
@@ -675,12 +706,26 @@ impl Sync {
     /// # Errors
     /// Returns [`SyncError::InvalidAddress`] if the ticket has no address hints.
     /// Returns the last sync error if no address succeeded.
+    #[tracing::instrument(skip_all, fields(tree = %ticket.database_id()))]
     pub async fn sync_with_ticket(&self, ticket: &DatabaseTicket) -> Result<()> {
-        let database_id = ticket.database_id().clone();
-        let (address, peer_pubkey) = self.select_address(ticket.addresses(), None).await?;
-        self.add_peer_address(&peer_pubkey, address.clone()).await?;
-        self.sync_tree_with_peer_at(&address, &peer_pubkey, &database_id, None)
-            .await
+        let mut operation = SyncOperation::new("sync_ticket");
+        let span = operation.span();
+        let result = async {
+            let database_id = ticket.database_id().clone();
+            let (address, peer_pubkey) = self
+                .select_address(ticket.addresses(), None, &mut operation)
+                .await?;
+            self.add_peer_address(&peer_pubkey, address.clone()).await?;
+            let result = self
+                .sync_tree_with_peer_at(&address, &peer_pubkey, &database_id, None)
+                .await;
+            operation.tree_result(&result);
+            result
+        }
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
     }
 
     /// Sync a specific tree with a peer, with optional authentication for bootstrap.
@@ -697,6 +742,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure.
+    #[tracing::instrument(skip_all, fields(peer = %peer_pubkey, tree = %tree_id))]
     pub async fn sync_tree_with_peer_auth(
         &self,
         peer_pubkey: &PublicKey,
@@ -706,29 +752,49 @@ impl Sync {
         requested_permission: Option<Permission>,
         metadata: Option<Doc>,
     ) -> Result<()> {
+        let mut operation = SyncOperation::new("sync_tree_auth");
+        let span = operation.span();
+
+        let result = self
+            .sync_tree_with_peer_auth_in_operation(
+                peer_pubkey,
+                tree_id,
+                requesting_key,
+                requesting_key_name,
+                requested_permission,
+                metadata,
+                &mut operation,
+            )
+            .instrument(span)
+            .await;
+        operation.finish(&result);
+        result
+    }
+
+    /// Continue a caller-owned diagnostic operation through route selection.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn sync_tree_with_peer_auth_in_operation(
+        &self,
+        peer_pubkey: &PublicKey,
+        tree_id: &ID,
+        requesting_key: Option<&PrivateKey>,
+        requesting_key_name: Option<&str>,
+        requested_permission: Option<Permission>,
+        metadata: Option<Doc>,
+        operation: &mut SyncOperation,
+    ) -> Result<()> {
         let addresses = self.peer_addresses(peer_pubkey).await?;
-        let peer = peer_pubkey.clone();
-        let tree = tree_id.clone();
-        let key = requesting_key.cloned();
-        let key_name = requesting_key_name.map(str::to_string);
-        self.with_selected_address(&addresses, peer_pubkey, move |sync, addr| {
-            let peer = peer.clone();
-            let tree = tree.clone();
-            let key = key.clone();
-            let key_name = key_name.clone();
-            let metadata = metadata.clone();
-            async move {
-                sync.sync_tree_with_peer_auth_at(
-                    &addr,
-                    &peer,
-                    &tree,
-                    key.as_ref(),
-                    key_name.as_deref(),
-                    requested_permission,
-                    metadata,
-                )
-                .await
-            }
+        self.with_selected_address(&addresses, peer_pubkey, operation, |address| async move {
+            self.sync_tree_with_peer_auth_at(
+                &address,
+                peer_pubkey,
+                tree_id,
+                requesting_key,
+                requesting_key_name,
+                requested_permission,
+                metadata,
+            )
+            .await
         })
         .await
     }
@@ -800,12 +866,14 @@ impl Sync {
     /// Shared by requests signed in this process and requests whose proof was
     /// signed elsewhere (a service client that keeps its key in-process). A
     /// pending or rejected bootstrap surfaces as the matching [`SyncError`].
+    #[tracing::instrument(name = "sync_tree", skip_all, fields(peer = %peer_pubkey, tree = %request.tree_id, address = ?address), err)]
     pub(super) async fn exchange_tree_request_at(
         &self,
         address: &Address,
         peer_pubkey: &PublicKey,
         request: SyncTreeRequest,
     ) -> Result<()> {
+        debug!("Starting tree synchronization");
         let tree_id = request.tree_id.clone();
         let requested_access = request
             .requesting_key
@@ -820,6 +888,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
+                span: tracing::Span::current(),
                 address: address.clone(),
                 request: Box::new(request),
                 response: tx,
@@ -830,12 +899,9 @@ impl Sync {
             })?;
 
         // Wait for response
-        let response = rx
-            .await
-            .map_err(|_| {
-                SyncError::CommandSendError("Background sync response channel closed".to_string())
-            })?
-            .map_err(|e| SyncError::Network(format!("Sync request failed: {e}")))?;
+        let response = rx.await.map_err(|_| {
+            SyncError::CommandSendError("Background sync response channel closed".to_string())
+        })??;
 
         // Handle the response (same logic as existing sync_tree_with_peer)
         match response {
@@ -936,6 +1002,7 @@ impl Sync {
         // Publication follows verified transfer and current requested authority.
         self.add_tree_sync(peer_pubkey, &tree_id).await?;
 
+        debug!("Completed tree synchronization");
         Ok(())
     }
 
@@ -1027,14 +1094,22 @@ impl Sync {
         &self,
         addresses: &[Address],
         peer_pubkey: &PublicKey,
+        operation: &mut SyncOperation,
         f: F,
     ) -> Result<()>
     where
-        F: Fn(Sync, Address) -> Fut,
-        Fut: Future<Output = Result<()>> + Send + 'static,
+        F: FnOnce(Address) -> Fut,
+        Fut: Future<Output = Result<()>>,
     {
-        let result = match self.select_address(addresses, Some(peer_pubkey)).await {
-            Ok((address, _)) => f(self.clone(), address).await,
+        let result = match self
+            .select_address(addresses, Some(peer_pubkey), operation)
+            .await
+        {
+            Ok((address, _)) => {
+                let result = f(address).await;
+                operation.tree_result(&result);
+                result
+            }
             Err(error) => Err(error),
         };
         if let Err(e) = &result {
@@ -1042,7 +1117,7 @@ impl Sync {
                 peer = %peer_pubkey,
                 attempted = ?addresses,
                 error = %e,
-                "No address answered for this peer"
+                "Sync operation failed"
             );
         }
         result
@@ -1078,7 +1153,9 @@ impl Sync {
         &self,
         addresses: &[Address],
         expected: Option<&PublicKey>,
+        operation: &mut SyncOperation,
     ) -> Result<(Address, PublicKey)> {
+        operation.routes(addresses.len(), addresses.len());
         if addresses.is_empty() {
             return Err(SyncError::InvalidAddress("Ticket has no address hints".into()).into());
         }
@@ -1097,45 +1174,52 @@ impl Sync {
             let addr = addr.clone();
             let addr_info = addr.clone();
             let cancel = cancel.subscribe();
-            tokio::spawn(async move {
-                let result = tokio::time::timeout(
-                    Self::ADDRESS_ATTEMPT_TIMEOUT,
-                    sync.connect_to_peer_with_cancel(&addr, cancel),
-                )
-                .await;
-                let result = match result {
-                    Ok(Ok(peer_pubkey)) => Ok((addr, peer_pubkey)),
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => {
-                        warn!(
-                            address = ?addr_info,
-                            "Address attempt timed out after {:?}",
-                            Self::ADDRESS_ATTEMPT_TIMEOUT,
-                        );
-                        Err(SyncError::Network(format!(
-                            "Address attempt timed out after {:?}",
-                            Self::ADDRESS_ATTEMPT_TIMEOUT,
-                        ))
-                        .into())
+            tokio::spawn(
+                async move {
+                    let result = tokio::time::timeout(
+                        Self::ADDRESS_ATTEMPT_TIMEOUT,
+                        sync.connect_to_peer_with_cancel(&addr, cancel),
+                    )
+                    .await;
+                    let attempt_timed_out = result.is_err();
+                    let result = match result {
+                        Ok(Ok(peer_pubkey)) => Ok((addr, peer_pubkey)),
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => {
+                            warn!(
+                                address = ?addr_info,
+                                "Address attempt timed out after {:?}",
+                                Self::ADDRESS_ATTEMPT_TIMEOUT,
+                            );
+                            Err(SyncError::Network(format!(
+                                "Address attempt timed out after {:?}",
+                                Self::ADDRESS_ATTEMPT_TIMEOUT,
+                            ))
+                            .into())
+                        }
+                    };
+                    match &result {
+                        Ok(_) => debug!(address = ?addr_info, "Address attempt succeeded"),
+                        Err(e) => {
+                            debug!(address = ?addr_info, error = %e, "Address attempt failed")
+                        }
                     }
-                };
-                match &result {
-                    Ok(_) => debug!(address = ?addr_info, "Address attempt succeeded"),
-                    Err(e) => debug!(address = ?addr_info, error = %e, "Address attempt failed"),
+                    // Ignore send errors — the receiver is dropped once a winner
+                    // was selected and this loser's dial has been abandoned.
+                    let _ = tx.send((result, attempt_timed_out)).await;
                 }
-                // Ignore send errors — the receiver is dropped once a winner
-                // was selected and this loser's dial has been abandoned.
-                let _ = tx.send(result).await;
-            });
+                .in_current_span(),
+            );
         }
         // Drop our sender so the channel closes when all tasks finish.
         drop(tx);
 
         let mut last_err = None;
-        while let Some(result) = rx.recv().await {
+        while let Some((result, attempt_timed_out)) = rx.recv().await {
             match result {
                 Ok((addr, answered)) => match expected {
                     Some(want) if want != &answered => {
+                        operation.wrong_peer();
                         warn!(
                             address = ?addr,
                             expected = %want,
@@ -1149,9 +1233,16 @@ impl Sync {
                             .into(),
                         );
                     }
-                    _ => return Ok((addr, answered)),
+                    _ => {
+                        operation.selected(&addr);
+                        debug!(address = ?addr, "Selected sync route");
+                        return Ok((addr, answered));
+                    }
                 },
-                Err(e) => last_err = Some(e),
+                Err(e) => {
+                    operation.failed_route(&e, attempt_timed_out);
+                    last_err = Some(e);
+                }
             }
         }
 

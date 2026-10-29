@@ -15,3 +15,6 @@ self-hosted-runner:
     - ubicloud-standard-8-arm
     - ubicloud-standard-16-arm
     - ubicloud-standard-30-arm
+    # Persistent native ARM64 runner registered to this repository
+    - zinc
+    - nix

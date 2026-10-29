@@ -47,6 +47,13 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
         ("backend", "InvalidStoreStateStagingToken") => {
             BackendError::InvalidStoreStateStagingToken.into()
         }
+        ("backend", "StoreStateNotRetained") => BackendError::StoreStateNotRetained {
+            reason: err.message,
+        }
+        .into(),
+        ("backend", "StoreStateStorageUnsupported") => {
+            BackendError::StoreStateStorageUnsupported.into()
+        }
         ("backend", "InvalidStoreStateView") => BackendError::InvalidStoreStateView.into(),
         ("backend", "RecordTooLarge") => BackendError::RecordTooLarge { encoded_bytes: 0 }.into(),
         ("backend", "EntryNotFound") => BackendError::EntryNotFound {

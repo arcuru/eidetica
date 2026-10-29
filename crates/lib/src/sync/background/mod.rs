@@ -15,6 +15,7 @@ use tracing::{Instrument, debug, info, info_span, trace, warn};
 use super::{
     error::SyncError,
     handler::SyncHandlerImpl,
+    operation::SyncOperation,
     peer_manager::PeerManager,
     peer_state::PeerStates,
     peer_types::{Address, PeerId, PeerStatus},
@@ -79,6 +80,8 @@ pub enum SyncCommand {
     // Peer connection
     /// Connect to a peer and perform handshake
     ConnectToPeer {
+        /// Caller context for the engine-served dial; never transmitted.
+        span: tracing::Span,
         address: Address,
         /// Closes when the race that started this dial no longer needs it:
         /// a usable route was selected elsewhere. The dial is abandoned
@@ -90,6 +93,8 @@ pub enum SyncCommand {
     // Request/Response operations
     /// Send a sync request and get response
     SendRequest {
+        /// Caller context for the engine-served request; never transmitted.
+        span: tracing::Span,
         address: Address,
         request: Box<SyncRequest>,
         response: oneshot::Sender<Result<SyncResponse>>,
@@ -445,6 +450,7 @@ impl BackgroundSync {
             }
 
             SyncCommand::ConnectToPeer {
+                span,
                 address,
                 cancel,
                 response,
@@ -460,26 +466,29 @@ impl BackgroundSync {
                         #[cfg(any(test, feature = "testing"))]
                         crate::sync::dial_testing::record(&attempt);
                         let addr_info = address.clone();
-                        tokio::spawn(async move {
-                            tokio::select! {
-                                // Check the race first: a dial whose race is
-                                // already over never starts, instead of
-                                // opening a connection it is about to drop.
-                                biased;
-                                () = attempt.abandoned() => {
-                                    // Another address won the race: tear this
-                                    // dial down instead of holding its socket,
-                                    // buffers, and task to the deadline.
-                                    debug!(
-                                        address = ?addr_info,
-                                        "Dial abandoned: another address won the race"
-                                    );
-                                }
-                                result = conn::run_handshake(ctx, address) => {
-                                    let _ = response.send(result);
+                        tokio::spawn(
+                            async move {
+                                tokio::select! {
+                                    // Check the race first: a dial whose race is
+                                    // already over never starts, instead of
+                                    // opening a connection it is about to drop.
+                                    biased;
+                                    () = attempt.abandoned() => {
+                                        // Another address won the race: tear this
+                                        // dial down instead of holding its socket,
+                                        // buffers, and task to the deadline.
+                                        debug!(
+                                            address = ?addr_info,
+                                            "Dial abandoned: another address won the race"
+                                        );
+                                    }
+                                    result = conn::run_handshake(ctx, address) => {
+                                        let _ = response.send(result);
+                                    }
                                 }
                             }
-                        });
+                            .instrument(span),
+                        );
                     }
                     Err(e) => {
                         let _ = response.send(Err(e));
@@ -488,6 +497,7 @@ impl BackgroundSync {
             }
 
             SyncCommand::SendRequest {
+                span,
                 address,
                 request,
                 response,
@@ -507,10 +517,14 @@ impl BackgroundSync {
                 // from the engine and the loop is free immediately.
                 match self.transport_manager.handle_for_address(&address) {
                     Some(transport) => {
-                        tokio::spawn(async move {
-                            let result = transport.send_request(&address, &request).await;
-                            let _ = response.send(result);
-                        });
+                        tokio::spawn(
+                            async move {
+                                debug!(address = ?address, "Sending sync request");
+                                let result = transport.send_request(&address, &request).await;
+                                let _ = response.send(result);
+                            }
+                            .instrument(span),
+                        );
                     }
                     None => {
                         let _ =
@@ -570,6 +584,7 @@ impl BackgroundSync {
         &self,
         addresses: &[Address],
         expected: &PublicKey,
+        operation: &mut SyncOperation,
     ) -> Result<(std::sync::Arc<dyn SyncTransport>, Address)> {
         // Collect transport handles upfront (before any spawn).
         let mut tasks: Vec<(std::sync::Arc<dyn SyncTransport>, Address)> = Vec::new();
@@ -579,6 +594,7 @@ impl BackgroundSync {
             }
         }
 
+        operation.routes(addresses.len(), tasks.len());
         if tasks.is_empty() {
             return Err(
                 SyncError::InvalidAddress("No matching transport for any address".into()).into(),
@@ -593,34 +609,38 @@ impl BackgroundSync {
             let mut ctx = self.handshake_ctx(&addr)?;
             ctx.transport = Arc::clone(&transport);
             let addr_info = addr.clone();
-            attempts.push(tokio::spawn(async move {
-                let result = tokio::time::timeout(
-                    ADDRESS_ATTEMPT_TIMEOUT,
-                    conn::run_handshake(ctx, addr.clone()),
-                )
-                .await;
-                let result = match result {
-                    Ok(Ok(answered)) => Ok((transport, addr, answered)),
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => {
-                        warn!(
-                            address = ?addr_info,
-                            timeout = ?ADDRESS_ATTEMPT_TIMEOUT,
-                            "Address attempt timed out",
-                        );
-                        Err(SyncError::Network(format!(
-                            "Address attempt timed out after {ADDRESS_ATTEMPT_TIMEOUT:?}"
-                        ))
-                        .into())
-                    }
-                };
-                let _ = tx.send(result).await;
-            }));
+            attempts.push(tokio::spawn(
+                async move {
+                    let result = tokio::time::timeout(
+                        ADDRESS_ATTEMPT_TIMEOUT,
+                        conn::run_handshake(ctx, addr.clone()),
+                    )
+                    .await;
+                    let attempt_timed_out = result.is_err();
+                    let result = match result {
+                        Ok(Ok(answered)) => Ok((transport, addr, answered)),
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => {
+                            warn!(
+                                address = ?addr_info,
+                                timeout = ?ADDRESS_ATTEMPT_TIMEOUT,
+                                "Address attempt timed out",
+                            );
+                            Err(SyncError::Network(format!(
+                                "Address attempt timed out after {ADDRESS_ATTEMPT_TIMEOUT:?}"
+                            ))
+                            .into())
+                        }
+                    };
+                    let _ = tx.send((result, attempt_timed_out)).await;
+                }
+                .in_current_span(),
+            ));
         }
         drop(tx);
 
         let mut last_err = None;
-        while let Some(result) = rx.recv().await {
+        while let Some((result, attempt_timed_out)) = rx.recv().await {
             match result {
                 Ok((transport, addr, answered)) if &answered == expected => {
                     // Cancel every attempt that has not succeeded and let no
@@ -635,9 +655,12 @@ impl BackgroundSync {
                     for attempt in attempts {
                         let _ = attempt.await;
                     }
+                    operation.selected(&addr);
+                    debug!(address = ?addr, "Selected sync route");
                     return Ok((transport, addr));
                 }
                 Ok((_, addr, answered)) => {
+                    operation.wrong_peer();
                     warn!(
                         address = ?addr,
                         expected = %expected,
@@ -651,7 +674,11 @@ impl BackgroundSync {
                         .into(),
                     );
                 }
-                Err(e) => last_err = Some(e),
+                Err(e) => {
+                    operation.failed_route(&e, attempt_timed_out);
+                    debug!(error = %e, "Address attempt failed");
+                    last_err = Some(e);
+                }
             }
         }
 
@@ -674,36 +701,47 @@ impl BackgroundSync {
     /// # Error Handling
     ///
     /// Failed sends are automatically added to the retry queue with exponential backoff.
+    #[tracing::instrument(skip_all, fields(peer = %peer, entry_count = entries.len()))]
     async fn send_to_peer(&self, peer: &PeerId, entries: Vec<Entry>) -> Result<()> {
-        // Get peer addresses from sync tree (extract and drop transaction before await)
-        let (addresses, request) = {
-            let sync_tree = self.get_sync_tree().await?;
-            let txn = sync_tree.new_transaction().await?;
-            let peer_info = PeerManager::new(&txn)
-                .get_peer_info(peer.public_key())
-                .await?
-                .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
+        let mut operation = SyncOperation::new("send_entries");
+        let span = operation.span();
+        let result = async {
+            // Get peer addresses from sync tree (extract and drop transaction before await)
+            let (addresses, request) = {
+                let sync_tree = self.get_sync_tree().await?;
+                let txn = sync_tree.new_transaction().await?;
+                let peer_info = PeerManager::new(&txn)
+                    .get_peer_info(peer.public_key())
+                    .await?
+                    .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
 
-            let addresses = peer_info.addresses.clone();
-            let request = SyncRequest::SendEntries(entries);
-            (addresses, request)
-        }; // Transaction is dropped here
+                let addresses = peer_info.addresses.clone();
+                let request = SyncRequest::SendEntries(entries);
+                (addresses, request)
+            }; // Transaction is dropped here
 
-        let (transport, address) = self.select_route(&addresses, peer.public_key()).await?;
-        let response = transport.send_request(&address, &request).await?;
+            let (transport, address) = self
+                .select_route(&addresses, peer.public_key(), &mut operation)
+                .await?;
+            let response = transport.send_request(&address, &request).await?;
 
-        match response {
-            SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
-            SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
-                "Peer {peer} returned error: {msg}"
-            ))
-            .into()),
-            _ => Err(SyncError::UnexpectedResponse {
-                expected: "Ack or Count",
-                actual: format!("{response:?}"),
+            match response {
+                SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
+                SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
+                    "Peer {peer} returned error: {msg}"
+                ))
+                .into()),
+                _ => Err(SyncError::UnexpectedResponse {
+                    expected: "Ack or Count",
+                    actual: format!("{response:?}"),
+                }
+                .into()),
             }
-            .into()),
         }
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
     }
 
     /// Add failed send to retry queue
@@ -893,8 +931,11 @@ impl BackgroundSync {
     }
 
     /// Sync with a specific peer (bidirectional)
+    #[tracing::instrument(skip_all, fields(peer = %peer_id))]
     async fn sync_with_peer(&self, peer_id: &PeerId) -> Result<()> {
-        async move {
+        let mut operation = SyncOperation::new("sync_peer");
+        let span = operation.span();
+        let result = async {
             info!(peer = %peer_id, "Starting peer synchronization");
 
             // Get peer addresses and tree list from sync tree (extract and
@@ -925,14 +966,18 @@ impl BackgroundSync {
             // Race bounded handshakes to select one route. Other successful
             // handshakes may finish registration, but only the selected route
             // continues into the tree exchange.
-            let (_transport, address) = self.select_route(&addresses, peer_id.public_key()).await?;
+            let (_transport, address) = self
+                .select_route(&addresses, peer_id.public_key(), &mut operation)
+                .await?;
 
             info!(peer = %peer_id, tree_count = sync_trees.len(), "Synchronizing trees with peer");
 
             let tree_count = sync_trees.len();
             let mut synced_any = false;
             for (index, tree_id) in sync_trees.iter().enumerate() {
-                let Err(e) = self.sync_tree_with_peer(peer_id, tree_id, &address).await else {
+                let result = self.sync_tree_with_peer(peer_id, tree_id, &address).await;
+                operation.tree_result(&result);
+                let Err(e) = result else {
                     synced_any = true;
                     continue;
                 };
@@ -970,8 +1015,10 @@ impl BackgroundSync {
             info!(peer = %peer_id, "Completed peer synchronization");
             Ok(())
         }
-        .instrument(info_span!("sync_with_peer", peer = %peer_id))
-        .await
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
     }
 
     /// Sync a specific tree with a peer using smart duplicate prevention.

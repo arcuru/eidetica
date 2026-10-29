@@ -260,7 +260,17 @@ impl Error {
         matches!(self, Error::Backend(e) if e.is_unsupported_store_state())
     }
 
-    /// Whether a Store-state view no longer identifies a published record set.
+    /// Whether a derived materialization was definitely not retained.
+    pub fn is_store_state_not_retained(&self) -> bool {
+        matches!(self, Error::Backend(e) if e.is_store_state_not_retained())
+    }
+
+    /// Optional cache absence/refusal, not a storage, authentication or decode failure.
+    pub fn is_optional_store_state_unavailable(&self) -> bool {
+        self.is_unsupported_store_state() || self.is_store_state_not_retained()
+    }
+
+    /// Whether a previously resolved view has expired.
     pub fn is_invalid_store_state_view(&self) -> bool {
         matches!(self, Error::Backend(e) if e.is_invalid_store_state_view())
     }

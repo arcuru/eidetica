@@ -417,9 +417,9 @@ The context grows with the registry and must fit in one frame under the existing
 `ReadScope` controls the DAG snapshot exposed over the wire:
 
 - **`Verified`** (default) — only the maximal all-`Verified` ancestor-closed prefix of the DAG (the "Verified frontier"). Tips that are still `Unverified` are replaced by their nearest `Verified` ancestors; `Failed` entries are always dropped.
-- **`AllowUnverified`** — open against the raw DAG (only `Failed` dropped). The caller must explicitly opt in via `Database::allow_unverified()`.
+- **`AllowUnverified`** — select raw tips with `Failed` tips dropped, not a recursively sanitized accepted prefix. The caller must explicitly opt in via `Database::allow_unverified()`.
 
-`BeginTransaction` carries the caller's `ReadScope`: write parents are drawn from the _same_ snapshot the caller reads, so a write built under `AllowUnverified` uses unverified tips as parents and a write built under the `Verified` default uses only verified ancestors. This ensures the write's parent snapshot is self-consistent with the caller's read posture.
+`BeginTransaction` carries the caller's `ReadScope`: selected parents come from the same snapshot as its reads. Selection is not permission to commit against unsettled ancestry: signed local commit validation requires Verified parents, and server-side verification defers a submitted Entry with Unverified parents. `GetVerifiedTips` itself always returns the server's Verified frontier, even for a client handle with `.allow_unverified()`. The [verification contract](../design/verification.md#writes-inherit-the-selected-boundary-not-weaker-validation) defines the distinction.
 
 ### Gate scope for `AuthenticatedDb`
 
@@ -484,6 +484,6 @@ This is a **fully trusted local-client** v1. Filesystem access to the socket gra
 
 - **PAKE for network transport**: `TrustedLogin` is safe only because the socket is filesystem-gated. A network transport must replace it with a password-authenticated key exchange.
 - **Sync delegation**: as above.
-- **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier needs an incremental frontier first; `Database::verified_frontier` is an O(N) walk, too expensive on the per-commit path.
+- **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier can now read the retained frontier (`BackendImpl::verified_snapshot`); wiring it into the per-commit path is still future work.
 - **Notification backpressure**: the per-connection writer channel is `mpsc::unbounded_channel`; a stalled client reader buffers notifications in memory. Switch to a bounded channel with a documented drop-oldest policy if memory growth becomes measurable.
 - **Derived-key caching**: cache the Argon2id-derived encryption key in an OS secret store with a TTL, evolving the daemon into an ssh-agent-like key agent to eliminate repeated password prompts for CLI tools.
