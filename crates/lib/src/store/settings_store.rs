@@ -173,6 +173,11 @@ impl SettingsStore {
     /// entry, not the full auth state. The CRDT merge produces the correct
     /// merged view when reading.
     ///
+    /// Authorization is enforced at transaction commit, not by this setter.
+    /// The signer's effective permission must cover both the causal pre-write
+    /// grant and the resulting grant. The shared entry validator applies the
+    /// same check to remote entries and raw settings deltas.
+    ///
     /// # Arguments
     /// * `pubkey` - The public key
     /// * `key` - The AuthKey containing name, permissions, and status
@@ -241,6 +246,9 @@ impl SettingsStore {
 
     /// Revoke an authentication key in the settings
     ///
+    /// Commit requires an admin with at least the target's pre-write permission,
+    /// just as for [`Self::set_auth_key`]. Revocation is causal, not retroactive.
+    ///
     /// # Arguments
     /// * `pubkey` - The public key of the key to revoke
     ///
@@ -256,6 +264,8 @@ impl SettingsStore {
     /// Add a delegated tree reference to the settings
     ///
     /// The delegation is stored by root tree ID, extracted from `tree_ref.tree.root`.
+    /// Commit checks the signer's effective permission against the old and new
+    /// bounds, including a minimum bound that raises delegated permissions.
     ///
     /// # Arguments
     /// * `tree_ref` - The delegated tree reference to add
