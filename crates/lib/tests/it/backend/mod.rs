@@ -18,3 +18,5 @@ mod subtree_operations;
 mod tree_operations;
 mod verification;
 mod verified_snapshot;
+
+mod local_accounts;
