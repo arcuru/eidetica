@@ -70,9 +70,10 @@ does not introduce canonical JSON ordering or a new merge algebra.
 ## Standalone Map and Lww Algebra
 
 `Map<K, V>` and `Lww<T>` implement merge algebra independently of persistence.
-Neither provides a built-in `Codec` or Serde implementation, so neither selects
-a durable format or changes an existing Store. Their payloads need not implement
-`Default` or encoding traits.
+Neither provides a built-in `Codec`, so neither selects a durable format or
+changes an existing Store. Conditional Serde implementations expose their logical
+structure without adding encoding bounds to the algebra. Their payloads need not
+implement `Default` or encoding traits.
 
 ### Ordered register operations
 
@@ -147,6 +148,113 @@ is required.
 These primitives do not integrate with Table, add a live-value convenience
 layer, or define lifecycle resets. Table behavior and persisted bytes are
 unchanged.
+
+## Structured DAG-CBOR Persistence
+
+`eidetica::crdt::dag_cbor::{encode, decode}` is an opt-in boundary for **new**
+structured formats. Serde describes the complete value; the helper produces one
+canonical plaintext object, not a sequence of separately encoded child payloads.
+It does not implement `Codec` automatically or select a Store/schema version.
+
+### Logical wire representation
+
+The conditional Serde implementations pin these shapes independently of private
+Rust fields:
+
+| Type              | Logical representation                                                  |
+| ----------------- | ----------------------------------------------------------------------- |
+| `Map<K, V>`       | A map from serialized keys to structured `V`, with no `entries` wrapper |
+| `Lww::NoOp`       | The text string `"NoOp"`                                                |
+| `Lww::Delete`     | The text string `"Delete"`                                              |
+| `Lww::Set(value)` | A single-entry map `{"Set": value}`, with structured `value`            |
+
+The DAG-CBOR boundary requires unique text keys. `Map`'s algebra still permits
+other ordered key types, but their serialization must expose text to use this
+helper. Keys are literal: empty, dotted and Unicode strings are not normalized.
+An absent entry, an explicit `NoOp`, a `Delete`, and `Set` of empty bytes remain
+distinct. Payloads use their own declared Serde schema, not a recursive `Codec`.
+There is no per-Map/Lww version header, payload-byte envelope or Table-specific
+version protocol.
+
+A logical map has the same bytes regardless of insertion/iteration order,
+`BTreeMap` versus `HashMap`, or a custom string type exposing the same Serde text.
+DAG-CBOR orders keys by encoded length and then bytes; this is **not** ordinary
+Rust string scan order (`"b"` precedes `"aa"` on the wire). Arrays retain order.
+A change to a Rust container alone need not change the format, but changing its
+logical equality, key normalization, field/variant names or merge interpretation
+is a schema/compatibility change.
+
+```rust
+use eidetica::crdt::{Map, Lww, dag_cbor};
+
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Record {
+    #[serde(rename = "name")]
+    name: String,
+    #[serde(rename = "data", with = "serde_bytes")]
+    data: Vec<u8>,
+}
+
+let mut operations = Map::new();
+operations.insert("literal.key".to_owned(), Lww::Set(Record {
+    name: "example".to_owned(),
+    data: vec![0, 255],
+}));
+operations.insert("gone".to_owned(), Lww::Delete);
+let bytes = dag_cbor::encode(&operations)?;
+let decoded: Map<String, Lww<Record>> = dag_cbor::decode(&bytes)?;
+assert_eq!(decoded, operations);
+# Ok::<(), eidetica::Error>(())
+```
+
+### Supported domain and strict admission
+
+The helper follows the [DAG-CBOR encoding rules](https://ipld.io/specs/codecs/dag-cbor/spec/):
+
+- Null, booleans, UTF-8 text, arrays, unique text-keyed maps, byte strings and CID
+  links are supported. Native integer range is `[-2^64, 2^64-1]`, including the
+  full `i64` and `u64` ranges. Out-of-range `i128`/`u128` values fail; schemas that
+  need them must choose an explicit representation, not an implicit JSON fallback.
+- Floats must be finite. They use 64-bit encoding, even when exactly representable
+  at a narrower width. New values normalize negative zero to positive zero;
+  negative-zero bytes are rejected on admission.
+- Binary leaves require `serde_bytes` (as above) or an equivalent byte adapter.
+  Plain `Vec<u8>` is an integer array, not a byte string. Opaque native bytes are
+  canonical as those exact bytes, not as all equivalent Yjs histories.
+- `decode` requires both `DeserializeOwned` and `Serialize`. It rejects malformed,
+  trailing, duplicate-key, non-text-key, nonminimal-number/length, wrong-order and
+  wrong-float-width inputs. It also requires typed re-encoding to reproduce the
+  input exactly: ignored fields, redundant defaults, unknown variants and lossy
+  schema normalization are not silently accepted.
+
+The pinned `serde_ipld_dagcbor` adapter sorts map keys and rejects nonfinite float
+encoding, but its raw decoder accepts some noncanonical representations, its
+serializer permits non-text/duplicate keys, and it preserves negative zero.
+The helper therefore validates through `ipld_core::Ipld`, normalizes zero on
+encoding, and compares canonical re-encoding on admission. This uses the library
+parser, not a separate handwritten CBOR parser. Typed re-encoding is necessary
+in addition: Doc List's existing decoder can collapse repeated positions even
+when the surrounding CBOR is canonical.
+
+This validation allocates a complete IPLD value and performs multiple passes;
+one persisted object does not mean one CPU pass or streaming encoding. Serde
+implementations must preserve complete state and be deterministic under their
+schema. A display/visible-row serialization that omits tombstones cannot meet
+that contract. Custom types remain responsible for their own semantic invariants.
+
+Nested Doc uses its existing structural Serde representation, retaining atomic
+flags, child tombstones and ordered List position/value pairs, including List
+tombstones and UUIDs. The helper does not establish Doc v1 or repair Doc's separate
+batching defect involving delete/scalar replacement followed by descendant writes.
+The continuation tests qualify only their lawful fixtures, not arbitrary Doc
+operation regrouping.
+
+Existing Doc/List/Value/Yrs JSON `Codec` implementations, Table, Entry bytes/IDs,
+signature inputs, encryption and legacy decoder semantics remain unchanged.
+This helper is not routed into any of those persistence paths. A future Store
+must explicitly own its whole format and interpretation/schema identity; this
+module does not decide where that identity is stored. Canonical plaintext does
+not imply identical ciphertext or equivalence of different histories.
 
 ## Fork and Merge
 
