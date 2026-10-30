@@ -3,22 +3,19 @@
 use tracing::{debug, info};
 
 use super::{Sync, SyncError, account_sync_manager::AccountSyncManager};
-use crate::{
-    Database, Result, Snapshot, account::types::TrackedDatabase, entry::ID,
-    instance::settings_merge::merge_sync_settings, store::Table,
-};
+use crate::{Result, Snapshot, entry::ID, instance::settings_merge::merge_sync_settings};
 
 impl Sync {
     // === AccountSession Synchronization Methods ===
 
     /// Synchronize a user's preferences with the sync system.
     ///
-    /// This establishes tracking for a user's preferences database and synchronizes
-    /// their current preferences to the sync tree. The sync system will monitor the
-    /// user's preferences and automatically sync databases according to their settings.
+    /// This establishes tracking for a user's native local preferences and synchronizes
+    /// their current local preferences to the sync tree. Native preference writers notify the
+    /// sync coordinator, which configures replication according to those settings.
     ///
     /// This method ensures the user is tracked and reads their preferences database
-    /// to update sync configuration. It detects changes via tip comparison and only
+    /// to update sync configuration. It detects changes via a token of sorted activation data and only
     /// processes updates when preferences have changed.
     ///
     /// This operation is idempotent and can be called multiple times safely.
@@ -62,27 +59,19 @@ impl Sync {
             }
         };
 
-        // Open user's preferences database with device key (Read permission)
         let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
-        let device_key = instance.signing_key()?.clone();
-        let prefs_db = Database::open(&instance, preferences_db_id)
-            .await?
-            .with_key(device_key.clone());
-        let current_snapshot = prefs_db.snapshot().await?;
-
-        // Check if preferences have changed via snapshot comparison (set-equal).
-        if current_snapshot == Snapshot::from(old_tips.clone()) {
-            debug!(login_id = %user_uuid_str, "No changes to user preferences, skipping update");
+        let local = crate::account::local_state::read(&instance, user_uuid_str).await?;
+        let mut all_tracked: Vec<_> = local.databases.into_values().collect();
+        all_tracked.sort_by_key(|tracked| tracked.database_id.to_string());
+        let value = serde_json::to_value(&all_tracked)
+            .map_err(|_| crate::account::AccountError::InvalidLocalState)?;
+        let bytes = serde_json::to_vec(&value)
+            .map_err(|_| crate::account::AccountError::InvalidLocalState)?;
+        // A change token for local preferences, not a portable Account frontier.
+        let current_snapshot = Snapshot::from(vec![ID::from_bytes(bytes)]);
+        if current_snapshot == Snapshot::from(old_tips) {
             return Ok(());
         }
-
-        debug!(login_id = %user_uuid_str, "Account preferences changed, updating sync configuration");
-
-        // Read all tracked databases
-        let databases_table = prefs_db
-            .get_store_viewer::<Table<TrackedDatabase>>("databases")
-            .await?;
-        let all_tracked = databases_table.search(|_| true).await?; // Get all entries
 
         // Get databases user previously tracked
         let old_databases = user_mgr.get_linked_databases(user_uuid_str).await?;
@@ -90,7 +79,6 @@ impl Sync {
         // Build set of current database IDs
         let current_databases: std::collections::HashSet<_> = all_tracked
             .iter()
-            .map(|(_uuid, tracked)| tracked)
             .filter(|t| t.sync_settings.sync_enabled)
             .map(|t| t.database_id.clone())
             .collect();
@@ -110,7 +98,7 @@ impl Sync {
         }
 
         // Add/update user for current databases
-        for (_uuid, tracked) in &all_tracked {
+        for tracked in &all_tracked {
             if tracked.sync_settings.sync_enabled {
                 user_mgr
                     .link_account_to_database(&tracked.database_id, user_uuid_str)
@@ -130,29 +118,13 @@ impl Sync {
                 continue;
             }
 
-            // Collect settings from all users tracking this database
-            let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
-            let device_key = instance.signing_key()?.clone();
             let mut settings_list = Vec::new();
             for uuid in &users {
-                // Read preferences from each user's database using device key (Read permission)
-                if let Some((user_prefs_db_id, _)) =
-                    user_mgr.get_tracked_account_state(uuid).await?
+                let state = crate::account::local_state::read(&instance, uuid).await?;
+                if let Some(tracked) = state.databases.get(&db_id.to_string())
+                    && tracked.sync_settings.sync_enabled
                 {
-                    let user_db = Database::open(&instance, &user_prefs_db_id)
-                        .await?
-                        .with_key(device_key.clone());
-                    let user_table = user_db
-                        .get_store_viewer::<Table<TrackedDatabase>>("databases")
-                        .await?;
-
-                    // Find this database's settings
-                    for (_key, tracked) in user_table.search(|_| true).await? {
-                        if tracked.database_id == db_id && tracked.sync_settings.sync_enabled {
-                            settings_list.push(tracked.sync_settings.clone());
-                            break;
-                        }
-                    }
+                    settings_list.push(tracked.sync_settings.clone());
                 }
             }
 

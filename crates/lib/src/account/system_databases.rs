@@ -1,6 +1,6 @@
 //! System database initialization for the account system
 //!
-//! Creates and manages _users and _databases system databases.
+//! Creates system Auth databases and native installation login records.
 
 use handle_trait::Handle;
 
@@ -19,7 +19,6 @@ use crate::{
     },
     constants::{DATABASES, INSTANCE, USERS},
     crdt::Doc,
-    store::Table,
 };
 
 /// Whether `_users.auth_settings` already lists an instance admin.
@@ -104,7 +103,7 @@ pub async fn create_instance_database(
 
 /// Create the _users system database
 ///
-/// This database stores the account directory mapping user_id -> AccountInfo.
+/// This database gates instance-admin capabilities. Login credentials are native local records.
 /// Auth is bootstrapped by `Database::create` with the device key as Admin(0).
 ///
 /// # Arguments
@@ -120,7 +119,7 @@ pub async fn create_accounts_database(
     let mut settings = Doc::new();
     settings.set("name", USERS);
     settings.set("type", "system");
-    settings.set("description", "Account login directory database");
+    settings.set("description", "Instance account administration");
 
     Database::create(instance, device_signing_key.clone(), settings).await
 }
@@ -154,8 +153,8 @@ pub async fn create_databases_tracking(
 /// This function:
 /// 1. Optionally hashes the account's password (if provided)
 /// 2. Generates a device keypair for the account
-/// 3. Creates an account database for storing keys (encrypted or unencrypted)
-/// 4. Creates AccountInfo and stores it in _users database with auto-generated UUID
+/// 3. Creates the portable Account database (no private keys)
+/// 4. Registers AccountInfo in native local storage with a login UUID
 /// 5. **First-admin bootstrap**: if no instance admin exists yet in `_users.auth_settings`,
 ///    promotes this account by adding their pubkey as `Admin(0)` to the
 ///    instance-admin system DBs (`_users` and `_databases`). Subsequent
@@ -181,21 +180,15 @@ pub async fn create_account(
     password: Option<&str>,
 ) -> Result<(String, AccountInfo, crate::auth::crypto::PrivateKey)> {
     let username = username.as_ref();
-    // FIXME: Race condition - multiple concurrent creates with same username
-    // can both succeed, creating duplicate accounts. This requires either:
-    // 1. Distributed locking mechanism
-    // 2. Backend-level unique constraints
-    // 3. Periodic cleanup/reconciliation process
-    // For now, duplicate detection happens at login time.
-
-    // Check if username already exists
-    let users_table = users_db
-        .get_store_viewer::<Table<AccountInfo>>("users")
-        .await?;
-    let existing = users_table.search(|u| u.username == username).await?;
-    if !existing.is_empty() {
+    // Names are unique within this installation. The native insertion below
+    // is atomic; no credential row is ever written into _users or AccountDB.
+    if super::local_logins::list(users_db)
+        .await?
+        .iter()
+        .any(|name| name == username)
+    {
         return Err(AccountError::LoginNameAlreadyExists {
-            username: username.to_string(),
+            username: username.to_owned(),
         }
         .into());
     }
@@ -217,19 +210,9 @@ pub async fn create_account(
         Database::create(instance, user_private_key.clone(), user_db_settings).await?;
     let account_id = account_database.root_id().clone();
 
-    // The two historical follow-up writes on the account's tree — granting the
-    // device key `Read` on `_settings.auth`, and persisting the root `AccountKey`
-    // metadata into the `keys` table — are deferred to first login. The
-    // structural reason: this function may run over a remote (admin's)
-    // session whose `session_pubkey` is *not* a member of the new account's
-    // tree, so `Transaction::commit`'s reads on that tree would be denied by
-    // the server-side gate (gating is by connection session_pubkey, not by
-    // request identity hint). Deferring is also functionally correct: the
-    // device-Read grant only matters once the daemon needs to sync the
-    // account's tree on the account's behalf, and the `keys` row is layered on top
-    // of the root key already carried in `AccountInfo.credentials` (which is
-    // the durable source of truth and reaches the account via `_users`).
-    // `build_account_session` performs the idempotent bootstrap on first login.
+    // First login grants the existing daemon device Read access to AccountDB.
+    // It also initializes native key metadata from this local root credential;
+    // neither root nor additional private keys are authored into AccountDB.
     let device_pubkey = instance.id();
 
     // 3. Build AccountCredentials — encrypt root key if password provided
@@ -270,11 +253,8 @@ pub async fn create_account(
         status: AccountStatus::Active,
     };
 
-    // 5. Store AccountInfo in _users database with auto-generated UUID
-    let tx = users_db.new_transaction().await?;
-    let users_table = tx.get_store::<Table<AccountInfo>>("users").await?;
-    let login_id = users_table.insert(account_info.clone()).await?; // Generate UUID primary key
-    tx.commit().await?;
+    let login_id = uuid::Uuid::new_v4().to_string();
+    super::local_logins::register(instance, &login_id, &account_info).await?;
 
     // 6. First-admin bootstrap: if no instance admin exists yet, promote this
     // account. Done last so that a failure here doesn't leave behind a partially
@@ -293,7 +273,7 @@ pub async fn create_account(
 /// Login an account
 ///
 /// This function:
-/// 1. Searches for account by username in _users database
+/// 1. Finds the installation-local login record by name
 /// 2. Verifies password (if provided and required)
 /// 3. Opens account's private database
 /// 4. Loads and decrypts account keys (or loads unencrypted for passwordless accounts)
@@ -309,47 +289,14 @@ pub async fn create_account(
 /// # Returns
 /// An AccountSession object with keys loaded
 pub async fn login_account(
-    users_db: &Database,
+    _users_db: &Database,
     instance: &Instance,
     username: impl AsRef<str>,
     password: Option<&str>,
 ) -> Result<super::AccountSession> {
     let username = username.as_ref();
 
-    // 1. Search for account by username
-    let users_table = users_db
-        .get_store_viewer::<Table<AccountInfo>>("users")
-        .await?;
-    let results = users_table.search(|u| u.username == username).await?;
-
-    // Check for duplicate accounts (race condition detection)
-    let (login_id, account_info) = match results.len() {
-        0 => {
-            return Err(AccountError::AccountNotFound {
-                username: username.to_string(),
-            }
-            .into());
-        }
-        1 => results.into_iter().next().unwrap(),
-        count => {
-            // FIXME: Multiple accounts with same username detected!
-            // This indicates the race condition occurred during account creation.
-            // Resolution requires manual intervention or automated cleanup.
-            return Err(AccountError::DuplicateAccountsDetected {
-                username: username.to_string(),
-                count,
-            }
-            .into());
-        }
-    };
-
-    // Check if account is disabled
-    if account_info.status != AccountStatus::Active {
-        return Err(AccountError::AccountDisabled {
-            username: username.to_string(),
-        }
-        .into());
-    }
+    let (login_id, account_info) = super::local_logins::lookup(instance, username).await?;
 
     // 2. Verify password compatibility and construct root AccountKey from credentials
     let creds = &account_info.credentials;
@@ -406,25 +353,6 @@ pub async fn login_account(
     )
     .await?;
 
-    // Last-login bookkeeping. Best-effort: skip the write on remote instances
-    // (no local device key to sign with — the daemon owns this side) and
-    // downgrade any other failure to a debug log rather than blocking login.
-    // The last_login table is treated as a low-priority access log (per the
-    // older TODO noting it grows unbounded and should move to a log table);
-    // a missed entry is acceptable, a failed login over a transient table
-    // error would not be.
-    let now = instance.clock().now_secs();
-    let user_uuid_ref = login_id.clone();
-    if let Err(e) = users_db
-        .with_transaction(|tx| async move {
-            let last_login_table = tx.get_store::<Table<i64>>("last_login").await?;
-            last_login_table.set(&user_uuid_ref, now).await
-        })
-        .await
-    {
-        tracing::debug!("skipping last_login update for {username}: {e}");
-    }
-
     Ok(user)
 }
 
@@ -432,17 +360,9 @@ pub async fn login_account(
 /// signing key, the account's record, and an optional password (the
 /// `AccountKeyManager` re-derives the KEK from it for any per-key decryption).
 ///
-/// Used by both the local path (`login_account`, after it reads `_users` and
-/// decrypts the root key from credentials) and the remote path
-/// (`Instance::login_account` over a service connection, after `trusted_login`
-/// has already shipped the `AccountInfo` and decrypted the root key on the
-/// client). Keeping a single helper means new keys/state added to the AccountSession
-/// session are picked up on both paths without divergence.
-///
-/// Does NOT touch `_users` — that's the caller's responsibility on the local
-/// path (last-login bookkeeping). The remote path skips that intentionally:
-/// the daemon would be the natural place to record it, and burning a wire
-/// write per login is not worth it before the audit-log work lands.
+/// Shared by local login and service login after client-side root unlock.
+/// Additional keys/mappings are read only from this installation's native record.
+/// The private Account database supplies references and Auth, never credentials.
 pub(crate) async fn build_account_session(
     instance: &Instance,
     login_id: &str,
@@ -455,38 +375,26 @@ pub(crate) async fn build_account_session(
         .await?
         .with_key(root_signing_key);
 
-    // 2. Load all keys from account database into key manager.
-    // TODO: load keys lazily
-    let keys_table = account_database
-        .get_store_viewer::<Table<AccountKey>>("keys")
-        .await?;
-    let mut all_keys: Vec<AccountKey> = keys_table
-        .search(|_| true)
-        .await?
-        .into_iter()
-        .map(|(_, key)| key)
-        .collect();
-
-    // The root key may not yet be persisted in the account-tree `keys` table —
-    // `create_account` no longer writes it there (the write would require reads
-    // on a tree the creator's session isn't a member of). `AccountInfo.credentials`
-    // in `_users` is the durable source of truth; synthesize the in-memory
-    // `AccountKey` from it when the table is missing the row. The durable write
-    // happens at `bootstrap_account_tree_if_needed` below, signed by the account.
-    let root_in_table = all_keys
-        .iter()
-        .any(|k| k.key_id == account_info.credentials.root_key_id);
-    if !root_in_table {
-        all_keys.push(AccountKey {
-            key_id: account_info.credentials.root_key_id.clone(),
-            storage: account_info.credentials.root_key.clone(),
-            display_name: Some("Root Key".to_string()),
-            created_at: account_info.created_at,
-            last_used: None,
-            is_default: true,
-            database_sigkeys: std::collections::HashMap::new(),
-        });
-    }
+    // The installation's native record is the only key/mapping store. Never
+    // import historical Account keys: old histories remain untouched, not safe.
+    let state = super::local_state::update(instance, login_id, |state| {
+        state.last_login = Some(instance.clock().now_secs());
+        state
+            .keys
+            .entry(account_info.credentials.root_key_id.to_string())
+            .or_insert_with(|| AccountKey {
+                key_id: account_info.credentials.root_key_id.clone(),
+                storage: account_info.credentials.root_key.clone(),
+                display_name: Some("Root Key".to_string()),
+                created_at: account_info.created_at,
+                last_used: None,
+                is_default: true,
+                database_sigkeys: std::collections::HashMap::new(),
+            });
+        Ok(())
+    })
+    .await?;
+    let all_keys = state.keys.into_values().collect();
 
     let key_manager = if let Some(pwd) = password {
         let salt = account_info
@@ -504,10 +412,7 @@ pub(crate) async fn build_account_session(
     // effort — failure here is logged and the login proceeds, because the
     // in-memory `key_manager` already has the root key and the next login
     // will retry on the same conditions.
-    if let Err(e) =
-        bootstrap_account_tree_if_needed(instance, &account_database, account_info, root_in_table)
-            .await
-    {
+    if let Err(e) = bootstrap_account_tree_if_needed(instance, &account_database).await {
         tracing::debug!(
             user = %account_info.username,
             error = %e,
@@ -524,76 +429,32 @@ pub(crate) async fn build_account_session(
     ))
 }
 
-/// Idempotently populate first-login state on the account's own tree.
-///
-/// Two writes, both Admin(0)-only and signed by the account (who is Admin(0)
-/// via `Database::create`'s genesis):
-///
-/// - **`keys` table** — persist the root `AccountKey` row that mirrors
-///   `AccountInfo.credentials`, so `AccountSession::track_database` and other writes
-///   that update per-database SigKey mappings have a row to update.
-/// - **`_settings.auth`** — grant this instance's device key `Read`, so the
-///   daemon can sync the account's tree on the account's behalf.
-///
-/// Each is gated on a pre-check via the read-only viewer; on a fresh login
-/// both checks miss and a single transaction commits both writes, on every
-/// subsequent login both checks hit and the function returns without
-/// touching the tree.
+/// Preserve the existing device-Read grant for daemon replication. This is
+/// public Auth, not credential storage or a redesign of background authority.
 async fn bootstrap_account_tree_if_needed(
     instance: &Instance,
     account_database: &Database,
-    account_info: &AccountInfo,
-    root_already_persisted: bool,
 ) -> Result<()> {
     let device_pubkey = instance.id();
-
-    // Check whether the device key already has an auth entry on _settings.
-    // `get_settings()` builds a read-only transaction; `get_auth_key` returns
-    // `Err` if the key isn't present.
-    let settings_viewer = account_database.get_settings().await?;
-    let device_already_granted = settings_viewer.get_auth_key(&device_pubkey).await.is_ok();
-
-    if root_already_persisted && device_already_granted {
+    if account_database
+        .get_settings()
+        .await?
+        .get_auth_key(&device_pubkey)
+        .await
+        .is_ok()
+    {
         return Ok(());
     }
-
-    // Capture by-value for the move into the closure.
-    let root_user_key = if root_already_persisted {
-        None
-    } else {
-        Some(AccountKey {
-            key_id: account_info.credentials.root_key_id.clone(),
-            storage: account_info.credentials.root_key.clone(),
-            display_name: Some("Root Key".to_string()),
-            created_at: account_info.created_at,
-            last_used: None,
-            is_default: true,
-            database_sigkeys: std::collections::HashMap::new(),
-        })
-    };
-    let device_grant = if device_already_granted {
-        None
-    } else {
-        Some((
-            device_pubkey,
-            AuthKey::active(Some("device"), Permission::Read),
-        ))
-    };
-
     account_database
         .with_transaction(|tx| async move {
-            if let Some(row) = root_user_key {
-                let keys_table = tx.get_store::<Table<AccountKey>>("keys").await?;
-                keys_table.insert(row).await?;
-            }
-            if let Some((pubkey, auth_key)) = device_grant {
-                let settings = tx.get_settings()?;
-                settings.set_auth_key(&pubkey, auth_key).await?;
-            }
-            Ok(())
+            tx.get_settings()?
+                .set_auth_key(
+                    &device_pubkey,
+                    AuthKey::active(Some("device"), Permission::Read),
+                )
+                .await
         })
         .await?;
-
     Ok(())
 }
 
@@ -616,37 +477,7 @@ pub async fn lookup_account_record(
     users_db: &Database,
     username: impl AsRef<str>,
 ) -> Result<(String, AccountInfo)> {
-    let username = username.as_ref();
-    let users_table = users_db
-        .get_store_viewer::<Table<AccountInfo>>("users")
-        .await?;
-    let results = users_table.search(|u| u.username == username).await?;
-
-    let (login_id, account_info) = match results.len() {
-        0 => {
-            return Err(AccountError::AccountNotFound {
-                username: username.to_string(),
-            }
-            .into());
-        }
-        1 => results.into_iter().next().unwrap(),
-        count => {
-            return Err(AccountError::DuplicateAccountsDetected {
-                username: username.to_string(),
-                count,
-            }
-            .into());
-        }
-    };
-
-    if account_info.status != AccountStatus::Active {
-        return Err(AccountError::AccountDisabled {
-            username: username.to_string(),
-        }
-        .into());
-    }
-
-    Ok((login_id, account_info))
+    super::local_logins::lookup(&users_db.instance()?, username.as_ref()).await
 }
 
 /// List all accounts in the system
@@ -657,16 +488,7 @@ pub async fn lookup_account_record(
 /// # Returns
 /// Vector of usernames
 pub async fn list_accounts(users_db: &Database) -> Result<Vec<String>> {
-    let users_table = users_db
-        .get_store_viewer::<Table<AccountInfo>>("users")
-        .await?;
-    let users: Vec<AccountInfo> = users_table
-        .search(|_| true)
-        .await? // Get all users
-        .into_iter()
-        .map(|(_, user)| user)
-        .collect();
-    Ok(users.into_iter().map(|u| u.username).collect())
+    super::local_logins::list(users_db).await
 }
 
 #[cfg(test)]
@@ -818,12 +640,11 @@ mod tests {
         ));
         assert!(!login_id.is_empty());
 
-        // Verify account was stored in _users database
-        let users_table = users_db
-            .get_store_viewer::<Table<AccountInfo>>("users")
+        // Verify native registration is durable
+        let (stored_id, stored_user) = lookup_account_record(&users_db, &account_info.username)
             .await
             .unwrap();
-        let stored_user = users_table.get(&login_id).await.unwrap();
+        assert_eq!(stored_id, login_id);
         assert_eq!(stored_user.username, "alice");
     }
 
@@ -849,12 +670,11 @@ mod tests {
         ));
         assert!(!login_id.is_empty());
 
-        // Verify account was stored in _users database
-        let users_table = users_db
-            .get_store_viewer::<Table<AccountInfo>>("users")
+        // Verify native registration is durable
+        let (stored_id, stored_user) = lookup_account_record(&users_db, &account_info.username)
             .await
             .unwrap();
-        let stored_user = users_table.get(&login_id).await.unwrap();
+        assert_eq!(stored_id, login_id);
         assert_eq!(stored_user.username, "bob");
     }
 
@@ -897,12 +717,12 @@ mod tests {
         // Verify account session
         assert_eq!(user.username(), "bob");
 
-        // Verify last_login was recorded in separate table
-        let last_login_table = users_db
-            .get_store_viewer::<Table<i64>>("last_login")
+        // Verify native last_login was recorded in native local state
+        let last_login = super::super::local_state::read(&instance, user.login_id())
             .await
+            .unwrap()
+            .last_login
             .unwrap();
-        let last_login = last_login_table.get(user.login_id()).await.unwrap();
         assert!(last_login > 0);
     }
 
@@ -926,12 +746,12 @@ mod tests {
         // Verify account session
         assert_eq!(user.username(), "charlie");
 
-        // Verify last_login was recorded
-        let last_login_table = users_db
-            .get_store_viewer::<Table<i64>>("last_login")
+        // Verify native last_login was recorded
+        let last_login = super::super::local_state::read(&instance, user.login_id())
             .await
+            .unwrap()
+            .last_login
             .unwrap();
-        let last_login = last_login_table.get(user.login_id()).await.unwrap();
         assert!(last_login > 0);
     }
 
@@ -1000,9 +820,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Initially no accounts
+        // The installation already has its bootstrap admin.
         let users = list_accounts(&users_db).await.unwrap();
-        assert_eq!(users.len(), 0);
+        assert_eq!(users, ["admin"]);
 
         // Create some accounts (mix of password-protected and passwordless)
         create_account(&users_db, &instance, "alice", Some("pass1"))
@@ -1017,7 +837,7 @@ mod tests {
 
         // List accounts
         let users = list_accounts(&users_db).await.unwrap();
-        assert_eq!(users.len(), 3);
+        assert_eq!(users.len(), 4);
         assert!(users.contains(&"alice".into()));
         assert!(users.contains(&"bob".into()));
         assert!(users.contains(&"charlie".into()));
@@ -1084,14 +904,9 @@ mod tests {
         let databases_db = instance.databases_db().await.unwrap();
 
         // Bob's root pubkey lives in `AccountInfo.credentials.root_key_id` —
-        // the durable source of truth. The account-tree `keys` table is
-        // populated only at first login (deferred bootstrap), so reading
-        // it here would race a `bob` that hasn't logged in yet.
-        let users_table = users_db
-            .get_store_viewer::<Table<AccountInfo>>("users")
-            .await
-            .unwrap();
-        let bob_info = users_table.get(&bob_uuid).await.unwrap();
+        // the native durable source of truth, even before first login.
+        let (stored_id, bob_info) = lookup_account_record(&users_db, "bob").await.unwrap();
+        assert_eq!(stored_id, bob_uuid);
         let bob_pubkey = bob_info.credentials.root_key_id.clone();
 
         assert!(

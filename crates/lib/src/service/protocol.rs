@@ -80,7 +80,7 @@ pub struct HandshakeAck {
 // ===========================================================================
 // Database-level wire API.
 //
-// Every storage operation rides this single op enum: the server runs the
+// Every tree-scoped storage operation rides this single op enum: the server runs the
 // `Database` layer on its local instance, so verify-on-read and the Verified
 // frontier are server-side by construction, and every op is intrinsically
 // (tree, store, identity)-scoped. Carried in `ServiceRequest::AuthenticatedDb`.
@@ -408,6 +408,24 @@ pub enum ServiceRequest {
         signature: Vec<u8>,
     },
 
+    /// Register a new instance-local login. Requires instance-admin; contains
+    /// only already-wrapped credentials for password-protected logins.
+    RegisterLocalAccount {
+        login_id: String,
+        account_info: Box<AccountInfo>,
+    },
+    /// List login names, instance-admin only. Never returns personal bundles.
+    ListLocalAccounts,
+    /// Read only the authenticated login's installation-local state. An
+    /// explicit signer connection without a login record has no such scope.
+    LocalAccountState { login_id: String },
+    /// Atomic observed-byte replacement within that same login scope.
+    ExchangeLocalAccountState {
+        login_id: String,
+        expected: Option<Vec<u8>>,
+        value: Vec<u8>,
+    },
+
     // === Post-auth: ticket bootstrap through the daemon's sync engine ===
     /// Step 1 of joining a database from a ticket. The daemon races the
     /// ticket's address hints with its own transports and returns the route,
@@ -421,8 +439,8 @@ pub enum ServiceRequest {
     /// connection's session keyset (see `SessionKeyRegister`).
     TicketBootstrap(Box<TicketBootstrapRequest>),
 
-    // === Authenticated wrapper for every storage operation ===
-    /// All storage ops travel inside this wrapper. The inner
+    // === Authenticated wrapper for tree-scoped storage operations ===
+    /// Tree-scoped storage ops travel inside this wrapper. The inner
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
     /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
@@ -588,6 +606,12 @@ pub enum ServiceResponse {
         peer: PublicKey,
         tips: Snapshot,
     },
+    /// Installation-local login names.
+    LocalAccounts(Vec<String>),
+    /// Opaque installation-local state, never a replicated Entry.
+    LocalAccountState(Option<Vec<u8>>),
+    /// Whether observed-byte replacement succeeded.
+    LocalAccountStateExchanged(bool),
     /// Result of a ticket bootstrap (response to `TicketBootstrap`).
     TicketBootstrapOutcome(TicketBootstrapOutcome),
 }
@@ -596,6 +620,10 @@ pub enum ServiceResponse {
 // step with the wire enums above. Recognized payloads go through their original
 // serde decoders; a malformed known message must never become Unsupported.
 const REQUEST_VARIANTS: &[&str] = &[
+    "RegisterLocalAccount",
+    "ListLocalAccounts",
+    "LocalAccountState",
+    "ExchangeLocalAccountState",
     "SignerChallenge",
     "TrustedLoginUser",
     "TrustedLoginProve",
@@ -629,6 +657,9 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "CreateTicket",
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
+    "LocalAccounts",
+    "LocalAccountState",
+    "LocalAccountStateExchanged",
     "SignerChallenge",
     "Entry",
     "Entries",

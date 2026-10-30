@@ -9,21 +9,18 @@
 //! references through the session ([`AccountSession::set_reference`],
 //! [`AccountSession::open_reference`]); there is no mandatory catalog.
 //!
-//! This API retains the current key/tracking layout. It does not implement
-//! portable secret-free state, cross-instance account enrollment or new Auth.
+//! Credentials, key mappings and activation preferences are installation-local;
+//! Account Entries carry references and public Auth. Enrollment remains separate.
 //!
 //! # Architecture
 //!
 //! - **[`Instance`](crate::Instance)**: Manages infrastructure (local login records, system databases, backends)
 //! - **[`AccountSession`]**: Handles contextual operations (database access, key management) via sessions
 //!
-//! The account's root signing key is stored in `_users` as [`types::AccountCredentials`]
-//! (encrypted or unencrypted). Each account has a private database (`_user_<username>`)
-//! owned by the account's root key (Admin(0)), with the device key granted Read permission.
-//! The private database stores:
-//! - **keys**: Additional Ed25519 keypairs with per-database SigKey mappings
-//! - **databases**: Tracked databases with sync preferences
-//! - **settings**: Account configuration
+//! Native local records hold [`types::AccountCredentials`], additional keys and
+//! per-installation tracking. They are not Entries or inputs to Account sync.
+//! The Account's private database stores application references and public Auth;
+//! the existing device-Read grant is retained without redesigning device authority.
 //!
 //! # Key Management
 //!
@@ -49,6 +46,8 @@ pub use credentials::{CredentialBundle, UnlockedCredentials};
 pub use signer::AccountSigner;
 pub mod errors;
 pub mod key_manager;
+pub(crate) mod local_logins;
+pub(crate) mod local_state;
 mod root;
 pub mod session;
 mod sharing;

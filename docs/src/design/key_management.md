@@ -1,288 +1,74 @@
-> ✅ **Status: Implemented**
->
-> This design is fully implemented and functional.
-
-# Key Management Technical Details
-
-This design document describes the technical implementation of key storage, encryption, and discovery within the Eidetica Account system. For the overall architecture and user-centric key management, see [accounts.md](./accounts.md).
-
-## Overview
-
-Keys in Eidetica are managed at the user level. Each user owns a set of private keys that are:
-
-- Encrypted with the user's password
-- Stored in the user's private database
-- Mapped to specific SigKeys in different databases
-- Decrypted only during active user sessions
-
-## Problem Statement
-
-Key management requires solving several technical challenges:
-
-1. **Secure Storage**: Private keys must be encrypted at rest
-2. **Password-Derived Encryption**: Encryption keys derived from user passwords
-3. **SigKey Mapping**: Same key can be known by different SigKeys in different databases
-4. **Key Discovery**: Finding which key to use for a given database operation
-5. **Memory Security**: Clearing sensitive data after use
-
-## Technical Components
-
-### Password-Derived Key Encryption
-
-**Algorithm**: Argon2id for key derivation, AES-256-GCM for encryption
-
-**Argon2id Parameters:**
-
-- Memory cost: 64 MiB minimum
-- Time cost: 3 iterations minimum
-- Parallelism: 4 threads
-- Output: 32 bytes for AES-256
-
-**Encryption Process:**
-
-1. Derive 256-bit encryption key from password using Argon2id
-2. Generate random 12-byte nonce for AES-GCM
-3. Encode private key as prefixed string (e.g., `"ed25519:base64..."`)
-4. Encrypt with AES-256-GCM
-5. Store ciphertext and nonce
-
-**Decryption Process:**
-
-1. Derive encryption key from password (same parameters)
-2. Decrypt ciphertext using nonce and encryption key
-3. Parse prefixed string back to PrivateKey
-
-### Key Storage Format
-
-Keys are stored in the user's private database in the `keys` subtree as a Table:
-
-<!-- Code block ignored: Missing Serialize/Deserialize imports from serde -->
-
-```rust,ignore
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AccountKey {
-    /// Public key identifier
-    pub key_id: PublicKey,
-
-    /// Key storage (encrypted ciphertext or plaintext PrivateKey)
-    pub storage: KeyStorage,
-
-    /// Display name for this key
-    pub display_name: Option<String>,
-
-    /// When this key was created (Unix timestamp)
-    pub created_at: i64,
-
-    /// Last time this key was used (Unix timestamp)
-    pub last_used: Option<i64>,
-
-    /// Whether this is the user's default key, which has admin access on the user's DB
-    /// Only one key should be marked as default at a time
-    pub is_default: bool,
-
-    /// Database-specific SigKey mappings
-    /// None = default pubkey identity, Some(sigkey) = non-default identity
-    pub database_sigkeys: HashMap<ID, Option<SigKey>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum KeyStorage {
-    /// Key is encrypted with a password-derived key (AES-256-GCM)
-    Encrypted {
-        /// Encryption algorithm identifier
-        algorithm: String,
-        /// Encrypted prefixed-string-encoded PrivateKey
-        ciphertext: Vec<u8>,
-        /// Encryption nonce/IV (12 bytes for AES-GCM)
-        nonce: Vec<u8>,
-    },
-    /// Key is stored unencrypted (passwordless users only)
-    Unencrypted {
-        /// PrivateKey stored directly — serde carries the signing algorithm tag
-        key: PrivateKey,
-    },
-}
-```
-
-**Storage Location**: Account database → `keys` subtree → `Table<AccountKey>`
-
-**Table Key**: The `key_id` field (not stored in struct, used as table key)
-
-### SigKey Mapping
-
-A key can be known by different SigKeys in different databases:
-
-```text
-Local Key: "ed25519:ABC123..."
-├── Database A: SigKey "alice"
-├── Database B: SigKey "admin"
-└── Database C: SigKey "alice_laptop"
-```
-
-**Mapping Storage**: The `database_sigkeys` HashMap in `AccountKey` stores these mappings as `database_id → Option<SigKey>`, where `None` represents the default pubkey identity and `Some(sigkey)` represents non-default identities.
-
-**Lookup**: When creating a transaction, retrieve the appropriate SigKey from the mapping using the database ID.
-
-### Database Access Index
-
-To efficiently find which keys can access a database, we build a reverse index from database auth settings:
-
-<!-- Code block ignored: Missing HashMap and type imports -->
-
-```rust,ignore
-/// Built by reading _settings.auth from database tips
-pub struct DatabaseAccessIndex {
-    /// Maps: Database ID → Vec<(local_key_id, permission)>
-    access_map: HashMap<ID, Vec<(String, Permission)>>,
-}
-```
-
-**Index Building**: For each database, read its `_settings.auth`, match SigKeys to user keys via the `database_sigkeys` mapping, and store the resulting `(key_id, permission)` pairs.
-
-**Key Lookup**: Query the index by database ID to get all user keys with access, optionally filtered by minimum permission level.
-
-### Key Discovery
-
-Finding the right key for a database operation involves:
-
-1. **Get Available Keys**: Query the DatabaseAccessIndex for keys with access to the database, filtered by minimum permission if needed
-2. **Filter to Decrypted Keys**: Ensure we have the private key decrypted in memory
-3. **Select Best Key**: Choose the key with highest permission level for the database
-4. **Retrieve SigKey**: Get the mapped SigKey from the `database_sigkeys` field for transaction creation
-
-### Memory Security
-
-Decrypted keys are held in memory only during active user sessions:
-
-- **Session-Based**: Keys decrypted on login, held in memory during session
-- **Explicit Clearing**: On logout, overwrite key bytes with zeros using the `zeroize` crate
-- **Drop Safety**: Implement `Drop` to automatically clear keys when manager is destroyed
-- **Encryption Key**: Also clear the password-derived encryption key from memory
-
-## Implementation Details
-
-### AccountKeyManager Structure
-
-<!-- Code block ignored: Missing HashMap and SigningKey imports -->
-
-```rust,ignore
-pub struct AccountKeyManager {
-    /// Decrypted private keys (only in memory during session)
-    /// Map: key_id → PrivateKey
-    decrypted_keys: HashMap<String, PrivateKey>,
-
-    /// Key metadata (including SigKey mappings)
-    /// Map: key_id → AccountKey
-    key_metadata: HashMap<String, AccountKey>,
-
-    /// Account's password-derived encryption key
-    /// Used for encrypting new keys during session
-    encryption_key: Vec<u8>,
-
-    /// Database access index (for key discovery)
-    access_index: DatabaseAccessIndex,
-}
-```
-
-**Creation**: On user login, derive encryption key from password, decrypt all user's private keys, and build the database access index.
-
-**Key Operations**:
-
-- **Add Key**: Encrypt private key with session encryption key, create metadata, store in both maps
-- **Get Key**: Retrieve decrypted key by ID, update last_used timestamp
-- **Serialize**: Export all key metadata (with encrypted keys) for storage
-
-### Password Change
-
-When a user changes their password, all keys must be re-encrypted:
-
-1. **Verify Old Password**: Authenticate user with current password
-2. **Derive New Encryption Key**: Generate new salt, derive key from new password
-3. **Re-encrypt All Keys**: Iterate through decrypted keys, encrypt each with new key
-4. **Update Password Hash**: Hash new password with new salt
-5. **Store Updates**: Write all updated AccountKey records and password hash in transaction
-6. **Update In-Memory State**: Replace session encryption key with new one
-
-## Security Properties
-
-### Encryption Strength
-
-- **Key Derivation**: Argon2id with 64 MiB memory, 3 iterations
-- **Encryption**: AES-256-GCM (authenticated encryption)
-- **Key Size**: 256-bit encryption keys
-- **Nonce**: Unique 96-bit nonces for each encryption
-
-### Attack Resistance
-
-- **Brute Force**: Argon2id parameters make password cracking expensive
-- **Replay Attacks**: Nonces prevent reuse of ciphertexts
-- **Tampering**: GCM authentication tag detects modifications
-- **Memory Dumps**: Keys cleared from memory on logout
-
-### Limitations
-
-- **Password Strength**: Security depends on user password strength
-- **No HSM Support**: Keys stored in software (future enhancement)
-- **No Key Recovery**: Lost password means lost keys (by design)
-
-## Performance Considerations
-
-### Login Performance
-
-Password derivation is intentionally slow:
-
-- Argon2id: ~100-200ms per derivation
-- Key decryption: ~1ms per key
-- Total login time: ~200ms + (num_keys × 1ms)
-
-This is acceptable for login operations.
-
-### Runtime Performance
-
-During active session:
-
-- Key lookups: O(1) from HashMap
-- SigKey lookups: O(1) from HashMap
-- Database key discovery: O(n) where n = number of keys
-- No decryption overhead (keys already decrypted)
-
-## Testing Strategy
-
-1. **Unit Tests**:
-   - Password derivation consistency
-   - Encryption/decryption round-trips
-   - Key serialization/deserialization
-   - SigKey mapping operations
-
-2. **Security Tests**:
-   - Verify different passwords produce different encrypted keys
-   - Verify wrong password fails decryption
-   - Verify nonce uniqueness
-   - Verify memory clearing
-
-3. **Integration Tests**:
-   - Full user session lifecycle
-   - Key addition and usage
-   - Password change flow
-   - Multiple keys with different SigKey mappings
-
-## Future Enhancements
-
-1. **Hardware Security Module Support**: Store keys in HSMs
-2. **Key Derivation Tuning**: Adjust Argon2 parameters based on hardware
-3. **Key Backup/Recovery**: Secure key recovery mechanisms
-4. **Multi-Device Sync**: Sync encrypted keys across devices
-5. **Biometric Authentication**: Use biometrics instead of passwords where available
-
-## Conclusion
-
-This key management implementation provides:
-
-- Strong encryption of private keys at rest
-- User-controlled key ownership through passwords
-- Flexible SigKey mapping for multi-database use
-- Efficient key discovery for database operations
-- Memory security through session-based decryption
-
-For the overall architecture and user management, see the [Account design](./accounts.md).
+# Key Management
+
+Private credentials, local key selection and database Auth have separate owners.
+Account references organize databases; they do not supply private keys, enroll Identity members or grant authority.
+See [Accounts](accounts.md) for the portable organization and [local record formats](../internal/account_credentials.md) for the concrete storage layout.
+
+## Stored credentials
+
+Ordinary login registration and key metadata use native installation-local records, outside the immutable Entry DAG and Store-state caches.
+A login identifies an Account root and that installation's explicitly configured keys.
+A second installation must obtain independently authorized keys; syncing AccountDB does not transfer private credentials or activation choices.
+App credentials must be scoped separately from the owner's personal credentials.
+The library does not infer key custody from an Identity reference.
+
+Two wrapping interfaces currently coexist:
+
+- Convenience login uses `AccountCredentials` and per-key `KeyStorage` values in native records.
+  One password unlocks the root and additional keys using the login's salt.
+  Passwordless logins deliberately retain plaintext local storage.
+- `CredentialBundle` authenticates the Account locator and explicit key list together under AES-GCM.
+  `UnlockedCredentials` supplies caller-held signers independently of daemon login storage.
+  This format is not yet the ordinary convenience-login encoding, and full AccountSession construction from it remains unfinished.
+
+Both reuse the existing Account Argon2id derivation: version 0x13, 19456 KiB, two iterations, parallelism one and a 32-byte output.
+The generated base64 salt text is passed to Argon2, not decoded first.
+AES-256-GCM uses fresh 96-bit nonces.
+The authenticated bundle adds fixed domain/version AAD; convenience per-key wrapping retains its existing format.
+PasswordStore's separately owned KDF/AAD formats and upgrades are not changed here.
+There is no separate password-verification hash: decryption verifies the password.
+
+No existing live records, private keys or historical Entries are migrated or deleted.
+An old Account history can still contain credentials even if current fields are removed.
+A binary rollback does not restore an earlier storage format.
+Operators need a separately approved rollout/migration plan for existing data.
+
+## Signer lookup and authority
+
+`AccountKeyManager` owns decrypted keys and metadata during a login.
+Per-database `database_sigkeys` mappings are installation-local lookup hints.
+`track_database` discovers an applicable SigKey for the explicitly supplied key; explicit `map_key` records the caller's choice.
+`find_key` searches those mappings; it is not a precomputed reverse access index.
+Neither stored hints nor Account access confer permission: target Auth and the actual signature remain the boundary.
+
+`AccountSigner` binds one Account locator, actual private signer and explicit `DatabaseKey` identity immutably.
+Direct-key access needs no Identity database.
+Delegation uses an explicit SigKey path and verified proof history, with no silent direct-key fallback.
+Selecting another handle leaves existing handles unchanged.
+Service clients prove possession before the daemon accepts an acting key; they still sign Entries on the client.
+The socket remains filesystem-trusted, not a hostile-client sandbox.
+The optional dashboard retains its documented daemon-process signing exception.
+
+## Updates, lifetime and loss
+
+Native observed-byte compare/exchange prevents unrelated concurrent local mapping/preference changes from being overwritten.
+It is not a transaction with peer grants, database creation or a distributed enrollment protocol.
+A later bookkeeping failure may leave earlier durable effects; callers must retain the error and retry explicitly.
+A lost acknowledgement is not rollback, and caches are refreshed from persisted local metadata.
+
+Session keys and wrapping-key owners are zeroized when dropped.
+Independent signer and database handles retain their own key clones: logout is not Auth revocation.
+This does not promise erasure of serde/parser/allocator copies, swap, core dumps or memory held by a compromised process.
+The concrete buffer ownership and limits are described in the [local credential chapter](../internal/account_credentials.md#bundle-format-and-key-lifetimes).
+
+`UnlockedCredentials::rewrap` changes a bundle password without rotating or revoking signing keys.
+Old copies can remain decryptable under their old password, and retained signers still work.
+There is no ordinary convenience-login password-change API, recovery/export guarantee, automatic key backup, or stronger live revocation in this change.
+Loss of every usable key or unlock credential can make an Account inaccessible.
+
+## Verification
+
+Bundle regressions check tampering, formats, wrong passwords, locator substitution, scoped key lists and retained signers.
+Local-state regressions inspect fresh Account/system histories, preserve concurrent choices and lost-ack outcomes, and test ordinary logout/returning login.
+Distinct-key fixtures use the same Account on two installations, with different activation choices and actual embedded/socket signatures.
+They preload public history and independently authorized registrations; they do not claim the separate enrollment workflow is shipped.
