@@ -4,6 +4,7 @@
 //! Tests are organized by CRDT type for better maintainability.
 
 mod codec_tests;
+mod dag_cbor_tests;
 mod doc_advanced_tests;
 mod doc_tests;
 mod helpers;
