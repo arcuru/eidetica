@@ -105,6 +105,17 @@ impl Fixture {
     /// Craft a signed `_settings` entry with `delta` on the current single
     /// tip, bypassing the local transaction check, as a remote peer could.
     async fn craft_settings_entry(&self, signer: &PrivateKey, delta: &Doc) -> Entry {
+        self.craft_settings_entry_at(signer, delta, None).await
+    }
+
+    /// As [`Self::craft_settings_entry`], optionally overriding the
+    /// `_settings` subtree height.
+    async fn craft_settings_entry_at(
+        &self,
+        signer: &PrivateKey,
+        delta: &Doc,
+        settings_height: Option<u64>,
+    ) -> Entry {
         let engine = self.instance.backend().local_engine().unwrap();
         let db = Database::open(&self.instance, &self.root).await.unwrap();
         let tips = db.snapshot().await.unwrap().into_tips();
@@ -126,6 +137,7 @@ impl Fixture {
             .set_metadata(metadata)
             .set_subtree_data(SETTINGS, serde_json::to_vec(delta).unwrap())
             .set_subtree_parents(SETTINGS, settings_tips)
+            .set_subtree_height(SETTINGS, settings_height)
             .build()
             .unwrap()
             .with_auth(|auth| auth.key = SigKey::from_pubkey(&signer.public_key()));
@@ -353,6 +365,42 @@ async fn raw_settings_deltas_cannot_remove_higher_admin() {
 }
 
 #[tokio::test]
+async fn malformed_grant_fragments_require_top_priority() {
+    let fx = Fixture::new().await;
+    // A lone `permissions` field is not a key, but a concurrent `status`
+    // fragment could merge with it into an Admin(0) key.
+    let newcomer = PrivateKey::generate();
+    let path = format!("auth.keys.{}.permissions", newcomer.public_key());
+    assert_rejected(
+        fx.commit_raw(&fx.low_admin, async |s| {
+            s.set(&path, Permission::Admin(0)).await
+        })
+        .await,
+        "Admin(0) permissions fragment",
+    );
+    let path = format!("auth.keys.{}.status", newcomer.public_key());
+    assert_rejected(
+        fx.commit_raw(&fx.low_admin, async |s| s.set(&path, "Active").await)
+            .await,
+        "status-only key fragment",
+    );
+    // Breaking its own key while raising its permission field.
+    let own = format!("auth.keys.{}", fx.low_admin.public_key());
+    assert_rejected(
+        fx.commit_raw(&fx.low_admin, async |s| {
+            s.set(format!("{own}.permissions"), Permission::Admin(0)).await?;
+            s.set(format!("{own}.status"), "bogus").await
+        })
+        .await,
+        "self-promotion hidden behind a malformed status",
+    );
+    // The top admin may still write raw fragments.
+    fx.commit_raw(&fx.super_admin, async |s| s.set(&path, "Active").await)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn writer_still_cannot_touch_settings() {
     let fx = Fixture::new().await;
     let txn = fx.db_as(&fx.writer).await.new_transaction().await.unwrap();
@@ -515,4 +563,37 @@ async fn remote_verification_rejects_priority_violations() {
     replace.set("auth", auth);
     let replace = fx.craft_settings_entry(&fx.low_admin, &replace).await;
     assert_eq!(fx.remote_verdict(replace).await, VerificationStatus::Failed);
+
+    // Malformed fragment: permissions without status.
+    let mut fragment = Doc::new();
+    fragment.set(
+        format!("auth.keys.{}.permissions", PrivateKey::generate().public_key()),
+        Permission::Admin(0),
+    );
+    let fragment = fx.craft_settings_entry(&fx.low_admin, &fragment).await;
+    assert_eq!(fx.remote_verdict(fragment).await, VerificationStatus::Failed);
+}
+
+/// `_settings` replay orders by subtree height; an explicit override would let
+/// a delta replay outside its causal position, so it is never valid.
+#[tokio::test]
+async fn remote_verification_rejects_settings_height_override() {
+    let fx = Fixture::new().await;
+    let delta = key_delta(&fx.writer, AuthKey::active(None, Permission::Write(31)));
+    let inherited = fx.craft_settings_entry(&fx.low_admin, &delta).await;
+    let height = inherited.height();
+    assert_eq!(
+        fx.remote_verdict(inherited).await,
+        VerificationStatus::Verified
+    );
+    for settings_height in [1, height + 10] {
+        let entry = fx
+            .craft_settings_entry_at(&fx.low_admin, &delta, Some(settings_height))
+            .await;
+        assert_eq!(
+            fx.remote_verdict(entry).await,
+            VerificationStatus::Failed,
+            "_settings height {settings_height} on entry height {height}"
+        );
+    }
 }
