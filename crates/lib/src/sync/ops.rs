@@ -17,12 +17,10 @@ use super::{
 };
 use crate::{
     Database, Entry, Result,
-    account::types::AccountInfo,
     auth::Permission,
     auth::crypto::{PrivateKey, PublicKey},
     crdt::Doc,
     entry::ID,
-    store::Table,
 };
 
 use super::utils::collect_ancestors_to_send;
@@ -525,54 +523,24 @@ impl Sync {
     /// Initialize combined settings for all users.
     ///
     /// This is called during Sync initialization. For new sync trees (just created),
-    /// it scans the _users database to register all existing users. For existing
+    /// it scans native local login records to register existing users. For existing
     /// sync trees (loaded), it updates combined settings for already-tracked users.
     pub(super) async fn initialize_account_settings(&self) -> Result<()> {
         self.reconcile_account_settings().await
     }
 
-    /// Reconcile the persisted user directory and every tracked preferences tree.
-    ///
-    /// The daemon calls this at startup and whenever a service client changes
-    /// either source tree. It is intentionally idempotent: `sync_account` compares
-    /// the persisted preferences cursor before updating combined settings.
+    /// Reconcile native installation logins at startup. Subsequent supported
+    /// preference writes call `sync_account` for their exact login directly.
+    /// Activation tokens suppress unchanged combined-setting writes.
     pub(crate) async fn reconcile_account_settings(&self) -> Result<()> {
         let _guard = self.reconciliation.lock().await;
 
         let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
-        let users_db = instance.users_db().await?;
-        let users_table = users_db
-            .get_store_viewer::<Table<AccountInfo>>("users")
-            .await?;
-
-        // Always scan `_users`, not only when the sync tree is empty. A daemon
-        // may already track some users when another account is created through
-        // the service socket.
-        for (login_id, account_info) in users_table.search(|_| true).await? {
+        for (login_id, account_info) in crate::account::local_logins::records(&instance).await? {
             self.sync_account(&login_id, &account_info.account_id)
                 .await?;
         }
-
         Ok(())
-    }
-
-    /// Whether a local write can change the persisted user sync intent.
-    pub(crate) async fn is_reconciliation_source(&self, database_id: &ID) -> Result<bool> {
-        let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
-        if instance.users_db_id() == database_id {
-            return Ok(true);
-        }
-        let users_db = instance.users_db().await?;
-        let users_table = users_db
-            .get_store_viewer::<Table<AccountInfo>>("users")
-            .await?;
-
-        Ok(users_table
-            .search(|user| &user.account_id == database_id)
-            .await?
-            .into_iter()
-            .next()
-            .is_some())
     }
 
     /// Send a sync request to a peer and get a response (async version).

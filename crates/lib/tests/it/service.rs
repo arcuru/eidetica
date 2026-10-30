@@ -2622,3 +2622,135 @@ async fn test_signer_authentication_requires_fresh_proof_without_login_record() 
         ServiceResponse::TrustedLoginOk
     ));
 }
+
+#[tokio::test]
+async fn test_local_account_state_requires_exact_login_and_preserves_conflicts() {
+    let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "local-alice").await;
+    create_user_via_admin(&server, "local-bob").await;
+    let alice = server.login_account("local-alice", None).await.unwrap();
+    let bob = server.login_account("local-bob", None).await.unwrap();
+    let native = server.backend().local_engine().unwrap();
+    let alice_name = format!("account-state:{}", alice.login_id());
+    let bob_name = format!("account-state:{}", bob.login_id());
+    let alice_bytes = native
+        .local_account_record(&alice_name)
+        .await
+        .unwrap()
+        .unwrap();
+    let bob_bytes = native
+        .local_account_record(&bob_name)
+        .await
+        .unwrap()
+        .unwrap();
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LocalAccountState {
+            login_id: alice.login_id().to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(read_response(&mut reader).await, ServiceResponse::Error(_)),
+        "pre-auth read succeeded"
+    );
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginAccount {
+            username: "local-alice".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("expected challenge, got {other:?}"),
+    };
+    let signer = alice
+        .get_signing_key(&alice.get_default_key().unwrap())
+        .unwrap();
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, &signer),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    for request in [
+        ServiceRequest::LocalAccountState {
+            login_id: bob.login_id().to_owned(),
+        },
+        ServiceRequest::ExchangeLocalAccountState {
+            login_id: bob.login_id().to_owned(),
+            expected: Some(bob_bytes.clone()),
+            value: alice_bytes.clone(),
+        },
+        ServiceRequest::ListLocalAccounts,
+        ServiceRequest::RegisterLocalAccount {
+            login_id: uuid::Uuid::new_v4().to_string(),
+            account_info: Box::new(alice.account_info().clone()),
+        },
+    ] {
+        write_frame(&mut writer, &request).await.unwrap();
+        assert!(
+            matches!(read_response(&mut reader).await, ServiceResponse::Error(_)),
+            "foreign state or admin operation succeeded"
+        );
+    }
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LocalAccountState {
+            login_id: alice.login_id().to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(read_response(&mut reader).await, ServiceResponse::LocalAccountState(Some(bytes)) if bytes == alice_bytes)
+    );
+    for (expected, exchanged) in [(Some(vec![0]), false), (Some(alice_bytes.clone()), true)] {
+        write_frame(
+            &mut writer,
+            &ServiceRequest::ExchangeLocalAccountState {
+                login_id: alice.login_id().to_owned(),
+                expected,
+                value: alice_bytes.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(read_response(&mut reader).await, ServiceResponse::LocalAccountStateExchanged(actual) if actual == exchanged)
+        );
+    }
+    assert_eq!(
+        native.local_account_record(&bob_name).await.unwrap(),
+        Some(bob_bytes)
+    );
+    assert_eq!(
+        native.local_account_record(&alice_name).await.unwrap(),
+        Some(alice_bytes)
+    );
+    for entry in native
+        .get_tree(
+            &native
+                .get_instance_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .users_db,
+        )
+        .await
+        .unwrap()
+    {
+        assert!(!entry.in_subtree("users"));
+        assert!(!entry.in_subtree("last_login"));
+    }
+}

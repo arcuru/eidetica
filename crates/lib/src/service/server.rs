@@ -758,6 +758,33 @@ async fn dispatch(
     }
 }
 
+async fn gate_local_login_admin(instance: &Instance, state: &ConnectionState) -> crate::Result<()> {
+    let pubkey = match state {
+        ConnectionState::Authenticated { login_pubkey, .. } => login_pubkey,
+        _ => return Err(crate::account::AccountError::InsufficientPermissions.into()),
+    };
+    gate_tree_permission(
+        instance,
+        pubkey,
+        &SigKey::from_pubkey(pubkey),
+        instance.users_db_id(),
+        Permission::Admin(0),
+        true,
+    )
+    .await
+}
+
+fn require_local_login(state: &ConnectionState, requested: &str) -> crate::Result<()> {
+    match state {
+        ConnectionState::Authenticated { login_id, .. }
+            if login_id == requested && !login_id.starts_with("signer:") =>
+        {
+            Ok(())
+        }
+        _ => Err(crate::account::AccountError::InsufficientPermissions.into()),
+    }
+}
+
 /// Inner dispatch that returns Result for ergonomic error handling.
 async fn dispatch_inner(
     instance: &Instance,
@@ -819,10 +846,60 @@ async fn dispatch_inner(
             handle_ticket_bootstrap(instance, state, *request).await
         }
 
+        ServiceRequest::RegisterLocalAccount {
+            login_id,
+            account_info,
+        } => {
+            gate_local_login_admin(instance, state).await?;
+            if login_id.is_empty() || login_id.starts_with("signer:") {
+                return Err(crate::account::AccountError::InvalidLocalState.into());
+            }
+            crate::account::local_logins::register(instance, &login_id, &account_info).await?;
+            Ok(ServiceResponse::Ok)
+        }
+        ServiceRequest::ListLocalAccounts => {
+            gate_local_login_admin(instance, state).await?;
+            Ok(ServiceResponse::LocalAccounts(
+                crate::account::local_logins::list(&instance.users_db().await?).await?,
+            ))
+        }
+        ServiceRequest::LocalAccountState { login_id } => {
+            require_local_login(state, &login_id)?;
+            Ok(ServiceResponse::LocalAccountState(
+                crate::account::local_state::read_raw(instance, &login_id).await?,
+            ))
+        }
+        ServiceRequest::ExchangeLocalAccountState {
+            login_id,
+            expected,
+            value,
+        } => {
+            require_local_login(state, &login_id)?;
+            let exchanged = crate::account::local_state::exchange_raw(
+                instance,
+                &login_id,
+                expected.as_deref(),
+                &value,
+            )
+            .await?;
+            if exchanged && instance.sync().is_some() {
+                let username = match state {
+                    ConnectionState::Authenticated { username, .. } => username.clone(),
+                    _ => unreachable!(),
+                };
+                let (_, info) =
+                    lookup_account_record(&instance.users_db().await?, &username).await?;
+                crate::account::local_state::refresh_sync(instance, &login_id, &info.account_id)
+                    .await?;
+            }
+            Ok(ServiceResponse::LocalAccountStateExchanged(exchanged))
+        }
+
         // === Authenticated storage operations ===
         //
         // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
-        // the per-tree permission gate. Every `DatabaseOp` carries its target
+        // the per-tree permission gate. Native login operations above are separate.
+        // Every `DatabaseOp` carries its target
         // `root_id` explicitly, so the gate is *unconditional* — there is no
         // tree-less op to fall through it — with two exceptions handled below
         // (`SubmitSignedEntry`, verification-gated; `SetInstanceMetadata`,

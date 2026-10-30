@@ -33,6 +33,8 @@ enum Fault {
     PutTree,
     PromoteTree,
     AckTree,
+    LocalState,
+    AckLocalState,
 }
 
 /// Only the named write fails; all reads use the real backend, including caches.
@@ -43,6 +45,40 @@ struct FaultBackend {
 
 #[async_trait]
 impl BackendImpl for FaultBackend {
+    async fn local_account_record(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        self.inner.local_account_record(name).await
+    }
+    async fn local_account_names(&self) -> Result<Vec<String>> {
+        self.inner.local_account_names().await
+    }
+    async fn compare_exchange_local_account_record(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool> {
+        let fault = self.fault.lock().unwrap().clone();
+        let target = ID::from_bytes(name);
+        if fault
+            .as_ref()
+            .is_some_and(|(op, id)| matches!(op, Fault::LocalState) && id == &target)
+        {
+            return Err(std::io::Error::other("injected local state persistence failure").into());
+        }
+        let exchanged = self
+            .inner
+            .compare_exchange_local_account_record(name, expected, replacement)
+            .await?;
+        if exchanged
+            && fault
+                .as_ref()
+                .is_some_and(|(op, id)| matches!(op, Fault::AckLocalState) && id == &target)
+        {
+            return Err(std::io::Error::other("injected local state lost acknowledgement").into());
+        }
+        Ok(exchanged)
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -561,18 +597,21 @@ async fn wildcard_database(instance: &Instance) -> Result<Database> {
 #[tokio::test]
 async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result<()> {
     use crate::account::SyncSettings;
-    for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+    for op in [Fault::LocalState, Fault::AckLocalState] {
         let (instance, _sync, fault) = destination(Arc::new(InMemory::new())).await?;
         let mut user = instance.login_account("client", None).await?;
         let key = user.get_default_key()?;
         let db = wildcard_database(&instance).await?;
-        *fault.lock().unwrap() = Some((op, user.account().id().clone()));
+        *fault.lock().unwrap() = Some((
+            op,
+            ID::from_bytes(format!("account-state:{}", user.login_id())),
+        ));
         assert!(
             user.track_database(db.root_id(), &key, SyncSettings::disabled())
                 .await
                 .is_err()
         );
-        if matches!(op, Fault::AckTree) {
+        if matches!(op, Fault::AckLocalState) {
             assert_eq!(
                 user.key_mapping(&key, db.root_id())?,
                 Some(crate::auth::SigKey::global(&key)),
@@ -929,7 +968,7 @@ async fn join_transfer_checks_grant_and_rejects_incremental_send_back() -> Resul
 #[tokio::test]
 async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Result<()> {
     use crate::{account::SyncSettings, backend::database::Sqlite};
-    for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+    for op in [Fault::LocalState, Fault::AckLocalState] {
         let dir = tempfile::tempdir()?;
         let file = dir.path().join("join.sqlite");
         let (instance, sync, fault) = destination(Arc::new(Sqlite::open(&file).await?)).await?;
@@ -937,7 +976,10 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
         let key = user.get_default_key()?;
         let target = wildcard_database(&instance).await?;
         let target_id = target.root_id().clone();
-        *fault.lock().unwrap() = Some((op, user.account().id().clone()));
+        *fault.lock().unwrap() = Some((
+            op,
+            ID::from_bytes(format!("account-state:{}", user.login_id())),
+        ));
         assert!(
             user.track_database(&target_id, &key, SyncSettings::disabled())
                 .await

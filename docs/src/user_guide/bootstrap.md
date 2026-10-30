@@ -105,7 +105,7 @@ Success returns a `Database` after recording the selected user key's SigKey mapp
 Success means the finite supplied response and its ancestry have verified locally and the selected key currently satisfies the requested permission; it is not global catch-up.
 Identical completed Account settings and established routing are not written again.
 Newer preferences observed after the network wait are preserved, and legacy provisional mappings are not deleted on Pending or rejection.
-An error, dropped future or disconnected caller can leave a peer request, replicated entries, routing or a committed Account Entry without its acknowledgement.
+An error, dropped future or disconnected caller can leave a peer request, replicated entries, routing or a persisted local account record without its acknowledgement.
 Reconnect and retry explicitly; a failed call does not imply rollback.
 There is no cancellation API, automatic restart-safe completion, or device enrollment.
 The client holds and signs with the user's private keys; the daemon owns networking, without a second client sync engine.

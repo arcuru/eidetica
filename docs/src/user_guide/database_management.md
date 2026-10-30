@@ -6,7 +6,7 @@ keeping two kinds of state separate:
 
 1. Database settings are replicated database-owned state, accessed through
    `Database::get_settings()`.
-2. `SyncSettings` are this caller's signed, durable private preferences.
+2. `SyncSettings` are this caller's durable installation-local preferences; they are not signed Account Entries.
 
 Plain `Database` handles remain valid for ordinary reads and transactions, but
 cannot manage a user's private sharing preference. Their sharing methods return
@@ -40,7 +40,7 @@ println!("share {}", database.ticket().await?);
 # }
 ```
 
-A successful call acknowledges durable signed preference state. It does not say
+A successful call acknowledges durable native preference state. It does not say
 that the daemon has reconciled its internal configuration or is advertising an
 address. If the connection fails while committing, the write may have reached
 the owner. Safely retry it or read `sync_settings()`.

@@ -5,6 +5,9 @@ use crate::entry::ID;
 
 #[derive(Error, Debug)]
 pub enum AccountError {
+    #[error("Invalid installation-local account state")]
+    InvalidLocalState,
+
     #[error("Account not found: {username}")]
     AccountNotFound { username: String },
 

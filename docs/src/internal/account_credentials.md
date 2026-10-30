@@ -1,18 +1,19 @@
 # Local credential and signer ownership
 
-This chapter describes the explicit bundle/signer API and native local-record substrate.
-The normal login/key/tracking path is still on its historical stores; its migration is unfinished.
-The distinction matters: adding a safe local storage mechanism alone does not remove secrets from existing or newly created legacy Account histories.
+Login records, private keys, signer mappings, access timestamps and activation preferences use native installation-local records.
+Fresh Account histories contain portable references and public Auth, not key or unlock records.
+Existing histories are not rewritten or scrubbed.
+The explicit authenticated `CredentialBundle` API remains separate from the convenience login's per-key wrapping format; converging those formats and constructing full AccountSession values from caller-held credentials are unfinished.
 
 ## Storage boundaries
 
-| Data                                                                | Location and behavior                                                                                                                                                                    |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Portable application references                                     | Ordinary Account `refs:<namespace>` stores; references grant no authority and trigger no activation                                                                                      |
-| Explicit encrypted bundle                                           | `CredentialBundle` bytes; authenticated Account locator and supplied keys; no Entry or CRDT semantics                                                                                    |
-| Native local account record                                         | InMemory `local_accounts` map or SQL `local_accounts(name, data)`; mutable observed-value compare/exchange; not in any Entry DAG, tree enumeration, Store-state namespace or sync stream |
-| Current convenience-login credentials, key mappings and preferences | Historical `_users`/Account stores; not yet moved onto the native substrate                                                                                                              |
-| Acting authority                                                    | An immutable `AccountSigner` containing an Account ID and existing `DatabaseKey`; normal database Auth determines permission                                                             |
+| Data                                                        | Location and behavior                                                                                                                                                                    |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Portable application references                             | Ordinary Account `refs:<namespace>` stores; references grant no authority and trigger no activation                                                                                      |
+| Explicit encrypted bundle                                   | `CredentialBundle` bytes; authenticated Account locator and supplied keys; no Entry or CRDT semantics                                                                                    |
+| Native local account record                                 | InMemory `local_accounts` map or SQL `local_accounts(name, data)`; mutable observed-value compare/exchange; not in any Entry DAG, tree enumeration, Store-state namespace or sync stream |
+| Convenience-login credentials, key mappings and preferences | Native `login:<name>` and `account-state:<login UUID>` records; no replicated credential/preference tables                                                                               |
+| Acting authority                                            | An immutable `AccountSigner` containing an Account ID and existing `DatabaseKey`; normal database Auth determines permission                                                             |
 
 `BackendImpl::local_account_record` returns the exact stored bytes.
 `compare_exchange_local_account_record(name, expected, replacement)` inserts only when absent (`expected = None`) or replaces only the exact previously observed bytes.
@@ -29,6 +30,58 @@ Missing credential storage under a v4 marker is corruption and refuses open rath
 Older binaries refuse the new format counters instead of silently dropping credentials.
 These are tested synthetic storage transitions, not permission to open/migrate live installations.
 A binary rollback does not roll back data; see the [format matrix](../design/verification.md#persistence-restart-and-forward-migration).
+
+## Convenience-login records
+
+`login:<name>` contains the installation login UUID and `AccountInfo`: local label, Account ID, root credential, creation time and status.
+Names are inserted atomically when absent; a duplicate registration is refused.
+`account-state:<UUID>` contains `keys` (public-key-indexed `AccountKey` values), `databases` (ID-indexed `TrackedDatabase` values) and `last_login`.
+A key record includes its wrapped private key, display label and per-database SigKey hints.
+References remain ordinary Account Entries, never inputs to key import or activation.
+A fresh installation does not learn another installation's keys or activation choices by replicating AccountDB.
+
+All local edits reread and compare/exchange the observed native bytes.
+Mapping and preference edits are one atomic replacement, so concurrent sessions retain unrelated changes.
+After a lost acknowledgement, mapping caches are refreshed from persisted local state before the original error is reported.
+This is not a transaction with peer approval, database creation or login registration; those earlier effects can survive later bookkeeping failure.
+
+For password-protected convenience logins, the existing per-key AES-GCM envelopes and Account salt convention remain in use.
+There is no separate password hash.
+Passwordless logins deliberately retain unencrypted local keys; they require filesystem-trusted processes and are not encrypted storage.
+The standalone authenticated bundle below is not yet the convenience-login serialization format.
+No live old-format record or historical key is imported automatically; old installations require a separately approved operational plan.
+
+`_users` remains the public Auth boundary for instance-admin capabilities, not a credential directory.
+`_sync` retains the daemon's installation-local bootstrap request lifecycle and derived combined settings; it is not the shared Account inventory.
+Sync reads native login/activation records at startup, and supported local/RPC preference writes request recomputation.
+The stored preference change token hashes only sorted activation data, not private keys or encrypted key bytes.
+Failure to recompute can follow successful local persistence and remains an error; retry explicitly.
+
+Embedded convenience path:
+
+```text
+native login record + client password -> root unlock
+native local keys/mappings -> client AccountKeyManager -> immutable DatabaseKey
+native activation preferences -> this instance's sync coordinator
+AccountDB refs/Auth <-> ordinary replicated Entries (no keys/unlock/preferences)
+```
+
+Connected convenience path:
+
+```text
+trusted client                           daemon
+local label ---------------------------> native login record -> wrapped root credential
+password -> unlock -> challenge proof --> public session keyset + exact login UUID
+read/CAS local state ------------------> only that login's native record
+private signer -> signed Entry --------> normal per-tree/proof verification
+```
+
+`LocalAccountState` and `ExchangeLocalAccountState` require the authenticated login UUID to match exactly.
+Proof-only signer connections have no login-record scope.
+`RegisterLocalAccount` and `ListLocalAccounts` require instance-admin on the daemon's `_users` Auth.
+No operation exposes arbitrary native record names or general backend secrets.
+The unchanged frame-size limit bounds each request/response; oversize state is refused rather than split into partially applied writes.
+Updated clients require matching support for these operations; older peers may return Unsupported, with no replicated-store fallback.
 
 ## Bundle format and key lifetimes
 
@@ -117,4 +170,8 @@ No stronger live revocation, private-key recovery or isolation guarantee follows
 - SQL schema tests: synthetic v3→v4 retention without backfill and fail-closed missing v4 storage.
 - Service signer proof and signed-submit tests: wrong proof, consumed challenges, valid fresh proof and propagation of actual verification refusal.
 
-These do not yet prove the normal login path secret-free or two-installation activation independent; those require integration of the native substrate into the existing session writers.
+- `local_state_tests`: ordinary protected login/key addition/logout/re-login, fresh Account and system histories without key/unlock tables, and portable reference writes as a positive control.
+- `local_state::tests`: distinct independently authorized keys on one shared Account, different installation activation choices, actual signatures and returning login, embedded and through two real service sockets. The fixture preloads verified public data and registration; it does not claim a shipped device-enrollment flow.
+- Service native-state test: pre-auth/foreign-login reads and writes denied, non-admin registration/listing denied, own-state reads and compare/exchange conflicts exercised.
+
+Full AccountSession construction from caller-held credentials, scoped authenticated-bundle convenience login and its final acceptance checks remain unfinished.
