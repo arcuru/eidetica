@@ -393,6 +393,29 @@ impl VerificationStatus {
 /// signature, causal-settings and delegation checks.
 #[async_trait]
 pub trait BackendImpl: Send + Sync + Any {
+    /// Read installation-local account data. These bytes are not Entries, Store
+    /// state, or part of any sync/export tree. Callers encrypt credentials before
+    /// persistence; backend-file access remains a trusted boundary.
+    async fn local_account_record(&self, _name: &str) -> Result<Option<Vec<u8>>> {
+        Err(BackendError::LocalAccountStorageUnsupported.into())
+    }
+
+    /// Atomically insert (expected `None`) or replace an exact observed record.
+    /// A stale observation returns `false` without writing. No history is kept.
+    async fn compare_exchange_local_account_record(
+        &self,
+        _name: &str,
+        _expected: Option<&[u8]>,
+        _replacement: &[u8],
+    ) -> Result<bool> {
+        Err(BackendError::LocalAccountStorageUnsupported.into())
+    }
+
+    /// List local login names, without returning credential contents.
+    async fn local_account_names(&self) -> Result<Vec<String>> {
+        Err(BackendError::LocalAccountStorageUnsupported.into())
+    }
+
     /// Look up the published cached state for an exact request. Private
     /// builds are never returned.
     async fn resolve_store_state(
