@@ -232,9 +232,8 @@ in {
       name = "eidetica-mdns-sync";
 
       nodes.machine = _: {
-        # The debug nextest archive exceeds 3.8 GiB; leave filesystem headroom
-        # for extraction and test output rather than filling the guest disk.
-        virtualisation.diskSize = 6144;
+        # The workspace debug archive expands to about 5 GiB; use disk, not /tmp's tmpfs.
+        virtualisation.diskSize = 8192;
         networking = {
           dhcpcd.enable = false;
           nameservers = ["127.0.0.1"];

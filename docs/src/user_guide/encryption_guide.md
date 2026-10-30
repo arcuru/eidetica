@@ -83,10 +83,12 @@ A wrong password cannot decrypt the wrapped Store metadata, so `open` fails befo
 is available. There is no recovery key or password-reset operation. Losing the password loses
 access to the Store; back up the password separately from the database.
 
-The password and derived key remain in the client process for the lifetime of the opened
-transaction. Their owning buffers are cleared when dropped, but applications should not assume
-that every temporary, allocator copy, serialized result, or plaintext value is erased from memory.
-Keep transactions short and avoid logging passwords or decrypted values.
+The password and derived key remain in the client process until the last clone of the opened
+transaction drops. Their owning buffers, and PasswordStore's temporary keys and plaintext JSON
+buffers, are cleared when dropped, including after errors. Applications should not assume that
+their own copies of the password, plaintext values returned to them, or parser, cryptographic or
+allocator copies are erased from memory. Errors about malformed decrypted data do not include the
+decrypted content. Keep transactions short and avoid logging passwords or decrypted values.
 
 ## Choosing a wrapped Store
 

@@ -270,3 +270,32 @@ For the `Database::on_write` semantics on a connected Instance — including
 the deliberate trade that callbacks fire asynchronously to `commit()` in
 exchange for a single daemon-canonical event ordering — see [Write
 Callbacks](transactions.md#write-callbacks).
+
+## Dashboard access requests
+
+An authenticated dashboard session can open **Manage pending database access requests**
+(`/dashboard/requests`).
+Only requests for databases where a held, mapped Account key currently has Admin
+permission are displayed; instance-admin status alone does not grant this authority.
+Each request shows its exact database ID, requester public key, requester-supplied
+key name, requested permission/priority and Pending lifecycle state.
+A key identifies a cryptographic signer, not an independently verified person.
+
+**Approve exact request** and **Reject request** are explicit same-origin form
+submissions bound to both the request ID and database ID.
+Approval uses the requested permission and priority, subject to existing Auth rules;
+an admin cannot create a higher-priority key than its own.
+There is no automatic approval or new device authorization.
+Refresh before deciding a stale request: already-decided requests are no longer
+in the pending list, and opposite decisions cannot reverse a terminal result.
+
+The requesting dashboard distinguishes pending approval, terminal rejection,
+network failure and completed access.
+Pending requests require an explicit **Retry request** after approval; they do
+not create new Account mappings or preferences.
+A successful transfer followed by a local bookkeeping error is reported separately,
+not as usable local access: local metadata may have persisted despite the error.
+Retry explicitly to repair or inspect the recorded state.
+The network wait does not hold the per-session lock, and bookkeeping preserves a
+tracked preference/key selection changed while that request was waiting.
+This observed-state check is not distributed compare-and-set or background completion.

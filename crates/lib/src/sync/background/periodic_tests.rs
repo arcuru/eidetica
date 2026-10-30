@@ -189,3 +189,104 @@ async fn periodic_round_does_not_stamp_a_dead_peer_or_skip_a_healthy_peer() -> R
     healthy.engine.stop_server(None).await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn background_round_correlates_routes_and_reports_partial_tree_outcome() -> Result<()> {
+    use crate::sync::operation_tests::{Trace, assert_fields, operation_id, summary};
+
+    let trace = Trace::default();
+    let _guard = trace.capture();
+    let mut source = LocalPeer::new().await?;
+    let recipient = LocalPeer::new().await?;
+    let tree = source.shared_tree().await?;
+    source.engine.start_server(None).await?;
+    recipient.follow(&source, &[&tree]).await?;
+    let peer = source.instance.id();
+    recipient
+        .sync
+        .add_peer_address(&peer, Address::new("unsupported", "route"))
+        .await?;
+    recipient
+        .sync
+        .add_tree_sync(&peer, &ID::from_bytes("missing tree"))
+        .await?;
+    trace.clear();
+
+    recipient
+        .engine
+        .sync_with_peer(&PeerId::from(peer.clone()))
+        .await?;
+    let output = trace.output();
+    let aggregate = summary(&output);
+    assert_fields(
+        aggregate,
+        &[
+            "outcome=\"partial\"",
+            "routes=2",
+            "attempted=1",
+            "unsupported=1",
+            "unobserved=0",
+            "trees_ok=1",
+            "trees_failed=1",
+            "last_tree_error=Some(",
+        ],
+    );
+    let id = operation_id(aggregate);
+    for message in [
+        "Selected sync route",
+        "Sending sync tree request",
+        "Failed to sync tree",
+        "Bootstrap completed successfully",
+    ] {
+        let event = output
+            .lines()
+            .find(|line| line.contains(message))
+            .expect(message);
+        assert_eq!(operation_id(event), id, "{event}");
+    }
+    // A round still returns Ok when none of its trees sync. Its diagnostic
+    // outcome must describe those failures rather than the scheduling policy.
+    recipient
+        .sync
+        .remove_tree_sync(&peer, tree.root_id())
+        .await?;
+    trace.clear();
+    recipient.engine.sync_with_peer(&PeerId::from(peer)).await?;
+    let output = trace.output();
+    assert_fields(
+        summary(&output),
+        &["outcome=\"failed\"", "trees_ok=0", "trees_failed=1"],
+    );
+    source.engine.stop_server(None).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn background_send_emits_one_route_outcome() -> Result<()> {
+    use crate::sync::operation_tests::{Trace, assert_fields, summary};
+
+    let trace = Trace::default();
+    let _guard = trace.capture();
+    let mut source = LocalPeer::new().await?;
+    let recipient = LocalPeer::new().await?;
+    source.engine.start_server(None).await?;
+    recipient.follow(&source, &[]).await?;
+    trace.clear();
+    recipient
+        .engine
+        .send_to_peer(&PeerId::from(source.instance.id()), vec![])
+        .await?;
+    let output = trace.output();
+    assert_fields(
+        summary(&output),
+        &[
+            "kind=\"send_entries\"",
+            "outcome=\"success\"",
+            "routes=1",
+            "attempted=1",
+            "unobserved=0",
+        ],
+    );
+    source.engine.stop_server(None).await?;
+    Ok(())
+}
