@@ -504,3 +504,73 @@ async fn test_mixed_subtree_strategies() {
         independent_height
     );
 }
+
+#[tokio::test]
+async fn test_store_height_transition_joins_all_effective_parent_heights() {
+    for strategy in [None, Some(HeightStrategy::Incremental)] {
+        let clock = Arc::new(FixedClock::new(1_000));
+        let (instance, database) = create_test_database_with_clock(clock.clone()).await;
+        let _hold = clock.hold();
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("transition").await.unwrap();
+        store.set("key", "initial").await.unwrap();
+        store
+            .set_height_strategy(Some(HeightStrategy::Timestamp))
+            .await
+            .unwrap();
+        let initial = tx.commit().await.unwrap();
+        let mut parents = Vec::new();
+        for time in [2_000, 5_000] {
+            clock.set(time);
+            let tx = database
+                .new_transaction_at(&eidetica::Snapshot::from([initial.clone()]))
+                .await
+                .unwrap();
+            tx.get_store::<DocStore>("transition")
+                .await
+                .unwrap()
+                .set("key", time)
+                .await
+                .unwrap();
+            parents.push(tx.commit().await.unwrap());
+        }
+        let tx = database
+            .new_transaction_at(&eidetica::Snapshot::from(parents.clone()))
+            .await
+            .unwrap();
+        let store = tx.get_store::<DocStore>("transition").await.unwrap();
+        store.set_height_strategy(strategy).await.unwrap();
+        store.set("key", "joined").await.unwrap();
+        let joined = tx.commit().await.unwrap();
+        let entry = database.get_entry(&joined).await.unwrap();
+        assert_eq!(
+            eidetica::Snapshot::from(entry.subtree_parents("transition").unwrap()),
+            eidetica::Snapshot::from(parents)
+        );
+        assert_eq!(entry.subtree_height("transition").unwrap(), 5_001);
+        assert_eq!(entry.height(), if strategy.is_none() { 5_001 } else { 3 });
+        assert!(
+            database
+                .verify_entry_signature(joined.clone())
+                .await
+                .unwrap()
+        );
+        // Re-run the receipt validator, not only local transaction authoring.
+        instance
+            .demote_to_unverified(database.root_id(), &initial)
+            .await
+            .unwrap();
+        let report = database.verify().await.unwrap();
+        assert_eq!(report.verified, 4);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.still_unverified, 0);
+        assert_eq!(
+            instance
+                .backend()
+                .get_verification_status(&joined)
+                .await
+                .unwrap(),
+            eidetica::backend::VerificationStatus::Verified
+        );
+    }
+}

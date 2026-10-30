@@ -96,6 +96,29 @@ recursively verifies another tree under the lock. Verify delegated dependencies
 first, then retry their dependents. A `VerifyReport` counts entries considered
 in that pass, not all stored failures; an empty report is not a health inventory.
 
+### Store-parent frontiers
+
+For every Store an Entry contains, its parent Snapshot must equal that Store's
+complete Verified frontier within the Entry's **main-parent ancestry**. Only
+main links define this causal cut; a Store link cannot prove its own reachability.
+Same-tree siblings, wrong-Store targets, omitted concurrent tips and redundant
+older ancestors are invalid, regardless of their height labels. Snapshot equality
+is set equality, not list ordering.
+
+Entries that do not touch a Store carry its frontier forward. In
+`A(X) -> B(Y) -> C(X)`, `C.X` parents `A.X`. Concurrent branches touching `X`
+require all maximal `X` contributions at their join. Empty Store parents are
+valid only if the cut has no Verified contribution to that Store, including
+first creation and genesis.
+
+Local commits and received Entries use the same validation before acceptance.
+Missing or Unverified main ancestry remains retryable, never an empty frontier.
+Conclusive invalid evidence takes precedence over incomplete proof. Once the
+main cut is complete, an outside Store reference is invalid even if its bytes
+have not arrived. Raw storage still retains rejected and undecidable Entries.
+Today verification is whole-Entry: every Store contribution in a Verified Entry
+is accepted; there is no contribution-local status or recovery/splicing policy.
+
 ### Height monotonicity
 
 Before promotion, the verifier requires the main-tree height to be strictly
@@ -104,12 +127,25 @@ heights produce `Failed`, as does a `Failed` parent; missing or `Unverified`
 parents otherwise leave the Entry retryable. Heights need not equal
 `max(parent heights) + 1`: timestamp heights and gaps remain valid.
 
-This checks main-tree heights only. Store heights have independent strategy
-and inheritance rules. Height-based consumers such as `Database::ids_added`
-retain their best-effort behavior for raw, unsettled history. Existing
-`Verified` entries are not rechecked automatically; use the
-[offline trust reset](#explicit-trust-reset-on-verification-rule-upgrades)
-before relying on the new rule for previously accepted history.
+Every Store-parent edge also requires strict growth of the **effective Store
+height**: an explicit Store height when present, otherwise the main-tree height.
+A valid main height cannot hide an equal or decreasing Store height. Independent
+Store heights are compared with that Store's parents, not unrelated main parents;
+positive gaps remain valid. Verification does not mandate a particular strategy
+or an exact `max + 1` calculation.
+
+Authoring follows the configured [height strategy](height_strategy.md). Returning
+a Store to inheritance with `set_height_strategy(None)` includes its prior
+effective parent heights in the main height calculation. Incremental then takes
+`max(relevant parent heights) + 1`, so a previous Timestamp override can cause a
+main-height gap rather than a height regression.
+
+Height-based consumers such as `Database::ids_added` retain their best-effort
+behavior for raw, unsettled history. Neither these height checks nor exact
+Store-frontier checks automatically recheck existing `Verified` history. Use the
+[offline trust reset](#explicit-trust-reset-on-verification-rule-upgrades) and
+dependency-first re-verification before relying on the new rules for previously
+accepted history; a format migration or closure repair is not that revalidation.
 
 ### Backend: same-tree ancestor closure
 
