@@ -188,7 +188,7 @@ async fn test_load_wrong_version_fails() {
         .await
         .unwrap();
     let mut value = serde_json::to_value(&backend).unwrap();
-    for version in [1, 3, 99] {
+    for version in [1, 4, 99] {
         value["_v"] = version.into();
         let original = serde_json::to_vec(&value).unwrap();
         fs::write(&path, &original).unwrap();
@@ -293,7 +293,7 @@ async fn test_v0_migration_preserves_entries_and_instance_state_across_save() {
         }
         save_backend(&loaded, &path).unwrap();
         let current: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(current["_v"], 2);
+        assert_eq!(current["_v"], 3);
         for field in ["entries", "instance_metadata", "instance_secrets"] {
             assert_eq!(current[field], legacy[field], "preserve {field}");
         }

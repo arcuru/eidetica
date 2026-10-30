@@ -266,9 +266,11 @@ file or treats corrupt JSON as an empty instance.
 #### Storage compatibility and older candidate data
 
 SQL schema and InMemory persistence versions are independent internal integer
-format counters, not release versions or stability levels. SQL currently uses `3`
-and InMemory uses `2`. Mainline SQL schema `0` migrates directly to `3`; unversioned or explicit
-`_v: 0` InMemory files reconstruct retained state on load and write `2` on next save.
+format counters, not release versions or stability levels. SQL currently uses `4`
+and InMemory uses `3`. Mainline SQL schema `0` migrates directly to `4`; SQL `3`
+adds an empty native local-account table without rewriting keys or verification state.
+Unversioned or explicit `_v: 0` InMemory files reconstruct retained state on load and write `3` on next save.
+Version `2` snapshots load without history repair and acquire empty local-account storage when saved.
 Migration reuses conservative repair, not cryptographic re-verification; SQL schema,
 version, and label/tip changes commit together. Clean current-format opens load
 persisted tips without a history scan. See the canonical

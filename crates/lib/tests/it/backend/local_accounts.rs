@@ -13,20 +13,69 @@ async fn test_local_account_records_are_atomic_and_outside_entry_history() {
     assert_eq!(backend.local_account_record("alice").await.unwrap(), None);
     assert!(backend.local_account_names().await.unwrap().is_empty());
 
-    assert!(backend.compare_exchange_local_account_record("alice", None, b"encrypted-bundle-1").await.unwrap());
-    assert!(!backend.compare_exchange_local_account_record("alice", None, b"lost-racing-insert").await.unwrap());
-    assert!(!backend.compare_exchange_local_account_record("alice", Some(b"stale"), b"lost-update").await.unwrap());
-    assert!(backend.compare_exchange_local_account_record("alice", Some(b"encrypted-bundle-1"), b"encrypted-bundle-2").await.unwrap());
-    assert!(backend.compare_exchange_local_account_record("bob", None, b"separate-scoped-bundle").await.unwrap());
-    assert_eq!(backend.local_account_record("alice").await.unwrap().unwrap(), b"encrypted-bundle-2");
-    assert_eq!(backend.local_account_record("bob").await.unwrap().unwrap(), b"separate-scoped-bundle");
-    assert_eq!(backend.local_account_names().await.unwrap(), ["alice", "bob"]);
+    assert!(
+        backend
+            .compare_exchange_local_account_record("alice", None, b"encrypted-bundle-1")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !backend
+            .compare_exchange_local_account_record("alice", None, b"lost-racing-insert")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !backend
+            .compare_exchange_local_account_record("alice", Some(b"stale"), b"lost-update")
+            .await
+            .unwrap()
+    );
+    assert!(
+        backend
+            .compare_exchange_local_account_record(
+                "alice",
+                Some(b"encrypted-bundle-1"),
+                b"encrypted-bundle-2"
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        backend
+            .compare_exchange_local_account_record("bob", None, b"separate-scoped-bundle")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        backend
+            .local_account_record("alice")
+            .await
+            .unwrap()
+            .unwrap(),
+        b"encrypted-bundle-2"
+    );
+    assert_eq!(
+        backend.local_account_record("bob").await.unwrap().unwrap(),
+        b"separate-scoped-bundle"
+    );
+    assert_eq!(
+        backend.local_account_names().await.unwrap(),
+        ["alice", "bob"]
+    );
     assert_eq!(backend.get_tree(&root).await.unwrap(), entries);
     assert_eq!(backend.all_roots().await.unwrap(), [root]);
     // Cache clearing and an explicit trust reset must not erase durable custody.
     backend.clear_derived_store_state().await.unwrap();
     backend.reset_local_verification().await.unwrap();
-    assert_eq!(backend.local_account_record("alice").await.unwrap().unwrap(), b"encrypted-bundle-2");
+    assert_eq!(
+        backend
+            .local_account_record("alice")
+            .await
+            .unwrap()
+            .unwrap(),
+        b"encrypted-bundle-2"
+    );
 }
 
 #[tokio::test]
@@ -46,10 +95,16 @@ async fn test_local_account_record_racing_insert_has_one_winner() {
 #[tokio::test]
 async fn test_local_account_records_survive_inmemory_persistence() {
     let backend = InMemory::new();
-    backend.compare_exchange_local_account_record("app", None, b"encrypted-scoped-keys").await.unwrap();
+    backend
+        .compare_exchange_local_account_record("app", None, b"encrypted-scoped-keys")
+        .await
+        .unwrap();
     let encoded = serde_json::to_vec(&backend).unwrap();
     let reopened: InMemory = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(reopened.local_account_record("app").await.unwrap().unwrap(), b"encrypted-scoped-keys");
+    assert_eq!(
+        reopened.local_account_record("app").await.unwrap().unwrap(),
+        b"encrypted-scoped-keys"
+    );
     assert!(reopened.all_roots().await.unwrap().is_empty());
 }
 
@@ -60,10 +115,16 @@ async fn test_local_account_records_survive_sqlite_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("local.db");
     let backend = Sqlite::open(&path).await.unwrap();
-    backend.compare_exchange_local_account_record("app", None, b"encrypted-scoped-keys").await.unwrap();
+    backend
+        .compare_exchange_local_account_record("app", None, b"encrypted-scoped-keys")
+        .await
+        .unwrap();
     drop(backend);
     let reopened = Sqlite::open(&path).await.unwrap();
-    assert_eq!(reopened.local_account_record("app").await.unwrap().unwrap(), b"encrypted-scoped-keys");
+    assert_eq!(
+        reopened.local_account_record("app").await.unwrap().unwrap(),
+        b"encrypted-scoped-keys"
+    );
     assert!(reopened.all_roots().await.unwrap().is_empty());
     drop(reopened);
 }

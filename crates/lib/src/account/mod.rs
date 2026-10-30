@@ -42,7 +42,11 @@
 //! When multiple accounts track the same database, settings are merged to use the most aggressive settings.
 
 pub mod admin;
+mod credentials;
 pub mod crypto;
+mod signer;
+pub use credentials::{CredentialBundle, UnlockedCredentials};
+pub use signer::AccountSigner;
 pub mod errors;
 pub mod key_manager;
 mod root;
