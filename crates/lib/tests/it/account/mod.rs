@@ -17,3 +17,5 @@ mod root_reference_tests;
 mod credential_bundle_tests;
 
 mod signer_tests;
+
+mod local_state_tests;
