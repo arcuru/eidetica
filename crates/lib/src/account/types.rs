@@ -30,12 +30,12 @@ pub struct AccountCredentials {
     pub password_salt: Option<String>,
 }
 
-/// Instance-local login registration stored in the `_users` database.
+/// Instance-local login registration stored outside all Entry DAGs.
 ///
 /// The Table UUID and `username` identify a login on this instance, not the
 /// Account itself. `account_id` identifies the ordinary private root database.
-/// Credentials retain their existing storage layout; this is not a portable
-/// export format or a claim of instance-local private-key isolation.
+/// Credentials retain the existing per-key wrapping format in native local storage.
+/// This is not a portable export or the standalone CredentialBundle encoding.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountInfo {
     /// Unique username (login identifier)
@@ -147,7 +147,7 @@ pub struct AccountKey {
 
 /// A database tracked by an account.
 ///
-/// Stored in the account's private database "databases" Table.
+/// Stored in this installation's native account-state record.
 /// Records which databases the account has added to their list, along with
 /// which key to use and sync preferences.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

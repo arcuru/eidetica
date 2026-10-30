@@ -12,11 +12,42 @@ Its scope comes from database Auth, not a bundle label.
 `AccountSigner` binds a locator, an actual signing key and an explicit Auth identity immutably.
 These interfaces work without registering a daemon login; they do not discover, enroll or import keys from Account references.
 
-The ordinary `Instance::login_account` convenience path still uses the existing login/key tables.
-It has **not yet been switched to the native local record store**.
-Do not infer secret-free Account histories, independent installation preferences, or a shipped client-owned credential-store backend from these low-level APIs.
-Existing Account histories are not made secret-free by removing their current key rows.
-No live key/data migration or deletion is performed by these APIs.
+The ordinary `Instance::login_account` convenience path stores login credentials, additional keys, signer hints and sync preferences in native installation-local records.
+These records are not Entries and do not replicate with AccountDB.
+Adding an Account reference neither imports credentials nor activates its target.
+Existing Account histories are not made secret-free by removing current fields; this change does not delete or migrate live data.
+
+The convenience path still uses its per-key wrapping format, not the standalone authenticated `CredentialBundle` format below.
+Full `AccountSession` construction from caller-held bundles/signers is unfinished; `AccountSigner` is the shipped daemon-independent interface.
+No client-owned credential-store backend, device-enrollment workflow or recovery/export feature is claimed.
+
+## Convenience login, logout and returning login
+
+One local password unlocks the explicitly stored keys for that login.
+Do not register an owner's personal credentials as an app login: provision an independently authorized app key instead.
+Passwordless creation retains plaintext local credentials and is only for trusted environments.
+
+```rust
+# use eidetica::{Instance, NewAccount, backend::database::InMemory};
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+let (instance, mut session) = Instance::create_backend(
+    Box::new(InMemory::new()), NewAccount::with_password("local", "local password"),
+).await?;
+let key_id = session.add_private_key(Some("this installation")).await?;
+let retained = session.acting_as(&key_id, None)?;
+session.logout()?;
+assert!(instance.login_account("local", Some("wrong password")).await.is_err());
+let returning = instance.login_account("local", Some("local password")).await?;
+assert_eq!(returning.get_signing_key(&key_id)?.public_key(), retained.key_id());
+# Ok(())
+# }
+```
+
+Connected logins use the same `login_account` call on an `Instance::connect("unix:///path/to/eidetica.sock")` result.
+Password derivation, key decryption and signing run on the client; additional local key records are returned only within that authenticated login's scope.
+The socket is still filesystem-trusted, including the pre-auth encrypted-login lookup.
+Logout drops that session's key owners; it does not revoke Auth or erase independent signer/database handles.
 
 ## Set up, unlock and retain an explicit signer
 

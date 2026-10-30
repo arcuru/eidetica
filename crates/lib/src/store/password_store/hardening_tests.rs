@@ -578,6 +578,26 @@ impl GatedBackend {
 
 #[async_trait]
 impl BackendImpl for GatedBackend {
+    async fn local_account_record(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        self.pass().await?;
+        self.inner.local_account_record(name).await
+    }
+    async fn local_account_names(&self) -> Result<Vec<String>> {
+        self.pass().await?;
+        self.inner.local_account_names().await
+    }
+    async fn compare_exchange_local_account_record(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool> {
+        self.pass().await?;
+        self.inner
+            .compare_exchange_local_account_record(name, expected, replacement)
+            .await
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

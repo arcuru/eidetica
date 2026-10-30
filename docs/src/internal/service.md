@@ -116,7 +116,7 @@ persisted state rather than assume cancellation undid it.
 
 ## Security Model
 
-Client-side signing over the Unix service socket. In socket-only mode the daemon stores and serves encrypted key material and signed entries but **never holds plaintext user signing keys or passwords**. When the optional dashboard is enabled, web logins decrypt signing keys in the daemon process for their in-memory sessions; the socket protocol remains client-side signing.
+Client-side signing over the Unix service socket. For password-protected socket logins, the daemon stores and serves encrypted key material and signed entries without decrypting user signing keys or receiving passwords. Existing passwordless logins deliberately store and serve unencrypted local keys and do not provide that guarantee. When the optional dashboard is enabled, web logins decrypt signing keys in the daemon process for their in-memory sessions; the socket protocol remains client-side signing.
 
 - **AccountSession keys stay client-side**: `TrustedLoginAccount` returns the user's full record (`account_info`, including the encrypted `AccountCredentials`) in the same round-trip as the challenge. The client derives the key-encryption-key locally (Argon2id over the password), decrypts the root signing key in-process, signs the challenge, and builds its `AccountSession` session from the already-returned record — no second wire read of `_users`. The signing key never crosses the socket.
 - **Authentication via challenge-response**: the daemon issues fresh random challenge bytes per login attempt. Successful decryption of the user's signing key on the client _is_ password verification; the daemon verifies the returned signature against the user's stored public key. No password is sent over the wire.
@@ -142,17 +142,21 @@ See the `crate::service` module rustdoc for the full design rationale, including
 
 The top-level request enum is intentionally flat, keeping the pre-auth surface visible at a glance:
 
-| Variant                                        | When                                                                                                        |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `TrustedLoginAccount { username }`             | Pre-auth step 1 — request a login challenge                                                                 |
-| `TrustedLoginProve { signature }`              | Pre-auth step 2 — return the signed login challenge                                                         |
-| `SignerChallenge { pubkey }`                   | Pre-auth — prove a caller-held signer without fetching login credentials; complete with `TrustedLoginProve` |
-| `GetInstanceMetadata`                          | Pre-auth — fetch server identity (used by `Instance::connect`)                                              |
-| `SessionKeyChallenge { pubkey }`               | Post-auth — request a challenge bound to `pubkey` so the client can prove possession                        |
-| `SessionKeyRegister { pubkey, signature }`     | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset          |
-| `TicketBootstrapPrepare { ticket }`            | Post-auth — select a ticket route; see [Ticket Bootstrap](#ticket-bootstrap)                                |
-| `TicketBootstrap(Box<TicketBootstrapRequest>)` | Post-auth — send a client-signed bootstrap request through the daemon's sync engine                         |
-| `AuthenticatedDb(Box<AuthenticatedDbRequest>)` | A `DatabaseOp` — the single envelope for every storage operation                                            |
+| Variant                                                   | When                                                                                                        |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `TrustedLoginAccount { username }`                        | Pre-auth step 1 — request a login challenge                                                                 |
+| `TrustedLoginProve { signature }`                         | Pre-auth step 2 — return the signed login challenge                                                         |
+| `SignerChallenge { pubkey }`                              | Pre-auth — prove a caller-held signer without fetching login credentials; complete with `TrustedLoginProve` |
+| `GetInstanceMetadata`                                     | Pre-auth — fetch server identity (used by `Instance::connect`)                                              |
+| `SessionKeyChallenge { pubkey }`                          | Post-auth — request a challenge bound to `pubkey` so the client can prove possession                        |
+| `SessionKeyRegister { pubkey, signature }`                | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset          |
+| `TicketBootstrapPrepare { ticket }`                       | Post-auth — select a ticket route; see [Ticket Bootstrap](#ticket-bootstrap)                                |
+| `TicketBootstrap(Box<TicketBootstrapRequest>)`            | Post-auth — send a client-signed bootstrap request through the daemon's sync engine                         |
+| `RegisterLocalAccount { login_id, account_info }`         | Post-auth — native login registration, gated by instance-admin on `_users` Auth                             |
+| `ListLocalAccounts`                                       | Post-auth — instance-admin-gated login names, no credentials                                                |
+| `LocalAccountState { login_id }`                          | Post-auth — read only the exact authenticated login's native record                                         |
+| `ExchangeLocalAccountState { login_id, expected, value }` | Post-auth — observed-byte replacement in that same login scope                                              |
+| `AuthenticatedDb(Box<AuthenticatedDbRequest>)`            | A `DatabaseOp` — the envelope for tree-scoped storage operations                                            |
 
 `AuthenticatedDbRequest` carries an identity claim that the server validates against the connection's session keyset before dispatch:
 
@@ -199,26 +203,29 @@ Published views and private builds use opaque random tokens stored only in the c
 
 ### ServiceResponse
 
-| Variant                                                       | Payload                                                            |
-| ------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `Entry(Entry)` / `Entries(Vec<Entry>)`                        | One or many entries                                                |
-| `EntrySignatureValid(bool)`                                   | Historical signature verdict, not verification status              |
-| `Ids(Vec<ID>)`                                                | One or many IDs                                                    |
-| `Ok`                                                          | Success with no data                                               |
-| `Unsupported`                                                 | Unknown operation; no action performed                             |
-| `Token(String)`                                               | Opaque server-issued staging capability                            |
-| `Record` / `RecordPage` / `RecordView`                        | Lazy point, bounded page, and published-record-set responses       |
-| `TransactionContext(TransactionContext)`                      | Parent tips + settings, response to `DatabaseOp::BeginTransaction` |
-| `CrdtValue(WireCrdtValue)`                                    | Materialized merged state, response to `DatabaseOp::GetStoreState` |
-| `MergeState(MergeState)`                                      | LCA + path, response to `DatabaseOp::ComputeMergeState`            |
-| `DatabaseTicket(DatabaseTicket)`                              | Point-in-time locator, response to `DatabaseOp::CreateTicket`      |
-| `InstanceMetadata(Option<InstanceMetadata>)`                  | Optional instance metadata                                         |
-| `TrustedLoginChallenge { challenge, login_id, account_info }` | Challenge bytes + the user's full record (login)                   |
-| `TrustedLoginOk`                                              | Login succeeded; connection now authenticated                      |
-| `SessionKeyChallenge { challenge }`                           | Challenge bytes the client signs to register an additional key     |
-| `TicketBootstrapRoute { address, peer, tips }`                | Selected route, answering peer, and empty tips                     |
-| `TicketBootstrapOutcome(TicketBootstrapOutcome)`              | `Complete`, `Pending { .. }`, or `Rejected { .. }`                 |
-| `Error(ServiceError)`                                         | Error response                                                     |
+| Variant                                                       | Payload                                                             |
+| ------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `Entry(Entry)` / `Entries(Vec<Entry>)`                        | One or many entries                                                 |
+| `EntrySignatureValid(bool)`                                   | Historical signature verdict, not verification status               |
+| `Ids(Vec<ID>)`                                                | One or many IDs                                                     |
+| `Ok`                                                          | Success with no data                                                |
+| `Unsupported`                                                 | Unknown operation; no action performed                              |
+| `Token(String)`                                               | Opaque server-issued staging capability                             |
+| `Record` / `RecordPage` / `RecordView`                        | Lazy point, bounded page, and published-record-set responses        |
+| `TransactionContext(TransactionContext)`                      | Parent tips + settings, response to `DatabaseOp::BeginTransaction`  |
+| `CrdtValue(WireCrdtValue)`                                    | Materialized merged state, response to `DatabaseOp::GetStoreState`  |
+| `MergeState(MergeState)`                                      | LCA + path, response to `DatabaseOp::ComputeMergeState`             |
+| `DatabaseTicket(DatabaseTicket)`                              | Point-in-time locator, response to `DatabaseOp::CreateTicket`       |
+| `InstanceMetadata(Option<InstanceMetadata>)`                  | Optional instance metadata                                          |
+| `TrustedLoginChallenge { challenge, login_id, account_info }` | Challenge bytes + the user's full record (login)                    |
+| `TrustedLoginOk`                                              | Login succeeded; connection now authenticated                       |
+| `SessionKeyChallenge { challenge }`                           | Challenge bytes the client signs to register an additional key      |
+| `TicketBootstrapRoute { address, peer, tips }`                | Selected route, answering peer, and empty tips                      |
+| `TicketBootstrapOutcome(TicketBootstrapOutcome)`              | `Complete`, `Pending { .. }`, or `Rejected { .. }`                  |
+| `LocalAccounts(Vec<String>)`                                  | Installation-local login names                                      |
+| `LocalAccountState(Option<Vec<u8>>)`                          | Exact native account-state bytes, scoped to the authenticated login |
+| `LocalAccountStateExchanged(bool)`                            | Whether observed-byte replacement succeeded                         |
+| `Error(ServiceError)`                                         | Error response                                                      |
 
 ## Ticket Bootstrap
 
@@ -235,12 +242,12 @@ A bootstrap request proof (`SyncRequestAuth`) is bound to the answering peer and
 
 Pending and rejected results travel as `TicketBootstrapOutcome` data rather than as `ServiceError`s, so the client rebuilds `SyncError::BootstrapPending` and `SyncError::BootstrapRejected` exactly.
 Neither outcome creates Account state or a new serving relationship; existing legacy Account rows are preserved.
-Only after a successful exchange does the client discover the valid SigKey and record mapping and preferences atomically in its Account database, publishing cache from acknowledged or read-back verified state.
+Only after a successful exchange does the client discover the valid SigKey and record mapping and preferences atomically in its native local record, publishing cache from acknowledged or read-back persisted state.
 An identical retry does not append equivalent configuration history, and preferences changed during the network wait are not overwritten.
 Success returns an opened `Database` only after those client-side writes finish.
 Pending requires an explicit `join` retry after approval; rejection is terminal for the request.
 Requests on a connection are handled in order, so the join occupies its connection until the peer answers.
-A dropped future or disconnected caller may leave peer-side effects, replicated data or a committed Account Entry without its acknowledgement.
+A dropped future or disconnected caller may leave peer-side effects, replicated data or a persisted local account record without its acknowledgement.
 Already-dispatched daemon work may continue after client EOF, but daemon/process death can interrupt it.
 Reconnect and retry explicitly; there is no cancellation API or automatic restart-safe completion.
 The shared [frame cancellation rules](#cancellation-and-frame-integrity) apply: an interrupted frame retires the connection, while cancelling only its response wait retains FIFO response association.
@@ -467,7 +474,7 @@ This is a **fully trusted local-client** v1. Filesystem access to the socket gra
 - **Lock-poisoning posture**: the per-connection session `RwLock` and the `RemoteBackend` per-connection cache mutex are poison-tolerant (handlers recover the guard from a poisoned lock rather than panicking), but other `std::sync::Mutex` sites in the service path still use `lock().unwrap()`. Documented at the lock sites; the remaining ones must be audited before serving multiple or untrusted clients.
 - **Verification status is never asserted over the wire**: the service protocol carries no way for a client to assert a verification status; entries arriving over the wire are stored `Unverified` and earn `Verified` only via the daemon's own validation pass. The status model, the pinned-settings validation that makes it staleness-free, the disclosure posture, and the unbuilt authority-_reduction_ (revocation) gap are documented in the [Verification Model](../design/verification.md) design doc.
 - **`snapshot()` on a connected Database delegates to `self.ops()`**: handles built via `Database::create` or `Database::open_remote` carry a `RemoteBackend` bound to a per-DB identity; reads use that identity (not the connection's login pubkey). Handles built via plain `Database::open` on a connected instance share the `Instance`'s `RemoteBackend` (which uses the connection's default session identity) — appropriate for code that wants the connection's login pubkey to drive reads. The previous heuristic remote-detection in `Database::snapshot` was replaced with an explicit ops delegation.
-- **No sync delegation**: `enable_sync()` on a remote Instance is a silent no-op (sync runs daemon-side; the client can't enable it from over the wire). A future admin-gated `EnableSync` RPC would let a client ask the daemon to enable its sync subsystem, parallel to how `InstanceAdmin::create_account` reaches `_users` today.
+- **No sync delegation**: `enable_sync()` on a remote Instance is a silent no-op (sync runs daemon-side; the client can't enable it from over the wire). A future admin-gated `EnableSync` RPC would let a client ask the daemon to enable its sync subsystem, parallel to the native registration RPC used by `InstanceAdmin::create_account`.
 
 ## Future Work
 

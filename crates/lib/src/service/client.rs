@@ -713,6 +713,63 @@ impl RemoteConnection {
         keys.insert(pubkey);
     }
 
+    pub(crate) async fn register_local_account(
+        &self,
+        login_id: &str,
+        info: &AccountInfo,
+    ) -> crate::Result<()> {
+        match self
+            .request_ok(ServiceRequest::RegisterLocalAccount {
+                login_id: login_id.to_owned(),
+                account_info: Box::new(info.clone()),
+            })
+            .await?
+        {
+            ServiceResponse::Ok => Ok(()),
+            other => Err(unexpected_response("Ok", &other)),
+        }
+    }
+    pub(crate) async fn list_local_accounts(&self) -> crate::Result<Vec<String>> {
+        match self.request_ok(ServiceRequest::ListLocalAccounts).await? {
+            ServiceResponse::LocalAccounts(names) => Ok(names),
+            other => Err(unexpected_response("LocalAccounts", &other)),
+        }
+    }
+
+    pub(crate) async fn local_account_state(
+        &self,
+        login_id: &str,
+    ) -> crate::Result<Option<Vec<u8>>> {
+        match self
+            .request_ok(ServiceRequest::LocalAccountState {
+                login_id: login_id.to_owned(),
+            })
+            .await?
+        {
+            ServiceResponse::LocalAccountState(bytes) => Ok(bytes),
+            other => Err(unexpected_response("LocalAccountState", &other)),
+        }
+    }
+
+    pub(crate) async fn exchange_local_account_state(
+        &self,
+        login_id: &str,
+        expected: Option<&[u8]>,
+        value: &[u8],
+    ) -> crate::Result<bool> {
+        match self
+            .request_ok(ServiceRequest::ExchangeLocalAccountState {
+                login_id: login_id.to_owned(),
+                expected: expected.map(<[u8]>::to_vec),
+                value: value.to_vec(),
+            })
+            .await?
+        {
+            ServiceResponse::LocalAccountStateExchanged(changed) => Ok(changed),
+            other => Err(unexpected_response("LocalAccountStateExchanged", &other)),
+        }
+    }
+
     /// Authenticate this connection as `username` by completing the
     /// `TrustedLogin*` handshake against the daemon.
     ///
@@ -722,13 +779,13 @@ impl RemoteConnection {
     /// signing key in-process (or take it raw for passwordless users) → sign
     /// the challenge → send `TrustedLoginProve` → expect `TrustedLoginOk`.
     ///
-    /// The daemon never sees the password or the plaintext signing key; the
+    /// For password-protected logins the daemon never sees the password or plaintext signing key; the
     /// trust model for shipping the encrypted blob over the socket is captured
     /// in the Service Architecture doc § Trusted login threat model.
     ///
     /// On success the connection's server-side state is `Authenticated`. The
     /// caller receives the user's record and the decrypted root key so it can
-    /// build the `AccountSession` session without a second wire read of `_users` —
+    /// build the `AccountSession` session without a second credential lookup —
     /// reads through the wire always travel as the authenticated user, which
     /// with the per-tree gate means a fresh user without permissions on
     /// `_users` would not be able to re-fetch it.

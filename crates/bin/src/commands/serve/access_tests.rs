@@ -790,28 +790,32 @@ async fn access_http_local_bookkeeping_failure_does_not_claim_usable_access() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    // Test-only fault injection: reduce Account write authority while the peer
-    // is serving the join. Production code never opens the Account backing DB.
-    let account = {
-        let session = user.read().await;
-        Database::open(&client_instance, session.account().id())
-            .await
-            .unwrap()
-            .with_key(session.get_signing_key(&key).unwrap())
-    };
+    // Fault the native record after the network phase starts. Account write
+    // authority is no longer the local-bookkeeping persistence boundary.
+    let native = client_instance.backend().local_engine().unwrap();
+    let record_name = format!("account-state:{}", user.read().await.login_id());
+    let original_bytes = native
+        .local_account_record(&record_name)
+        .await
+        .unwrap()
+        .unwrap();
+    let unavailable = b"injected unavailable local state";
     let (gate, ticket, proxy_task) = gated_peer(&peer).await;
     let request = client.track(&cookie, &ticket, "write");
     let fail_during_network = async {
         tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
             .await
             .unwrap();
-        let tx = account.new_transaction().await.unwrap();
-        tx.get_settings()
-            .unwrap()
-            .set_auth_key(&key, AuthKey::active(Some("read only"), Permission::Read))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
+        assert!(
+            native
+                .compare_exchange_local_account_record(
+                    &record_name,
+                    Some(&original_bytes),
+                    unavailable
+                )
+                .await
+                .unwrap()
+        );
         gate.resume.notify_one();
     };
     let (response, ()) = tokio::join!(request, fail_during_network);
@@ -824,6 +828,20 @@ async fn access_http_local_bookkeeping_failure_does_not_claim_usable_access() {
     );
     assert!(body.contains("Retry request"));
     assert!(!body.contains("Access granted and recorded locally"));
+    assert_eq!(
+        native
+            .local_account_record(&record_name)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(unavailable.as_slice())
+    );
+    assert!(
+        native
+            .compare_exchange_local_account_record(&record_name, Some(unavailable), &original_bytes)
+            .await
+            .unwrap()
+    );
     let session = user.read().await;
     assert_eq!(session.databases().await.unwrap(), before);
     assert!(

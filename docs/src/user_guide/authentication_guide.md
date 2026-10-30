@@ -56,7 +56,7 @@ txn.commit().await?;  // Automatically signed
 - **Read**: Can only read data
 
 **Key Storage**: Public keys belong in database Auth settings; private-key custody is separate.
-The existing login convenience path still uses legacy key stores.
+The login convenience path stores private credentials in native installation-local records, not replicated Account Entries.
 For explicit caller-held keys and daemon-independent signing, see [credential bundles and signers](account_credentials.md).
 
 ## Common Tasks

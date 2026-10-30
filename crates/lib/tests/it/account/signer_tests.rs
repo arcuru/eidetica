@@ -192,6 +192,13 @@ async fn test_account_signers_work_without_bundle_login_connected() {
     let (shutdown, rx) = tokio::sync::watch::channel(());
     let service = ServiceServer::bind(instance.clone(), &path).await.unwrap();
     let task = tokio::spawn(service.run(rx));
+    let before = instance
+        .backend()
+        .local_engine()
+        .unwrap()
+        .local_account_names()
+        .await
+        .unwrap();
     explicit_signers(&instance, Some(&format!("unix://{}", path.display()))).await;
     // Signer authentication must not register any personal or app secrets.
     assert_eq!(
@@ -207,15 +214,16 @@ async fn test_account_signers_work_without_bundle_login_connected() {
             .unwrap(),
         ["admin"]
     );
-    assert!(
+    assert_eq!(
         instance
             .backend()
             .local_engine()
             .unwrap()
             .local_account_names()
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        before,
+        "explicit signers created daemon credential records"
     );
     drop(shutdown);
     task.await.unwrap().unwrap();

@@ -1509,12 +1509,6 @@ impl Instance {
             let event = event.clone();
             let database = database.clone();
             async move {
-                if event.source() == WriteSource::Local
-                    && sync.is_reconciliation_source(database.root_id()).await?
-                {
-                    sync.reconcile_account_settings().await?;
-                }
-
                 if event.source() == WriteSource::Local {
                     sync.on_local_write(&event, &database).await
                 } else {
