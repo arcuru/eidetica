@@ -18,3 +18,5 @@ mod create_with_init;
 mod helpers;
 mod merge_algorithms;
 mod settings_metadata;
+
+mod store_verification;

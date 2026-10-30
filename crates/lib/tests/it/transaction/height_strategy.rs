@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use crate::helpers::LocalBackendTestExt;
+
 use eidetica::{
     Clock, Database, FixedClock, HeightStrategy, Instance, Store, backend::database::InMemory,
     crdt::Doc, store::DocStore,
@@ -345,6 +347,76 @@ async fn test_unregistered_subtree_inherits_tree_height() {
         subtree_height,
         entry.height(),
         "Subtree without explicit strategy should inherit tree height"
+    );
+}
+
+/// Exercise the documented override setter through signed local commits, not
+/// hand-built Entries. The main strategy remains Incremental throughout.
+async fn store_height_transition(
+    next: Option<HeightStrategy>,
+) -> (eidetica::Entry, eidetica::Entry) {
+    let clock = Arc::new(FixedClock::new(1_700_000_000_000));
+    let (instance, database) = create_test_database_with_clock(clock.clone()).await;
+    let _hold = clock.hold();
+
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("transition").await.unwrap();
+    store.set("key", "timestamp").await.unwrap();
+    store
+        .set_height_strategy(Some(HeightStrategy::Timestamp))
+        .await
+        .unwrap();
+    let parent_id = tx.commit().await.unwrap();
+    let parent = database.backend().unwrap().get(&parent_id).await.unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("transition").await.unwrap();
+    store.set_height_strategy(next).await.unwrap();
+    store.set("key", "after transition").await.unwrap();
+    let child_id = tx.commit().await.unwrap();
+    let child = database.backend().unwrap().get(&child_id).await.unwrap();
+
+    for id in [&parent_id, &child_id] {
+        assert!(database.verify_entry_signature(id.clone()).await.unwrap());
+        assert_eq!(
+            instance
+                .backend()
+                .get_verification_status(id)
+                .await
+                .unwrap(),
+            eidetica::backend::VerificationStatus::Verified
+        );
+    }
+    assert_eq!(
+        child.subtree_parents("transition").unwrap(),
+        vec![parent_id]
+    );
+    assert!(child.height() > parent.height());
+    eprintln!(
+        "override {next:?}: main {} -> {}, Store {} -> {}; signed and Verified",
+        parent.height(),
+        child.height(),
+        parent.subtree_height("transition").unwrap(),
+        child.subtree_height("transition").unwrap()
+    );
+    (parent, child)
+}
+
+#[tokio::test]
+async fn test_store_height_transition_to_independent_incremental() {
+    let (parent, child) = store_height_transition(Some(HeightStrategy::Incremental)).await;
+    assert!(
+        child.subtree_height("transition").unwrap() > parent.subtree_height("transition").unwrap()
+    );
+}
+
+#[tokio::test]
+async fn test_store_height_transition_to_inheritance() {
+    let (parent, child) = store_height_transition(None).await;
+    assert_eq!(child.subtree_height("transition").unwrap(), child.height());
+    assert!(
+        child.subtree_height("transition").unwrap() > parent.subtree_height("transition").unwrap(),
+        "documented override removal must not violate strict effective Store-height growth"
     );
 }
 
