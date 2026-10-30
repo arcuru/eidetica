@@ -99,3 +99,17 @@ fn test_credential_bundle_tampering_and_invalid_formats_fail_closed() {
     unknown["unimplemented_kdf_cost"] = 999999999.into();
     assert!(serde_json::from_value::<CredentialBundle>(unknown).is_err());
 }
+
+#[tokio::test]
+async fn test_native_login_bundle_authenticates_account_locator() {
+    use eidetica::{Database, Instance, NewAccount, backend::database::InMemory, crdt::Doc};
+    let (instance, session) = Instance::create_backend(Box::new(InMemory::new()), NewAccount::with_password("local", "password")).await.unwrap();
+    let key = session.get_signing_key(&session.get_default_key().unwrap()).unwrap();
+    let other = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let backend = instance.backend().local_engine().unwrap();
+    let old = backend.local_account_record("login:local").await.unwrap().unwrap();
+    let mut altered: serde_json::Value = serde_json::from_slice(&old).unwrap();
+    altered["info"]["user_database_id"] = serde_json::to_value(other.root_id()).unwrap();
+    assert!(backend.compare_exchange_local_account_record("login:local", Some(&old), &serde_json::to_vec(&altered).unwrap()).await.unwrap());
+    assert!(instance.login_account("local", Some("password")).await.is_err(), "an unauthenticated directory locator rebound an unlocked login");
+}
