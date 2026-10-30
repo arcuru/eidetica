@@ -15,6 +15,7 @@ eidetica = { path = "../lib", features = ["full"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_bytes = { workspace = true }
 chrono = { workspace = true }
 iroh = { workspace = true }
 tracing-subscriber = { workspace = true }
