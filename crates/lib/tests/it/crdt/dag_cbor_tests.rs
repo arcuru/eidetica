@@ -345,6 +345,17 @@ fn test_dag_cbor_complete_state_continuation_and_lawful_merges() {
     let mut list = List::new();
     list.insert_at_position(position(1), Value::Deleted);
     list.insert_at_position(position(2), Value::Int(i64::MIN));
+    let fractional = Position {
+        numerator: -3,
+        denominator: u64::MAX,
+        unique_id: Uuid::from_u128(0x123456789abcdef0123456789abcdef0),
+    };
+    let tied = Position {
+        unique_id: Uuid::from_u128(0x123456789abcdef0123456789abcdef1),
+        ..fractional.clone()
+    };
+    list.insert_at_position(fractional.clone(), Value::Text("before".to_owned()));
+    list.insert_at_position(tied.clone(), Value::Deleted);
     doc.set("list", list);
     let mut nested = Doc::atomic();
     nested.set("deleted", Value::Deleted);
@@ -352,6 +363,10 @@ fn test_dag_cbor_complete_state_continuation_and_lawful_merges() {
     roundtrip(&doc);
     let mut later = Doc::new();
     later.set("after", true);
+    let mut list_delta = List::new();
+    list_delta.insert_at_position(fractional, Value::Deleted);
+    list_delta.insert_at_position(tied, Value::Text("after".to_owned()));
+    later.set("list", list_delta);
     // Exact state preservation for this fixture, NOT a repair/qualification of
     // Doc's separate delete/scalar/descendant-write batching defect.
     assert_continuation(&doc, &[later, Doc::atomic()]);
