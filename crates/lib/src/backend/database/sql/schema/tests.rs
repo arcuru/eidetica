@@ -1261,3 +1261,80 @@ async fn malformed_negative_cache_counters_refuse_open() {
     assert_eq!(db.content().await, before);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn local_accounts_v4_adds_empty_storage_without_rewriting_v3_data() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.populate(&backend).await;
+    db.close_backend(backend).await;
+    // Synthetic previous mainline layout. This is not a migration of live keys.
+    db.pool.execute("DROP TABLE local_accounts").await.unwrap();
+    db.pool
+        .execute("UPDATE schema_version SET version = 3")
+        .await
+        .unwrap();
+    // A v3 open must not redo the earlier cache-accounting backfill.
+    db.pool
+        .execute("UPDATE store_state_namespaces SET size_bytes = 0")
+        .await
+        .unwrap();
+    let before = db.content().await;
+    let reopened = db.open().await.unwrap();
+    let counters: Vec<(i64,)> = sqlx::query_as("SELECT size_bytes FROM store_state_namespaces")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        counters,
+        [(0,)],
+        "v3-to-v4 must not backfill old cache accounting"
+    );
+    assert_eq!(db.versions().await, [(4,)]);
+    assert_eq!(db.content().await, before);
+    assert!(reopened.local_account_names().await.unwrap().is_empty());
+    assert!(
+        reopened
+            .compare_exchange_local_account_record("app", None, b"encrypted")
+            .await
+            .unwrap()
+    );
+    db.close_backend(reopened).await;
+    let reopened = db.open().await.unwrap();
+    assert_eq!(
+        reopened.local_account_record("app").await.unwrap().unwrap(),
+        b"encrypted"
+    );
+    assert_eq!(db.content().await, before);
+    db.close_backend(reopened).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn local_accounts_v4_missing_native_table_is_not_recreated_as_empty() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    backend
+        .compare_exchange_local_account_record("app", None, b"encrypted")
+        .await
+        .unwrap();
+    db.close_backend(backend).await;
+    db.pool.execute("DROP TABLE local_accounts").await.unwrap();
+    let before = db.catalog().await;
+    let error = match db.open().await {
+        Ok(_) => panic!("missing credential storage was silently recreated"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("missing columns in local_accounts"),
+        "{error}"
+    );
+    assert_eq!(db.catalog().await, before);
+    db.cleanup().await;
+}

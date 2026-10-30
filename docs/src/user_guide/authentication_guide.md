@@ -55,7 +55,9 @@ txn.commit().await?;  // Automatically signed
 - **Write**: Can read and write data
 - **Read**: Can only read data
 
-**Key Storage**: Private keys are stored in Instance, public keys in database settings.
+**Key Storage**: Public keys belong in database Auth settings; private-key custody is separate.
+The existing login convenience path still uses legacy key stores.
+For explicit caller-held keys and daemon-independent signing, see [credential bundles and signers](account_credentials.md).
 
 ## Common Tasks
 

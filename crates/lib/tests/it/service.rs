@@ -639,8 +639,17 @@ async fn test_database_submit_signed_entry() {
     let entry = Entry::builder(root_id.clone())
         .set_parents(parents)
         .set_subtree_data("submitted", b"{\"submitted\":true}")
+        .set_height(ctx.main_parents.iter().map(|(_, h)| *h).max().unwrap_or(0) + 1)
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": ctx.settings_tips,
+                "entropy": serde_json::Value::Null,
+            }))
+            .unwrap(),
+        )
         .build()
         .unwrap();
+    let entry = entry.with_auth(|auth| auth.key = identity.clone());
     let signature = sign_entry(&entry, &signing_key).unwrap();
     let entry = entry.with_auth(|auth| auth.signature = Some(signature));
     let entry_id = entry.id();
@@ -1253,7 +1262,7 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
             fixture.delegated_entry,
         )
         .await
-        .expect("submission stays accepted while verification remains incomplete");
+        .expect_err("unsettled submission must not acknowledge a successful commit");
 
     assert_eq!(
         receiver
@@ -1377,7 +1386,7 @@ async fn test_submit_delegated_snapshot_regression_is_failed() {
     remote_conn(&client)
         .submit_signed_entry(fixture.target_root, regressed.auth().key.clone(), regressed)
         .await
-        .unwrap();
+        .expect_err("quarantined snapshot regression must report commit rejection");
     assert_eq!(
         receiver
             .backend()
@@ -1393,8 +1402,8 @@ async fn test_submit_delegated_snapshot_regression_is_failed() {
 }
 
 /// An authenticated session submitting an entry whose signer holds no key
-/// on the target tree's auth: accepted at the socket (Change A skips the
-/// gate), but the server's verification pass marks it `Failed`/leaves
+/// on the target tree's auth: persisted for verification, but rejected in the
+/// response. The server's verification pass marks it `Failed`/leaves
 /// `Unverified`, so it never appears in the Verified frontier or any
 /// default read. Correctness is preserved by verification, not the gate.
 #[tokio::test]
@@ -1433,11 +1442,13 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let entry_id = entry.id();
     let admin_identity = eidetica::auth::types::SigKey::from_pubkey(&admin_pub);
 
-    // Accepted at the socket — Change A's relaxation. Verification is the
-    // boundary the server still enforces.
-    conn.submit_signed_entry(bob_root.clone(), admin_identity, entry)
+    // Stored for verification, but rejection must reach the transaction caller.
+    let error = conn
+        .submit_signed_entry(bob_root.clone(), admin_identity, entry)
         .await
-        .expect("submit accepted at socket; verification rejects in-handler");
+        .expect_err("verification rejection must not be reported as a successful commit");
+    assert!(matches!(error, eidetica::Error::Transaction(error)
+        if matches!(*error, eidetica::transaction::TransactionError::EntryValidationFailed)));
 
     // Bob's Verified frontier is unchanged: the unauthorized entry never
     // graduated past Unverified/Failed and is excluded from default reads.
@@ -2532,4 +2543,82 @@ async fn live_delegation_service_rechecks_retained_session_identity() {
         retained.snapshot().await.is_err(),
         "a direct grant does not repair the removed delegated path"
     );
+}
+
+#[tokio::test]
+async fn test_signer_authentication_requires_fresh_proof_without_login_record() {
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (key, pubkey) = generate_keypair();
+    let (wrong, _) = generate_keypair();
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+    write_frame(
+        &mut writer,
+        &ServiceRequest::SignerChallenge {
+            pubkey: pubkey.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let first = match read_response(&mut reader).await {
+        ServiceResponse::SignerChallenge { challenge } => challenge,
+        other => panic!("expected proof-only challenge, got {other:?}"),
+    };
+    assert_eq!(first.len(), 32);
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&first, &wrong),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::Error(_)
+    ));
+    // Failed proof consumes the challenge, even when retried with the right key.
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&first, &key),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::Error(_)
+    ));
+    write_frame(
+        &mut writer,
+        &ServiceRequest::SessionKeyChallenge {
+            pubkey: pubkey.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::Error(_)
+    ));
+    write_frame(&mut writer, &ServiceRequest::SignerChallenge { pubkey })
+        .await
+        .unwrap();
+    let second = match read_response(&mut reader).await {
+        ServiceResponse::SignerChallenge { challenge } => challenge,
+        other => panic!("expected proof-only challenge, got {other:?}"),
+    };
+    assert_ne!(first, second);
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&second, &key),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
 }

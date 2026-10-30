@@ -15,7 +15,12 @@
 //! ## Security Model
 //!
 //! Client-side signing. The daemon stores and serves encrypted key material and
-//! signed entries but never holds plaintext user signing keys or passwords.
+//! signed entries. Socket clients keep plaintext signing keys and passwords
+//! client-side; the optional dashboard retains its existing in-daemon sessions.
+//!
+//! Caller-held signers can authenticate through `SignerChallenge` plus
+//! `TrustedLoginProve`, without reading or registering a daemon login record.
+//! This proves possession, not Account authority; ordinary per-tree Auth applies.
 //!
 //! - **AccountSession keys stay client-side**: clients fetch encrypted `AccountCredentials` from
 //!   the daemon, derive the key-encryption-key locally (Argon2id), decrypt the user's
@@ -47,7 +52,8 @@
 //!
 //! Client writes travel as `DatabaseOp::SubmitSignedEntry` — the daemon stores
 //! the entry `Unverified`, then runs its own verification pass before the
-//! entry is exposed on any default read.
+//! entry is exposed on any default read. A successful acknowledgment requires
+//! that exact Entry to become Verified; an error does not roll back stored input.
 //!
 //! On a connected setup the daemon is also the **sole publisher** of write
 //! events for [`Database::on_write`](crate::Database::on_write) callbacks:

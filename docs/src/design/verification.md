@@ -269,28 +269,32 @@ replace Doc's deterministic conflict resolution.
 ## Persistence, restart and forward migration
 
 SQL `schema_version` and InMemory JSON `_v` are **independent internal integer
-format revision counters**. SQL uses `3` and InMemory uses `2`; they are not release
+format revision counters**. SQL uses `4` and InMemory uses `3`; they are not release
 versions, SemVer or a stability scale. A format change requiring migration
 advances the relevant counter and supplies an explicit supported forward path.
 Do not renumber existing data or infer a migration merely from integer ordering.
 The current supported matrix is:
 
-| Stored format                                             | Open/load behavior                                                                                                                              |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fresh SQL database (no version row)                       | Initialize current schema and marker `3`. This is initialization, not a promise to repair unmarked populated SQL databases.                     |
-| Mainline SQL `0`                                          | Migrate directly to `3`: create retained tips/cache accounting, conservatively repair each tree, publish schema/labels/tips/version atomically. |
-| SQL `2`                                                   | Add/backfill cache accounting and advance to `3`, preserving labels and Verified tips without verification repair.                              |
-| SQL `3`                                                   | Use persisted labels, Verified tips and cache accounting; no recurring backfill or history repair.                                              |
-| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported experimental prefix-tracking layout before schema initialization.                                                        |
-| SQL above `3`, or below `0`                               | Refuse: newer schema or unknown migration path.                                                                                                 |
-| InMemory absent `_v` or explicit `_v: 0`                  | Reconstruct Verified tips from Entries and labels on load, conservatively demoting inconsistent Verified regions. Next save writes `2`.         |
-| InMemory `_v: 2`                                          | Load persisted labels/tips without history repair.                                                                                              |
-| InMemory other `_v`                                       | Refuse; this includes experimental `1` and future versions. Invalid/out-of-range encodings also fail deserialization.                           |
+| Stored format                                             | Open/load behavior                                                                                                                                                    |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fresh SQL database (no version row)                       | Initialize current schema and marker `4`. This is initialization, not a promise to repair unmarked populated SQL databases.                                           |
+| Mainline SQL `0`                                          | Migrate directly to `4`: create retained tips/cache accounting/local account storage, conservatively repair each tree, publish schema/labels/tips/version atomically. |
+| SQL `2`                                                   | Add/backfill cache accounting and advance to `4`, preserving labels and Verified tips without verification repair.                                                    |
+| SQL `3`                                                   | Add empty native local-account storage and advance to `4`; no cache backfill or history repair.                                                                       |
+| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported experimental prefix-tracking layout before schema initialization.                                                                              |
+| SQL `4`                                                   | Use retained state and native local records without recurring backfill or history repair.                                                                             |
+| SQL above `4`, or below `0`                               | Refuse: newer schema or unknown migration path.                                                                                                                       |
+| InMemory absent `_v` or explicit `_v: 0`                  | Reconstruct Verified tips from Entries and labels on load, conservatively demoting inconsistent Verified regions. Next save writes `3`.                               |
+| InMemory `_v: 2`                                          | Load persisted labels/tips without history repair; next save writes `3` with empty local-account storage.                                                             |
+| InMemory `_v: 3`                                          | Load labels/tips and local-account records without history repair.                                                                                                    |
+| InMemory other `_v`                                       | Refuse; this includes experimental `1` and future versions. Invalid/out-of-range encodings also fail deserialization.                                                 |
 
 SQL migration preserves immutable Entry bytes, parent/subtree records, raw tips,
 instance metadata/secrets and existing Store-state namespaces/records. It changes
 only inconsistent Verified labels and the retained Verified frontier on the v0
-transition; v2→v3 changes cache accounting and its marker, not trust state.
+transition; the v2 cache-accounting migration and v3→v4 empty local-account table addition do not change trust state.
+Neither transition copies or deletes existing keys.
+Native local-account records are preserved by cache clearing and trust reset.
 Exclusive startup may reclaim disposable retired/abandoned cache rows. Failed decisions remain Failed. Failure rolls back
 the migration; version refusal is not a wholly read-only open, since ownership
 bookkeeping and SQLite WAL setup can precede the schema check.

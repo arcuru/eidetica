@@ -313,6 +313,12 @@ impl Zeroize for AccountKeyManager {
     }
 }
 
+impl Drop for AccountKeyManager {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
 impl ZeroizeOnDrop for AccountKeyManager {}
 
 #[cfg(test)]

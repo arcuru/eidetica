@@ -16,6 +16,10 @@ A person, group, or app can have an Account; it is not necessarily one account p
 An Account and an Identity need not have a one-to-one relationship.
 Neither an organizational link nor Account membership adds a new Role or grants access to another database.
 
+The [explicit credential and signer API](../user_guide/account_credentials.md) supports caller-held keys and proof-only service connections without daemon login storage.
+Its [native local-record substrate](../internal/account_credentials.md) is separate from the Entry DAG.
+The ordinary login/key/preference path described below is not yet migrated onto that substrate; these APIs alone do not make Account histories secret-free.
+
 ## Current custody and security boundary
 
 This API slice does **not** relocate private keys or establish complete portable-account/scoped-key isolation.

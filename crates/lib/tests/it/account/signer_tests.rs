@@ -1,0 +1,264 @@
+use eidetica::{
+    Database, Instance, NewAccount,
+    account::{AccountSigner, CredentialBundle},
+    auth::{
+        crypto::{PublicKey, generate_keypair, verify_entry_signature},
+        types::{
+            AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, Permission, PermissionBounds,
+            SigKey, TreeReference,
+        },
+    },
+    backend::database::InMemory,
+    crdt::Doc,
+    store::DocStore,
+};
+
+async fn write_as(database: &Database, label: &str, signer: &PublicKey, identity: &SigKey) {
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set(label, label)
+        .await
+        .unwrap();
+    let id = tx
+        .commit()
+        .await
+        .unwrap_or_else(|error| panic!("{label} commit failed: {error:?}"));
+    let entry = database.get_entry(id).await.unwrap();
+    assert_eq!(&entry.auth().key, identity);
+    verify_entry_signature(&entry, signer).unwrap();
+}
+
+async fn explicit_signers(server: &Instance, url: Option<&str>) {
+    let (first, first_id) = generate_keypair();
+    let (second, second_id) = generate_keypair();
+    let account = Database::create(server, first.clone(), Doc::new())
+        .await
+        .unwrap();
+    let target = Database::create(server, first.clone(), Doc::new())
+        .await
+        .unwrap();
+    let tx = target.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &second_id,
+            AuthKey::active(Some("writer"), Permission::Write(1)),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let bundle =
+        CredentialBundle::seal(account.root_id(), &[first.clone(), second], "local").unwrap();
+    let unlocked = bundle.unlock_for(account.root_id(), "local").unwrap();
+    let a = AccountSigner::new(
+        account.root_id().clone(),
+        unlocked.signer(&first_id).unwrap(),
+    );
+    let b = AccountSigner::new(
+        account.root_id().clone(),
+        eidetica::database::DatabaseKey::with_name(unlocked.signer(&second_id).unwrap(), "writer"),
+    );
+    // No daemon-held bundle was installed for these keys. Both come from the
+    // same caller-side interface; service connections prove their own signer.
+    let instance = match url {
+        Some(url) => a.connect(url).await.unwrap(),
+        None => server.clone(),
+    };
+    let a_database = a.open_database(&instance, target.root_id()).await.unwrap();
+    let b_database = b.open_database(&instance, target.root_id()).await.unwrap();
+    assert_eq!(a.account_id(), account.root_id());
+    assert!(
+        b.open_account(&instance).await.is_err(),
+        "the locator must not grant Account access"
+    );
+    let mismatched = AccountSigner::new(
+        account.root_id().clone(),
+        eidetica::database::DatabaseKey::with_identity(
+            unlocked.signer(&second_id).unwrap(),
+            SigKey::from_pubkey(&first_id),
+        ),
+    );
+    assert!(
+        mismatched
+            .open_database(&instance, target.root_id())
+            .await
+            .is_err(),
+        "another proven key must not stand in for the actual signer"
+    );
+    drop(unlocked);
+    write_as(&b_database, "new", &second_id, b.identity()).await;
+    write_as(&a_database, "retained", &first_id, a.identity()).await;
+    assert!(
+        verify_entry_signature(
+            &a_database
+                .get_entry(a_database.snapshot().await.unwrap().tips()[0].clone())
+                .await
+                .unwrap(),
+            &second_id
+        )
+        .is_err()
+    );
+
+    let identity = Database::create(server, first, Doc::new()).await.unwrap();
+    let tips = identity.snapshot().await.unwrap().into_tips();
+    let tx = target.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(2),
+                min: None,
+            },
+            tree: TreeReference {
+                root: identity.root_id().clone(),
+                tips: tips.clone(),
+            },
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let path = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: identity.root_id().clone(),
+            tips,
+        }],
+        hint: KeyHint::from_pubkey(&first_id),
+    };
+    let delegated = a.with_identity(path.clone());
+    let delegated_database = delegated
+        .open_database(&instance, target.root_id())
+        .await
+        .unwrap();
+    write_as(&delegated_database, "delegated", &first_id, &path).await;
+    write_as(&a_database, "still-direct", &first_id, a.identity()).await;
+    assert_ne!(a.identity(), delegated.identity());
+    let wrong_path = a.with_identity(SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: account.root_id().clone(),
+            tips: account.snapshot().await.unwrap().into_tips(),
+        }],
+        hint: KeyHint::from_pubkey(&first_id),
+    });
+    assert!(
+        wrong_path
+            .open_database(&instance, target.root_id())
+            .await
+            .is_err(),
+        "no fallback to the same key's direct grant"
+    );
+    let stranger = AccountSigner::new(account.root_id().clone(), generate_keypair().0);
+    assert!(
+        stranger
+            .open_database(&instance, target.root_id())
+            .await
+            .is_err()
+    );
+    if let Some(url) = url {
+        // New connection with a different signer; retained handles on the first
+        // connection remain bound and usable. No global login/selection mutation.
+        let second_connection = b.connect(url).await.unwrap();
+        let reopened = b
+            .open_database(&second_connection, target.root_id())
+            .await
+            .unwrap();
+        write_as(&reopened, "reconnected", &second_id, b.identity()).await;
+        write_as(&a_database, "after-reconnect", &first_id, a.identity()).await;
+    }
+}
+
+#[tokio::test]
+async fn test_account_signers_work_without_bundle_login_embedded() {
+    let (instance, _admin) =
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("admin"))
+            .await
+            .unwrap();
+    explicit_signers(&instance, None).await;
+}
+
+#[tokio::test]
+#[cfg(all(unix, feature = "service"))]
+async fn test_account_signers_work_without_bundle_login_connected() {
+    use eidetica::service::ServiceServer;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = dir.path().join("service.sock");
+    let (instance, _admin) =
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("admin"))
+            .await
+            .unwrap();
+    let (shutdown, rx) = tokio::sync::watch::channel(());
+    let service = ServiceServer::bind(instance.clone(), &path).await.unwrap();
+    let task = tokio::spawn(service.run(rx));
+    explicit_signers(&instance, Some(&format!("unix://{}", path.display()))).await;
+    // Signer authentication must not register any personal or app secrets.
+    assert_eq!(
+        instance
+            .login_account("admin", None)
+            .await
+            .unwrap()
+            .admin()
+            .await
+            .unwrap()
+            .list_accounts()
+            .await
+            .unwrap(),
+        ["admin"]
+    );
+    assert!(
+        instance
+            .backend()
+            .local_engine()
+            .unwrap()
+            .local_account_names()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(shutdown);
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn test_account_session_selection_returns_new_retained_signer_handles() {
+    let (instance, mut session) =
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("admin"))
+            .await
+            .unwrap();
+    let first = session.get_default_key().unwrap();
+    let second = session.add_private_key(Some("second")).await.unwrap();
+    let target = session.create_database(Doc::new(), &first).await.unwrap();
+    let tx = target.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_auth_key(&second, AuthKey::active(None, Permission::Write(1)))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let retained = session.acting_as(&first, None).unwrap();
+    let selected = session.acting_as(&second, None).unwrap();
+    assert!(session.acting_as(&generate_keypair().1, None).is_err());
+    session.logout().unwrap();
+    write_as(
+        &selected
+            .open_database(&instance, target.root_id())
+            .await
+            .unwrap(),
+        "new-selection",
+        &second,
+        selected.identity(),
+    )
+    .await;
+    write_as(
+        &retained
+            .open_database(&instance, target.root_id())
+            .await
+            .unwrap(),
+        "retained-selection",
+        &first,
+        retained.identity(),
+    )
+    .await;
+}
