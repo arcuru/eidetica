@@ -2695,7 +2695,7 @@ async fn test_local_account_state_requires_exact_login_and_preserves_conflicts()
         ServiceRequest::ListLocalAccounts,
         ServiceRequest::RegisterLocalAccount {
             login_id: uuid::Uuid::new_v4().to_string(),
-            account_info: Box::new(alice.account_info().clone()),
+            account_info: Box::new(alice.account_info().unwrap().clone()),
         },
     ] {
         write_frame(&mut writer, &request).await.unwrap();

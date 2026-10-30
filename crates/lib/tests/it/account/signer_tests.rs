@@ -1,6 +1,6 @@
 use eidetica::{
     Database, Instance, NewAccount,
-    account::{AccountSigner, CredentialBundle},
+    account::{AccountSession, AccountSigner, CredentialBundle},
     auth::{
         crypto::{PublicKey, generate_keypair, verify_entry_signature},
         types::{
@@ -119,6 +119,22 @@ async fn explicit_signers(server: &Instance, url: Option<&str>) {
         .await
         .unwrap();
     tx.commit().await.unwrap();
+    let tx = account.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Admin(0),
+                min: None,
+            },
+            tree: TreeReference {
+                root: identity.root_id().clone(),
+                tips: tips.clone(),
+            },
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     let path = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: identity.root_id().clone(),
@@ -127,6 +143,32 @@ async fn explicit_signers(server: &Instance, url: Option<&str>) {
         hint: KeyHint::from_pubkey(&first_id),
     };
     let delegated = a.with_identity(path.clone());
+    let direct_session = AccountSession::from_signer(&instance, a.clone())
+        .await
+        .unwrap();
+    let delegated_session = AccountSession::from_signer(&instance, delegated.clone())
+        .await
+        .unwrap();
+    delegated_session
+        .set_reference("identity", "root", target.root_id())
+        .await
+        .unwrap();
+    write_as(
+        delegated_session.account().database(),
+        "delegated-account",
+        &first_id,
+        &path,
+    )
+    .await;
+    write_as(
+        direct_session.account().database(),
+        "retained-direct-account",
+        &first_id,
+        a.identity(),
+    )
+    .await;
+    direct_session.logout().unwrap();
+    delegated_session.logout().unwrap();
     let delegated_database = delegated
         .open_database(&instance, target.root_id())
         .await
@@ -141,6 +183,11 @@ async fn explicit_signers(server: &Instance, url: Option<&str>) {
         }],
         hint: KeyHint::from_pubkey(&first_id),
     });
+    assert!(
+        AccountSession::from_signer(&instance, wrong_path.clone())
+            .await
+            .is_err()
+    );
     assert!(
         wrong_path
             .open_database(&instance, target.root_id())
@@ -269,4 +316,199 @@ async fn test_account_session_selection_returns_new_retained_signer_handles() {
         retained.identity(),
     )
     .await;
+}
+
+async fn local_records(instance: &Instance) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let backend = instance.backend().local_engine().unwrap();
+    let mut records = std::collections::BTreeMap::new();
+    for name in backend.local_account_names().await.unwrap() {
+        records.insert(
+            name.clone(),
+            backend.local_account_record(&name).await.unwrap().unwrap(),
+        );
+    }
+    records
+}
+
+async fn caller_held_sessions(server: &Instance, url: Option<&str>) {
+    use eidetica::account::{AccountSession, SyncSettings};
+    let (personal_key, personal_id) = generate_keypair();
+    let personal = Database::create(server, personal_key.clone(), Doc::new())
+        .await
+        .unwrap();
+    let (app_key, app_id) = generate_keypair();
+    let (other_key, other_id) = generate_keypair();
+    let app = Database::create(server, app_key.clone(), Doc::new())
+        .await
+        .unwrap();
+    let tx = app.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_auth_key(&other_id, AuthKey::active(None, Permission::Admin(0)))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let records_before = local_records(server).await;
+    // This is the complete app input. The personal bundle never crosses this
+    // boundary; even a personal Account reference cannot supply its signer.
+    let bundle = CredentialBundle::seal(app.root_id(), &[app_key, other_key], "app-only").unwrap();
+    assert!(bundle.unlock_for(personal.root_id(), "app-only").is_err());
+    let credentials = bundle.unlock("app-only").unwrap();
+    assert!(credentials.signer(&personal_id).is_err());
+    let first = AccountSigner::new(app.root_id().clone(), credentials.signer(&app_id).unwrap());
+    let instance = match url {
+        Some(url) => first.connect(url).await.unwrap(),
+        None => server.clone(),
+    };
+    let mut session =
+        AccountSession::from_credentials(&instance, bundle.unlock("app-only").unwrap(), &app_id)
+            .await
+            .unwrap();
+    assert!(session.account_info().is_none());
+    assert!(session.login_id().is_empty());
+    assert!(session.username().is_empty());
+    assert_eq!(session.account().id(), app.root_id());
+    assert!(session.admin().await.is_err());
+    assert!(
+        AccountSession::from_credentials(
+            &instance,
+            bundle.unlock("app-only").unwrap(),
+            &personal_id
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        AccountSession::from_signer(
+            &instance,
+            AccountSigner::new(
+                personal.root_id().clone(),
+                credentials.signer(&app_id).unwrap()
+            )
+        )
+        .await
+        .is_err()
+    );
+    session
+        .set_reference("app", "personal", personal.root_id())
+        .await
+        .unwrap();
+    assert_eq!(
+        session.reference("app", "personal").await.unwrap(),
+        Some(personal.root_id().clone())
+    );
+    assert!(session.open_reference("app", "personal").await.is_err());
+    assert!(session.acting_as(&personal_id, None).is_err());
+    assert_eq!(session.list_keys().unwrap().len(), 2);
+    let target = session.create_database(Doc::new(), &app_id).await.unwrap();
+    let tx = target.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_auth_key(&other_id, AuthKey::active(None, Permission::Write(1)))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    session
+        .set_reference("app", "target", target.root_id())
+        .await
+        .unwrap();
+    session
+        .track_database(target.root_id(), &other_id, SyncSettings::disabled())
+        .await
+        .unwrap();
+    let retained = session.acting_as(&app_id, None).unwrap();
+    let selected = session.acting_as(&other_id, None).unwrap();
+    assert!(
+        session
+            .open_reference("app", "target")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let selected_database = session
+        .open_database_with_key(target.root_id(), &other_id)
+        .await
+        .unwrap();
+    write_as(
+        &selected_database,
+        "caller-selected",
+        &other_id,
+        selected.identity(),
+    )
+    .await;
+    assert_eq!(session.databases().await.unwrap().len(), 1);
+    session.untrack_database(target.root_id()).await.unwrap();
+    assert!(session.databases().await.unwrap().is_empty());
+    // Adding a local key does not add it to the input bundle or any daemon
+    // record. External storage ownership stays explicit.
+    let additional = session.add_private_key(None).await.unwrap();
+    assert!(credentials.signer(&additional).is_err());
+    session.logout().unwrap();
+    drop(credentials);
+    write_as(
+        &selected_database,
+        "after-caller-logout",
+        &other_id,
+        selected.identity(),
+    )
+    .await;
+    write_as(
+        &retained
+            .open_database(&instance, target.root_id())
+            .await
+            .unwrap(),
+        "caller-retained",
+        &app_id,
+        retained.identity(),
+    )
+    .await;
+    let reopened =
+        AccountSession::from_credentials(&instance, bundle.unlock("app-only").unwrap(), &app_id)
+            .await
+            .unwrap();
+    assert!(reopened.databases().await.unwrap().is_empty());
+    assert!(reopened.get_signing_key(&additional).is_err());
+    assert_eq!(
+        reopened.reference("app", "target").await.unwrap(),
+        Some(target.root_id().clone())
+    );
+    assert!(
+        reopened.open_reference("app", "target").await.is_err(),
+        "references must not activate local mappings"
+    );
+    assert_eq!(
+        local_records(server).await,
+        records_before,
+        "caller-owned sessions wrote daemon credentials or activation state"
+    );
+    drop(personal_key);
+}
+
+#[tokio::test]
+async fn test_caller_held_full_sessions_embedded() {
+    let (instance, _) =
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("admin"))
+            .await
+            .unwrap();
+    caller_held_sessions(&instance, None).await;
+}
+
+#[tokio::test]
+#[cfg(all(unix, feature = "service"))]
+async fn test_caller_held_full_sessions_connected() {
+    use eidetica::service::ServiceServer;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = dir.path().join("service.sock");
+    let (instance, _) =
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("admin"))
+            .await
+            .unwrap();
+    let service = ServiceServer::bind(instance.clone(), &path).await.unwrap();
+    let (shutdown, rx) = tokio::sync::watch::channel(());
+    let task = tokio::spawn(service.run(rx));
+    caller_held_sessions(&instance, Some(&format!("unix://{}", path.display()))).await;
+    drop(shutdown);
+    task.await.unwrap().unwrap();
 }

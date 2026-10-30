@@ -5,9 +5,10 @@ use crate::{ID, Instance, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LocalAccountState {
+    pub credentials: Option<super::KeyStorage>,
     pub keys: BTreeMap<String, AccountKey>,
     pub last_login: Option<i64>,
     pub databases: BTreeMap<String, TrackedDatabase>,
@@ -164,23 +165,12 @@ mod tests {
                 database.snapshot().await?
             );
         }
-        let salt = super::super::crypto::generate_salt();
-        let wrapping = zeroize::Zeroizing::new(super::super::crypto::derive_encryption_key(
-            "second-password",
-            &salt,
-        )?);
-        let (ciphertext, nonce) = super::super::crypto::encrypt_private_key(&b_secret, &wrapping)?;
         let info = AccountInfo {
             username: "device-two".to_owned(),
             account_id: account.root_id().clone(),
             credentials: AccountCredentials {
                 root_key_id: b.clone(),
-                root_key: KeyStorage::Encrypted {
-                    algorithm: "aes-256-gcm".to_owned(),
-                    ciphertext,
-                    nonce,
-                },
-                password_salt: Some(salt),
+                bundle: KeyStorage::seal(account.root_id(), &[b_secret], Some("second-password"))?,
             },
             created_at: second_server.clock().now_secs(),
             status: AccountStatus::Active,

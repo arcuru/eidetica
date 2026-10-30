@@ -24,9 +24,7 @@ use tokio::net::{
 };
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
-use crate::account::AccountError;
-use crate::account::crypto::{decrypt_private_key, derive_encryption_key};
-use crate::account::types::{AccountInfo, KeyStorage};
+use crate::account::types::AccountInfo;
 use crate::auth::crypto::PrivateKey;
 use crate::auth::crypto::{PublicKey, create_challenge_response};
 use crate::auth::types::SigKey;
@@ -784,8 +782,8 @@ impl RemoteConnection {
     /// in the Service Architecture doc § Trusted login threat model.
     ///
     /// On success the connection's server-side state is `Authenticated`. The
-    /// caller receives the user's record and the decrypted root key so it can
-    /// build the `AccountSession` session without a second credential lookup —
+    /// caller receives the record and its unlocked credential owner so it can
+    /// build the `AccountSession` without a second login-directory lookup —
     /// reads through the wire always travel as the authenticated user, which
     /// with the per-tree gate means a fresh user without permissions on
     /// `_users` would not be able to re-fetch it.
@@ -793,7 +791,7 @@ impl RemoteConnection {
         &self,
         username: &str,
         password: Option<&str>,
-    ) -> crate::Result<(String, AccountInfo, PrivateKey)> {
+    ) -> crate::Result<(String, AccountInfo, crate::account::UnlockedCredentials)> {
         // Step 1: name the user, receive challenge + user record.
         let resp = self
             .request_ok(ServiceRequest::TrustedLoginAccount {
@@ -809,30 +807,10 @@ impl RemoteConnection {
             other => return Err(unexpected_response("TrustedLoginChallenge", &other)),
         };
 
-        // Step 2: decrypt the root signing key locally. Cross-check that the
-        // caller's password/no-password matches the credential's salt/no-salt;
-        // a mismatch is the same UX-level error as a wrong password.
+        // Unlock the authenticated Account locator and all supplied keys locally.
         let credentials = &account_info.credentials;
-        let is_passwordless = credentials.password_salt.is_none();
-        let signing_key = match (&credentials.root_key, password, is_passwordless) {
-            (KeyStorage::Unencrypted { key }, None, true) => key.clone(),
-            (
-                KeyStorage::Encrypted {
-                    ciphertext, nonce, ..
-                },
-                Some(pwd),
-                false,
-            ) => {
-                let salt = credentials.password_salt.as_deref().ok_or_else(|| {
-                    AccountError::PasswordRequired {
-                        operation: "decrypt root key for remote login".to_string(),
-                    }
-                })?;
-                let kek = derive_encryption_key(pwd, salt)?;
-                decrypt_private_key(ciphertext, nonce, &kek)?
-            }
-            _ => return Err(AccountError::InvalidPassword.into()),
-        };
+        let unlocked = credentials.unlock(&account_info.account_id, password)?;
+        let signing_key = unlocked.signer(&credentials.root_key_id)?;
 
         // Step 3: sign the challenge and send the proof.
         let signature = create_challenge_response(&challenge, &signing_key);
@@ -843,7 +821,7 @@ impl RemoteConnection {
             ServiceResponse::TrustedLoginOk => {
                 self.record_authenticated_key(credentials.root_key_id.clone())
                     .await;
-                Ok((login_id, account_info, signing_key))
+                Ok((login_id, account_info, unlocked))
             }
             other => Err(unexpected_response("TrustedLoginOk", &other)),
         }

@@ -12,19 +12,18 @@ A second installation must obtain independently authorized keys; syncing Account
 App credentials must be scoped separately from the owner's personal credentials.
 The library does not infer key custody from an Identity reference.
 
-Two wrapping interfaces currently coexist:
+Protected convenience logins and explicit caller-held credentials use one `CredentialBundle` format.
+It authenticates the Account locator and the complete explicit key list together under AES-GCM.
+`AccountCredentials` holds the login key ID and the initial bundle; the native account-state record holds the current complete bundle and separate non-key-bearing metadata.
+Additional-key updates merge into that observed bundle atomically with their metadata.
+One password unlocks all of its keys; no per-key encryption format is used.
+Passwordless logins deliberately retain plaintext local storage.
+`AccountSession::from_credentials` and `from_signer` support full sessions without a daemon registration, keeping their bookkeeping in session memory rather than the convenience store.
 
-- Convenience login uses `AccountCredentials` and per-key `KeyStorage` values in native records.
-  One password unlocks the root and additional keys using the login's salt.
-  Passwordless logins deliberately retain plaintext local storage.
-- `CredentialBundle` authenticates the Account locator and explicit key list together under AES-GCM.
-  `UnlockedCredentials` supplies caller-held signers independently of daemon login storage.
-  This format is not yet the ordinary convenience-login encoding, and full AccountSession construction from it remains unfinished.
-
-Both reuse the existing Account Argon2id derivation: version 0x13, 19456 KiB, two iterations, parallelism one and a 32-byte output.
+The format reuses the existing Account Argon2id derivation: version 0x13, 19456 KiB, two iterations, parallelism one and a 32-byte output.
 The generated base64 salt text is passed to Argon2, not decoded first.
 AES-256-GCM uses fresh 96-bit nonces.
-The authenticated bundle adds fixed domain/version AAD; convenience per-key wrapping retains its existing format.
+The authenticated bundle uses fixed domain/version AAD in both convenience and caller-held paths.
 PasswordStore's separately owned KDF/AAD formats and upgrades are not changed here.
 There is no separate password-verification hash: decryption verifies the password.
 

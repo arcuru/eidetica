@@ -35,6 +35,10 @@ impl AccountSigner {
         }
     }
 
+    pub(crate) fn signing_key(&self) -> &crate::auth::crypto::PrivateKey {
+        self.key.signing_key()
+    }
+
     pub fn account_id(&self) -> &ID {
         &self.account_id
     }
