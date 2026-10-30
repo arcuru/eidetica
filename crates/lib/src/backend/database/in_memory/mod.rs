@@ -70,6 +70,8 @@ pub(crate) struct InMemoryInner {
     /// This is suitable for development/testing only. Production systems should use
     /// proper key management with encryption at rest.
     pub(crate) instance_secrets: Option<InstanceSecrets>,
+    /// Installation-local account records, never part of an Entry tree.
+    pub(crate) local_accounts: BTreeMap<String, Vec<u8>>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
     /// Retained verified frontier per tree, maintained under this same lock.
@@ -195,6 +197,7 @@ impl InMemory {
                 verification_status: HashMap::new(),
                 instance_metadata: None,
                 instance_secrets: None,
+                local_accounts: BTreeMap::new(),
                 tips: HashMap::new(),
                 verified: HashMap::new(),
             }),
@@ -888,6 +891,37 @@ impl BackendImpl for InMemory {
         self.store_history_reads.fetch_add(1, Ordering::Relaxed);
         let inner = self.inner.read().unwrap();
         storage::store_at(&inner, tree, subtree, snapshot.tips())
+    }
+
+    async fn local_account_record(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.inner.read().unwrap().local_accounts.get(name).cloned())
+    }
+
+    async fn compare_exchange_local_account_record(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool> {
+        let mut inner = self.inner.write().unwrap();
+        if inner.local_accounts.get(name).map(Vec::as_slice) != expected {
+            return Ok(false);
+        }
+        inner
+            .local_accounts
+            .insert(name.to_owned(), replacement.to_vec());
+        Ok(true)
+    }
+
+    async fn local_account_names(&self) -> Result<Vec<String>> {
+        Ok(self
+            .inner
+            .read()
+            .unwrap()
+            .local_accounts
+            .keys()
+            .cloned()
+            .collect())
     }
 
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {

@@ -777,6 +777,19 @@ async fn dispatch_inner(
             handle_trusted_login_prove(state, &signature)
         }
 
+        ServiceRequest::SignerChallenge { pubkey } => {
+            let challenge = generate_challenge();
+            *state = ConnectionState::AwaitingProof {
+                username: String::new(),
+                // Cache scope only, never a daemon login record. UUID login
+                // records and this prefix occupy distinct namespaces.
+                login_id: format!("signer:{}", uuid::Uuid::new_v4()),
+                challenge: challenge.clone(),
+                expected_pubkey: pubkey,
+            };
+            Ok(ServiceResponse::SignerChallenge { challenge })
+        }
+
         // === Pre-auth: server identity ===
         ServiceRequest::GetInstanceMetadata => {
             let metadata = instance.backend().get_instance_metadata().await?;
@@ -1241,6 +1254,7 @@ async fn dispatch_database_op(
 
         DatabaseOp::SubmitSignedEntry { entry } => {
             let previous_tips = instance.snapshot(&root_id).await?;
+            let entry_id = entry.id();
             // The client signed this entry; the server does NOT trust its
             // claimed validity. Store it `Unverified`, then run our OWN
             // verification pass against the entry's pinned settings. A
@@ -1268,6 +1282,14 @@ async fn dispatch_database_op(
                 .await?
                 .verify_with_source(WriteSource::Local, Some(previous_tips))
                 .await?;
+            if instance
+                .require_local_engine()?
+                .get_verification_status(&entry_id)
+                .await?
+                != VerificationStatus::Verified
+            {
+                return Err(crate::transaction::TransactionError::EntryValidationFailed.into());
+            }
             Ok(ServiceResponse::Ok)
         }
 

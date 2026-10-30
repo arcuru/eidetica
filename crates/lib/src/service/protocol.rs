@@ -6,13 +6,13 @@
 //! ## Request shape
 //!
 //! `ServiceRequest` is a flat enum holding pre-authentication lifecycle messages
-//! (`TrustedLoginAccount`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
+//! (`TrustedLoginAccount`, `SignerChallenge`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
 //! query, and an `AuthenticatedDb` wrapper that carries every storage operation
 //! (including any user-management writes against `_users`). The wrapper
 //! bundles the `(root_id, identity)` scope so the server can validate each
 //! op against the connection's session keyset and the target database's
 //! auth settings. Pre-auth verification of the session pubkey happens once at
-//! login via a challenge-response handshake.
+//! authentication via a challenge-response handshake.
 //!
 //! The login lifecycle is **trusted** in the sense that the daemon ships the
 //! user's encrypted credentials (salt + AES-GCM ciphertext) to anyone who can
@@ -27,7 +27,7 @@
 //!
 //! `AuthenticatedDb` requests carry the caller's `root_id`/`identity` and are
 //! gated per-tree by the daemon's permission check; clients populate these
-//! from the session established by the `TrustedLogin*` flow.
+//! from the session established by trusted login or proof of a caller-held signer.
 
 use std::collections::BTreeMap;
 
@@ -372,10 +372,15 @@ pub enum ServiceRequest {
     #[serde(rename = "TrustedLoginUser")]
     TrustedLoginAccount { username: String },
     /// Step 2 of the trusted login flow. Client returns a signature over the
-    /// challenge from `TrustedLoginAccount`, computed with the user's root key.
-    /// Server verifies against the stored pubkey and, on success, marks the
+    /// challenge from `TrustedLoginAccount` or `SignerChallenge`, computed with
+    /// the selected private key. Server verifies the bound pubkey and marks the
     /// connection authenticated.
     TrustedLoginProve { signature: Vec<u8> },
+
+    /// Authenticate a caller-held signer without daemon login storage. The
+    /// challenge proves possession only; all existing per-tree Auth gates apply.
+    /// Complete with `TrustedLoginProve` on the same trusted local connection.
+    SignerChallenge { pubkey: PublicKey },
 
     // === Pre-auth: queries safe before login ===
     /// Fetch the server's instance metadata (including device id). Used by
@@ -570,6 +575,8 @@ pub enum ServiceResponse {
     },
     /// Trusted login succeeded; the connection is now authenticated.
     TrustedLoginOk,
+    /// Challenge for an explicit client-held signer (no credential record).
+    SignerChallenge { challenge: Vec<u8> },
     /// Challenge bytes returned in response to `SessionKeyChallenge`. The
     /// client signs these with the named pubkey's private key and returns the
     /// signature in `SessionKeyRegister`.
@@ -589,6 +596,7 @@ pub enum ServiceResponse {
 // step with the wire enums above. Recognized payloads go through their original
 // serde decoders; a malformed known message must never become Unsupported.
 const REQUEST_VARIANTS: &[&str] = &[
+    "SignerChallenge",
     "TrustedLoginUser",
     "TrustedLoginProve",
     "GetInstanceMetadata",
@@ -621,6 +629,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "CreateTicket",
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
+    "SignerChallenge",
     "Entry",
     "Entries",
     "Ids",

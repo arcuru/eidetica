@@ -678,6 +678,41 @@ impl RemoteConnection {
         .await
     }
 
+    /// Prove a caller-owned signer, with no daemon credential-store dependency.
+    pub(crate) async fn authenticate_signer(&self, signer: &PrivateKey) -> crate::Result<()> {
+        let response = self
+            .request_ok(ServiceRequest::SignerChallenge {
+                pubkey: signer.public_key(),
+            })
+            .await?;
+        let challenge = match response {
+            ServiceResponse::SignerChallenge { challenge } => challenge,
+            other => return Err(unexpected_response("SignerChallenge", &other)),
+        };
+        let signature = create_challenge_response(&challenge, signer);
+        match self
+            .request_ok(ServiceRequest::TrustedLoginProve { signature })
+            .await?
+        {
+            ServiceResponse::TrustedLoginOk => {
+                self.record_authenticated_key(signer.public_key()).await;
+                Ok(())
+            }
+            other => Err(unexpected_response("TrustedLoginOk", &other)),
+        }
+    }
+
+    async fn record_authenticated_key(&self, pubkey: PublicKey) {
+        *self.inner.session_write() = Some(SessionState {
+            session_pubkey: pubkey.clone(),
+        });
+        // Reauthentication replaces the server keyset. Mirror it exactly;
+        // retaining this cache would skip required possession proofs on reopen.
+        let mut keys = self.inner.registered_keys.lock().await;
+        keys.clear();
+        keys.insert(pubkey);
+    }
+
     /// Authenticate this connection as `username` by completing the
     /// `TrustedLogin*` handshake against the daemon.
     ///
@@ -749,22 +784,8 @@ impl RemoteConnection {
             .await?;
         match resp {
             ServiceResponse::TrustedLoginOk => {
-                // Stash the verified session pubkey so subsequent
-                // `backend_request` calls can populate the `Authenticated`
-                // envelope's identity field.
-                *self.inner.session_write() = Some(SessionState {
-                    session_pubkey: credentials.root_key_id.clone(),
-                });
-                // The login pubkey is in the server-side session keyset by
-                // construction (the server seeds it there in
-                // `handle_trusted_login_prove`). Mirror that here so
-                // `register_session_key` short-circuits without a wire
-                // round-trip when called for the login key.
-                self.inner
-                    .registered_keys
-                    .lock()
-                    .await
-                    .insert(credentials.root_key_id.clone());
+                self.record_authenticated_key(credentials.root_key_id.clone())
+                    .await;
                 Ok((login_id, account_info, signing_key))
             }
             other => Err(unexpected_response("TrustedLoginOk", &other)),

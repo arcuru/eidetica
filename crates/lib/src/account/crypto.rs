@@ -8,8 +8,8 @@ use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, AeadCore, OsRng},
 };
-use argon2::{Argon2, password_hash::SaltString};
-use zeroize::Zeroize;
+use argon2::{Algorithm, Argon2, Params, Version, password_hash::SaltString};
+use zeroize::{Zeroize, Zeroizing};
 
 use super::errors::AccountError;
 use crate::{Result, auth::crypto::PrivateKey};
@@ -56,9 +56,16 @@ pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -
         reason: format!("Invalid salt format: {e}"),
     })?;
 
-    let argon2 = Argon2::default();
+    // Pin the existing Account format rather than inheriting future library
+    // defaults. PasswordStore has its own independently versioned KDF envelope.
+    let params = Params::new(19 * 1024, 2, 1, Some(KEY_LENGTH)).map_err(|_| {
+        AccountError::EncryptionFailed {
+            reason: "Invalid account KDF parameters".to_owned(),
+        }
+    })?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    let mut key = vec![0u8; KEY_LENGTH];
+    let mut key = Zeroizing::new(vec![0u8; KEY_LENGTH]);
     argon2
         .hash_password_into(
             password.as_ref().as_bytes(),
@@ -69,7 +76,7 @@ pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -
             reason: format!("Key derivation failed: {e}"),
         })?;
 
-    Ok(key)
+    Ok(std::mem::take(&mut *key))
 }
 
 /// Encrypt a private key with a password-derived encryption key.
@@ -206,6 +213,27 @@ pub fn decrypt_private_key(
 mod tests {
     use super::*;
     use crate::auth::crypto::generate_keypair;
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_account_kdf_v1_keeps_existing_text_salt_convention() {
+        let salt = "AAAAAAAAAAAAAAAAAAAAAA";
+        let password = "synthetic fixture password";
+        let actual = derive_encryption_key(password, salt).unwrap();
+        let mut legacy = [0; KEY_LENGTH];
+        Argon2::default()
+            .hash_password_into(password.as_bytes(), salt.as_bytes(), &mut legacy)
+            .unwrap();
+        assert_eq!(actual, legacy);
+        let mut raw_salt = [0; KEY_LENGTH];
+        Argon2::default()
+            .hash_password_into(password.as_bytes(), &[0; 16], &mut raw_salt)
+            .unwrap();
+        assert_ne!(
+            actual, raw_salt,
+            "raw salt would silently change stored Account credentials"
+        );
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri

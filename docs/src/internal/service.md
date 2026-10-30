@@ -90,7 +90,10 @@ sequenceDiagram
 ```
 
 1. **Handshake**: client sends `Handshake { protocol_version }`; server validates and acks. On mismatch the server acks with its own version and closes the connection.
-2. **Trusted login** (see Security Model below): a challenge-response over the user's root key. `GetInstanceMetadata` is the only other request permitted before login.
+2. **Authentication**: trusted login (see Security Model below) retrieves a credential record and proves the root key.
+   Alternatively, `SignerChallenge { pubkey }` returns only a fresh challenge; `TrustedLoginProve` completes proof of a caller-held signer without a login record.
+   `GetInstanceMetadata` is also permitted before authentication.
+   Both authentication paths enter the same public-key session state; neither bypasses per-tree Auth.
 3. **Optional session-key registration**: once authenticated, the client may prove possession of additional pubkeys via `SessionKeyChallenge`/`SessionKeyRegister`. Each successfully proven pubkey joins the connection's `session_keyset` and can then act as the identity on subsequent ops. See [Session Keyset](#session-keyset) below.
 4. **Authenticated request loop**: every storage operation travels inside `ServiceRequest::AuthenticatedDb`. The server handles requests in connection order. `RemoteConnection` serializes frame writes, not response waits; its background reader associates responses with pending callers in FIFO order and dispatches notifications separately.
 5. **Termination**: client closes its write half (EOF); the server detects EOF and cleans up.
@@ -121,6 +124,10 @@ Client-side signing over the Unix service socket. In socket-only mode the daemon
 - **Encrypted stores remain opaque to the daemon**: per-database encrypted CRDTs merge as `Vec<EncryptedBlob>`; the daemon participates in storage and sync without ever holding a content encryption key.
 - **Filesystem permissions**: missing directories in the socket path are created with mode `0700`, including under a permissive process umask. The socket is mode `0660`.
 
+Caller-owned signers can use [`AccountSigner`](account_credentials.md#service-execution) without a daemon-held login bundle.
+A proof-only connection carries a generated cache scope, not a registered local-login identity.
+The optional dashboard remains an explicit daemon-side signing exception.
+
 The socket directory is the local trust boundary.
 An existing parent must be owned by the daemon user, not writable by group or others, and reached without symlinked path components.
 Its group, setgid bit, and traversal permissions can intentionally grant another Unix user access; every process that can connect receives the existing fully trusted service API.
@@ -135,16 +142,17 @@ See the `crate::service` module rustdoc for the full design rationale, including
 
 The top-level request enum is intentionally flat, keeping the pre-auth surface visible at a glance:
 
-| Variant                                        | When                                                                                               |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `TrustedLoginAccount { username }`             | Pre-auth step 1 — request a login challenge                                                        |
-| `TrustedLoginProve { signature }`              | Pre-auth step 2 — return the signed login challenge                                                |
-| `GetInstanceMetadata`                          | Pre-auth — fetch server identity (used by `Instance::connect`)                                     |
-| `SessionKeyChallenge { pubkey }`               | Post-auth — request a challenge bound to `pubkey` so the client can prove possession               |
-| `SessionKeyRegister { pubkey, signature }`     | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset |
-| `TicketBootstrapPrepare { ticket }`            | Post-auth — select a ticket route; see [Ticket Bootstrap](#ticket-bootstrap)                       |
-| `TicketBootstrap(Box<TicketBootstrapRequest>)` | Post-auth — send a client-signed bootstrap request through the daemon's sync engine                |
-| `AuthenticatedDb(Box<AuthenticatedDbRequest>)` | A `DatabaseOp` — the single envelope for every storage operation                                   |
+| Variant                                        | When                                                                                                        |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `TrustedLoginAccount { username }`             | Pre-auth step 1 — request a login challenge                                                                 |
+| `TrustedLoginProve { signature }`              | Pre-auth step 2 — return the signed login challenge                                                         |
+| `SignerChallenge { pubkey }`                   | Pre-auth — prove a caller-held signer without fetching login credentials; complete with `TrustedLoginProve` |
+| `GetInstanceMetadata`                          | Pre-auth — fetch server identity (used by `Instance::connect`)                                              |
+| `SessionKeyChallenge { pubkey }`               | Post-auth — request a challenge bound to `pubkey` so the client can prove possession                        |
+| `SessionKeyRegister { pubkey, signature }`     | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset          |
+| `TicketBootstrapPrepare { ticket }`            | Post-auth — select a ticket route; see [Ticket Bootstrap](#ticket-bootstrap)                                |
+| `TicketBootstrap(Box<TicketBootstrapRequest>)` | Post-auth — send a client-signed bootstrap request through the daemon's sync engine                         |
+| `AuthenticatedDb(Box<AuthenticatedDbRequest>)` | A `DatabaseOp` — the single envelope for every storage operation                                            |
 
 `AuthenticatedDbRequest` carries an identity claim that the server validates against the connection's session keyset before dispatch:
 

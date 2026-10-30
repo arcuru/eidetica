@@ -4,7 +4,7 @@
 //! the in-memory database state to/from JSON files.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::Path,
     sync::{Mutex, RwLock},
 };
@@ -24,7 +24,9 @@ use crate::{
 /// Internal JSON format revision counter, independent of release versions and
 /// the SQL schema counter. v0 reconstructs retained state on load; v2 persists
 /// verified tips only. Unreleased v1 prefix files are refused.
-const PERSISTENCE_VERSION: u8 = 2;
+// v3 adds non-replicated local account records. v2 readers refuse this version
+// rather than silently discarding credentials when saving an older snapshot.
+const PERSISTENCE_VERSION: u8 = 3;
 
 /// Helper to check if version is default (0) for serde skip_serializing_if
 fn is_v0(v: &u8) -> bool {
@@ -38,7 +40,7 @@ where
 {
     use serde::Deserialize;
     let version = u8::deserialize(deserializer)?;
-    if version != 0 && version != PERSISTENCE_VERSION {
+    if version != 0 && version != 2 && version != PERSISTENCE_VERSION {
         return Err(serde::de::Error::custom(format!(
             "unsupported persistence version {version}; newest supported version \
              is {PERSISTENCE_VERSION} (v0 files rebuild retained state on load)"
@@ -67,6 +69,8 @@ struct SerializableDatabase {
     /// Instance secrets containing the device signing key
     #[serde(default)]
     instance_secrets: Option<InstanceSecrets>,
+    #[serde(default)]
+    local_accounts: BTreeMap<String, Vec<u8>>,
     /// CRDT state cache *was* serialized here pre-unification. The cache is
     /// now scope-keyed (Shared vs Login) and bounded by an LRU; rather than
     /// serializing an opaque LRU snapshot, we treat the cache as ephemeral
@@ -101,6 +105,7 @@ impl Serialize for InMemory {
                 verification_status: inner.verification_status.clone(),
                 instance_metadata: inner.instance_metadata.clone(),
                 instance_secrets: inner.instance_secrets.clone(),
+                local_accounts: inner.local_accounts.clone(),
                 cache: None,
                 tips: inner.tips.clone(),
                 verified: inner.verified.clone(),
@@ -126,6 +131,7 @@ impl<'de> Deserialize<'de> for InMemory {
             verification_status: serializable.verification_status,
             instance_metadata: serializable.instance_metadata,
             instance_secrets: serializable.instance_secrets,
+            local_accounts: serializable.local_accounts,
             tips: serializable.tips,
             verified: serializable.verified,
         };
@@ -187,6 +193,7 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
             verification_status: inner.verification_status.clone(),
             instance_metadata: inner.instance_metadata.clone(),
             instance_secrets: inner.instance_secrets.clone(),
+            local_accounts: inner.local_accounts.clone(),
             cache: None,
             tips: inner.tips.clone(),
             verified: inner.verified.clone(),
@@ -296,14 +303,14 @@ mod persistence_tests {
     }
 
     #[test]
-    fn v2_round_trip_retains_verified_frontier() {
+    fn current_round_trip_retains_verified_frontier() {
         let (backend, root_id, a_id) = verified_chain();
         let before =
             super::super::storage::verified_snapshot(&backend.inner.read().unwrap(), &root_id);
         assert_eq!(before.tips(), std::slice::from_ref(&a_id));
 
         let value = serde_json::to_value(&backend).expect("serializes");
-        assert_eq!(value["_v"], 2);
+        assert_eq!(value["_v"], 3);
         assert!(value.get("verified").is_some());
 
         let loaded: InMemory = serde_json::from_value(value).expect("deserializes");
@@ -334,6 +341,8 @@ mod persistence_tests {
     fn v2_file_trusts_persisted_state() {
         let (backend, root_id, _) = verified_chain();
         let mut value = serde_json::to_value(&backend).expect("serializes");
+        value["_v"] = 2.into();
+        value.as_object_mut().unwrap().remove("local_accounts");
         value["verified"] = serde_json::Value::Object(Default::default());
 
         let loaded: InMemory = serde_json::from_value(value).expect("deserializes");

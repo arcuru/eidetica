@@ -137,6 +137,28 @@ impl AccountSession {
         }
     }
 
+    /// Bind a newly selected actual signer without changing existing handles.
+    /// `None` selects direct-key Auth; delegation requires an explicit identity.
+    /// References and key-to-Identity hints never supply authority here.
+    pub fn acting_as(
+        &self,
+        key_id: &PublicKey,
+        identity: Option<SigKey>,
+    ) -> Result<super::AccountSigner> {
+        let signer = self
+            .key_manager
+            .get_signing_key(key_id)
+            .cloned()
+            .ok_or_else(|| AccountError::KeyNotFound {
+                key_id: key_id.to_string(),
+            })?;
+        let key = match identity {
+            Some(identity) => DatabaseKey::with_identity(signer, identity),
+            None => DatabaseKey::new(signer),
+        };
+        Ok(super::AccountSigner::new(self.account.id().clone(), key))
+    }
+
     // === Basic Session Methods ===
 
     /// Instance-local login record UUID, not the Account's portable identity.
@@ -256,8 +278,9 @@ impl AccountSession {
 
     /// Logout (consumes self and clears decrypted keys from memory)
     ///
-    /// After logout, all decrypted keys are zeroized and the session is ended.
-    /// Keys are automatically cleared when the AccountSession is dropped.
+    /// The session's key manager is cleared on drop. Independently retained
+    /// signer/database handles own their own key clones and remain usable;
+    /// logout is not revocation or invalidation of those handles.
     pub fn logout(self) -> Result<()> {
         // Consume self, all keys are stored in other Types that zeroize themselves on drop
         Ok(())
