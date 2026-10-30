@@ -576,10 +576,10 @@ pub enum ServiceResponse {
     /// round-trip, and then build the `AccountSession` session from data the daemon
     /// already returned — no second wire read of `_users` is required.
     ///
-    /// `account_info.credentials` carries the (encrypted) root private key, its
-    /// `KeyStorage` envelope (algorithm/ciphertext/nonce for password-protected
-    /// users, raw `PrivateKey` for passwordless users), and the Argon2id salt
-    /// when password-protected. The non-credential fields (account_id,
+    /// `account_info.credentials` carries the public login key ID and a
+    /// `KeyStorage` bundle. Protected logins authenticate the Account locator
+    /// and explicit keys in the versioned `CredentialBundle` envelope;
+    /// passwordless logins deliberately carry a plaintext locator/key list. The non-credential fields (account_id,
     /// status, timestamps) are what `AccountSession::new` consumes after the proof
     /// step succeeds. See § Trusted login threat model in the Service
     /// Architecture doc for why this is safe to ship to anyone who can
@@ -1126,12 +1126,13 @@ mod tests {
             account_id: ID::from_bytes("alice-db"),
             credentials: AccountCredentials {
                 root_key_id: pubkey.clone(),
-                root_key: KeyStorage::Encrypted {
-                    algorithm: "aes-256-gcm".to_string(),
-                    ciphertext: b"ct".to_vec(),
-                    nonce: b"123456789012".to_vec(),
+                bundle: KeyStorage::Encrypted {
+                    bundle: serde_json::from_value(serde_json::json!({
+                        "version": 1, "salt": "salt-string", "ciphertext": b"ct".to_vec(),
+                        "nonce": b"123456789012".to_vec(),
+                    }))
+                    .unwrap(),
                 },
-                password_salt: Some("salt-string".to_string()),
             },
             created_at: 1_700_000_000,
             status: AccountStatus::Active,
@@ -1158,9 +1159,10 @@ mod tests {
                     "user_database_id": account_info.account_id,
                     "credentials": {
                         "root_key_id": "PUBLIC_KEY",
-                        "root_key": {"type": "encrypted", "algorithm": "aes-256-gcm",
-                            "ciphertext": b"ct".to_vec(), "nonce": b"123456789012".to_vec()},
-                        "password_salt": "salt-string"
+                        "bundle": {"type": "encrypted", "bundle": {
+                            "version": 1, "salt": "salt-string",
+                            "ciphertext": b"ct".to_vec(), "nonce": b"123456789012".to_vec()
+                        }}
                     },
                     "created_at": 1_700_000_000, "status": "Active"
                 }
@@ -1179,8 +1181,8 @@ mod tests {
                 assert_eq!(ui2.account_id, account_info.account_id);
                 assert_eq!(ui2.credentials.root_key_id, pubkey);
                 assert_eq!(
-                    ui2.credentials.password_salt.as_deref(),
-                    Some("salt-string")
+                    serde_json::to_value(&ui2.credentials).unwrap(),
+                    serde_json::to_value(&account_info.credentials).unwrap()
                 );
             }
             _ => panic!("wrong variant"),

@@ -27,7 +27,7 @@ async fn test_user_getters() {
 
     assert_eq!(user.username(), "test_user");
     assert!(!user.login_id().is_empty());
-    assert_eq!(user.account_info().username, "test_user");
+    assert_eq!(user.account_info().unwrap().username, "test_user");
     assert!(!user.account().id().to_string().is_empty());
 }
 

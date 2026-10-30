@@ -8,7 +8,7 @@ Routine discovery goes through the session's reference operations below.
 
 An **AccountSession** is an authenticated, unlocked handle on one Instance, with decrypted keys and the existing database access, key management, sharing, and sync-preference operations.
 `Instance::login_account` returns a session; `NewAccount` supplies initial account creation settings, and `InstanceAdmin::create_account` creates subsequent accounts.
-`AccountSession::login_id()` identifies the instance-local login record, while `username()` is its local login name.
+`AccountSession::login_id()` identifies the instance-local login record, while `username()` is its local login name; both are empty for caller-held sessions, whose `account_info()` is `None`.
 `AccountInfo` is that registration record, not the portable Account itself.
 A person, group, or app can have an Account; it is not necessarily one account per process, device, or conversation.
 
@@ -24,9 +24,11 @@ The ordinary login/key/preference writers also use native local records; Account
 
 Fresh Account histories contain public Auth and portable application references, not private-key/unlock records or installation activation preferences.
 Native `login:<name>` and `account-state:<UUID>` records hold convenience credentials and local bookkeeping; `_users` retains instance-admin Auth only.
-Password-protected convenience keys retain their existing Account Argon2id/AES-GCM wrapping; passwordless logins retain plaintext local storage.
-The standalone authenticated `CredentialBundle` and ordinary convenience formats are not yet unified.
-Full AccountSession construction from caller-held credentials remains unfinished; daemon-independent `AccountSigner` use already works.
+Password-protected convenience logins use the authenticated `CredentialBundle` format: the Account locator and explicit keys are one payload under the established Account Argon2id/AES-GCM primitives.
+Passwordless logins retain plaintext local storage.
+`AccountSession::from_credentials` consumes caller-unlocked credentials and an explicit Account key; `from_signer` accepts a signer plus Account locator and optional explicit Identity context.
+Both check Account Auth without a daemon login lookup and keep their own tracking/key hints in session memory.
+They do not enable daemon background synchronization or install a credential-store backend.
 
 No historical key deletion, compatibility import, live migration or deployment occurs here.
 Old histories can still contain credentials and must not be advertised as scrubbed.

@@ -17,7 +17,7 @@
 //! - **[`Instance`](crate::Instance)**: Manages infrastructure (local login records, system databases, backends)
 //! - **[`AccountSession`]**: Handles contextual operations (database access, key management) via sessions
 //!
-//! Native local records hold [`types::AccountCredentials`], additional keys and
+//! Native local records hold authenticated [`CredentialBundle`] credentials and
 //! per-installation tracking. They are not Entries or inputs to Account sync.
 //! The Account's private database stores application references and public Auth;
 //! the existing device-Read grant is retained without redesigning device authority.

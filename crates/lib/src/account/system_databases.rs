@@ -6,7 +6,6 @@ use handle_trait::Handle;
 
 use super::{
     AccountSession,
-    crypto::{derive_encryption_key, encrypt_private_key},
     errors::AccountError,
     key_manager::AccountKeyManager,
     types::{AccountCredentials, AccountInfo, AccountKey, AccountStatus, KeyStorage},
@@ -215,33 +214,10 @@ pub async fn create_account(
     // neither root nor additional private keys are authored into AccountDB.
     let device_pubkey = instance.id();
 
-    // 3. Build AccountCredentials — encrypt root key if password provided
-    let (root_key, password_salt) = match password {
-        Some(pwd) => {
-            let salt_string = super::crypto::generate_salt();
-            let encryption_key = derive_encryption_key(pwd, &salt_string)?;
-            let (ciphertext, nonce) = encrypt_private_key(&user_private_key, &encryption_key)?;
-            (
-                KeyStorage::Encrypted {
-                    algorithm: "aes-256-gcm".to_string(),
-                    ciphertext,
-                    nonce,
-                },
-                Some(salt_string),
-            )
-        }
-        None => (
-            KeyStorage::Unencrypted {
-                key: user_private_key,
-            },
-            None,
-        ),
-    };
-
+    // One authenticated locator/key payload, shared with caller-held bundles.
     let credentials = AccountCredentials {
         root_key_id: user_public_key.clone(),
-        root_key,
-        password_salt,
+        bundle: KeyStorage::seal(&account_id, &[user_private_key], password)?,
     };
 
     // 4. Create AccountInfo
@@ -257,8 +233,8 @@ pub async fn create_account(
     super::local_logins::register(instance, &login_id, &account_info).await?;
 
     // 6. First-admin bootstrap: if no instance admin exists yet, promote this
-    // account. Done last so that a failure here doesn't leave behind a partially
-    // created account. The auth-settings write itself is signed by the device
+    // account. Registration and genesis are already durable if this later step
+    // fails; callers must reconcile that partial result. The write uses the device
     // key (the only Admin on the system DBs at bootstrap time); opening
     // `databases_db()` here mirrors the `users_db` argument passed in and
     // keeps the device-key signing detail inside `Instance`.
@@ -298,67 +274,18 @@ pub async fn login_account(
 
     let (login_id, account_info) = super::local_logins::lookup(instance, username).await?;
 
-    // 2. Verify password compatibility and construct root AccountKey from credentials
-    let creds = &account_info.credentials;
-    let is_passwordless = creds.password_salt.is_none();
-    match (password, is_passwordless) {
-        (Some(_), false) => {
-            // Password provided for password-protected account: OK
-            // Decryption of the root key IS password verification
-        }
-        (None, true) => {
-            // No password for passwordless account: OK
-        }
-        (Some(_), true) => {
-            // Password provided for passwordless account: reject
-            return Err(AccountError::InvalidPassword.into());
-        }
-        (None, false) => {
-            // No password for password-protected account: reject
-            return Err(AccountError::PasswordRequired {
-                operation: "login for password-protected user".to_string(),
-            }
-            .into());
-        }
-    }
+    let unlocked = account_info
+        .credentials
+        .unlock(&account_info.account_id, password)?;
 
-    // 3. Decrypt root signing key from credentials (decryption IS password verification)
-    let root_signing_key = match (&creds.root_key, password) {
-        (
-            KeyStorage::Encrypted {
-                ciphertext, nonce, ..
-            },
-            Some(pwd),
-        ) => {
-            let salt =
-                creds
-                    .password_salt
-                    .as_ref()
-                    .ok_or_else(|| AccountError::PasswordRequired {
-                        operation: "decrypt keys for password-protected user".to_string(),
-                    })?;
-            let encryption_key = derive_encryption_key(pwd, salt)?;
-            super::crypto::decrypt_private_key(ciphertext, nonce, &encryption_key)?
-        }
-        (KeyStorage::Unencrypted { key }, None) => key.clone(),
-        _ => return Err(AccountError::InvalidPassword.into()),
-    };
-
-    let user = build_account_session(
-        instance,
-        &login_id,
-        &account_info,
-        root_signing_key,
-        password,
-    )
-    .await?;
+    let user = build_account_session(instance, &login_id, &account_info, unlocked).await?;
 
     Ok(user)
 }
 
-/// Build an `AccountSession` session from data already in hand: the decrypted root
-/// signing key, the account's record, and an optional password (the
-/// `AccountKeyManager` re-derives the KEK from it for any per-key decryption).
+/// Build a registered session from its record and client-unlocked login anchor.
+/// The guarded wrapping key unlocks the current complete native bundle without
+/// retaining the password or introducing a second per-key encryption format.
 ///
 /// Shared by local login and service login after client-side root unlock.
 /// Additional keys/mappings are read only from this installation's native record.
@@ -367,45 +294,54 @@ pub(crate) async fn build_account_session(
     instance: &Instance,
     login_id: &str,
     account_info: &AccountInfo,
-    root_signing_key: crate::auth::crypto::PrivateKey,
-    password: Option<&str>,
+    unlocked: super::UnlockedCredentials,
 ) -> Result<super::AccountSession> {
-    // 1. Open account database authenticated with decrypted root key.
-    let account_database = Database::open(instance, &account_info.account_id)
-        .await?
-        .with_key(root_signing_key);
+    // Match the authenticated payload to the directory locator before using it.
+    if unlocked.account_id() != &account_info.account_id {
+        return Err(AccountError::InvalidLocalState.into());
+    }
+    let root_signing_key = unlocked.signer(&account_info.credentials.root_key_id)?;
+    let account_database =
+        super::AccountSigner::new(account_info.account_id.clone(), root_signing_key)
+            .open_account(instance)
+            .await?
+            .database()
+            .clone();
 
     // The installation's native record is the only key/mapping store. Never
     // import historical Account keys: old histories remain untouched, not safe.
-    let state = super::local_state::update(instance, login_id, |state| {
-        state.last_login = Some(instance.clock().now_secs());
+    let mut key_manager = None;
+    super::local_state::update(instance, login_id, |state| {
+        if state.credentials.is_none() {
+            state.credentials = Some(account_info.credentials.bundle.clone());
+        }
         state
             .keys
             .entry(account_info.credentials.root_key_id.to_string())
             .or_insert_with(|| AccountKey {
                 key_id: account_info.credentials.root_key_id.clone(),
-                storage: account_info.credentials.root_key.clone(),
                 display_name: Some("Root Key".to_string()),
                 created_at: account_info.created_at,
                 last_used: None,
                 is_default: true,
                 database_sigkeys: std::collections::HashMap::new(),
             });
+        let current = unlocked.unlock_storage(
+            state
+                .credentials
+                .as_ref()
+                .ok_or(AccountError::InvalidLocalState)?,
+        )?;
+        current.signer(&account_info.credentials.root_key_id)?;
+        key_manager = Some(AccountKeyManager::new(
+            current,
+            state.keys.values().cloned().collect(),
+        )?);
+        state.last_login = Some(instance.clock().now_secs());
         Ok(())
     })
     .await?;
-    let all_keys = state.keys.into_values().collect();
-
-    let key_manager = if let Some(pwd) = password {
-        let salt = account_info
-            .credentials
-            .password_salt
-            .as_ref()
-            .ok_or(AccountError::InvalidPassword)?;
-        AccountKeyManager::new(pwd, salt, all_keys)?
-    } else {
-        AccountKeyManager::new_passwordless(all_keys)?
-    };
+    let key_manager = key_manager.ok_or(AccountError::InvalidLocalState)?;
 
     // 3. First-login (and recovery) bootstrap on the account's own tree.
     // Idempotent: each check short-circuits on subsequent logins. Best
@@ -464,9 +400,8 @@ async fn bootstrap_account_tree_if_needed(
 /// fetches the account's full `AccountInfo` (including encrypted credentials and the
 /// account's private-database id) and ships it to the client so the client can
 /// derive the KEK locally, decrypt the root key, sign the challenge, and then
-/// build the `AccountSession` session entirely from the data already carried by the
-/// `TrustedLoginChallenge` response — no second wire read of `_users` is
-/// required. The encrypted blob is designed to survive at rest; shipping it
+/// load the current encrypted bundle through exact-login-scoped native state.
+/// No credential read of `_users` is required. The encrypted blob is designed to survive at rest; shipping it
 /// over the local socket is the same trust boundary as filesystem read. See
 /// the Service Architecture doc § Trusted login threat model for the full
 /// rationale.
@@ -633,9 +568,9 @@ mod tests {
         // Verify account info
         assert_eq!(account_info.username, "alice");
         assert_eq!(account_info.status, AccountStatus::Active);
-        assert!(account_info.credentials.password_salt.is_some());
+
         assert!(matches!(
-            account_info.credentials.root_key,
+            account_info.credentials.bundle,
             KeyStorage::Encrypted { .. }
         ));
         assert!(!login_id.is_empty());
@@ -663,9 +598,9 @@ mod tests {
         // Verify account info
         assert_eq!(account_info.username, "bob");
         assert_eq!(account_info.status, AccountStatus::Active);
-        assert!(account_info.credentials.password_salt.is_none());
+
         assert!(matches!(
-            account_info.credentials.root_key,
+            account_info.credentials.bundle,
             KeyStorage::Unencrypted { .. }
         ));
         assert!(!login_id.is_empty());
