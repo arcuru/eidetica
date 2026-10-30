@@ -12,8 +12,8 @@ use eidetica::{
     auth::{
         crypto::{PrivateKey, sign_entry},
         types::{
-            AuthKey, DelegatedTreeRef, KeyStatus, Permission, PermissionBounds, SigKey,
-            TreeReference,
+            AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, KeyStatus, Permission,
+            PermissionBounds, SigKey, TreeReference,
         },
     },
     backend::VerificationStatus,
@@ -148,9 +148,25 @@ impl Fixture {
     /// Replicate this database to a fresh receiver, ingest `entry` as an
     /// unverified remote write and return the receiver's verdict.
     async fn remote_verdict(&self, entry: Entry) -> VerificationStatus {
+        self.remote_verdict_with_proof(entry, &[]).await
+    }
+
+    async fn remote_verdict_with_proof(
+        &self,
+        entry: Entry,
+        proof_roots: &[ID],
+    ) -> VerificationStatus {
         let receiver = crate::helpers::test_local_instance().await;
-        for existing in self.instance.backend().get_tree(&self.root).await.unwrap() {
-            receiver.backend().put(existing).await.unwrap();
+        for root in proof_roots.iter().chain(std::iter::once(&self.root)) {
+            for existing in self.instance.backend().get_tree(root).await.unwrap() {
+                receiver.backend().put(existing).await.unwrap();
+            }
+            Database::open(&receiver, root)
+                .await
+                .unwrap()
+                .verify()
+                .await
+                .unwrap();
         }
         let id = entry.id();
         receiver.backend().put(entry).await.unwrap();
@@ -340,6 +356,23 @@ async fn raw_settings_deltas_cannot_remove_higher_admin() {
         "raw delete of Admin(0)",
     );
 
+    assert_rejected(
+        fx.commit_raw(&fx.low_admin, async |s| {
+            s.delete(&super_path).await?;
+            s.set(&super_path, AuthKey::active(None, Permission::Admin(20)))
+                .await
+        })
+        .await,
+        "delete and readd stronger key at lower priority",
+    );
+    assert_rejected(
+        fx.commit_raw(&fx.low_admin, async |s| {
+            s.delete("auth.keys").await.map(|_| ())
+        })
+        .await,
+        "keys subtree deletion",
+    );
+
     // Whole keys-map replacement that keeps only the signer.
     let mut keys = Doc::atomic();
     keys.set(
@@ -388,7 +421,8 @@ async fn malformed_grant_fragments_require_top_priority() {
     let own = format!("auth.keys.{}", fx.low_admin.public_key());
     assert_rejected(
         fx.commit_raw(&fx.low_admin, async |s| {
-            s.set(format!("{own}.permissions"), Permission::Admin(0)).await?;
+            s.set(format!("{own}.permissions"), Permission::Admin(0))
+                .await?;
             s.set(format!("{own}.status"), "bogus").await
         })
         .await,
@@ -553,6 +587,17 @@ async fn remote_verification_rejects_priority_violations() {
     let delete = fx.craft_settings_entry(&fx.low_admin, &delete).await;
     assert_eq!(fx.remote_verdict(delete).await, VerificationStatus::Failed);
 
+    for path in ["auth", "auth.keys"] {
+        let mut delta = Doc::new();
+        delta.remove(path);
+        let entry = fx.craft_settings_entry(&fx.low_admin, &delta).await;
+        assert_eq!(
+            fx.remote_verdict(entry).await,
+            VerificationStatus::Failed,
+            "{path}"
+        );
+    }
+
     // Whole-auth replacement drops every existing grant.
     let mut replace = Doc::new();
     let mut auth = Doc::atomic();
@@ -567,11 +612,17 @@ async fn remote_verification_rejects_priority_violations() {
     // Malformed fragment: permissions without status.
     let mut fragment = Doc::new();
     fragment.set(
-        format!("auth.keys.{}.permissions", PrivateKey::generate().public_key()),
+        format!(
+            "auth.keys.{}.permissions",
+            PrivateKey::generate().public_key()
+        ),
         Permission::Admin(0),
     );
     let fragment = fx.craft_settings_entry(&fx.low_admin, &fragment).await;
-    assert_eq!(fx.remote_verdict(fragment).await, VerificationStatus::Failed);
+    assert_eq!(
+        fx.remote_verdict(fragment).await,
+        VerificationStatus::Failed
+    );
 }
 
 /// `_settings` replay orders by subtree height; an explicit override would let
@@ -596,4 +647,178 @@ async fn remote_verification_rejects_settings_height_override() {
             "_settings height {settings_height} on entry height {height}"
         );
     }
+}
+
+#[tokio::test]
+async fn priority_uses_causal_parents_not_unrelated_live_heads() {
+    let fx = Fixture::new().await;
+    let low = fx.db_as(&fx.low_admin).await;
+    let boundary = low.snapshot().await.unwrap();
+    let top = fx.db_as(&fx.super_admin).await;
+    let revoke = top.new_transaction().await.unwrap();
+    revoke
+        .get_settings()
+        .unwrap()
+        .revoke_auth_key(&fx.low_admin.public_key())
+        .await
+        .unwrap();
+    let revoked = revoke.commit().await.unwrap();
+
+    // A valid sibling is not retroactively invalidated by a concurrent revocation.
+    let sibling = low.new_transaction_at(&boundary).await.unwrap();
+    sibling
+        .get_settings()
+        .unwrap()
+        .set_auth_key(
+            &fx.writer.public_key(),
+            AuthKey::active(None, Permission::Write(31)),
+        )
+        .await
+        .unwrap();
+    let sibling = sibling.commit().await.unwrap();
+    let entry = fx.instance.backend().get(&sibling).await.unwrap();
+    assert_eq!(fx.remote_verdict(entry).await, VerificationStatus::Verified);
+
+    // Joining the revocation cannot rewind to the earlier grant.
+    let joined = vec![revoked, sibling].into();
+    let denied = low.new_transaction_at(&joined).await.unwrap();
+    denied
+        .get_settings()
+        .unwrap()
+        .set_auth_key(
+            &fx.writer.public_key(),
+            AuthKey::active(None, Permission::Write(32)),
+        )
+        .await
+        .unwrap();
+    assert_rejected(
+        denied.commit().await,
+        "revoked admin after joining both parents",
+    );
+}
+
+#[tokio::test]
+async fn remote_delegated_admin_is_checked_at_its_clamped_priority() {
+    let fx = Fixture::new().await;
+    // The signer is Admin(0) on its Identity but only Admin(20) on the target.
+    let identity = Database::create(&fx.instance, fx.low_admin.clone(), Doc::new())
+        .await
+        .unwrap();
+    let identity_tips = identity.snapshot().await.unwrap().into_tips();
+    let top = fx.db_as(&fx.super_admin).await;
+    let txn = top.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Admin(20),
+                min: None,
+            },
+            tree: TreeReference {
+                root: identity.root_id().clone(),
+                tips: identity_tips.clone(),
+            },
+        })
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let sig_key = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: identity.root_id().clone(),
+            tips: identity_tips,
+        }],
+        hint: KeyHint::from_pubkey(&fx.low_admin.public_key()),
+    };
+    for (target, grant, expected) in [
+        (
+            &fx.writer,
+            Permission::Write(31),
+            VerificationStatus::Verified,
+        ),
+        (
+            &fx.super_admin,
+            Permission::Write(31),
+            VerificationStatus::Failed,
+        ),
+        (
+            &PrivateKey::generate(),
+            Permission::Admin(19),
+            VerificationStatus::Failed,
+        ),
+    ] {
+        let mut entry = fx
+            .craft_settings_entry(
+                &fx.low_admin,
+                &key_delta(target, AuthKey::active(None, grant)),
+            )
+            .await;
+        entry = entry.with_auth(|auth| auth.key = sig_key.clone());
+        let signature = sign_entry(&entry, &fx.low_admin).unwrap();
+        entry = entry.with_auth(|auth| auth.signature = Some(signature));
+        assert_eq!(
+            fx.remote_verdict_with_proof(entry, &[identity.root_id().clone()])
+                .await,
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn lower_admin_cannot_remove_or_narrow_owner_delegation() {
+    let fx = Fixture::new().await;
+    let owner = Database::create(&fx.instance, PrivateKey::generate(), Doc::new())
+        .await
+        .unwrap();
+    let owner_ref = DelegatedTreeRef {
+        permission_bounds: PermissionBounds {
+            max: Permission::Admin(0),
+            min: None,
+        },
+        tree: TreeReference {
+            root: owner.root_id().clone(),
+            tips: owner.snapshot().await.unwrap().into_tips(),
+        },
+    };
+    let top = fx.db_as(&fx.super_admin).await;
+    let txn = top.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(owner_ref.clone())
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let path = format!("auth.delegations.{}", owner.root_id());
+    let mut narrowed = owner_ref;
+    narrowed.permission_bounds.max = Permission::Admin(20);
+    assert_rejected(
+        fx.commit_raw(&fx.low_admin, async |s| s.delete(&path).await.map(|_| ()))
+            .await,
+        "deleting owner delegation",
+    );
+    assert_rejected(
+        fx.commit_raw(&fx.low_admin, async |s| {
+            s.set(&path, narrowed.clone()).await
+        })
+        .await,
+        "narrowing owner delegation",
+    );
+    let mut remove = Doc::new();
+    remove.remove(&path);
+    let mut replace = Doc::new();
+    replace.set(&path, narrowed.clone());
+    for delta in [remove, replace] {
+        let entry = fx.craft_settings_entry(&fx.low_admin, &delta).await;
+        assert_eq!(
+            fx.remote_verdict_with_proof(entry, &[owner.root_id().clone()])
+                .await,
+            VerificationStatus::Failed
+        );
+    }
+    // The owner may narrow a stronger delegation; the now-equal admin may remove it.
+    fx.commit_raw(&fx.super_admin, async |s| s.set(&path, narrowed).await)
+        .await
+        .unwrap();
+    fx.commit_raw(&fx.low_admin, async |s| s.delete(&path).await.map(|_| ()))
+        .await
+        .unwrap();
 }

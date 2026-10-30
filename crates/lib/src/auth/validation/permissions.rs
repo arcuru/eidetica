@@ -139,7 +139,9 @@ pub(crate) fn select_effective_permission(
 /// whether through one key path, a whole map or a tombstone — requires the signer
 /// to rank at least as high as both its old and its new permission. A weaker signer
 /// therefore cannot strip a stronger grant or manufacture one. Delegations count
-/// at their bounds, and the wildcard `global` grant at its permission.
+/// at their bounds, and the wildcard `global` grant at its permission. A changed
+/// grant left malformed requires the highest permission: its fragments could
+/// later merge with another write into any grant at all.
 ///
 /// Returns `None` when no grant changes, and an error when `delta` is not a Doc.
 pub(crate) fn required_auth_change_permission(
@@ -161,12 +163,18 @@ pub(crate) fn required_auth_change_permission(
     let mut required = None;
     let mut require =
         |old: Option<&Value>, new: Option<&Value>, grant: fn(&Doc) -> Option<Permission>| {
-            if old != new {
-                for side in [old, new].into_iter().flatten() {
-                    if let Value::Doc(doc) = side {
-                        required = required.max(grant(doc));
-                    }
-                }
+            if old == new {
+                return;
+            }
+            if let Some(Value::Doc(doc)) = old {
+                required = required.max(grant(doc));
+            }
+            if let Some(new) = new {
+                let parsed = match new {
+                    Value::Doc(doc) => grant(doc),
+                    _ => None,
+                };
+                required = required.max(Some(parsed.unwrap_or(Permission::Admin(0))));
             }
         };
     let key_grant = |doc: &Doc| AuthKey::try_from(doc).ok().map(|key| *key.permissions());

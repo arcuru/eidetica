@@ -40,6 +40,9 @@ impl AuthValidator {
     /// This method answers: "Is this entry valid?" which includes:
     /// 1. Is the signature valid (or is unsigned allowed)?
     /// 2. Does the signing key have permission for what this entry does?
+    ///    Settings writes also require permission covering every changed Auth
+    ///    grant, before and after the delta, against the causal pre-write state.
+    ///    Settings subtree heights must match the main-tree height.
     ///
     /// For entries with name hints that match multiple keys, this method
     /// tries signature verification against each matching key until one succeeds.
@@ -51,7 +54,8 @@ impl AuthValidator {
     ///
     /// # Arguments
     /// * `entry` - The entry to validate
-    /// * `auth_settings` - Authentication settings for key lookup
+    /// * `auth_settings` - Causal pre-write settings for key lookup and Auth-delta
+    ///   comparison (genuine genesis uses its own settings)
     /// * `instance` - Instance for loading delegated trees (optional for direct keys)
     pub async fn validate_entry(
         &mut self,
@@ -139,6 +143,16 @@ impl AuthValidator {
         } else {
             Operation::WriteData
         };
+
+        // Settings replay orders by `_settings` height. System subtrees inherit
+        // the entry height, which keeps a settings delta after its causal
+        // pre-write state; an explicit override could replay it elsewhere.
+        if matches!(operation, Operation::WriteSettings)
+            && entry.subtree_height(SETTINGS)? != entry.height()
+        {
+            debug!("Settings subtree height differs from entry height");
+            return Ok(false);
+        }
 
         // Auth changes additionally require the signer to outrank every grant
         // they touch, judged against this entry's pre-write auth state.

@@ -684,6 +684,12 @@ Clearing only the derived cache is not a substitute.
 - Admin-level permissions
 - Equal or higher priority than the grant being changed, both before and after the change (you cannot grant more than you hold)
 
+These checks run on signed entries at commit and remote verification, including raw settings writes.
+They use the entry's causal pre-write settings, not unrelated newer grants or revocations on another branch.
+Delegated signers use their clamped permission; changing a delegation is checked at its old and new bounds.
+Raw fragments that leave a changed grant malformed require `Admin(0)` because concurrent fragments could otherwise assemble stronger authority.
+See the [priority rules and regression coverage](../design/authentication.md#priority-system).
+
 **Multi-device conflicts**: During bootstrap sync between devices:
 
 - If same key name with same public key: Operation succeeds (safe)
