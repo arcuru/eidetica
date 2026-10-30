@@ -44,7 +44,7 @@ async fn account_login_directory_has_no_replicated_unlock_history() {
     assert_ne!(app.get_default_key().unwrap(), admin.get_default_key().unwrap());
     assert!(instance.login_account("app", Some("personal-password")).await.is_err());
     let backend = instance.backend().local_engine().unwrap();
-    for entry in backend.get_tree(instance.users_db_id()).await.unwrap() {
+    for entry in backend.get_tree(&backend.get_instance_metadata().await.unwrap().unwrap().users_db).await.unwrap() {
         assert!(!entry.in_subtree("users"), "login credentials were authored into immutable history");
         assert!(!entry.in_subtree("last_login"), "local access log was replicated");
     }
