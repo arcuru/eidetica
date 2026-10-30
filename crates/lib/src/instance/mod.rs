@@ -1125,7 +1125,7 @@ impl Instance {
         // databases by `system_databases::create_account`'s
         // first-user-becomes-admin logic.
         let users_db = instance.users_db().await?;
-        let (login_id, account_info, root_key) = crate::account::system_databases::create_account(
+        let (login_id, account_info, _root_key) = crate::account::system_databases::create_account(
             &users_db,
             &instance,
             &initial.username,
@@ -1133,15 +1133,15 @@ impl Instance {
         )
         .await?;
 
-        // 6. Materialise the AccountSession directly from the keys we just
-        // generated — skips a redundant `login_account` round-trip that would
-        // otherwise re-derive the encryption key from the password.
+        // 6. Unlock the authenticated local bundle without a second directory
+        // lookup, then materialise the registered AccountSession.
         let user = crate::account::system_databases::build_account_session(
             &instance,
             &login_id,
             &account_info,
-            root_key,
-            initial.password.as_deref(),
+            account_info
+                .credentials
+                .unlock(&account_info.account_id, initial.password.as_deref())?,
         )
         .await?;
 
@@ -1364,7 +1364,6 @@ impl Instance {
                 &login_id,
                 &account_info,
                 signing_key,
-                password,
             )
             .await;
         }

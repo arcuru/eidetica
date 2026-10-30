@@ -66,7 +66,7 @@ mod tests;
 
 pub use builder::DatabaseBuilder;
 
-/// AccountSession object, returned after successful login
+/// Unlocked Account access, created by login or explicit caller-held credentials
 ///
 /// Represents an authenticated account with decrypted private keys loaded in memory.
 /// The AccountSession struct provides access to key management, tracked databases, and
@@ -88,7 +88,11 @@ pub struct AccountSession {
     key_manager: AccountKeyManager,
 
     /// Account info (cached from the native login record)
-    account_info: AccountInfo,
+    account_info: Option<AccountInfo>,
+
+    /// Caller-held sessions have no daemon registration; their bookkeeping is
+    /// session-local and never sent to the service credential store.
+    caller_state: Option<tokio::sync::Mutex<super::local_state::LocalAccountState>>,
 }
 
 impl std::fmt::Debug for AccountSession {
@@ -130,7 +134,120 @@ impl AccountSession {
             account: Account::new(account_database),
             instance,
             key_manager,
-            account_info,
+            account_info: Some(account_info),
+            caller_state: None,
+        }
+    }
+
+    /// Open a full session using an explicit signer and Account locator, without
+    /// reading or registering a daemon login. Ordinary Account Auth is checked.
+    /// Key hints, activation and tracking live only for this session; background
+    /// sync is not enabled. The signer may use an explicit delegation identity.
+    /// For a service, supply a connection authenticated by [`super::AccountSigner::connect`];
+    /// this constructor never reauthenticates or rebinds an existing connection.
+    pub async fn from_signer(instance: &Instance, signer: super::AccountSigner) -> Result<Self> {
+        let credentials = super::UnlockedCredentials::passwordless(
+            signer.account_id().clone(),
+            vec![signer.signing_key().clone()],
+        )?;
+        Self::from_unlocked(instance, signer, credentials).await
+    }
+
+    /// Consume caller-unlocked credentials using an explicitly selected Account
+    /// key. No personal/default key fallback or daemon bundle lookup occurs.
+    /// Persisting caller-owned credentials remains the caller's responsibility;
+    /// session additions do not alter the original encrypted bundle.
+    pub async fn from_credentials(
+        instance: &Instance,
+        credentials: super::UnlockedCredentials,
+        account_key: &PublicKey,
+    ) -> Result<Self> {
+        let signer = super::AccountSigner::new(
+            credentials.account_id().clone(),
+            credentials.signer(account_key)?,
+        );
+        Self::from_unlocked(instance, signer, credentials).await
+    }
+
+    async fn from_unlocked(
+        instance: &Instance,
+        signer: super::AccountSigner,
+        credentials: super::UnlockedCredentials,
+    ) -> Result<Self> {
+        let account = signer.open_account(instance).await?;
+        let keys: std::collections::BTreeMap<_, _> = credentials
+            .key_ids()
+            .into_iter()
+            .map(|id| {
+                let is_default = id == signer.key_id();
+                let metadata = super::AccountKey {
+                    key_id: id.clone(),
+                    display_name: None,
+                    created_at: instance.clock().now_secs(),
+                    last_used: None,
+                    is_default,
+                    database_sigkeys: if is_default {
+                        HashMap::from([(account.id().clone(), Some(signer.identity().clone()))])
+                    } else {
+                        HashMap::new()
+                    },
+                };
+                (id.to_string(), metadata)
+            })
+            .collect();
+        let state = super::local_state::LocalAccountState {
+            credentials: Some(credentials.storage()?),
+            keys: keys.clone(),
+            ..Default::default()
+        };
+        let key_manager = AccountKeyManager::new(credentials, keys.into_values().collect())?;
+        Ok(Self {
+            login_id: String::new(),
+            username: String::new(),
+            account,
+            instance: instance.clone(),
+            key_manager,
+            account_info: None,
+            caller_state: Some(tokio::sync::Mutex::new(state)),
+        })
+    }
+
+    async fn read_local_state(&self) -> Result<super::local_state::LocalAccountState> {
+        match &self.caller_state {
+            Some(state) => Ok(state.lock().await.clone()),
+            None => super::local_state::read(&self.instance, &self.login_id).await,
+        }
+    }
+
+    async fn update_local_state(
+        &self,
+        edit: impl FnMut(&mut super::local_state::LocalAccountState) -> Result<()>,
+    ) -> Result<super::local_state::LocalAccountState> {
+        if let Some(state) = &self.caller_state {
+            let mut state = state.lock().await;
+            let mut next = state.clone();
+            let mut edit = edit;
+            edit(&mut next)?;
+            *state = next.clone();
+            Ok(next)
+        } else {
+            super::local_state::update(&self.instance, &self.login_id, edit).await
+        }
+    }
+
+    async fn refresh_local_sync(&self) -> Result<()> {
+        if self.caller_state.is_none() {
+            super::local_state::refresh_sync(&self.instance, &self.login_id, self.account.id())
+                .await?;
+        }
+        Ok(())
+    }
+
+    fn with_local_account(&self, database: Database) -> Database {
+        if self.caller_state.is_some() {
+            database
+        } else {
+            database.with_local_account(&self.login_id, self.account.id())
         }
     }
 
@@ -158,13 +275,14 @@ impl AccountSession {
 
     // === Basic Session Methods ===
 
-    /// Instance-local login record UUID, not the Account's portable identity.
+    /// Instance-local login record UUID, or empty for a caller-held session.
+    /// This is not the Account's portable identity.
     /// Use [`Account::id`] (via [`Self::account`]) for the Account's identity.
     pub fn login_id(&self) -> &str {
         &self.login_id
     }
 
-    /// Get the username (login identifier)
+    /// Local login name, or empty for a caller-held session.
     pub fn username(&self) -> &str {
         &self.username
     }
@@ -182,9 +300,9 @@ impl AccountSession {
         self.instance.backend()
     }
 
-    /// Get a reference to the account info
-    pub fn account_info(&self) -> &AccountInfo {
-        &self.account_info
+    /// Registered login metadata, or `None` for a caller-held session.
+    pub fn account_info(&self) -> Option<&AccountInfo> {
+        self.account_info.as_ref()
     }
 
     /// Whether this account is an instance admin.
@@ -379,30 +497,31 @@ impl AccountSession {
         let database =
             Database::create_with_init(&self.instance, signing_key, settings, init).await?;
 
-        let state = super::local_state::update(&self.instance, &self.login_id, |state| {
-            let metadata = state.keys.get_mut(&key_id.to_string()).ok_or_else(|| {
-                AccountError::KeyNotFound {
-                    key_id: key_id.to_string(),
-                }
-            })?;
-            metadata
-                .database_sigkeys
-                .insert(database.root_id().clone(), None);
-            state.databases.insert(
-                database.root_id().to_string(),
-                TrackedDatabase {
-                    database_id: database.root_id().clone(),
-                    key_id: key_id.clone(),
-                    sync_settings: SyncSettings::disabled(),
-                },
-            );
-            Ok(())
-        })
-        .await?;
+        let state = self
+            .update_local_state(|state| {
+                let metadata = state.keys.get_mut(&key_id.to_string()).ok_or_else(|| {
+                    AccountError::KeyNotFound {
+                        key_id: key_id.to_string(),
+                    }
+                })?;
+                metadata
+                    .database_sigkeys
+                    .insert(database.root_id().clone(), None);
+                state.databases.insert(
+                    database.root_id().to_string(),
+                    TrackedDatabase {
+                        database_id: database.root_id().clone(),
+                        key_id: key_id.clone(),
+                        sync_settings: SyncSettings::disabled(),
+                    },
+                );
+                Ok(())
+            })
+            .await?;
         self.key_manager
             .add_key(state.keys[&key_id.to_string()].clone())?;
-        super::local_state::refresh_sync(&self.instance, &self.login_id, self.account.id()).await?;
-        Ok(database.with_local_account(&self.login_id, self.account.id()))
+        self.refresh_local_sync().await?;
+        Ok(self.with_local_account(database))
     }
 
     /// Open an existing database by its root ID using this account's keys.
@@ -501,9 +620,7 @@ impl AccountSession {
         if let Some(conn) = self.instance.remote_connection() {
             conn.register_session_key(signing_key).await?;
             return match Database::open_remote(&self.instance, conn, root_id, sigkey).await {
-                Ok(database) => Ok(database
-                    .with_key(key)
-                    .with_local_account(&self.login_id, self.account.id())),
+                Ok(database) => Ok(self.with_local_account(database.with_key(key))),
                 Err(e) if e.is_not_found() => {
                     Err(super::errors::AccountError::DatabaseAccessPending {
                         database_id: root_id.clone(),
@@ -514,9 +631,7 @@ impl AccountSession {
             };
         }
         match Database::open(&self.instance, root_id).await {
-            Ok(database) => Ok(database
-                .with_key(key)
-                .with_local_account(&self.login_id, self.account.id())),
+            Ok(database) => Ok(self.with_local_account(database.with_key(key))),
             Err(e) if e.is_not_found() => Err(super::errors::AccountError::DatabaseAccessPending {
                 database_id: root_id.clone(),
             }
@@ -648,10 +763,11 @@ impl AccountSession {
         database_id: &ID,
         sigkey: SigKey,
     ) -> Result<()> {
-        let result = super::local_state::update(&self.instance, &self.login_id, |state| {
-            Self::map_key_in_state(state, key_id, database_id, sigkey.clone())
-        })
-        .await;
+        let result = self
+            .update_local_state(|state| {
+                Self::map_key_in_state(state, key_id, database_id, sigkey.clone())
+            })
+            .await;
         self.refresh_key_metadata(key_id).await?;
         result?;
         Ok(())
@@ -682,7 +798,7 @@ impl AccountSession {
     }
 
     async fn refresh_key_metadata(&mut self, key_id: &PublicKey) -> Result<()> {
-        let state = super::local_state::read(&self.instance, &self.login_id).await?;
+        let state = self.read_local_state().await?;
         let metadata =
             state
                 .keys
@@ -789,8 +905,9 @@ impl AccountSession {
     /// Add a new private key to this account's keyring.
     ///
     /// Generates a new Ed25519 keypair, encrypts it (for password-protected accounts)
-    /// or stores it unencrypted (for passwordless accounts), and adds it to the account's
-    /// installation-local native record.
+    /// or stores it unencrypted (for passwordless accounts). Registered sessions
+    /// atomically update the native complete bundle and metadata. Caller-held
+    /// sessions update only their in-memory bundle; persistence is explicit.
     ///
     /// # Arguments
     /// * `display_name` - Optional display name for the key
@@ -798,63 +915,58 @@ impl AccountSession {
     /// # Returns
     /// The key ID (public key string)
     pub async fn add_private_key(&mut self, display_name: Option<&str>) -> Result<PublicKey> {
-        use crate::account::types::{AccountKey, KeyStorage};
-        use crate::auth::crypto::generate_keypair;
+        self.import_private_key(crate::auth::crypto::generate_keypair().0, display_name)
+            .await
+    }
 
-        // Generate new keypair
-        let (private_key, public_key) = generate_keypair();
-
-        // Get current timestamp using the instance's clock
-        let timestamp = self.instance.clock().now_secs();
-
-        // Prepare AccountKey based on encryption type
-        let user_key = if let Some(encryption_key) = self.key_manager.encryption_key() {
-            // Password-protected account: encrypt the key
-            use crate::account::crypto::encrypt_private_key;
-            let (ciphertext, nonce) = encrypt_private_key(&private_key, encryption_key)?;
-
-            AccountKey {
-                key_id: public_key.clone(),
-                storage: KeyStorage::Encrypted {
-                    algorithm: "aes-256-gcm".to_string(),
-                    ciphertext,
-                    nonce,
-                },
-                display_name: display_name.map(|s| s.to_string()),
-                created_at: timestamp,
-                last_used: None,
-                is_default: false, // New keys are not default
-                database_sigkeys: HashMap::new(),
-            }
-        } else {
-            // Passwordless account: store unencrypted
-            AccountKey {
-                key_id: public_key.clone(),
-                storage: KeyStorage::Unencrypted { key: private_key },
-                display_name: display_name.map(|s| s.to_string()),
-                created_at: timestamp,
-                last_used: None,
-                is_default: false, // New keys are not default
-                database_sigkeys: HashMap::new(),
-            }
+    /// Add exactly one caller-supplied key to this local bundle. Duplicate keys
+    /// fail without replacing metadata. This neither enrolls an Identity member
+    /// nor creates target mappings; database Auth remains independent of custody.
+    /// Caller-held sessions still require explicit external persistence.
+    pub async fn import_private_key(
+        &mut self,
+        private_key: crate::auth::crypto::PrivateKey,
+        display_name: Option<&str>,
+    ) -> Result<PublicKey> {
+        let public_key = private_key.public_key();
+        let metadata = super::AccountKey {
+            key_id: public_key.clone(),
+            display_name: display_name.map(str::to_owned),
+            created_at: self.instance.clock().now_secs(),
+            last_used: None,
+            is_default: false,
+            database_sigkeys: HashMap::new(),
         };
-
-        super::local_state::update(&self.instance, &self.login_id, |state| {
-            state.keys.insert(public_key.to_string(), user_key.clone());
-            Ok(())
-        })
-        .await?;
-
-        // Add to in-memory key manager
-        self.key_manager.add_key(user_key)?;
+        let state = self
+            .update_local_state(|state| {
+                let storage = state
+                    .credentials
+                    .as_ref()
+                    .ok_or(AccountError::InvalidLocalState)?;
+                // Merge against the observed complete bundle, not a stale key list:
+                // concurrent key additions must not overwrite one another.
+                let mut credentials = self.key_manager.unlock_storage(storage)?;
+                credentials.add_key(private_key.clone())?;
+                state.credentials = Some(credentials.storage()?);
+                state.keys.insert(public_key.to_string(), metadata.clone());
+                Ok(())
+            })
+            .await?;
+        let credentials = self.key_manager.unlock_storage(
+            state
+                .credentials
+                .as_ref()
+                .ok_or(AccountError::InvalidLocalState)?,
+        )?;
+        self.key_manager = AccountKeyManager::new(credentials, state.keys.into_values().collect())?;
 
         Ok(public_key)
     }
 
     /// List all key IDs owned by this account.
     ///
-    /// Keys are returned sorted by creation timestamp (oldest first), making the
-    /// first key in the list the "default" key created when the account was set up.
+    /// Keys are sorted by creation timestamp (oldest first), then public key ID
+    /// for ties. Use [`Self::get_default_key`] for the explicit default.
     ///
     /// # Returns
     /// Vector of PublicKeys sorted by creation time
@@ -1374,7 +1486,8 @@ impl AccountSession {
         &self,
         database_id: &ID,
     ) -> Result<Option<TrackedDatabase>> {
-        Ok(super::local_state::read(&self.instance, &self.login_id)
+        Ok(self
+            .read_local_state()
             .await?
             .databases
             .get(&database_id.to_string())
@@ -1444,22 +1557,23 @@ impl AccountSession {
                 key_id: key_id.to_string(),
                 database_id: tracked.database_id.clone(),
             })?;
-        let result = super::local_state::update(&self.instance, &self.login_id, |state| {
-            Self::map_key_in_state(state, key_id, &tracked.database_id, sigkey.clone())?;
-            let key = tracked.database_id.to_string();
-            let existing = state.databases.get(&key).cloned();
-            // Preserve choices changed by another session while bootstrap waited.
-            if original.as_ref().is_none_or(|before| *before == existing) {
-                state.databases.insert(key, tracked.clone());
-            }
-            Ok(())
-        })
-        .await;
+        let result = self
+            .update_local_state(|state| {
+                Self::map_key_in_state(state, key_id, &tracked.database_id, sigkey.clone())?;
+                let key = tracked.database_id.to_string();
+                let existing = state.databases.get(&key).cloned();
+                // Preserve choices changed by another session while bootstrap waited.
+                if original.as_ref().is_none_or(|before| *before == existing) {
+                    state.databases.insert(key, tracked.clone());
+                }
+                Ok(())
+            })
+            .await;
         // A lost acknowledgement is not rollback: reconcile from persisted
         // local bytes before reporting the original persistence outcome.
         self.refresh_key_metadata(key_id).await?;
         result?;
-        super::local_state::refresh_sync(&self.instance, &self.login_id, self.account.id()).await?;
+        self.refresh_local_sync().await?;
         Ok(())
     }
 
@@ -1470,7 +1584,8 @@ impl AccountSession {
     /// # Returns
     /// Vector of TrackedDatabase entries
     pub async fn databases(&self) -> Result<Vec<TrackedDatabase>> {
-        Ok(super::local_state::read(&self.instance, &self.login_id)
+        Ok(self
+            .read_local_state()
             .await?
             .databases
             .into_values()
@@ -1576,7 +1691,7 @@ impl AccountSession {
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the account's list
     pub async fn untrack_database(&mut self, database_id: &ID) -> Result<()> {
-        super::local_state::update(&self.instance, &self.login_id, |state| {
+        self.update_local_state(|state| {
             state
                 .databases
                 .remove(&database_id.to_string())
@@ -1586,7 +1701,7 @@ impl AccountSession {
             Ok(())
         })
         .await?;
-        super::local_state::refresh_sync(&self.instance, &self.login_id, self.account.id()).await?;
+        self.refresh_local_sync().await?;
         Ok(())
     }
 }

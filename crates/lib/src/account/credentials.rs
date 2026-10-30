@@ -27,7 +27,7 @@ const AAD: &[u8] = b"eidetica:local-credential-bundle:v1";
 /// An encrypted local bundle, safe to persist outside the replicated DAG.
 ///
 /// This is a local storage format, not a portable Account schema or a recovery
-/// export. The ordinary login directory is not yet backed by this type.
+/// export. Protected convenience logins use this same format.
 /// Encrypted records may be served to filesystem-trusted socket clients;
 /// their passwords and decrypted keys need not be sent to a daemon.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,8 +49,8 @@ pub struct UnlockedCredentials {
     keys: Vec<PrivateKey>,
     // Retain only the wrapping key, not the password, for explicit key updates
     // and password rewrap. Zeroized on drop, including early error returns.
-    wrapping_key: Zeroizing<Vec<u8>>,
-    salt: String,
+    wrapping_key: Option<Zeroizing<Vec<u8>>>,
+    salt: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -151,6 +151,13 @@ impl CredentialBundle {
             return Err(invalid_bundle());
         }
         let wrapping_key = Zeroizing::new(crypto::derive_encryption_key(password, &self.salt)?);
+        self.unlock_with_key(wrapping_key)
+    }
+
+    fn unlock_with_key(&self, wrapping_key: Zeroizing<Vec<u8>>) -> Result<UnlockedCredentials> {
+        if self.version != VERSION || self.nonce.len() != crypto::NONCE_LENGTH {
+            return Err(invalid_bundle());
+        }
         let cipher = Aes256Gcm::new_from_slice(&wrapping_key).map_err(|_| invalid_bundle())?;
         let plaintext = Zeroizing::new(
             cipher
@@ -169,8 +176,8 @@ impl CredentialBundle {
         Ok(UnlockedCredentials {
             account_id: payload.account_id,
             keys: payload.keys,
-            wrapping_key,
-            salt: self.salt.clone(),
+            wrapping_key: Some(wrapping_key),
+            salt: Some(self.salt.clone()),
         })
     }
 
@@ -186,6 +193,57 @@ impl CredentialBundle {
 }
 
 impl UnlockedCredentials {
+    pub(crate) fn passwordless(account_id: ID, keys: Vec<PrivateKey>) -> Result<Self> {
+        validate_keys(&keys)?;
+        Ok(Self {
+            account_id,
+            keys,
+            wrapping_key: None,
+            salt: None,
+        })
+    }
+
+    pub(crate) fn get_signer(&self, key_id: &PublicKey) -> Option<&PrivateKey> {
+        self.keys.iter().find(|key| &key.public_key() == key_id)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.keys.clear();
+        self.wrapping_key = None;
+    }
+
+    pub(crate) fn storage(&self) -> Result<super::KeyStorage> {
+        match &self.wrapping_key {
+            Some(_) => Ok(super::KeyStorage::Encrypted {
+                bundle: self.seal()?,
+            }),
+            None => Ok(super::KeyStorage::Unencrypted {
+                account_id: self.account_id.clone(),
+                keys: self.keys.clone(),
+            }),
+        }
+    }
+
+    /// Refresh an observed bundle using this session's wrapping key. A changed
+    /// password/format fails closed; stale sessions cannot overwrite a rewrap.
+    pub(crate) fn unlock_storage(&self, storage: &super::KeyStorage) -> Result<Self> {
+        let unlocked = match (storage, &self.wrapping_key) {
+            (super::KeyStorage::Encrypted { bundle }, Some(key))
+                if Some(&bundle.salt) == self.salt.as_ref() =>
+            {
+                bundle.unlock_with_key(key.clone())?
+            }
+            (super::KeyStorage::Unencrypted { account_id, keys }, None) => {
+                Self::passwordless(account_id.clone(), keys.clone())?
+            }
+            _ => return Err(invalid_bundle()),
+        };
+        if unlocked.account_id != self.account_id {
+            return Err(invalid_bundle());
+        }
+        Ok(unlocked)
+    }
+
     /// The authenticated Account locator. It grants no access by itself.
     pub fn account_id(&self) -> &ID {
         &self.account_id
@@ -228,7 +286,12 @@ impl UnlockedCredentials {
     /// Encrypt the current explicit bundle using the unlocked wrapping key and
     /// a fresh nonce. Does not persist or change the password.
     pub fn seal(&self) -> Result<CredentialBundle> {
-        CredentialBundle::encrypt(&self.account_id, &self.keys, &self.salt, &self.wrapping_key)
+        CredentialBundle::encrypt(
+            &self.account_id,
+            &self.keys,
+            self.salt.as_deref().ok_or_else(invalid_bundle)?,
+            self.wrapping_key.as_deref().ok_or_else(invalid_bundle)?,
+        )
     }
 
     /// Rewrap with a new password and salt. Does not revoke or rotate signing
@@ -247,5 +310,39 @@ impl std::io::Write for ByteCount {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::crypto::generate_keypair;
+
+    #[test]
+    fn credential_bundle_requires_its_domain_aad() {
+        let account = ID::from_bytes("account");
+        let bundle = CredentialBundle::seal(&account, &[generate_keypair().0], "password").unwrap();
+        assert!(bundle.unlock_for(&account, "password").is_ok());
+        let key = Zeroizing::new(crypto::derive_encryption_key("password", &bundle.salt).unwrap());
+        let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+        assert!(
+            cipher
+                .decrypt(
+                    Nonce::from_slice(&bundle.nonce),
+                    bundle.ciphertext.as_slice()
+                )
+                .is_err()
+        );
+        assert!(
+            cipher
+                .decrypt(
+                    Nonce::from_slice(&bundle.nonce),
+                    Payload {
+                        msg: &bundle.ciphertext,
+                        aad: b"another-format"
+                    }
+                )
+                .is_err()
+        );
     }
 }

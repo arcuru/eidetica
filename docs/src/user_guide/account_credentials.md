@@ -6,7 +6,7 @@ An installation should hold its own independently authorized keys, not another i
 An app receives a separate scoped bundle with its own Account locator and key(s).
 Its scope comes from database Auth, not a bundle label.
 
-## Available interfaces and current transition boundary
+## Available interfaces
 
 `CredentialBundle` encrypts exactly the supplied locator and keys with one password.
 `AccountSigner` binds a locator, an actual signing key and an explicit Auth identity immutably.
@@ -17,9 +17,10 @@ These records are not Entries and do not replicate with AccountDB.
 Adding an Account reference neither imports credentials nor activates its target.
 Existing Account histories are not made secret-free by removing current fields; this change does not delete or migrate live data.
 
-The convenience path still uses its per-key wrapping format, not the standalone authenticated `CredentialBundle` format below.
-Full `AccountSession` construction from caller-held bundles/signers is unfinished; `AccountSigner` is the shipped daemon-independent interface.
-No client-owned credential-store backend, device-enrollment workflow or recovery/export feature is claimed.
+Protected convenience logins use the same authenticated `CredentialBundle` format as explicit caller-held credentials.
+`AccountSession::from_credentials` consumes an unlocked bundle and an explicit Account key selection; `from_signer` accepts one `AccountSigner`, including an explicit delegated identity.
+Neither constructor needs a registered daemon login.
+There is no pluggable client-owned credential-store backend, device-enrollment workflow or recovery/export feature in this API.
 
 ## Convenience login, logout and returning login
 
@@ -78,12 +79,70 @@ assert_eq!(acting.account_id(), &account_id);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+`AccountSession::import_private_key(key, label)` adds an explicitly supplied key to that session's local bundle using the same observed-bundle update as key generation.
+It rejects duplicate keys without replacing their metadata and does not enroll Identity membership, grant database Auth or activate a target.
+
 `UnlockedCredentials::add_key` adds only an explicitly supplied key.
 Call `seal()` and explicitly persist the result to save that addition; a failure to save does not update the old encrypted bundle.
 `signer(key_id)` fails for an absent key rather than falling back to a personal or default signer.
 `rewrap(new_password)` produces a new encrypted bundle with the same keys and a new salt.
 It is **not key rotation or revocation**: old copies remain decryptable with their old password, and retained handles can still sign.
 Losing every usable key/bundle/password has no automatic recovery guarantee.
+
+## Full sessions without daemon login storage
+
+Use a caller-unlocked bundle when the application, rather than the daemon login directory, owns credential storage.
+The session checks Account Auth with the selected actual signer before returning.
+This example uses an existing authorized key; provisioning a separate app Account/key and device enrollment are separate operations.
+
+```rust
+# use eidetica::{Instance, NewAccount, account::{AccountSession, CredentialBundle}, backend::database::InMemory, crdt::Doc};
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let (instance, owner) = Instance::create_backend(Box::new(InMemory::new()), NewAccount::with_password("example", "example password")).await?;
+let account_id = owner.account().id().clone();
+let key_id = owner.get_default_key()?;
+let saved = CredentialBundle::seal(&account_id, &[owner.get_signing_key(&key_id)?], "client password")?;
+owner.logout()?;
+let unlocked = saved.unlock_for(&account_id, "client password")?;
+let mut session = AccountSession::from_credentials(&instance, unlocked, &key_id).await?;
+assert!(session.account_info().is_none()); // No daemon login registration was used.
+let target = session.create_database(Doc::new(), &key_id).await?;
+session.set_reference("example", "root", target.root_id()).await?;
+let retained = session.acting_as(&key_id, None)?;
+session.logout()?;
+let reopened = AccountSession::from_signer(&instance, retained).await?;
+assert_eq!(reopened.reference("example", "root").await?, Some(target.root_id().clone()));
+assert!(reopened.databases().await?.is_empty()); // Activation was session-local.
+# Ok(())
+# }
+```
+
+For a service, create a fresh proof-authenticated connection first with `AccountSigner::connect`, then pass it to the full-session constructor.
+The constructor does not reauthenticate an existing connection or fall back to a daemon login.
+
+```rust,no_run
+use eidetica::{ID, Result, account::{AccountSession, AccountSigner, CredentialBundle}, auth::crypto::PublicKey};
+
+async fn connect_session(url: &str, account_id: &ID, bundle: &CredentialBundle, password: &str, key_id: &PublicKey) -> Result<AccountSession> {
+    let unlocked = bundle.unlock_for(account_id, password)?;
+    let signer = AccountSigner::new(account_id.clone(), unlocked.signer(key_id)?);
+    let connected = signer.connect(url).await?;
+    AccountSession::from_credentials(&connected, unlocked, key_id).await
+}
+```
+
+Caller-held sessions keep key hints, tracking and activation preferences only in session memory.
+They do not register logins, write native daemon credential records or enable background synchronization.
+`login_id()` and `username()` are empty and `account_info()` is `None` for these sessions.
+A new session can read portable references but does not inherit the previous session's local target mappings.
+Use `track_database` with a held key or an explicit `AccountSigner` to open an authorized target.
+A reference never supplies a missing signer or membership.
+
+Keys added through a caller-held session belong only to that session until the caller explicitly saves them in its own credential store.
+They do not update the original encrypted bundle.
+To persist such a key, supply `session.get_signing_key(&new_id)?` to the caller's unlocked bundle with `add_key`, then seal and save it explicitly.
+This is low-level storage control, not a recovery/export service.
 
 ## Embedded and service use
 

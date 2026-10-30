@@ -3,7 +3,8 @@
 Login records, private keys, signer mappings, access timestamps and activation preferences use native installation-local records.
 Fresh Account histories contain portable references and public Auth, not key or unlock records.
 Existing histories are not rewritten or scrubbed.
-The explicit authenticated `CredentialBundle` API remains separate from the convenience login's per-key wrapping format; converging those formats and constructing full AccountSession values from caller-held credentials are unfinished.
+Protected convenience and caller-held credentials use the same authenticated `CredentialBundle` format.
+Full AccountSession values can also be constructed from caller-unlocked credentials or an explicit signer/Account locator without daemon login storage.
 
 ## Storage boundaries
 
@@ -35,8 +36,11 @@ A binary rollback does not roll back data; see the [format matrix](../design/ver
 
 `login:<name>` contains the installation login UUID and `AccountInfo`: local label, Account ID, root credential, creation time and status.
 Names are inserted atomically when absent; a duplicate registration is refused.
-`account-state:<UUID>` contains `keys` (public-key-indexed `AccountKey` values), `databases` (ID-indexed `TrackedDatabase` values) and `last_login`.
-A key record includes its wrapped private key, display label and per-database SigKey hints.
+`account-state:<UUID>` contains `credentials` (the complete current bundle), `keys` (public-key-indexed metadata), `databases` (ID-indexed `TrackedDatabase` values) and `last_login`.
+A key metadata record includes its public ID, display label and per-database SigKey hints, never a private key or per-key ciphertext.
+The directory's initial bundle supplies the login root proof; after authentication, the scoped local-state read supplies the current complete bundle.
+Its authenticated Account locator must match the directory hint, and the login key must be present.
+Both bundles use the same wrapping key/salt and one password; they are not two different wrapping schemes.
 References remain ordinary Account Entries, never inputs to key import or activation.
 A fresh installation does not learn another installation's keys or activation choices by replicating AccountDB.
 
@@ -45,10 +49,13 @@ Mapping and preference edits are one atomic replacement, so concurrent sessions 
 After a lost acknowledgement, mapping caches are refreshed from persisted local state before the original error is reported.
 This is not a transaction with peer approval, database creation or login registration; those earlier effects can survive later bookkeeping failure.
 
-For password-protected convenience logins, the existing per-key AES-GCM envelopes and Account salt convention remain in use.
+For password-protected convenience logins, `KeyStorage::Encrypted` contains a `CredentialBundle` as described below.
+Adding a key unlocks the observed complete bundle with the session wrapping key, explicitly adds the generated key and reseals with a fresh nonce in the same native compare/exchange as the metadata update.
+A stale session therefore preserves independent key additions rather than writing its old list over them.
+A changed salt/password, tampered ciphertext or foreign Account locator fails closed.
 There is no separate password hash.
 Passwordless logins deliberately retain unencrypted local keys; they require filesystem-trusted processes and are not encrypted storage.
-The standalone authenticated bundle below is not yet the convenience-login serialization format.
+The passwordless `KeyStorage::Unencrypted` variant holds the locator and explicit key list directly; it makes no cryptographic integrity claim.
 No live old-format record or historical key is imported automatically; old installations require a separately approved operational plan.
 
 `_users` remains the public Auth boundary for instance-admin capabilities, not a credential directory.
@@ -60,8 +67,8 @@ Failure to recompute can follow successful local persistence and remains an erro
 Embedded convenience path:
 
 ```text
-native login record + client password -> root unlock
-native local keys/mappings -> client AccountKeyManager -> immutable DatabaseKey
+native login anchor + client password -> authenticated root-bundle unlock
+native complete bundle + metadata -> client AccountKeyManager -> immutable DatabaseKey
 native activation preferences -> this instance's sync coordinator
 AccountDB refs/Auth <-> ordinary replicated Entries (no keys/unlock/preferences)
 ```
@@ -72,7 +79,8 @@ Connected convenience path:
 trusted client                           daemon
 local label ---------------------------> native login record -> wrapped root credential
 password -> unlock -> challenge proof --> public session keyset + exact login UUID
-read/CAS local state ------------------> only that login's native record
+read/CAS complete encrypted bundle -----> only that login's native record
+client wrapping key -> reseal update --> atomic bundle + public-metadata replacement
 private signer -> signed Entry --------> normal per-tree/proof verification
 ```
 
@@ -117,8 +125,12 @@ Recovery/export, live revocation and background-device authority are separate wo
 caller-owned keys + Account ID -> CredentialBundle::seal -> encrypted local bytes
                                         |
 client password + encrypted bytes -> unlock -> AccountSigner (actual key + SigKey)
-                                                |
-                            open_database -> normal Auth/verified proof -> signed Entry
+                                        |                |
+                  AccountSession::from_credentials / from_signer
+                                        |
+                  session-only key hints and activation (no daemon records)
+                                        |
+                  open_database -> normal Auth/verified proof -> signed Entry
 ```
 
 A direct-key handle needs no Identity.
@@ -174,4 +186,10 @@ No stronger live revocation, private-key recovery or isolation guarantee follows
 - `local_state::tests`: distinct independently authorized keys on one shared Account, different installation activation choices, actual signatures and returning login, embedded and through two real service sockets. The fixture preloads verified public data and registration; it does not claim a shipped device-enrollment flow.
 - Service native-state test: pre-auth/foreign-login reads and writes denied, non-admin registration/listing denied, own-state reads and compare/exchange conflicts exercised.
 
-Full AccountSession construction from caller-held credentials, scoped authenticated-bundle convenience login and its final acceptance checks remain unfinished.
+`AccountSession::from_credentials` consumes an unlocked bundle; `from_signer` accepts one actual signer with explicit Account locator and Auth identity.
+Both validate Account access, retain independent immutable acting handles and use a session-owned local-state map rather than native daemon records.
+Their local-login getters are empty and `account_info()` is `None`.
+They do not configure background sync, and a returned Database has no registered-login sharing preference binding.
+Added keys and mappings disappear at logout unless the caller explicitly persists the keys in its own store; the original encrypted bundle is unchanged.
+`credential_bundle_tests` exercises the complete ordinary bundle, stale-session key additions, returning login and foreign/tampered active bundles.
+`signer_tests` also exercises full caller-held sessions, scoped app inputs without personal keys, retained direct/delegated Account handles and exact absence of daemon credential-record writes on actual Unix services.

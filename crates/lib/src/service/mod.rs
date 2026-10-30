@@ -23,8 +23,8 @@
 //! This proves possession, not Account authority; ordinary per-tree Auth applies.
 //!
 //! - **AccountSession keys stay client-side**: clients fetch encrypted `AccountCredentials` from
-//!   the daemon, derive the key-encryption-key locally (Argon2id), decrypt the user's
-//!   signing key in-process, and sign entries before sending them to the daemon for
+//!   the daemon, derive the wrapping key locally (Argon2id), unlock the authenticated
+//!   Account locator/key bundle, and sign entries before sending them to the daemon for
 //!   storage. The signing key never crosses the socket.
 //! - **Authentication via challenge-response**: when the daemon needs to prove a
 //!   connecting client controls a user account, the daemon issues a fresh random
