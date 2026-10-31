@@ -472,6 +472,8 @@ async fn reopened_sqlite_keeps_warm_entries() {
 #[cfg(all(feature = "postgres", feature = "testing"))]
 #[tokio::test]
 async fn reopened_postgres_keeps_warm_entries() {
+    use std::time::Duration;
+
     use eidetica::backend::database::sql::SqlxBackend;
 
     if std::env::var("TEST_BACKEND").as_deref() != Ok("postgres") {
@@ -494,6 +496,10 @@ async fn reopened_postgres_keeps_warm_entries() {
         )
         .await;
     }
+    // Drop cannot await PostgreSQL session exit and its ownership-lock release.
+    SqlxBackend::test_await_postgres_namespace_release(&url, &schema, Duration::from_secs(5))
+        .await
+        .unwrap();
     let backend = SqlxBackend::test_connect_postgres_schema(&url, schema)
         .await
         .unwrap();
