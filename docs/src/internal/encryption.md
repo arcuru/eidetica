@@ -35,31 +35,50 @@ returned to application code. "Encrypted at rest" does not mean plaintext never 
 
 ## Password derivation
 
-Initialization generates a `SaltString` with `SaltString::generate`. The value stored in `_index`
-is its unpadded base64 text; for the generated v0 format it represents 16 random salt bytes.
+Initialization generates a `SaltString` representing 16 random bytes. `_index` stores its unpadded
+base64 text. The envelope specifies which bytes Argon2 receives:
 
-The master key is 32 bytes produced by Argon2id version 0x13 with parameters stored in the config:
+- v0 uses the base64 **text bytes**, preserving the original derivation. An absent `salt_encoding`
+  or `"base64-text"` selects this behavior.
+- v1 requires `salt_encoding: "raw"` and decodes the text before derivation.
 
-| Parameter     | v0 initialization value |
-| ------------- | ----------------------- |
-| memory        | 19 × 1024 KiB           |
-| time cost     | 2                       |
-| parallelism   | 1                       |
-| output length | 32 bytes                |
+Argon2id version 0x13 produces a 32-byte key using the stored costs:
 
-A compatibility detail is important: the implementation parses the stored text with
-`SaltString::from_b64`, then passes `salt.as_str().as_bytes()` to `hash_password_into`. The Argon2
-salt input is therefore the bytes of the base64 salt string, not the decoded 16 random bytes.
-Changing that would derive a different key and make existing Stores unreadable.
+| Parameter     | New Store default | Decrypt-side maximum |
+| ------------- | ----------------- | -------------------- |
+| memory        | 19 × 1024 KiB     | 256 × 1024 KiB       |
+| time cost     | 2                 | 10                   |
+| parallelism   | 1                 | 16                   |
+| output length | 32 bytes          | 32 bytes             |
 
-Older configuration without explicit cost fields uses the same defaults. `open` rejects unsupported
-algorithm and KDF names, invalid salts and parameters, wrong-size config nonces, failed config
-authentication, malformed decrypted metadata, and a wrapped Store type that does not match `S`.
-Errors for the last two use fixed text: a malformed-metadata `DeserializationFailed` carries no
-parser error, and a `TypeMismatch` does not echo the decrypted wrapped type.
+Legacy v0 configurations without explicit costs always mean 19456/2/1, independently of future
+initialization defaults. v1 requires explicit costs. Costs must satisfy Argon2's minimums and the
+fixed decrypt-side maxima before any derivation or Argon2 workspace allocation. Above-limit
+configurations are refused even with the correct password. These are per-derivation limits, not a
+limit on concurrent opens or an application-wide resource budget.
 
-`PasswordEncryptor` lazily derives the master key on first data operation and retains it behind the
-transaction's encryptor. Cleanup ownership is described in [Memory ownership](#memory-ownership).
+In v0 the derived key is the data key. In v1 it is a key-encryption key: it authenticates and
+unwraps a separate random 32-byte data key. The data key encrypts the wrapped Store metadata,
+Entry payloads and cached state. `open` checks the envelope version, encoding, algorithms, costs,
+salt, key-wrap and metadata authentication, nonce/key lengths, and wrapped Store type before
+registering the data key with the transaction. It never updates `_index`.
+
+After authentication, `needs_rehash()` reports a v0 envelope or costs below current defaults.
+`upgrade_kdf().await` explicitly stages a v1 envelope with a fresh raw salt, costs at least as high
+as both the old values and current defaults, and the **same data key** wrapped under the new
+derived key. The wrapped metadata ciphertext, Entry history, row-key mapping, and existing cache
+envelopes do not change. The atomic configuration update and registry type change persist only
+when the caller commits the transaction. An already-current Store is a no-op; a locked or
+uninitialized Store cannot report an authenticated upgrade or perform one.
+
+KDF upgrades do not rotate passwords or retroactively strengthen history. Old immutable
+`_index` Entries and backups still expose the old password wrapping or v0 derivation
+for the same data key. Upgrading does not revoke those copies, erase old metadata, or prevent an
+offline attack using their old KDF costs.
+
+Derivation happens once during initialization/open; data operations do not re-derive the key.
+Errors about malformed decrypted metadata use fixed text without a parser error; a wrapped
+`TypeMismatch` does not echo the decrypted wrapped type. Cleanup ownership is described below.
 
 ## Memory ownership
 
@@ -67,16 +86,16 @@ PasswordStore clears specific owned allocations when their owner drops, includin
 returns, future cancellation, and panic unwinding. This is best-effort cleanup of those buffers,
 not a guarantee that plaintext is erased from process memory.
 
-| Plaintext                            | Owner and lifetime                                                                                                   |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| Converted password                   | Moved into the zeroizing `Password` immediately after the state check, before derivation, encryption or persistence  |
-| Unlocked password                    | Two zeroizing `Password` clones: the PasswordStore's cache and the registered encryptor                              |
-| Initialize/open derived key          | Private zeroizing byte owner from allocation; dropped as soon as the wrapped config is encrypted or decrypted        |
-| Lazily derived master key            | Same owner from allocation; moved without copying into the encryptor's cache, which clears it on drop                |
-| Record subkeys                       | `Zeroizing<[u8; 32]>`, scoped to one hash or cipher operation                                                        |
-| Wrapped-config and row envelope JSON | Serialized directly into a guarded buffer sized by a measuring pass; dropped right after encryption                  |
-| Decrypted config and envelope JSON   | Guarded immediately after AES-GCM decryption; dropped right after parsing                                            |
-| Decrypted row `key`/`value` fields   | Guarded once each field deserializes; cleared on rejection, moved without copying into the returned `Vec`s otherwise |
+| Plaintext                            | Owner and lifetime                                                                                                         |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Converted password                   | Moved into the zeroizing `Password` immediately after the state check, before derivation, encryption or persistence        |
+| Unlocked password                    | Zeroizing `Password` retained by the wrapper for explicit upgrades; the encryptor does not retain the password             |
+| Password-derived wrapping key        | Private zeroizing byte owner from allocation; dropped after key wrapping/unwrapping, before persistence                    |
+| Authenticated data key               | Private zeroizing byte owner, shared without copying by the wrapper and transaction encryptor until their last owner drops |
+| Record subkeys                       | `Zeroizing<[u8; 32]>`, scoped to one hash or cipher operation                                                              |
+| Wrapped-config and row envelope JSON | Serialized directly into a guarded buffer sized by a measuring pass; dropped right after encryption                        |
+| Decrypted config and envelope JSON   | Guarded immediately after AES-GCM decryption; dropped right after parsing                                                  |
+| Decrypted row `key`/`value` fields   | Guarded once each field deserializes; cleared on rejection, moved without copying into the returned `Vec`s otherwise       |
 
 The private byte owner implements no `Debug`, `Display`, `Clone`, or serde trait. Decrypted wrapped
 metadata is parsed only to validate it, then dropped; PasswordStore does not retain it.
@@ -93,7 +112,7 @@ These are not covered:
 - allocator history, moved stack or register temporaries, swap, hibernation, core dumps, a
   compromised process, and process exit without destructors.
 
-The registered encryptor, with its password and master key, lives as long as the transaction's
+The registered encryptor, with its data key, lives as long as the transaction's
 encryptor map. Clones of a `Transaction` share that map and wrapped Store handles retain clones, so
 dropping one `PasswordStore` neither locks the Store nor removes the encryptor; cleanup happens when
 the last clone drops or the registration is replaced.
@@ -105,7 +124,8 @@ Entries, opaque cached state, and projected row caches.
 
 ### `_index` configuration
 
-The `_index` registry entry has type `encrypted:password:v0`. Its configuration is an atomic `Doc`
+New `_index` registry entries have type `encrypted:password:v1`; loading also accepts
+`encrypted:password:v0`. The configuration is an atomic `Doc`
 with this logical shape:
 
 ```text
@@ -114,7 +134,8 @@ with this logical shape:
     algorithm: "aes-256-gcm",
     kdf: "argon2id",
     salt: <base64 text>,
-    version: "v0",
+    version: "v1",
+    salt_encoding: "raw",
     argon2_m_cost: 19456,
     argon2_t_cost: 2,
     argon2_p_cost: 1
@@ -122,19 +143,26 @@ with this logical shape:
   wrapped_config: {
     ciphertext: <base64 text>,
     nonce: <base64 text>
+  },
+  wrapped_key: {
+    ciphertext: <base64 text>,
+    nonce: <base64 text>
   }
 }
 ```
 
-Algorithm, KDF, salt, version, and costs are public metadata. `wrapped_config` encrypts a JSON
-serialization of `WrappedStoreInfo { type, config }` with the master AES-256-GCM key and a random
-12-byte nonce. The nonce and ciphertext are separate fields and are base64-encoded only because
-they live inside a `Doc`. This encryption call supplies no additional authenticated data.
+Algorithm, KDF, salt, version, encoding and costs are public metadata. `wrapped_config` encrypts a
+JSON serialization of `WrappedStoreInfo { type, config }` with the data key and a random 12-byte
+nonce. v1's `wrapped_key` encrypts the raw 32-byte data key under the password-derived key with
+another random nonce. Both use AES-256-GCM. The nonce and ciphertext are separate fields and are
+base64-encoded only because they live inside a `Doc`. These calls supply no additional
+authenticated data. v0 has no `wrapped_key` and normally no `salt_encoding`; its cost fields may
+also be absent. Readers that only support v0 reject the new registry type.
 
 ### Entry payloads
 
-At commit, the wrapped Store's serialized delta is encrypted with the master AES-256-GCM key and a
-fresh random 12-byte nonce:
+At commit, the wrapped Store's serialized delta is encrypted with the data key using AES-256-GCM
+and a fresh random 12-byte nonce:
 
 ```text
 nonce[12] || AES-GCM ciphertext-and-tag
@@ -158,11 +186,11 @@ not necessarily the same bytes as an individual Entry delta.
 that descriptor as `eidetica/password/eidetica/table/rows`, version 0. The encrypted projection is
 built after decrypting Entry deltas and applying the Table projection.
 
-Two 32-byte subkeys are derived from the master with BLAKE3's derive-key mode:
+Two 32-byte subkeys are derived from the data key with BLAKE3's derive-key mode:
 
 ```text
-record-key subkey   = derive_key("eidetica/password-store/record-key/v1", master)
-record-value subkey = derive_key("eidetica/password-store/record-value/v1", master)
+record-key subkey   = derive_key("eidetica/password-store/record-key/v1", data_key)
+record-value subkey = derive_key("eidetica/password-store/record-value/v1", data_key)
 ```
 
 The physical key is BLAKE3 keyed-hash output:
@@ -206,11 +234,11 @@ decrypted content.
 The tests maintainers should start with are:
 
 - unit tests at the end of `crates/lib/src/store/password_store.rs` for domain separation, nonce
-  uniqueness, Store/physical-key binding, malformed values, and modification;
+  uniqueness, Store/physical-key binding, KDF ceilings, malformed envelopes, and modification;
 - `crates/lib/src/store/password_store/hardening_tests.rs` for buffer cleanup on success, error,
   cancellation and unwinding, redacted decrypted diagnostics, and fixed persistent-format fixtures;
 - `crates/lib/tests/it/store/password_store.rs` for encrypted Entries, opaque caches, Table row
-  records, physical ordering, staged updates/deletes, and cache clearing;
+  records, physical ordering, staged updates/deletes, legacy opens, explicit KDF upgrades, and cache clearing;
 - `crates/lib/tests/it/transaction/record_fallback.rs` for cache/history page and cursor equivalence;
 - `crates/lib/tests/it/store/ydoc_operations.rs` for the opaque encrypted YDoc path;
 - `crates/lib/tests/it/service.rs` for warm encrypted Table point reads over the service.
@@ -219,7 +247,7 @@ The tests maintainers should start with are:
 
 For an unencrypted Table, a cache record key is the normalized UTF-8 logical key and its value is
 the JSON row bytes. For an encrypted Table, neither is stored in plaintext. The physical key is
-stable for the same master key and normalized logical key, so equality and access patterns remain
+stable for the same data key and normalized logical key, so equality and access patterns remain
 visible. The physical key also defines scan and cursor order; it intentionally does not preserve
 logical-key sorting or range locality.
 

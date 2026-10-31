@@ -1039,4 +1039,469 @@ async fn test_password_store_open_uninitialized_fails() {
 
     let result = encrypted.open("password");
     assert!(result.is_err());
+    assert!(encrypted.needs_rehash().is_err());
+    assert!(encrypted.upgrade_kdf().await.is_err());
+}
+
+// Build the old envelope independently: v0 fed the unpadded base64 *text* to
+// Argon2, and its output directly encrypted Store metadata and Entry history.
+fn legacy_password_config<S: Registered>(m: Option<u32>, t: Option<u32>, p: Option<u32>) -> Doc {
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+    use argon2::{Algorithm, Argon2, Params, Version};
+    use eidetica::store::EncryptedFragment;
+
+    let salt = "MDEyMzQ1Njc4OUFCQ0RFRg";
+    let mut key = [0; 32];
+    Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(m.unwrap_or(19456), t.unwrap_or(2), p.unwrap_or(1), Some(32)).unwrap(),
+    )
+    .hash_password_into(b"legacy password", salt.as_bytes(), &mut key)
+    .unwrap();
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "type": S::type_id(), "config": Doc::new()
+    }))
+    .unwrap();
+    let nonce = [7; 12];
+    let ciphertext = Aes256Gcm::new_from_slice(&key)
+        .unwrap()
+        .encrypt(Nonce::from_slice(&nonce), metadata.as_slice())
+        .unwrap();
+    let mut encryption = Doc::new();
+    encryption.set("algorithm", "aes-256-gcm");
+    encryption.set("kdf", "argon2id");
+    encryption.set("version", "v0");
+    encryption.set("salt", salt);
+    for (name, value) in [
+        ("argon2_m_cost", m),
+        ("argon2_t_cost", t),
+        ("argon2_p_cost", p),
+    ] {
+        if let Some(value) = value {
+            encryption.set(name, value);
+        }
+    }
+    let mut config = Doc::atomic();
+    config.set("encryption", encryption);
+    config.set(
+        "wrapped_config",
+        Doc::from(EncryptedFragment {
+            ciphertext,
+            nonce: nonce.to_vec(),
+        }),
+    );
+    config
+}
+
+#[tokio::test]
+async fn test_password_store_legacy_text_salt_and_missing_costs() {
+    let (_instance, database) = setup_tree().await;
+    for (name, costs) in [
+        ("legacy_defaults", (None, None, None)),
+        ("legacy_explicit", (Some(8), Some(1), Some(1))),
+    ] {
+        let config = legacy_password_config::<DocStore>(costs.0, costs.1, costs.2);
+        install_legacy_password_config(&database, name, config).await;
+        let tx = database.new_transaction().await.unwrap();
+        let mut encrypted = tx.get_store::<PasswordStore<DocStore>>(name).await.unwrap();
+        assert!(encrypted.open("wrong password").is_err());
+        encrypted.open("legacy password").unwrap();
+        encrypted
+            .inner()
+            .await
+            .unwrap()
+            .set("key", "legacy value")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_password_docstore_data(
+            &database,
+            name,
+            "legacy password",
+            &[("key", "legacy value")],
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn test_password_store_rejects_excessive_kdf_iterations() {
+    let (_instance, database) = setup_tree().await;
+    // Tiny memory makes the unbounded old path cheap to exercise, but its valid
+    // ciphertext proves rejection is the work ceiling, not a wrong password.
+    let config = legacy_password_config::<DocStore>(Some(8), Some(11), Some(1));
+    install_legacy_password_config(&database, "expensive", config).await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("expensive")
+        .await
+        .unwrap();
+    let error = encrypted.open("legacy password").unwrap_err();
+    assert!(error.to_string().contains("work ceiling"), "{error}");
+    assert!(!encrypted.is_open());
+}
+
+async fn install_legacy_password_config(database: &eidetica::Database, name: &str, config: Doc) {
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_index()
+        .await
+        .unwrap()
+        .set_entry(name, "encrypted:password:v0", config)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_password_store_kdf_upgrade_preserves_history() {
+    let (_instance, database) = setup_tree().await;
+    let legacy = legacy_password_config::<DocStore>(None, None, None);
+    install_legacy_password_config(&database, "upgrade", legacy.clone()).await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<DocStore>>("upgrade")
+        .await
+        .unwrap();
+    assert!(store.needs_rehash().is_err());
+    assert!(store.upgrade_kdf().await.is_err());
+    assert!(store.open("wrong password").is_err());
+    assert!(store.needs_rehash().is_err());
+    store.open("legacy password").unwrap();
+    assert!(store.needs_rehash().unwrap());
+    // Authentication and ordinary writes do not silently change the envelope.
+    assert_eq!(store.get_config().await.unwrap(), legacy);
+    store
+        .inner()
+        .await
+        .unwrap()
+        .set("before", "old history")
+        .await
+        .unwrap();
+    let old_entry_id = tx.commit().await.unwrap();
+    let old_entry = database
+        .backend()
+        .unwrap()
+        .get(&old_entry_id)
+        .await
+        .unwrap();
+    let snapshot = database.snapshot().await.unwrap();
+
+    // An uncommitted upgrade must leave the persisted legacy envelope alone.
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let mut store = tx
+            .get_store::<PasswordStore<DocStore>>("upgrade")
+            .await
+            .unwrap();
+        store.open("legacy password").unwrap();
+        assert!(store.upgrade_kdf().await.unwrap());
+        assert!(!store.needs_rehash().unwrap());
+    }
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<DocStore>>("upgrade")
+        .await
+        .unwrap();
+    assert_eq!(store.get_config().await.unwrap(), legacy);
+    store.open("legacy password").unwrap();
+    let inner = store.inner().await.unwrap();
+    assert_eq!(
+        inner.get("before").await.unwrap().as_text(),
+        Some("old history")
+    );
+    inner.set("staged", "before upgrade").await.unwrap();
+    assert!(store.upgrade_kdf().await.unwrap());
+    assert!(!store.needs_rehash().unwrap());
+    let config_after = store.get_config().await.unwrap();
+    let parsed: eidetica::store::PasswordStoreConfig = config_after.clone().try_into().unwrap();
+    assert_eq!(parsed.encryption.version, "v1");
+    assert_eq!(parsed.encryption.salt_encoding.as_deref(), Some("raw"));
+    assert!(parsed.wrapped_key.is_some());
+    let old_config: eidetica::store::PasswordStoreConfig = legacy.try_into().unwrap();
+    assert_eq!(parsed.wrapped_config, old_config.wrapped_config);
+    assert!(!store.upgrade_kdf().await.unwrap());
+    assert_eq!(store.get_config().await.unwrap(), config_after);
+    inner.set("after", "new history").await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        database
+            .backend()
+            .unwrap()
+            .get(&old_entry_id)
+            .await
+            .unwrap(),
+        old_entry
+    );
+
+    database
+        .backend()
+        .unwrap()
+        .clear_derived_store_state()
+        .await
+        .unwrap();
+    assert_password_docstore_data(
+        &database,
+        "upgrade",
+        "legacy password",
+        &[
+            ("before", "old history"),
+            ("staged", "before upgrade"),
+            ("after", "new history"),
+        ],
+    )
+    .await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<DocStore>>("upgrade")
+        .await
+        .unwrap();
+    assert!(store.open("wrong password").is_err());
+    store.open("legacy password").unwrap();
+    assert!(!store.needs_rehash().unwrap());
+    assert_eq!(
+        tx.get_index()
+            .await
+            .unwrap()
+            .get_entry("upgrade")
+            .await
+            .unwrap()
+            .type_id,
+        "encrypted:password:v1"
+    );
+
+    // Historical snapshots still use the old text-salt envelope.
+    let tx = database.new_transaction_at(&snapshot).await.unwrap();
+    let mut old = tx
+        .get_store::<PasswordStore<DocStore>>("upgrade")
+        .await
+        .unwrap();
+    old.open("legacy password").unwrap();
+    assert!(old.needs_rehash().unwrap());
+    assert_eq!(
+        old.inner()
+            .await
+            .unwrap()
+            .get("before")
+            .await
+            .unwrap()
+            .as_text(),
+        Some("old history")
+    );
+}
+
+#[tokio::test]
+async fn test_password_store_new_envelope_uses_raw_salt() {
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+    use argon2::{Algorithm, Argon2, Params, Version, password_hash::SaltString};
+    use eidetica::store::PasswordStoreConfig;
+
+    let (_instance, database) = setup_tree().await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<DocStore>>("new")
+        .await
+        .unwrap();
+    store.initialize("password", Doc::new()).await.unwrap();
+    assert!(!store.needs_rehash().unwrap());
+    assert!(!store.upgrade_kdf().await.unwrap());
+    let config: PasswordStoreConfig = store.get_config().await.unwrap().try_into().unwrap();
+    assert_eq!(config.encryption.version, "v1");
+    assert_eq!(config.encryption.salt_encoding.as_deref(), Some("raw"));
+    // Independent derivation/unwrap detects a writer+reader both accidentally
+    // keeping the old text-salt behavior, unlike a self round-trip alone.
+    let e = &config.encryption;
+    let salt = SaltString::from_b64(&e.salt).unwrap();
+    let mut buffer = [0; 64];
+    let salt = salt.decode_b64(&mut buffer).unwrap();
+    assert_eq!(salt.len(), 16);
+    let mut wrapping_key = [0; 32];
+    Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(
+            e.argon2_m_cost.unwrap(),
+            e.argon2_t_cost.unwrap(),
+            e.argon2_p_cost.unwrap(),
+            Some(32),
+        )
+        .unwrap(),
+    )
+    .hash_password_into(b"password", salt, &mut wrapping_key)
+    .unwrap();
+    let wrapped_key = config.wrapped_key.as_ref().unwrap();
+    let data_key = Aes256Gcm::new_from_slice(&wrapping_key)
+        .unwrap()
+        .decrypt(
+            Nonce::from_slice(&wrapped_key.nonce),
+            wrapped_key.ciphertext.as_slice(),
+        )
+        .unwrap();
+    assert_eq!(data_key.len(), 32);
+    assert_ne!(data_key, wrapping_key);
+    let metadata = Aes256Gcm::new_from_slice(&data_key)
+        .unwrap()
+        .decrypt(
+            Nonce::from_slice(&config.wrapped_config.nonce),
+            config.wrapped_config.ciphertext.as_slice(),
+        )
+        .unwrap();
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+    assert_eq!(metadata["type"], DocStore::type_id());
+    let json = serde_json::to_string(&config).unwrap();
+    let from_json: PasswordStoreConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(Doc::from(from_json), Doc::from(config.clone()));
+    let mut weak = config.clone();
+    weak.encryption.argon2_m_cost = Some(8);
+    weak.encryption.argon2_t_cost = Some(1);
+    let mut weak_wrapping_key = [0; 32];
+    Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(8, 1, 1, Some(32)).unwrap(),
+    )
+    .hash_password_into(b"password", salt, &mut weak_wrapping_key)
+    .unwrap();
+    weak.wrapped_key.as_mut().unwrap().ciphertext = Aes256Gcm::new_from_slice(&weak_wrapping_key)
+        .unwrap()
+        .encrypt(Nonce::from_slice(&wrapped_key.nonce), data_key.as_slice())
+        .unwrap();
+    store.set_config(weak.into()).await.unwrap();
+    tx.commit().await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<DocStore>>("new")
+        .await
+        .unwrap();
+    store.open("password").unwrap();
+    assert!(store.needs_rehash().unwrap());
+    assert!(store.upgrade_kdf().await.unwrap());
+    assert!(!store.needs_rehash().unwrap());
+    tx.commit().await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<DocStore>>("new")
+        .await
+        .unwrap();
+    store.open("password").unwrap();
+    assert!(!store.needs_rehash().unwrap());
+}
+
+#[tokio::test]
+async fn test_password_table_kdf_upgrade_keeps_cached_rows() {
+    let (_instance, database, _key) = setup_tree_with_user_key_local().await;
+    let legacy = legacy_password_config::<Table<PasswordTestRecord>>(Some(8), Some(1), Some(1));
+    install_legacy_password_config(&database, "rows", legacy).await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("rows")
+        .await
+        .unwrap();
+    store.open("legacy password").unwrap();
+    store
+        .inner()
+        .await
+        .unwrap()
+        .set(
+            "row",
+            PasswordTestRecord {
+                name: "old".into(),
+                value: 1,
+            },
+        )
+        .await
+        .unwrap();
+    let entry_id = tx.commit().await.unwrap();
+    let backend = database.backend().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("rows")
+        .await
+        .unwrap();
+    store.open("legacy password").unwrap();
+    let table = store.inner().await.unwrap();
+    assert_eq!(table.get("row").await.unwrap().value, 1);
+    let request = eidetica::backend::StoreStateRequest {
+        database: database.root_id().clone(),
+        store: "rows".into(),
+        lifecycle: eidetica::backend::StoreStateLifecycle::Derived,
+        scope: eidetica::backend::CacheScope::Shared,
+        projection: PasswordStore::<Table<PasswordTestRecord>>::state_model().descriptor(),
+        source_key: Snapshot::from([entry_id]).cache_key_bytes(),
+    };
+    let view = backend
+        .resolve_store_state(&request)
+        .await
+        .unwrap()
+        .unwrap();
+    let before = backend
+        .store_state_record_scan(&view, &Default::default(), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(before.records.len(), 1);
+    assert!(store.upgrade_kdf().await.unwrap());
+    assert_eq!(table.get("row").await.unwrap().value, 1);
+    tx.commit().await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("rows")
+        .await
+        .unwrap();
+    store.open("legacy password").unwrap();
+    assert_eq!(
+        store.inner().await.unwrap().get("row").await.unwrap().value,
+        1
+    );
+    assert_eq!(
+        backend
+            .store_state_record_scan(&view, &Default::default(), None, 10)
+            .await
+            .unwrap(),
+        before
+    );
+    database
+        .backend()
+        .unwrap()
+        .clear_derived_store_state()
+        .await
+        .unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("rows")
+        .await
+        .unwrap();
+    store.open("legacy password").unwrap();
+    assert_eq!(
+        store.inner().await.unwrap().get("row").await.unwrap().value,
+        1
+    );
+}
+
+#[tokio::test]
+async fn test_password_store_kdf_upgrade_does_not_lower_costs() {
+    use eidetica::store::{DEFAULT_ARGON2_M_COST, DEFAULT_ARGON2_T_COST, PasswordStoreConfig};
+    let (_instance, database) = setup_tree().await;
+    let costs = (DEFAULT_ARGON2_M_COST + 8, DEFAULT_ARGON2_T_COST + 1, 2);
+    let legacy = legacy_password_config::<DocStore>(Some(costs.0), Some(costs.1), Some(costs.2));
+    install_legacy_password_config(&database, "stronger", legacy).await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<DocStore>>("stronger")
+        .await
+        .unwrap();
+    store.open("legacy password").unwrap();
+    assert!(store.upgrade_kdf().await.unwrap());
+    let upgraded: PasswordStoreConfig = store.get_config().await.unwrap().try_into().unwrap();
+    assert_eq!(upgraded.encryption.argon2_m_cost, Some(costs.0));
+    assert_eq!(upgraded.encryption.argon2_t_cost, Some(costs.1));
+    assert_eq!(upgraded.encryption.argon2_p_cost, Some(costs.2));
+    assert!(!store.needs_rehash().unwrap());
+    tx.commit().await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<DocStore>>("stronger")
+        .await
+        .unwrap();
+    store.open("legacy password").unwrap();
+    assert!(!store.needs_rehash().unwrap());
 }
