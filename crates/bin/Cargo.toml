@@ -32,3 +32,6 @@ rpassword = "7"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Test-only: drives the router with `ServiceExt::oneshot` without a network.
+# Already in the tree via axum; enabling `util` adds no new packages.
+tower = { version = "0.5", features = ["util"] }
