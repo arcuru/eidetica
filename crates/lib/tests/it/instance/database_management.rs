@@ -42,7 +42,7 @@ async fn test_find_database() {
     setup_trees_for_find_testing(&mut user).await;
 
     // Test: Find non-existent name
-    test_tree_not_found_error(&user, "NonExistent").await;
+    assert_database_not_found(&user, "NonExistent").await;
 
     // Test: Find unique name
     let found_unique = user
@@ -68,7 +68,7 @@ async fn test_find_database_edge_cases() {
     // Test: Database with trees but none matching
     let (_db, mut user) = test_instance_with_user("edge_user").await;
     create_database_with_settings(&mut user, "ExistingTree", "1.0").await;
-    test_tree_not_found_error(&user, "NonMatchingName").await;
+    assert_database_not_found(&user, "NonMatchingName").await;
 }
 
 #[tokio::test]
@@ -125,7 +125,7 @@ async fn test_concurrent_tree_creation() {
     let (_db, mut user) = test_instance_with_user("concurrent_user").await;
 
     // Use helper to test concurrent operations
-    let concurrent_trees = test_concurrent_tree_operations(&mut user).await;
+    let concurrent_trees = create_databases_with_profiles(&mut user).await;
 
     assert_databases_count(&concurrent_trees, 5);
 
@@ -196,12 +196,12 @@ async fn test_tree_management_error_handling() {
     let (_db, user) = test_instance_with_user("error_user").await;
 
     // Test various error scenarios
-    test_database_error_conditions(&user).await;
+    assert_database_error_conditions(&user).await;
 
     // Test finding non-existent trees with different names
     let test_names = &["", "NonExistent", "Missing", "NotFound"];
     for name in test_names {
-        test_tree_not_found_error(&user, name).await;
+        assert_database_not_found(&user, name).await;
     }
 }
 

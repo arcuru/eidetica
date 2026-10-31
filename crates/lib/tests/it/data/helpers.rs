@@ -10,6 +10,9 @@ use eidetica::{
 };
 
 use crate::helpers::test_instance;
+pub use crate::helpers::{
+    assert_nested_value, assert_path_deleted, assert_text_value, create_complex_nested_structure,
+};
 
 // Type alias for local usage
 type Node = Doc;
@@ -45,85 +48,7 @@ pub async fn setup_complete_test_env(
     Ok((db, tree, txn, dict))
 }
 
-// ===== MAP CREATION HELPERS =====
-
-// ===== ASSERTION HELPERS =====
-
-/// Assert that a string value matches expected content
-pub fn assert_text_value(value: &Value, expected: &str) {
-    match value {
-        Value::Text(actual) => assert_eq!(actual, expected),
-        _ => panic!("Expected text value '{expected}', got {value:?}"),
-    }
-}
-
-/// Assert that a nested value matches expected string
-pub fn assert_nested_value(map: &Node, path: &[&str], expected: &str) {
-    let mut current = map;
-
-    // Navigate to the parent of the final key
-    for &key in &path[..path.len() - 1] {
-        match current.get(key) {
-            Some(Value::Doc(inner)) => current = inner,
-            _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
-        }
-    }
-
-    // Check the final value
-    let final_key = path.last().expect("Path should not be empty");
-    match current.get(final_key) {
-        Some(Value::Text(s)) => assert_eq!(s, expected, "Value mismatch at path {path:?}"),
-        Some(other) => panic!("Expected text value at path {path:?}, got {other:?}"),
-        None => panic!("No value found at path {path:?}"),
-    }
-}
-
-/// Create a complex nested structure for testing
-pub fn create_complex_nested_structure() -> Node {
-    let mut root = Doc::new();
-
-    // Level 1
-    root.set("top_key", "top_value");
-
-    // Level 2
-    let mut level2 = Doc::new();
-    level2.set("level2_key1", "level2_value1");
-    level2.set("shared_key", "original_value");
-
-    // Level 3
-    let mut level3 = Doc::new();
-    level3.set("level3_key1", "level3_value1");
-    level2.set("level3", level3);
-
-    root.set("level2", level2);
-    root
-}
-
-/// Assert that a path is deleted (tombstone exists)
-pub fn assert_path_deleted(map: &Node, path: &[&str]) {
-    if path.len() == 1 {
-        // Simple case: check directly in this map using is_tombstone
-        assert!(
-            map.is_tombstone(path[0]),
-            "Expected tombstone at '{path:?}'"
-        );
-    } else {
-        // Navigate to parent and check final key
-        let mut current = map;
-        for &key in &path[..path.len() - 1] {
-            match current.get(key) {
-                Some(Value::Doc(inner)) => current = inner,
-                _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
-            }
-        }
-
-        let final_key = path.last().expect("Path should not be empty");
-        assert!(
-            current.is_tombstone(*final_key),
-            "Expected tombstone at '{path:?}'"
-        );
-    }
-}
+// ===== DOC CREATION HELPERS =====
 
 /// Create a Map with mixed value types
 pub fn create_mixed_map() -> Node {
@@ -141,7 +66,7 @@ pub fn create_mixed_map() -> Node {
 }
 
 /// Test serialization roundtrip for a Node
-pub fn test_serialization_roundtrip(map: &Node) -> Result<Doc> {
+pub fn assert_serialization_roundtrip(map: &Node) -> Result<Doc> {
     let serialized = serde_json::to_string(map).expect("Serialization failed");
     let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
@@ -164,7 +89,7 @@ pub fn test_serialization_roundtrip(map: &Node) -> Result<Doc> {
 }
 
 /// Assert that a value is a Map with expected content
-pub fn assert_map_contains(value: &Value, expected_keys: &[&str]) {
+pub fn assert_doc_value_has_keys(value: &Value, expected_keys: &[&str]) {
     match value {
         Value::Doc(map) => {
             for &key in expected_keys {
@@ -175,8 +100,6 @@ pub fn assert_map_contains(value: &Value, expected_keys: &[&str]) {
     }
 }
 
-// ===== MERGE TESTING HELPERS =====
-
 // ===== VALUE EDITOR HELPERS =====
 
 /// Setup a Doc for path operation tests
@@ -185,7 +108,7 @@ pub async fn setup_path_test_dict(txn: &Transaction) -> Result<DocStore> {
 }
 
 /// Test value editor basic functionality
-pub async fn test_editor_basic_set_get(dict: &DocStore, key: &str, value: Value) -> Result<()> {
+pub async fn assert_editor_set_get(dict: &DocStore, key: &str, value: Value) -> Result<()> {
     let editor = dict.get_value_mut(key);
     editor.set(value.clone()).await?;
 
@@ -196,7 +119,7 @@ pub async fn test_editor_basic_set_get(dict: &DocStore, key: &str, value: Value)
 }
 
 /// Test nested editor operations
-pub async fn test_nested_editor_operations(
+pub async fn assert_nested_editor_set_get(
     dict: &DocStore,
     path: &[&str],
     value: Value,
@@ -218,15 +141,13 @@ pub async fn test_nested_editor_operations(
 }
 
 /// Test path-based operations
-pub async fn test_path_operations(dict: &DocStore, path: &[&str], value: Value) -> Result<()> {
+pub async fn assert_path_set_get(dict: &DocStore, path: &[&str], value: Value) -> Result<()> {
     dict.set_at_path(path, value.clone()).await?;
     let retrieved = dict.get_at_path(path).await?;
     assert_eq!(retrieved, value, "Path operation mismatch at {path:?}");
 
     Ok(())
 }
-
-// ===== SERIALIZATION HELPERS =====
 
 // ===== ERROR TESTING HELPERS =====
 
@@ -250,35 +171,4 @@ pub fn assert_not_found_error<T>(result: Result<T>) {
 /// Test that a type error occurs
 pub fn assert_type_error<T>(result: Result<T>) {
     assert_error_type(result, |e| e.is_type_error(), "Type error");
-}
-
-// ===== TEST DATA BUILDERS =====
-
-// ===== MACROS =====
-
-/// Macro for creating test value assertions
-#[macro_export]
-macro_rules! assert_value_eq {
-    ($actual:expr, text: $expected:expr) => {
-        match $actual {
-            Value::Text(s) => assert_eq!(s, $expected),
-            other => panic!("Expected text value '{}', got {:?}", $expected, other),
-        }
-    };
-    ($actual:expr, map: $expected_keys:expr) => {
-        match $actual {
-            Value::Map(map) => {
-                for key in $expected_keys {
-                    assert!(map.contains_key(key), "Map should contain key '{}'", key);
-                }
-            }
-            other => panic!("Expected map value, got {:?}", other),
-        }
-    };
-    ($actual:expr, deleted) => {
-        match $actual {
-            Value::Deleted => (),
-            other => panic!("Expected deleted value, got {:?}", other),
-        }
-    };
 }

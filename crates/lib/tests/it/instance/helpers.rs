@@ -117,7 +117,7 @@ pub async fn create_tree_with_data(
 // ===== TREE MANAGEMENT HELPERS =====
 
 /// Test tree loading workflow using AccountSession API
-pub async fn test_tree_load_workflow(user: &mut AccountSession) -> (ID, Database) {
+pub async fn create_and_reload_database(user: &mut AccountSession) -> (ID, Database) {
     // Create initial tree
     let tree = create_database_with_default_key(user).await;
     let root_id = tree.root_id().clone();
@@ -309,7 +309,7 @@ pub async fn assert_tree_names_in_collection(trees: &[Database], expected_names:
 // ===== ERROR TESTING HELPERS =====
 
 /// Test tree not found scenarios using AccountSession API
-pub async fn test_tree_not_found_error(user: &AccountSession, non_existent_name: &str) {
+pub async fn assert_database_not_found(user: &AccountSession, non_existent_name: &str) {
     let result = user.find_database(non_existent_name).await;
     assert!(result.is_err(), "Expected error for non-existent tree");
 
@@ -328,7 +328,7 @@ pub async fn test_tree_not_found_error(user: &AccountSession, non_existent_name:
 }
 
 /// Test database operations with various error conditions using AccountSession API
-pub async fn test_database_error_conditions(user: &AccountSession) {
+pub async fn assert_database_error_conditions(user: &AccountSession) {
     // Test that find_database returns proper errors for non-existent databases
     let result = user.find_database("NonExistent").await;
     assert!(
@@ -339,8 +339,8 @@ pub async fn test_database_error_conditions(user: &AccountSession) {
 
 // ===== INTEGRATION HELPERS =====
 
-/// Complete workflow: create DB with user, add trees, perform operations, verify results
-pub async fn test_complete_instance_workflow(
+/// Create two databases with settings and profile data for a new user
+pub async fn create_databases_with_data(
     username: &str,
 ) -> (Instance, AccountSession, Vec<Database>) {
     let (instance, mut user) = test_instance_with_user(username).await;
@@ -361,8 +361,8 @@ pub async fn test_complete_instance_workflow(
     (instance, user, trees)
 }
 
-/// Test concurrent tree operations
-pub async fn test_concurrent_tree_operations(user: &mut AccountSession) -> Vec<Database> {
+/// Create five databases with user profiles, one at a time
+pub async fn create_databases_with_profiles(user: &mut AccountSession) -> Vec<Database> {
     let mut trees = Vec::new();
 
     // Create multiple trees rapidly

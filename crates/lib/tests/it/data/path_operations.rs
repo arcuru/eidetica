@@ -16,7 +16,7 @@ async fn test_dict_set_at_path_and_get_at_path_simple() -> Result<()> {
     let path = ["simple_key"];
     let value = Value::Text("simple_value".to_string());
 
-    test_path_operations(&dict, &path, value.clone()).await?;
+    assert_path_set_get(&dict, &path, value.clone()).await?;
 
     // Verify with regular get as well
     assert_text_value(&dict.get("simple_key").await?, "simple_value");
@@ -39,7 +39,7 @@ async fn test_dict_set_at_path_and_get_at_path_nested() -> Result<()> {
     let path = ["user", "profile", "email"];
     let value = Value::Text("test@example.com".to_string());
 
-    test_path_operations(&dict, &path, value.clone()).await?;
+    assert_path_set_get(&dict, &path, value.clone()).await?;
 
     // Verify intermediate map structure
     let profile_path = ["user", "profile"];
@@ -67,7 +67,7 @@ async fn test_dict_set_at_path_creates_intermediate_maps() -> Result<()> {
     let path = ["a", "b", "c"];
     let value = Value::Text("deep_value".to_string());
 
-    test_path_operations(&dict, &path, value.clone()).await?;
+    assert_path_set_get(&dict, &path, value.clone()).await?;
 
     // Verify intermediate maps were created
     match dict.get_at_path(["a", "b"]).await? {
@@ -284,7 +284,7 @@ async fn test_path_operations_complex_scenarios() -> Result<()> {
     match dict.get_at_path(["user", "profile"]).await? {
         Value::Doc(_) => {
             let profile_map = dict.get_at_path(["user", "profile"]).await?;
-            assert_map_contains(&profile_map, &["name", "email"]);
+            assert_doc_value_has_keys(&profile_map, &["name", "email"]);
         }
         _ => panic!("Expected user.profile to be a map"),
     }

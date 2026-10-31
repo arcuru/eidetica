@@ -6,11 +6,8 @@
 //!
 //! Pattern mirrors `instance/helpers.rs` for consistency.
 
-#![allow(dead_code)]
-
 use eidetica::{
     Database, Instance, account::AccountSession, auth::crypto::PublicKey, crdt::Doc, entry::ID,
-    sync::Sync,
 };
 
 use crate::helpers::test_instance;
@@ -134,15 +131,6 @@ pub async fn add_user_key(user: &mut AccountSession, display_name: Option<&str>)
         .expect("Failed to add private key")
 }
 
-/// Add multiple keys to a user
-pub async fn add_multiple_keys(user: &mut AccountSession, count: usize) -> Vec<PublicKey> {
-    let mut keys = Vec::with_capacity(count);
-    for i in 0..count {
-        keys.push(add_user_key(user, Some(&format!("key_{i}"))).await);
-    }
-    keys
-}
-
 // ===== DATABASE OPERATION HELPERS =====
 
 /// Create a database for a user with default settings
@@ -169,15 +157,6 @@ pub async fn create_named_database(user: &mut AccountSession, name: &str) -> Dat
     user.create_database(settings, &default_key)
         .await
         .expect("Failed to create database")
-}
-
-/// Create multiple databases for a user
-pub async fn create_multiple_databases(user: &mut AccountSession, names: &[&str]) -> Vec<Database> {
-    let mut databases = Vec::with_capacity(names.len());
-    for name in names {
-        databases.push(create_named_database(user, name).await);
-    }
-    databases
 }
 
 /// Create a database and return both the database and its ID
@@ -218,28 +197,6 @@ pub async fn setup_two_passwordless_users(
     )
 }
 
-/// Setup two users with one database shared via bootstrap
-///
-/// Returns (Instance, User1 with database, User2, Database, DatabaseID)
-///
-/// Local-only — see [`setup_two_passwordless_users`].
-pub async fn setup_users_with_shared_database(
-    owner_name: &str,
-    requester_name: &str,
-    db_name: &str,
-) -> (Instance, AccountSession, AccountSession, Database, ID) {
-    let instance = crate::helpers::test_local_instance().await;
-    admin_create_user(&instance, owner_name, None).await;
-    admin_create_user(&instance, requester_name, None).await;
-
-    let mut owner = login_account(&instance, owner_name, None).await;
-    let requester = login_account(&instance, requester_name, None).await;
-
-    let (database, db_id) = create_database_with_id(&mut owner, db_name).await;
-
-    (instance, owner, requester, database, db_id)
-}
-
 // ===== VERIFICATION HELPERS =====
 
 /// Assert that a user has the expected number of keys
@@ -264,15 +221,6 @@ pub fn assert_user_has_key(user: &AccountSession, key_id: &PublicKey) {
     );
 }
 
-/// Assert that a user does NOT have a specific key
-pub fn assert_user_lacks_key(user: &AccountSession, key_id: &PublicKey) {
-    let keys = user.list_keys().expect("Failed to list keys");
-    assert!(
-        !keys.contains(key_id),
-        "AccountSession should NOT have key {key_id}, but found it"
-    );
-}
-
 /// Assert that a database has a specific name
 pub async fn assert_database_name(database: &Database, expected_name: &str) {
     let actual_name = database
@@ -282,21 +230,6 @@ pub async fn assert_database_name(database: &Database, expected_name: &str) {
     assert_eq!(
         actual_name, expected_name,
         "Expected database name '{expected_name}', found '{actual_name}'"
-    );
-}
-
-/// Assert that a user has a sigkey mapping for a database
-pub fn assert_user_has_database_access(
-    user: &AccountSession,
-    key_id: &PublicKey,
-    database_id: &ID,
-) {
-    let sigkey = user
-        .key_mapping(key_id, database_id)
-        .expect("Failed to get database sigkey");
-    assert!(
-        sigkey.is_some(),
-        "AccountSession should have sigkey mapping for database"
     );
 }
 
@@ -316,7 +249,7 @@ pub fn assert_user_can_access_database(user: &AccountSession, database_id: &ID) 
 /// Complete user workflow: create → login → create DB → logout → login → load DB
 ///
 /// Returns the final AccountSession and Database for verification
-pub async fn test_complete_user_lifecycle(
+pub async fn create_database_and_relogin(
     username: &str,
     password: Option<&str>,
     db_name: &str,
@@ -350,70 +283,4 @@ pub async fn test_complete_user_lifecycle(
         .expect("Failed to load database");
 
     (instance, user, loaded_db)
-}
-
-/// Multi-user collaboration workflow: AccountSession A creates DB → AccountSession B requests access → AccountSession A approves
-///
-/// Returns (Instance, UserA, UserB, SharedDatabase, Sync) for verification
-///
-/// Local-only — `Sync::new` needs a process-local device key, and the
-/// multi-user pattern (two `AccountSession` sessions on one `Instance`) maps onto a
-/// local instance (see [`setup_two_passwordless_users`]).
-pub async fn test_multi_user_bootstrap_workflow(
-    owner_name: &str,
-    requester_name: &str,
-    db_name: &str,
-) -> (Instance, AccountSession, AccountSession, Database, Sync, ID) {
-    let instance = crate::helpers::test_local_instance().await;
-
-    // Create both users
-    admin_create_user(&instance, owner_name, None).await;
-    admin_create_user(&instance, requester_name, None).await;
-
-    // Owner creates database
-    let mut owner = login_account(&instance, owner_name, None).await;
-    let (database, db_id) = create_database_with_id(&mut owner, db_name).await;
-
-    // Requester logs in
-    let requester = login_account(&instance, requester_name, None).await;
-
-    // Create sync for bootstrap workflow
-    let sync = Sync::new(instance.clone())
-        .await
-        .expect("Failed to create sync");
-
-    (instance, owner, requester, database, sync, db_id)
-}
-
-/// Concurrent database operations: Multiple users creating databases simultaneously
-///
-/// Returns (Instance, Vec<AccountSession>, Vec<Database>) for verification
-///
-/// Local-only — see [`setup_two_passwordless_users`] for the
-/// one-identity-per-connection rationale.
-pub async fn test_concurrent_database_creation(
-    user_count: usize,
-    databases_per_user: usize,
-) -> (Instance, Vec<AccountSession>, Vec<Vec<Database>>) {
-    let instance = crate::helpers::test_local_instance().await;
-    let mut users = Vec::new();
-    let mut all_databases = Vec::new();
-
-    for i in 0..user_count {
-        let username = format!("user_{i}");
-        admin_create_user(&instance, &username, None).await;
-        let mut user = login_account(&instance, &username, None).await;
-
-        let mut user_databases = Vec::new();
-        for j in 0..databases_per_user {
-            let db_name = format!("user{i}_db{j}");
-            let db = create_named_database(&mut user, &db_name).await;
-            user_databases.push(db);
-        }
-
-        all_databases.push(user_databases);
-        users.push(user);
-    }
-
-    (instance, users, all_databases)
 }

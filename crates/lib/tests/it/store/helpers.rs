@@ -83,7 +83,7 @@ pub async fn create_dict_with_list(tree: &Database, subtree_name: &str, list_ite
 }
 
 /// Test multiple Doc operations across commits
-pub async fn test_dict_persistence(tree: &Database, subtree_name: &str) -> Vec<ID> {
+pub async fn assert_dict_persistence(tree: &Database, subtree_name: &str) -> Vec<ID> {
     let mut entry_ids = Vec::new();
 
     // Txn 1: Initial data
@@ -218,7 +218,10 @@ pub async fn create_ydoc_map_operation(
 
 #[cfg(feature = "y-crdt")]
 /// Test incremental YDoc updates and verify diff sizes
-pub async fn test_ydoc_incremental_updates(tree: &Database, subtree_name: &str) -> (usize, usize) {
+pub async fn assert_ydoc_incremental_updates(
+    tree: &Database,
+    subtree_name: &str,
+) -> (usize, usize) {
     // Large initial content
     let txn1 = tree.new_transaction().await.unwrap();
     let first_diff_size = {
@@ -514,7 +517,7 @@ pub fn create_test_records() -> Vec<TestRecord> {
 }
 
 /// Test concurrent Table modifications with merging
-pub async fn test_table_concurrent_modifications(
+pub async fn assert_table_concurrent_modifications(
     tree: &Database,
     subtree_name: &str,
 ) -> (String, TestRecord) {
