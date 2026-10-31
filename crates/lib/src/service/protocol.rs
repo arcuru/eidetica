@@ -104,8 +104,8 @@ pub enum ReadScope {
 /// `serde_json` bytes today, so this introduces no new representation.
 pub type WireCrdtValue = serde_json::Value;
 
-/// Everything a client needs to build **and sign** an entry locally without
-/// further round-trips. The client owns its keys, so signing stays
+/// Snapshot-bound metadata for building **and signing** an entry locally.
+/// Store payload reads remain separate. The client owns its keys, so signing stays
 /// client-side; only the inputs `Transaction::commit` reads from storage
 /// before signing travel here. Heights accompany each parent so the client
 /// computes entry height without a follow-up `GetEntry` per parent.
@@ -113,13 +113,18 @@ pub type WireCrdtValue = serde_json::Value;
 pub struct TransactionContext {
     /// Main-tree parent tips with their heights, in the caller's `scope`.
     pub main_parents: Vec<(ID, u64)>,
-    /// Per-store parent tips (with heights) reachable from `main_parents`.
+    /// Registered/requested and system store parents (with heights) reachable
+    /// from `main_parents`. Older servers include only requested stores.
     pub subtree_parents: BTreeMap<String, Vec<(ID, u64)>>,
     /// `_settings` tips this transaction pins in signed metadata.
     pub settings_tips: Vec<ID>,
     /// Merged `_settings` state the entry is authored against (used to build
     /// the auth settings the signature is validated under).
     pub settings_value: WireCrdtValue,
+    /// Merged `_index` at the same main-parent boundary. Absent on older
+    /// servers; clients then read registry history at that boundary as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_value: Option<WireCrdtValue>,
 }
 
 /// Response for ComputeMergeState: lowest common ancestor + path to tips.

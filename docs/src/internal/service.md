@@ -46,12 +46,13 @@ Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized pa
 Updated service peers tolerate additions at four named extension points:
 
 - An unknown top-level request operation or nested `DatabaseOp` receives `{"Response":"Unsupported"}`. The server performs no operation and does not change login or session-key state. A database envelope must still have a valid `root_id` and `identity`.
-- An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. There is no retry or execution fallback.
+- An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. The transport does not retry or execute a fallback.
 - An unknown optional variant inside `Notification` is ignored without consuming a response slot or invoking callbacks. Known notifications retain their behavior.
 
 These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix and 64 MiB cap are unchanged.
 
-This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no silent downgrade, capability advertisement, or legacy execution fallback. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
+This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no capability advertisement or fallback after a disconnect.
+The transaction builder can use its legacy path after `Unsupported`, as described in [Remote transaction builds](#remote-transaction-builds). Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
 
 ### Connection Lifecycle
 
@@ -392,6 +393,24 @@ Encrypted stores (wrapped in `PasswordStore`) are opaque to the daemon — the d
 - **Store-state resolve/stage/publish and record reads** provide a merge fast-path that avoids re-folding entries whose merged state is already materialized. For encrypted Stores, the client decrypts and materializes state, then publishes user-scoped ciphertext. A warm encrypted Table point read uses point-record gets for PasswordStore metadata and the requested row without scanning the row generation or reconstructing history. The daemon cannot validate the plaintext semantics of a client-built encrypted cache. See [Store state](#store-state) and [Encryption](encryption.md).
 
 The encrypted-store-over-service tests cover both paths: `test_database_encrypted_store_roundtrip` checks opaque Entry retrieval, while `test_warm_encrypted_table_service_point_read_is_lazy` proves a warm Table point read stays on record gets and does not reconstruct Store history. Decryption, local merge, and encrypted row-envelope verification are client-only.
+
+### Remote transaction builds
+
+`Database::new_transaction` on a connected handle uses `BeginTransaction` under that handle's acting identity and read scope.
+The daemon captures the main parents once, then derives parent heights, registered-store parents/heights, the settings pin, and merged `_settings` and `_index` from that boundary.
+The client retains this context only for that transaction, including its clones.
+It uses the existing registry type checks and staged overlays, calculates heights, signs locally, and submits through the unchanged verification gate.
+Neither private keys nor client-asserted verification status travel in the context.
+
+User-store payloads are not bundled or decrypted by the daemon.
+Table/Doc reads, encrypted-store materialization, host lookups and delegated-authority reads still use their normal gated operations.
+Stores absent from the context are discovered against its fixed main parents, not the live head.
+Explicit `new_transaction_at` and genesis retain the existing Backend build path; local transactions do not use the wire context.
+
+The v0 request shape is unchanged.
+The additive `index_value` response field is optional: an older server's context still supplies settings and heights, while missing registry/store inputs use parent-bound reads.
+An explicit `Unsupported` response falls back to the original transaction path; access, I/O and malformed-response failures do not.
+The context grows with the registry and must fit in one frame under the existing 64 MiB cap.
 
 ### Read scope
 

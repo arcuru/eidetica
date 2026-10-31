@@ -1784,7 +1784,7 @@ async fn traced_cli(
     history: &ID,
 ) -> CaptureTrace {
     use eidetica::service::protocol::{
-        DatabaseOp, Handshake, ServiceRequest, read_frame, write_frame,
+        DatabaseOp, Handshake, ReadScope, ServiceRequest, read_frame, write_frame,
     };
     use tokio::{
         io::AsyncWriteExt,
@@ -1814,7 +1814,16 @@ async fn traced_cli(
                 if let ServiceRequest::AuthenticatedDb(db) = &request
                     && pre_submit.is_none()
                 {
-                    if db.root_id == history && matches!(db.op, DatabaseOp::GetVerifiedTips) {
+                    if db.root_id == history
+                        && matches!(
+                            db.op,
+                            DatabaseOp::GetVerifiedTips
+                                | DatabaseOp::BeginTransaction {
+                                    scope: ReadScope::Verified,
+                                    ..
+                                }
+                        )
+                    {
                         history_snapshots += 1;
                     }
                     if db.root_id == history
