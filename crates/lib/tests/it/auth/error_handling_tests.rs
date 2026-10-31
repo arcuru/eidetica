@@ -4,9 +4,9 @@
 //! and security edge cases in the delegation system.
 
 use eidetica::{
-    Result,
+    Error, Result,
     auth::{
-        AuthSettings,
+        AuthError, AuthSettings,
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, KeyStatus, Permission,
             PermissionBounds, SigKey, TreeReference,
@@ -218,8 +218,7 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
         .await;
 
     // Should succeed but with clamped permissions
-    assert!(result.is_ok());
-    let resolved = result.unwrap();
+    let resolved = result.expect("Delegated key should resolve with clamped permissions");
     assert_eq!(resolved.len(), 1);
 
     // Effective permission should be Write (clamped), not Admin
@@ -285,7 +284,7 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: delegated_tree_root.clone(),
-            tips: fake_tips, // Using fake tips instead of real ones
+            tips: fake_tips.clone(), // Using fake tips instead of real ones
         }],
         hint: KeyHint::from_pubkey(&user_key_id),
     };
@@ -296,8 +295,17 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
         .resolve_sig_key(&delegation_path, &main_auth_settings, Some(&db))
         .await;
 
-    // Should fail because tips are invalid
-    assert!(result.is_err());
+    // Missing claimed tips are a replication dependency, not a forgery verdict.
+    match result.expect_err("Unknown claimed tips must prevent resolution") {
+        Error::Auth(error) => match *error {
+            AuthError::DelegatedTreeUnsynced { tree_id, missing } => {
+                assert_eq!(tree_id, delegated_tree_root);
+                assert_eq!(missing, fake_tips);
+            }
+            other => panic!("Expected unsynced delegation, got {other:?}"),
+        },
+        other => panic!("Expected authentication error, got {other:?}"),
+    }
 
     Ok(())
 }
@@ -380,8 +388,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
         .await;
 
     // Should succeed for active key
-    assert!(result.is_ok());
-    let resolved = result.unwrap();
+    let resolved = result.expect("Active delegated key should resolve");
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].key_status, KeyStatus::Active);
 
@@ -399,8 +406,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
         .await;
 
     // Should succeed in resolving but key should be marked as revoked
-    assert!(result.is_ok());
-    let resolved = result.unwrap();
+    let resolved = result.expect("Revoked delegated key should resolve with revoked status");
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].key_status, KeyStatus::Revoked);
 
@@ -427,20 +433,30 @@ async fn test_validation_cache_error_conditions() -> Result<()> {
     let result1 = validator
         .resolve_sig_key(&sig_key, &auth_settings, Some(&db))
         .await;
-    assert!(result1.is_ok());
+    let resolved1 = result1.expect("Original key should resolve");
+    assert_eq!(resolved1.len(), 1);
+    assert_eq!(resolved1[0].public_key, admin_key_id);
+    assert_eq!(resolved1[0].effective_permission, Permission::Admin(0));
+    assert_eq!(resolved1[0].key_status, KeyStatus::Active);
 
     // Try to resolve non-existent key (should fail but not corrupt cache)
     let fake_key = SigKey::from_name("nonexistent");
     let result2 = validator
         .resolve_sig_key(&fake_key, &auth_settings, Some(&db))
         .await;
-    assert!(result2.is_err());
+    assert!(
+        matches!(result2.unwrap_err(), Error::Auth(e) if matches!(e.as_ref(), AuthError::KeyNotFound { .. }))
+    );
 
     // Original key should still resolve correctly (cache should be intact)
     let result3 = validator
         .resolve_sig_key(&sig_key, &auth_settings, Some(&db))
         .await;
-    assert!(result3.is_ok());
+    let resolved3 = result3.expect("Original key should resolve");
+    assert_eq!(resolved3.len(), 1);
+    assert_eq!(resolved3[0].public_key, admin_key_id);
+    assert_eq!(resolved3[0].effective_permission, Permission::Admin(0));
+    assert_eq!(resolved3[0].key_status, KeyStatus::Active);
 
     Ok(())
 }
@@ -454,7 +470,8 @@ async fn test_error_message_consistency() {
                 path: vec![],
                 hint: KeyHint::from_name("final"),
             },
-            "empty",
+            AuthError::EmptyDelegationPath,
+            "empty delegation path",
         ),
         (
             SigKey::Direct {
@@ -464,7 +481,10 @@ async fn test_error_message_consistency() {
                     is_global: false,
                 },
             },
-            "empty",
+            AuthError::KeyNotFound {
+                key_name: String::new(),
+            },
+            "key not found",
         ),
         (
             SigKey::Delegation {
@@ -474,7 +494,10 @@ async fn test_error_message_consistency() {
                 }],
                 hint: KeyHint::from_name("final"),
             },
-            "not found",
+            AuthError::DelegationNotFound {
+                tree_id: ID::from_bytes("nonexistent"),
+            },
+            "delegation not found",
         ),
     ];
 
@@ -482,23 +505,21 @@ async fn test_error_message_consistency() {
     let auth_settings = AuthSettings::new();
     let db = test_instance().await;
 
-    for (sig_key, expected_error_type) in test_cases {
+    for (sig_key, expected_error, expected_error_type) in test_cases {
         let result = validator
             .resolve_sig_key(&sig_key, &auth_settings, Some(&db))
             .await;
-        assert!(result.is_err());
-
-        let error_msg = result.unwrap_err().to_string().to_lowercase();
-
-        // Error messages should be descriptive and consistent
+        let error = result.expect_err("Malformed or missing key should fail resolution");
+        let Error::Auth(auth_error) = &error else {
+            panic!("Expected authentication error, got {error:?}");
+        };
+        assert_eq!(
+            std::mem::discriminant(auth_error.as_ref()),
+            std::mem::discriminant(&expected_error)
+        );
+        let error_msg = error.to_string().to_lowercase();
         assert!(
-            error_msg.contains(expected_error_type)
-                || error_msg.contains("authentication")
-                || error_msg.contains("validation")
-                || error_msg.contains("failed")
-                || error_msg.contains("auth")
-                || error_msg.contains("key")
-                || error_msg.contains("configuration"),
+            error_msg.contains(expected_error_type),
             "Error message '{error_msg}' doesn't contain expected type '{expected_error_type}'"
         );
     }
@@ -538,7 +559,11 @@ async fn test_concurrent_validation_basic() -> Result<()> {
                 let result = validator
                     .resolve_sig_key(&sig_key, &settings_clone, Some(&db_clone))
                     .await;
-                assert!(result.is_ok());
+                let resolved = result.expect("Concurrent key resolution should succeed");
+                assert_eq!(resolved.len(), 1);
+                assert_eq!(resolved[0].public_key, *admin_key_clone);
+                assert_eq!(resolved[0].effective_permission, Permission::Admin(0));
+                assert_eq!(resolved[0].key_status, KeyStatus::Active);
             }
         });
 

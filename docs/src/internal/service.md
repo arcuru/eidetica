@@ -39,7 +39,7 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 └──────────────────┴──────────────────────┘
 ```
 
-Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF.
+Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF (before any length-prefix byte) and an `UnexpectedEof` I/O error when the stream ends mid-prefix or mid-payload.
 
 `PROTOCOL_VERSION` remains `0`, an unstable protocol. Version mismatches fail the handshake; the handshake and acknowledgment still advertise only the version, with no feature-capability negotiation.
 
@@ -170,11 +170,18 @@ Every storage operation rides a single `DatabaseOp` enum carried in `Authenticat
 | `GetStoreTipsUpToEntries { store, .. }`         | Store tips reachable from given main-tree entry IDs. Read.                                                                                                                       |
 | `ComputeMergeState { store, .. }`               | Lowest common ancestor + path to tip entries in a store DAG, fused into one RPC. Read.                                                                                           |
 | `GetEntry { id }`                               | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                  |
+| `VerifyEntrySignature { id }`                   | Re-run native historical authentication for one Entry; target and delegated-proof Read gates apply.                                                                              |
 | `CreateTicket`                                  | Build a point-in-time database locator after the request is gated for Read on the target database.                                                                               |
 | Store-state resolve / staging / record get/scan | Resolve, build, and lazily read cached state through opaque server-issued views onto published record sets. Read for reads, Write for staging.                                   |
 | `SetInstanceMetadata { metadata }`              | Rewrite daemon-level pointers to its own system DBs. Special-cased server-side to gate `Admin` on `_databases` (a daemon-global system tree) instead of the request's `root_id`. |
 
-Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
+`VerifyEntrySignature` runs the existing historical validator on the daemon, preserving pinned settings, inherited floors, permission bounds and incomplete-evidence errors.
+The Entry must belong to the requested database; the session-keyset-validated acting identity needs current Read on that database and every claimed delegated tree.
+The 10-step/64-tip bounds are checked before delegated Read queries.
+The verdict does not set verification status, acquire missing evidence or fall back to privileged reads; access gates may still perform their normal opportunistic verification.
+Older v0 peers follow the compatibility limits above.
+
+Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and raw verification-status/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
 
 `update_verification_status` is off-wire **by design, not just for tidiness**: verification is a local trust decision. If a client could set it over the socket, a client (or anything that reached the socket) could assert "this entry is `Verified`" without the server having validated it — exactly the caller-asserted-status hole the storage API was hardened to close. So the daemon's Instance owns verification: it stores everything `Unverified` and runs `Database::verify()` itself. The frontier/`allow_unverified` distinction is applied by the daemon-side `Database`, and every client connected to the same daemon therefore observes the same verified view.
 
@@ -187,6 +194,7 @@ Published views and private builds use opaque random tokens stored only in the c
 | Variant                                                       | Payload                                                            |
 | ------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `Entry(Entry)` / `Entries(Vec<Entry>)`                        | One or many entries                                                |
+| `EntrySignatureValid(bool)`                                   | Historical signature verdict, not verification status              |
 | `Ids(Vec<ID>)`                                                | One or many IDs                                                    |
 | `Ok`                                                          | Success with no data                                               |
 | `Unsupported`                                                 | Unknown operation; no action performed                             |
@@ -390,9 +398,9 @@ The encrypted-store-over-service tests cover both paths: `test_database_encrypte
 `ReadScope` controls the DAG snapshot exposed over the wire:
 
 - **`Verified`** (default) — only the maximal all-`Verified` ancestor-closed prefix of the DAG (the "Verified frontier"). Tips that are still `Unverified` are replaced by their nearest `Verified` ancestors; `Failed` entries are always dropped.
-- **`AllowUnverified`** — open against the raw DAG (only `Failed` dropped). The caller must explicitly opt in via `Database::allow_unverified()`.
+- **`AllowUnverified`** — select raw tips with `Failed` tips dropped, not a recursively sanitized accepted prefix. The caller must explicitly opt in via `Database::allow_unverified()`.
 
-`BeginTransaction` carries the caller's `ReadScope`: write parents are drawn from the _same_ snapshot the caller reads, so a write built under `AllowUnverified` uses unverified tips as parents and a write built under the `Verified` default uses only verified ancestors. This ensures the write's parent snapshot is self-consistent with the caller's read posture.
+`BeginTransaction` carries the caller's `ReadScope`: selected parents come from the same snapshot as its reads. Selection is not permission to commit against unsettled ancestry: signed local commit validation requires Verified parents, and server-side verification defers a submitted Entry with Unverified parents. `GetVerifiedTips` itself always returns the server's Verified frontier, even for a client handle with `.allow_unverified()`. The [verification contract](../design/verification.md#writes-inherit-the-selected-boundary-not-weaker-validation) defines the distinction.
 
 ### Gate scope for `AuthenticatedDb`
 
@@ -433,11 +441,14 @@ just test service
 nix build .#test.service
 ```
 
-The full suite passes 1:1 against the service backend. Tests that exercise _process-local_ subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), client-side delegation validation that reads delegated trees via `backend.get_tree`, the CRDT merge cache, and multi-`AccountSession`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
+The full suite passes 1:1 against the service backend. Tests that exercise _process-local_ subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), low-level delegation resolution that needs local verification evidence, the CRDT merge cache, and multi-`AccountSession`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
 
 - `test_local_instance()` — like `test_instance()` but always builds an in-memory local `Instance`.
 - `test_local_instance_with_user(username)` and `test_local_instance_with_user_and_key(username, key_name)` — counterparts to the wire-aware versions.
 - `setup_tree_with_user_key_local()` and `TestContext::with_local_database()` — for tests that poke at local-only backend state.
+
+`service::historical_signatures` uses a shared fixture for local/socket parity, concrete-key attribution, invalid/incomplete proof, inherited floors and revocation.
+Its non-admin, Read-only client checks bound acting identity and current Read on every delegation hop, including already-open handles.
 
 The architectural seam — wire-path tests vs. subsystem tests — is explicit at the helper level. The test harness bootstraps the server-side Instance with a passwordless `admin` user via `Instance::create_backend(..., NewAccount::passwordless("admin"))`, then logs in over the wire as that user. (The old `admin`/`admin` auto-bootstrap is gone; production deployments now run `eidetica daemon init --username <NAME>` with explicit credentials, and the test harness mirrors that shape.)
 
@@ -454,6 +465,6 @@ This is a **fully trusted local-client** v1. Filesystem access to the socket gra
 
 - **PAKE for network transport**: `TrustedLogin` is safe only because the socket is filesystem-gated. A network transport must replace it with a password-authenticated key exchange.
 - **Sync delegation**: as above.
-- **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier needs an incremental frontier first; `Database::verified_frontier` is an O(N) walk, too expensive on the per-commit path.
+- **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier can now read the retained frontier (`BackendImpl::verified_snapshot`); wiring it into the per-commit path is still future work.
 - **Notification backpressure**: the per-connection writer channel is `mpsc::unbounded_channel`; a stalled client reader buffers notifications in memory. Switch to a bounded channel with a documented drop-oldest policy if memory growth becomes measurable.
 - **Derived-key caching**: cache the Argon2id-derived encryption key in an OS secret store with a TTL, evolving the daemon into an ssh-agent-like key agent to eliminate repeated password prompts for CLI tools.

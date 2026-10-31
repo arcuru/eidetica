@@ -83,6 +83,36 @@ NixOS module opens the port when `openFirewall = true` and a web listener
 at `dataDir/service.sock` (not in systemd's private `/tmp`); client processes
 need owner-approved access to that directory.
 
+### Dashboard sync preferences
+
+Open a tracked database's detail page to edit **your account's** sync-enabled,
+sync-on-commit, and periodic-interval preferences.
+Blank interval means the background default; explicit intervals must be positive
+whole seconds representable by the server's timer.
+Saving retains the recorded key mapping, additional sync properties, and unrelated
+account settings.
+Only an already tracked database whose recorded key/mapping still authorizes reads
+can be updated; this form cannot create a tracking record or repair access.
+
+These are preferences, not global daemon switches or a report of network health.
+The ordinary signed write and daemon reconciliation combine the enabled accounts'
+preferences: sync-on-commit uses OR and explicit intervals use the minimum.
+Another account can therefore keep requesting sync after you disable it.
+Disabling neither cancels in-flight work nor revokes access.
+The current background scheduler uses a shared timer, so this is not an exact
+per-database deadline.
+
+Requests from one browser session hold its write lock through the complete
+read/modify/commit; reads in that session take the corresponding read lock.
+Separate logins, socket clients and replicas do not share that browser lock.
+They use normal snapshot transactions and the Table's row-level LWW merge,
+not distributed compare-and-swap or stale-form detection.
+Saving submits all three displayed preferences, so an older form can replace a
+newer edit; concurrent updates to the same row need not preserve each other's fields.
+Reload before editing to see current values.
+A commit error or lost response is not proof of rollback: the error page links to
+reload the actual preferences before retrying.
+
 ### Default Socket Path
 
 If no `--socket` is specified, the daemon uses:
@@ -231,3 +261,32 @@ For the `Database::on_write` semantics on a connected Instance — including
 the deliberate trade that callbacks fire asynchronously to `commit()` in
 exchange for a single daemon-canonical event ordering — see [Write
 Callbacks](transactions.md#write-callbacks).
+
+## Dashboard access requests
+
+An authenticated dashboard session can open **Manage pending database access requests**
+(`/dashboard/requests`).
+Only requests for databases where a held, mapped Account key currently has Admin
+permission are displayed; instance-admin status alone does not grant this authority.
+Each request shows its exact database ID, requester public key, requester-supplied
+key name, requested permission/priority and Pending lifecycle state.
+A key identifies a cryptographic signer, not an independently verified person.
+
+**Approve exact request** and **Reject request** are explicit same-origin form
+submissions bound to both the request ID and database ID.
+Approval uses the requested permission and priority, subject to existing Auth rules;
+an admin cannot create a higher-priority key than its own.
+There is no automatic approval or new device authorization.
+Refresh before deciding a stale request: already-decided requests are no longer
+in the pending list, and opposite decisions cannot reverse a terminal result.
+
+The requesting dashboard distinguishes pending approval, terminal rejection,
+network failure and completed access.
+Pending requests require an explicit **Retry request** after approval; they do
+not create new Account mappings or preferences.
+A successful transfer followed by a local bookkeeping error is reported separately,
+not as usable local access: local metadata may have persisted despite the error.
+Retry explicitly to repair or inspect the recorded state.
+The network wait does not hold the per-session lock, and bookkeeping preserves a
+tracked preference/key selection changed while that request was waiting.
+This observed-state check is not distributed compare-and-set or background completion.

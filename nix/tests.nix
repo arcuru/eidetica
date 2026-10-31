@@ -232,8 +232,8 @@ in {
       name = "eidetica-mdns-sync";
 
       nodes.machine = _: {
-        # The debug nextest archive expands to about 3 GiB; use disk, not /tmp's tmpfs.
-        virtualisation.diskSize = 4096;
+        # The workspace debug archive expands to about 5 GiB; use disk, not /tmp's tmpfs.
+        virtualisation.diskSize = 8192;
         networking = {
           dhcpcd.enable = false;
           nameservers = ["127.0.0.1"];
@@ -251,11 +251,21 @@ in {
       testScript = ''
         machine.start()
         machine.wait_for_unit("multi-user.target")
-        machine.succeed("mkdir -p /var/lib/nextest && cp -r ${testPkgs.src} /tmp/src && chmod -R u+w /tmp/src")
+        machine.succeed(
+          "mkdir -p /var/lib/nextest && cp -r ${testPkgs.src} /tmp/src && chmod -R u+w /tmp/src",
+          timeout=300,
+        )
+        # Archive extraction is setup, not part of the sync behavior deadline.
+        machine.succeed(
+          "tar --use-compress-program=${pkgs.zstd}/bin/zstd "
+          "-xf ${testPkgs.archive}/archive.tar.zst -C /var/lib/nextest",
+          timeout=300,
+        )
         result = machine.succeed(
           "cargo-nextest nextest run "
-          "--archive-file ${testPkgs.archive}/archive.tar.zst "
-          "--extract-to /var/lib/nextest --workspace-remap /tmp/src "
+          "--cargo-metadata /var/lib/nextest/target/nextest/cargo-metadata.json "
+          "--binaries-metadata /var/lib/nextest/target/nextest/binaries-metadata.json "
+          "--target-dir-remap /var/lib/nextest/target --workspace-remap /tmp/src "
           "--show-progress=none --run-ignored only --no-tests fail "
           "-E 'test(=sync::iroh_e2e_test::test_iroh_mdns_same_host_sync)'",
           timeout=60,

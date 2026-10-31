@@ -1,7 +1,7 @@
 use eidetica::{
-    Entry,
+    Entry, Error,
     sync::{
-        Address,
+        Address, SyncError,
         protocol::SyncRequest,
         transports::{SyncTransport, iroh::IrohTransport},
     },
@@ -42,7 +42,9 @@ async fn test_iroh_transport_double_start_error() {
     // Attempting to start again should fail
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
     let result = transport.start_server(handler2).await;
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerAlreadyRunning { .. }))
+    );
 
     // Clean up
     transport.stop_server().await.unwrap();
@@ -57,7 +59,9 @@ async fn test_iroh_transport_stop_without_start() {
 
     // Attempting to stop when not running should fail
     let result = transport.stop_server().await;
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
 }
 
 #[tokio::test]
@@ -69,7 +73,9 @@ async fn test_iroh_transport_get_server_address() {
 
     // Should return error when no server is running
     let result = transport.get_server_address();
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
 
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
@@ -86,7 +92,9 @@ async fn test_iroh_transport_get_server_address() {
 
     // Should return error again after stopping
     let result = transport.get_server_address();
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
 }
 
 #[tokio::test]
@@ -96,7 +104,7 @@ async fn test_iroh_transport_send_request_no_endpoint() {
         .build()
         .unwrap();
 
-    // Try to send request without initializing endpoint
+    // Lazy endpoint initialization succeeds, but the malformed ticket must be rejected
     let entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
@@ -107,7 +115,9 @@ async fn test_iroh_transport_send_request_no_endpoint() {
         )
         .await;
 
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::SerializationError(_)))
+    );
 }
 
 // Note: Testing actual client-server communication with Iroh requires
@@ -136,7 +146,9 @@ async fn test_iroh_transport_integration_lifecycle() {
     // Try to start again (should fail)
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
     let result = server_transport.start_server(handler2).await;
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerAlreadyRunning { .. }))
+    );
 
     // Stop server
     server_transport.stop_server().await.unwrap();
@@ -144,7 +156,9 @@ async fn test_iroh_transport_integration_lifecycle() {
 
     // Try to stop again (should fail)
     let result = server_transport.stop_server().await;
-    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
 }
 
 // Test that demonstrates the P2P nature of Iroh transport

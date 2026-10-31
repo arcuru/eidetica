@@ -3198,3 +3198,51 @@ async fn remote_snapshot_at_preserves_missing_boundary_error() {
         .expect_err("an incomplete boundary cannot be reported as an empty store");
     assert!(error.is_not_found(), "{error}");
 }
+
+mod historical_signatures;
+
+#[tokio::test]
+async fn zero_budget_daemon_keeps_client_history_reads_available() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("cache.sock");
+    let (server, _) = Instance::create_backend(
+        Box::new(InMemory::new_with_cache_policy(
+            eidetica::backend::DerivedCachePolicy {
+                max_namespaces: 0,
+                max_bytes: 0,
+            },
+        )),
+        NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let service = ServiceServer::bind(server.clone(), socket.clone())
+        .await
+        .unwrap();
+    let (shutdown, rx) = watch::channel(());
+    let task = tokio::spawn(service.run(rx));
+    let (client, root, _) = setup_db(&server, &socket, "cache_reader").await;
+    let user = client.login_account("cache_reader", None).await.unwrap();
+    let database = user.open_database(&root).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let doc = tx.get_store::<DocStore>("data").await.unwrap();
+    doc.set("key", "history").await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        database
+            .get_store_viewer::<DocStore>("data")
+            .await
+            .unwrap()
+            .get_string("key")
+            .await
+            .unwrap(),
+        "history"
+    );
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}

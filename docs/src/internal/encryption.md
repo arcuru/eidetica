@@ -55,11 +55,48 @@ Changing that would derive a different key and make existing Stores unreadable.
 Older configuration without explicit cost fields uses the same defaults. `open` rejects unsupported
 algorithm and KDF names, invalid salts and parameters, wrong-size config nonces, failed config
 authentication, malformed decrypted metadata, and a wrapped Store type that does not match `S`.
+Errors for the last two use fixed text: a malformed-metadata `DeserializationFailed` carries no
+parser error, and a `TypeMismatch` does not echo the decrypted wrapped type.
 
 `PasswordEncryptor` lazily derives the master key on first data operation and retains it behind the
-transaction's encryptor. `Password`, the cached master-key buffer, and temporary row subkeys use
-zeroizing owners. This is best-effort cleanup of those owned buffers, not a guarantee that every
-copy or plaintext is erased from process memory.
+transaction's encryptor. Cleanup ownership is described in [Memory ownership](#memory-ownership).
+
+## Memory ownership
+
+PasswordStore clears specific owned allocations when their owner drops, including on early error
+returns, future cancellation, and panic unwinding. This is best-effort cleanup of those buffers,
+not a guarantee that plaintext is erased from process memory.
+
+| Plaintext                            | Owner and lifetime                                                                                                   |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| Converted password                   | Moved into the zeroizing `Password` immediately after the state check, before derivation, encryption or persistence  |
+| Unlocked password                    | Two zeroizing `Password` clones: the PasswordStore's cache and the registered encryptor                              |
+| Initialize/open derived key          | Private zeroizing byte owner from allocation; dropped as soon as the wrapped config is encrypted or decrypted        |
+| Lazily derived master key            | Same owner from allocation; moved without copying into the encryptor's cache, which clears it on drop                |
+| Record subkeys                       | `Zeroizing<[u8; 32]>`, scoped to one hash or cipher operation                                                        |
+| Wrapped-config and row envelope JSON | Serialized directly into a guarded buffer sized by a measuring pass; dropped right after encryption                  |
+| Decrypted config and envelope JSON   | Guarded immediately after AES-GCM decryption; dropped right after parsing                                            |
+| Decrypted row `key`/`value` fields   | Guarded once each field deserializes; cleared on rejection, moved without copying into the returned `Vec`s otherwise |
+
+The private byte owner implements no `Debug`, `Display`, `Clone`, or serde trait. Decrypted wrapped
+metadata is parsed only to validate it, then dropped; PasswordStore does not retain it.
+
+These are not covered:
+
+- arguments the state check rejects before conversion, and copies the caller retains;
+- plaintext returned to the application, including accepted row fields and decrypted Entry
+  payloads, and the plaintext held by `Transaction` (staged deltas, merged CRDT state, and history
+  projections; see [Boundaries and ownership](#boundaries-and-ownership));
+- parsed `Doc`/`String` values, such as the validated wrapped metadata, whose drop does not wipe;
+- serde parser scratch, including a partially deserialized row field and its growth copies;
+- Argon2 block memory, AES key schedules, and AES-GCM's internal copies;
+- allocator history, moved stack or register temporaries, swap, hibernation, core dumps, a
+  compromised process, and process exit without destructors.
+
+The registered encryptor, with its password and master key, lives as long as the transaction's
+encryptor map. Clones of a `Transaction` share that map and wrapped Store handles retain clones, so
+dropping one `PasswordStore` neither locks the Store nor removes the encryptor; cleanup happens when
+the last clone drops or the registration is replaced.
 
 ## Four persistent representations
 
@@ -162,12 +199,16 @@ On decryption, AES-GCM authenticates the envelope against that AAD. The client t
 envelope and recomputes the physical key from its logical key. Authentication failure is reported
 as `StoreError::DataCorruption("record authentication failed")`; a successfully decrypted envelope
 whose logical key hashes elsewhere is `DataCorruption("record envelope key does not match its
-physical key")`. Too-short values and malformed JSON fail as deserialization errors.
+physical key")`. Too-short values and malformed JSON fail as deserialization errors; the
+malformed-envelope error has fixed text and does not carry the parser error, which can quote
+decrypted content.
 
 The tests maintainers should start with are:
 
 - unit tests at the end of `crates/lib/src/store/password_store.rs` for domain separation, nonce
   uniqueness, Store/physical-key binding, malformed values, and modification;
+- `crates/lib/src/store/password_store/hardening_tests.rs` for buffer cleanup on success, error,
+  cancellation and unwinding, redacted decrypted diagnostics, and fixed persistent-format fixtures;
 - `crates/lib/tests/it/store/password_store.rs` for encrypted Entries, opaque caches, Table row
   records, physical ordering, staged updates/deletes, and cache clearing;
 - `crates/lib/tests/it/transaction/record_fallback.rs` for cache/history page and cursor equivalence;

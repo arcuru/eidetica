@@ -21,8 +21,10 @@
 //!
 //! See [`schema`] module documentation for details on adding migrations.
 
+mod cache;
 mod storage;
 mod traversal;
+mod verified;
 
 /// Schema definition and migration system.
 pub mod schema;
@@ -52,11 +54,13 @@ use sqlx::{AnyPool, Executor};
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
-    BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-    RecordView, StagingToken, StoreStateRequest, VerificationStatus,
+    BackendImpl, DerivedCachePolicy, InstanceMetadata, InstanceSecrets, RecordMutations,
+    RecordPage, RecordRange, RecordView, StagingToken, StoreStateRequest, VerificationStatus,
 };
 use crate::entry::{Entry, ID};
 use crate::snapshot::Snapshot;
+
+use super::recency::RecencyState;
 
 /// Extension trait for sqlx Result types to simplify error handling.
 ///
@@ -117,6 +121,17 @@ pub struct SqlxBackend {
     _owner: Option<StorageOwner>,
     #[cfg(all(feature = "postgres", feature = "testing"))]
     postgres_token: Option<String>,
+    /// Bounds for the derived Store-state materialization cache (one policy
+    /// surface; see [`DerivedCachePolicy`]).
+    pub(crate) derived_cache_policy: std::sync::RwLock<DerivedCachePolicy>,
+    /// Exact access order while open; reads touch only this map.
+    pub(crate) cache_recency: std::sync::Mutex<RecencyState>,
+    /// Whether the recency clock was seeded above the persisted maximum.
+    pub(crate) cache_tick_seeded: std::sync::atomic::AtomicBool,
+    /// Durable recency flushes performed (test-only observable for the
+    /// no-write-per-hit gate).
+    #[cfg(feature = "testing")]
+    pub(crate) recency_flushes: std::sync::atomic::AtomicU64,
 }
 
 impl Drop for SqlxBackend {
@@ -310,6 +325,32 @@ impl SqlxBackend {
         self.kind == DbKind::Postgres
     }
 
+    /// Current bounds for the derived Store-state materialization cache.
+    pub(crate) fn cache_policy(&self) -> DerivedCachePolicy {
+        *self.derived_cache_policy.read().unwrap()
+    }
+
+    /// Test-only knob shrinking the derived-cache bounds so eviction is
+    /// reachable without publishing a thousand namespaces.
+    ///
+    /// Production policy is supplied at construction; this is compiled out of
+    /// every non-`testing` build.
+    #[cfg(feature = "testing")]
+    pub fn testing_set_derived_cache_policy(&self, policy: DerivedCachePolicy) {
+        *self.derived_cache_policy.write().unwrap() = policy;
+    }
+
+    /// Test-only count of durable recency flushes performed.
+    ///
+    /// The no-write-per-hit gate asserts this grows far slower than the
+    /// number of cache reads.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn testing_recency_flush_count(&self) -> u64 {
+        self.recency_flushes
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     #[cfg(all(feature = "postgres", feature = "testing"))]
     #[doc(hidden)]
     pub async fn test_postgres_owner_pid(&self) -> Result<i32> {
@@ -499,6 +540,29 @@ impl SqlxBackend {
     ///
     /// * `url` - SQLite connection URL (e.g., "sqlite:./my.db")
     pub async fn connect_sqlite(url: &str) -> Result<Self> {
+        Self::connect_sqlite_configured(url, None).await
+    }
+
+    /// Connect with explicit bounds, applied before startup reclamation/trim.
+    pub async fn connect_sqlite_with_cache_policy(
+        url: &str,
+        policy: DerivedCachePolicy,
+    ) -> Result<Self> {
+        Self::connect_sqlite_configured(url, Some(policy)).await
+    }
+
+    /// Open a file with explicit live derived-cache bounds.
+    pub async fn open_sqlite_with_cache_policy<P: AsRef<std::path::Path>>(
+        path: P,
+        policy: DerivedCachePolicy,
+    ) -> Result<Self> {
+        Self::connect_sqlite_with_cache_policy(&sqlite_path_url(path.as_ref())?, policy).await
+    }
+
+    async fn connect_sqlite_configured(
+        url: &str,
+        policy: Option<DerivedCachePolicy>,
+    ) -> Result<Self> {
         // Install any driver support
         sqlx::any::install_default_drivers();
 
@@ -565,10 +629,22 @@ impl SqlxBackend {
             _owner: storage,
             #[cfg(all(feature = "postgres", feature = "testing"))]
             postgres_token: None,
+            derived_cache_policy: std::sync::RwLock::new(policy.unwrap_or_else(|| {
+                if is_in_memory {
+                    DerivedCachePolicy::default()
+                } else {
+                    DerivedCachePolicy::persistent()
+                }
+            })),
+            cache_recency: std::sync::Mutex::new(RecencyState::default()),
+            cache_tick_seeded: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "testing")]
+            recency_flushes: std::sync::atomic::AtomicU64::new(0),
         };
 
         // Initialize schema
         schema::initialize(&backend).await?;
+        cache::startup(&backend).await?;
 
         Ok(backend)
     }
@@ -652,6 +728,14 @@ impl SqlxBackend {
         Self::connect_postgres_with_schema(url, None).await
     }
 
+    /// Connect with explicit bounds, applied before startup reclamation/trim.
+    pub async fn connect_postgres_with_cache_policy(
+        url: &str,
+        policy: DerivedCachePolicy,
+    ) -> Result<Self> {
+        Self::connect_postgres_configured(url, None, policy).await
+    }
+
     /// Connect to a PostgreSQL database with a specific schema for isolation.
     ///
     /// Creates a unique schema if `schema_name` is provided, providing test isolation.
@@ -662,6 +746,14 @@ impl SqlxBackend {
     /// * `url` - PostgreSQL connection URL
     /// * `schema_name` - Optional schema name. If None, uses the default (public) schema.
     async fn connect_postgres_with_schema(url: &str, schema_name: Option<String>) -> Result<Self> {
+        Self::connect_postgres_configured(url, schema_name, DerivedCachePolicy::persistent()).await
+    }
+
+    async fn connect_postgres_configured(
+        url: &str,
+        schema_name: Option<String>,
+        policy: DerivedCachePolicy,
+    ) -> Result<Self> {
         // Install any driver support
         sqlx::any::install_default_drivers();
 
@@ -734,10 +826,20 @@ impl SqlxBackend {
             _owner: None,
             #[cfg(feature = "testing")]
             postgres_token: Some(token),
+            derived_cache_policy: std::sync::RwLock::new(policy),
+            cache_recency: std::sync::Mutex::new(RecencyState::default()),
+            cache_tick_seeded: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "testing")]
+            recency_flushes: std::sync::atomic::AtomicU64::new(0),
         };
 
         // Initialize schema (tables will be created in the current search_path)
-        if let Err(error) = schema::initialize(&backend).await {
+        if let Err(error) = async {
+            schema::initialize(&backend).await?;
+            cache::startup(&backend).await
+        }
+        .await
+        {
             release_failed_postgres_claim(backend.pool.take(), owner).await;
             return Err(error);
         }
@@ -865,6 +967,42 @@ impl SqlxBackend {
     pub async fn test_connect_postgres_schema(url: &str, schema: String) -> Result<Self> {
         Self::connect_postgres_with_schema(url, Some(schema)).await
     }
+
+    /// Wait until no PostgreSQL session holds `schema`'s namespace ownership lock.
+    ///
+    /// Dropping a backend cannot await its sessions' exit, and the server releases their
+    /// locks only once they end. Lock acquisition waits on the server for at most `timeout`;
+    /// the transaction-level lock is released when the statement completes.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub async fn test_await_postgres_namespace_release(
+        url: &str,
+        schema: &str,
+        timeout: Duration,
+    ) -> Result<()> {
+        sqlx::any::install_default_drivers();
+        let mut connection = AnyConnection::connect(url)
+            .await
+            .sql_context("Failed to connect to PostgreSQL")?;
+        let schema = format!("\"{}\"", schema.replace('"', "\"\""));
+        // SAFETY: the schema is a quoted, escaped identifier and the timeout is an integer.
+        connection
+            .execute(sqlx::AssertSqlSafe(format!(
+                "SET search_path TO {schema}; SET lock_timeout = {}",
+                timeout.as_millis().max(1)
+            )))
+            .await
+            .sql_context("Failed to prepare PostgreSQL ownership wait")?;
+        // SAFETY: the lock expression is a compile-time constant.
+        let released = connection
+            .execute(sqlx::AssertSqlSafe(format!(
+                "SELECT pg_advisory_xact_lock({POSTGRES_NAMESPACE_LOCK})"
+            )))
+            .await
+            .sql_context("PostgreSQL storage ownership was not released");
+        let _ = connection.close().await;
+        released.map(|_| ())
+    }
 }
 
 #[async_trait]
@@ -935,7 +1073,7 @@ impl BackendImpl for SqlxBackend {
         id: &ID,
         verification_status: VerificationStatus,
     ) -> Result<()> {
-        storage::update_verification_status(self, id, verification_status).await
+        verified::update_verification_status(self, id, verification_status).await
     }
 
     async fn get_entries_by_verification_status(
@@ -947,6 +1085,14 @@ impl BackendImpl for SqlxBackend {
 
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
         traversal::snapshot(self, tree).await.map(Snapshot::new)
+    }
+
+    async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        verified::verified_snapshot(self, tree).await
+    }
+
+    async fn repair_verification(&self, tree: &ID) -> Result<crate::backend::VerificationRepair> {
+        verified::repair_verification(self, tree).await
     }
 
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot> {
@@ -1071,6 +1217,14 @@ impl Sqlite {
     ///
     /// The database exists only for the lifetime of the returned backend.
     /// Useful for testing.
+    /// Open a file with explicit derived-cache bounds before startup trim.
+    pub async fn open_with_cache_policy<P: AsRef<std::path::Path>>(
+        path: P,
+        policy: DerivedCachePolicy,
+    ) -> Result<SqlxBackend> {
+        SqlxBackend::open_sqlite_with_cache_policy(path, policy).await
+    }
+
     pub async fn in_memory() -> Result<SqlxBackend> {
         SqlxBackend::sqlite_in_memory().await
     }
@@ -1118,14 +1272,15 @@ impl Postgres {
         SqlxBackend::connect_postgres(url).await
     }
 
-    /// Connect to a PostgreSQL database with test isolation.
-    ///
-    /// Creates a unique schema for this backend instance, ensuring tests
-    /// don't interfere with each other when run in parallel.
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - PostgreSQL connection URL
+    /// Connect with explicit derived-cache bounds before startup trim.
+    pub async fn connect_with_cache_policy(
+        url: &str,
+        policy: DerivedCachePolicy,
+    ) -> Result<SqlxBackend> {
+        SqlxBackend::connect_postgres_with_cache_policy(url, policy).await
+    }
+
+    /// Connect to a PostgreSQL database with a fresh isolated test schema.
     pub async fn connect_isolated(url: &str) -> Result<SqlxBackend> {
         SqlxBackend::connect_postgres_isolated(url).await
     }
@@ -1232,7 +1387,7 @@ mod tests {
                 Err(error) => error,
             };
         assert!(
-            error.to_string().contains("Index creation failed"),
+            error.to_string().contains("Malformed SQL layout"),
             "cleanup must preserve the original initialization error: {error}"
         );
         // SAFETY: the only interpolated identifier is the UUID-derived test schema.
@@ -1256,11 +1411,8 @@ mod tests {
 /// A publish carrying a token whose target does not match the namespace it
 /// names must never disturb a ready namespace.
 ///
-/// Unlike `InMemory` (which resolves by target and adopts the ready winner),
-/// the SQL publish names the namespace: the `UPDATE` only flips
-/// lifecycle/status and keeps the begin-time identity, using `target` for
-/// locking and failure-path winner adoption. Either way the ready snapshot
-/// and its records always survive a malformed clone.
+/// Both engines validate begin-time identity before winner adoption. Malformed
+/// clones cannot change or discard published namespaces.
 #[cfg(all(test, feature = "sqlite"))]
 mod store_state_token_tests {
     use std::collections::BTreeMap;
@@ -1319,28 +1471,14 @@ mod store_state_token_tests {
             .await
             .unwrap();
 
-        // Malformed clone: B's namespace id, A's target. The SQL publish names
-        // the namespace (the UPDATE only flips lifecycle/status and keeps the
-        // begin-time identity; `target` drives locking and winner adoption),
-        // so B becomes ready under its own identity while ready A is
-        // untouched: no ready snapshot is ever modified by a mismatched token.
+        // A mismatched clone is refused before winner adoption; it never
+        // changes either published identity or record contents.
         let bad = StagingToken {
             namespace_id: token_b.namespace_id.clone(),
             target: request_a.clone(),
         };
-        let published_b = backend.publish_store_state(bad).await.unwrap();
-        assert_eq!(published_b.namespace_id, token_b.namespace_id);
-        assert_eq!(
-            backend.resolve_store_state(&request_b).await.unwrap(),
-            Some(published_b.clone())
-        );
-        assert_eq!(
-            backend
-                .store_state_record_get(&published_b, b"key")
-                .await
-                .unwrap(),
-            Some(b"value-b".to_vec())
-        );
+        assert!(backend.publish_store_state(bad).await.is_err());
+        assert_eq!(backend.resolve_store_state(&request_b).await.unwrap(), None);
         assert_eq!(
             backend.resolve_store_state(&request_a).await.unwrap(),
             Some(view_a.clone())

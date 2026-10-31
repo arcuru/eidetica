@@ -180,13 +180,19 @@ impl Fixture {
         self.data_entry_with_pin(parents, &settings_tips).await
     }
 
-    async fn data_entry_with_pin(&self, parents: &[ID], settings_tips: &[ID]) -> Entry {
+    /// Incremental fixture height above the parents already held locally.
+    async fn height_after(&self, parents: &[ID]) -> u64 {
         let mut height = 0u64;
         for p in parents {
             if let Ok(parent) = self.engine().get(p).await {
                 height = height.max(parent.height() + 1);
             }
         }
+        height
+    }
+
+    async fn data_entry_with_pin(&self, parents: &[ID], settings_tips: &[ID]) -> Entry {
+        let height = self.height_after(parents).await;
         let n = self.nonce.get();
         self.nonce.set(n + 1);
         let metadata = serde_json::to_vec(&serde_json::json!({

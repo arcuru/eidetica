@@ -8,8 +8,10 @@ use super::*;
 #[tokio::test]
 async fn empty_pin_cannot_promote_unsigned_child() {
     let fx = fixture().await;
+    let parents = fx.tips().await;
     let entry = Entry::builder(fx.target.root_id().clone())
-        .set_parents(fx.tips().await)
+        .set_height(fx.height_after(&parents).await)
+        .set_parents(parents)
         .set_subtree_data("data", b"unsigned")
         .build()
         .unwrap();
@@ -30,6 +32,7 @@ async fn empty_pin_allows_unsigned_child_without_settings() {
         .unwrap();
     let child = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
+        .set_height(1)
         .build()
         .unwrap();
     let child_id = child.id();
@@ -48,8 +51,10 @@ async fn empty_pin_allows_unsigned_child_without_settings() {
 #[tokio::test]
 async fn foreign_main_parent_cannot_promote_unsigned_child() {
     let fx = fixture().await;
+    let parents = [fx.tips().await, fx.i0.clone()].concat();
     let entry = Entry::builder(fx.target.root_id().clone())
-        .set_parents([fx.tips().await, fx.i0.clone()].concat())
+        .set_height(fx.height_after(&parents).await)
+        .set_parents(parents)
         .set_subtree_data("data", b"unsigned foreign-parent")
         .build()
         .unwrap();
@@ -243,13 +248,11 @@ async fn delegated_present_unverified_tip_is_retryable() {
 /// from delegated validation (normal demotion cascades to descendants).
 #[tokio::test]
 async fn delegated_verified_tip_requires_every_ancestor_verified() {
-    let fx = fixture().await;
-    let latest = advance(&fx.identity, "identity-v2").await;
-    let claim = fx.via_identity(&fx.tips().await, &latest).await;
-    // i1 is neither the claim tip (i2) nor the configured pointer (i0).
-    // Checking just those directly named tips would miss this interior node.
-    let ancestor = &fx.i1[0];
     for status in [VerificationStatus::Unverified, VerificationStatus::Failed] {
+        let fx = fixture().await;
+        let latest = advance(&fx.identity, "identity-v2").await;
+        let claim = fx.via_identity(&fx.tips().await, &latest).await;
+        let ancestor = &fx.i1[0];
         fx.engine()
             .update_verification_status(ancestor, status)
             .await
@@ -259,27 +262,27 @@ async fn delegated_verified_tip_requires_every_ancestor_verified() {
                 .get_verification_status(&latest[0])
                 .await
                 .unwrap(),
-            VerificationStatus::Verified,
-            "negative control must hide an unsettled ancestor behind a Verified tip"
+            VerificationStatus::Unverified,
+            "demotion must invalidate dependent labels"
         );
-        match fx.validate(&claim).await {
-            Err(Error::Auth(e)) if e.is_delegated_tree_unsynced() => {
-                assert_eq!(status, VerificationStatus::Unverified);
-                assert!(
-                    matches!(*e, AuthError::DelegatedTreeUnsynced { ref missing, .. }
-                    if missing.contains(ancestor))
-                );
-            }
-            Ok(false) => assert_eq!(status, VerificationStatus::Failed),
-            result => panic!("unexpected verdict for {status:?}: {result:?}"),
+        // A missing Verified proof is never accepted, even if a cached projection exists.
+        assert!(!matches!(fx.validate(&claim).await, Ok(true)));
+        if status == VerificationStatus::Unverified {
+            fx.identity.verify().await.unwrap();
+            fx.accept(&claim, "reverification restores complete ancestry")
+                .await;
+        } else {
+            fx.identity.verify().await.unwrap();
+            assert_eq!(
+                fx.engine()
+                    .get_verification_status(&latest[0])
+                    .await
+                    .unwrap(),
+                VerificationStatus::Failed
+            );
+            fx.reject(&claim, "Failed ancestor remains terminal").await;
         }
     }
-    fx.engine()
-        .update_verification_status(ancestor, VerificationStatus::Verified)
-        .await
-        .unwrap();
-    fx.accept(&claim, "restored complete Verified ancestry permits retry")
-        .await;
 }
 
 /// Clearing a disposable projection must reconstruct a Verified parent's
@@ -395,9 +398,20 @@ async fn revoked_signer_cannot_pin_old_settings_below_revocation() {
 async fn missing_main_ancestor_defers_forged_pin_decision_until_retry() {
     let fx = fixture().await;
     let missing_parent = fx.direct(&fx.tips().await).await;
-    let child = fx
-        .data_entry_with_pin(&[missing_parent.id()], &[missing_parent.id()])
-        .await;
+    // Keep the forged-pin verdict independent of the height rule even though
+    // this parent is deliberately not stored until after the first attempt.
+    let child = Entry::builder(fx.target.root_id().clone())
+        .add_parent(missing_parent.id())
+        .set_height(missing_parent.height() + 1)
+        .set_subtree_data("data", b"unsigned forged-pin")
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": [missing_parent.id()], "entropy": null,
+            }))
+            .unwrap(),
+        )
+        .build()
+        .unwrap();
     let child_id = child.id();
     assert_eq!(
         fx.submit_remote(child).await,
@@ -428,11 +442,13 @@ async fn settings_write_pins_pre_write_frontier_not_own_tip() {
     let data = serde_json::to_vec(&settings).unwrap();
     // Build the two variants with identical causal main parents.
     let parents = fx.tips().await;
+    let height = fx.height_after(&parents).await;
     let metadata = |tips: &[ID]| {
         serde_json::to_vec(&serde_json::json!({"settings_tips": tips, "entropy": null})).unwrap()
     };
     let valid = Fixture::sign(
         Entry::builder(fx.target.root_id().clone())
+            .set_height(height)
             .set_parents(parents.clone())
             .set_subtree_data(SETTINGS, data.clone())
             .set_subtree_parents(SETTINGS, subtree_parents.clone())
@@ -445,6 +461,7 @@ async fn settings_write_pins_pre_write_frontier_not_own_tip() {
     assert_eq!(fx.submit_remote(valid).await, VerificationStatus::Verified);
     // Pinning the as-yet-uncommitted settings write itself must not grant it authority.
     let own = Entry::builder(fx.target.root_id().clone())
+        .set_height(height)
         .set_parents(parents)
         .set_subtree_data(SETTINGS, data)
         .set_subtree_parents(SETTINGS, subtree_parents)
@@ -481,6 +498,7 @@ async fn non_genesis_settings_write_cannot_bootstrap_its_own_signer() {
     settings.set("auth", auth.as_doc().clone());
     let entry = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
+        .set_height(1)
         .set_subtree_data(SETTINGS, serde_json::to_vec(&settings).unwrap())
         .set_metadata(
             serde_json::to_vec(&serde_json::json!({"settings_tips": [], "entropy": null})).unwrap(),

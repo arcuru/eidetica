@@ -16,12 +16,12 @@ use tracing_subscriber::EnvFilter;
 
 use eidetica::{
     Instance,
-    account::SyncSettings,
-    auth::Permission,
+    account::{AccountError, AccountSession, SyncSettings},
+    auth::{Permission, crypto::PublicKey},
     backend::database::{DbKind, InMemory, SqlxBackend},
     entry::ID,
     sync::{
-        DatabaseTicket,
+        DatabaseTicket, SyncError,
         handler::{SyncHandler, SyncHandlerImpl},
         peer_types::Address,
         protocol::{RequestContext, SyncRequest, SyncResponse},
@@ -67,6 +67,23 @@ struct RegisterForm {
 struct TrackDatabaseForm {
     ticket: String,
     permission: String,
+}
+
+/// A decision never accepts a replacement requester, permission or priority.
+#[derive(Deserialize)]
+struct AccessDecisionForm {
+    database_id: String,
+    request_id: String,
+    decision: String,
+}
+
+/// Existing per-account preferences only; never accepts an account or key selector.
+#[derive(Deserialize)]
+struct SyncPreferencesForm {
+    id: String,
+    enabled: bool,
+    sync_on_commit: bool,
+    interval_seconds: String,
 }
 
 /// Run the Eidetica server
@@ -144,6 +161,9 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!("  POST /register     - Account registration submission");
     println!("  GET  /dashboard    - Account dashboard (requires login)");
     println!("  POST /dashboard/track - Request database access (requires login)");
+    println!("  GET  /dashboard/requests - Pending access requests (requires database Admin)");
+    println!("  POST /dashboard/requests/decide - Approve or reject an exact request");
+    println!("  POST /dashboard/database/sync - Save account sync preferences");
     println!("  GET  /stats        - Server statistics");
     println!("  POST /api/v0       - Eidetica sync protocol endpoint");
     println!();
@@ -219,6 +239,10 @@ pub(super) fn web_router(instance: Instance, include_http_sync: bool) -> Router 
         sync_handler,
         sessions: SessionStore::new(),
     };
+    dashboard_router(state, include_http_sync)
+}
+
+fn dashboard_router(state: AppState, include_http_sync: bool) -> Router {
     let mut app = Router::new()
         .route("/", get(handle_root_request))
         .route("/health", get(handle_health_endpoint))
@@ -231,6 +255,9 @@ pub(super) fn web_router(instance: Instance, include_http_sync: bool) -> Router 
         .route("/dashboard", get(handle_dashboard))
         .route("/dashboard/database", get(handle_database_detail))
         .route("/dashboard/track", post(handle_track_database))
+        .route("/dashboard/requests", get(handle_access_requests))
+        .route("/dashboard/requests/decide", post(handle_access_decision))
+        .route("/dashboard/database/sync", post(handle_sync_preferences))
         .route("/stats", get(handle_stats_request));
     if include_http_sync {
         app = app.route("/api/v0", post(handle_sync_request));
@@ -547,6 +574,193 @@ async fn handle_database_detail(
     .into_response()
 }
 
+/// Only a held, mapped account key with current database Admin authority may
+/// inspect its queue. Instance administration is not database authority.
+async fn bootstrap_admin_key(
+    user: &AccountSession,
+    database_id: &ID,
+) -> eidetica::Result<Option<PublicKey>> {
+    let mut best: Option<(PublicKey, Permission)> = None;
+    for key in user.list_keys()? {
+        if let Ok(database) = user.open_database_with_key(database_id, &key).await
+            && let Ok(permission) = database.current_permission().await
+            && permission.can_admin()
+            && best
+                .as_ref()
+                .is_none_or(|(_, current)| permission > *current)
+        {
+            best = Some((key, permission));
+        }
+    }
+    Ok(best.map(|(key, _)| key))
+}
+
+async fn handle_access_requests(State(state): State<AppState>, cookies: Cookies) -> Response {
+    let Some(cookie) = cookies.get(SESSION_COOKIE) else {
+        return Redirect::to("/login").into_response();
+    };
+    let Some(user_lock) = state.sessions.get_user(cookie.value()).await else {
+        return Redirect::to("/login").into_response();
+    };
+    let Some(sync) = state.instance.sync() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let user = user_lock.read().await;
+    let pending = match user.pending_bootstrap_requests(&sync).await {
+        Ok(pending) => pending,
+        Err(e) => {
+            tracing::warn!("Could not load bootstrap requests: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not load access requests",
+            )
+                .into_response();
+        }
+    };
+    let mut permitted = Vec::new();
+    for (id, request) in pending {
+        match bootstrap_admin_key(&user, &request.tree_id).await {
+            Ok(Some(_)) => permitted.push((id, request)),
+            Ok(None) => {}
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
+    Html(crate::templates::access_requests_page(&permitted)).into_response()
+}
+
+async fn handle_access_decision(
+    State(state): State<AppState>,
+    cookies: Cookies,
+    headers: HeaderMap,
+    Form(form): Form<AccessDecisionForm>,
+) -> Response {
+    if let Err(code) = form_origin(&headers) {
+        return code.into_response();
+    }
+    let Some(cookie) = cookies.get(SESSION_COOKIE) else {
+        return Redirect::to("/login").into_response();
+    };
+    let Some(user_lock) = state.sessions.get_user(cookie.value()).await else {
+        return Redirect::to("/login").into_response();
+    };
+    if !matches!(form.decision.as_str(), "approve" | "reject") {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Ok(database_id) = ID::parse(&form.database_id) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(sync) = state.instance.sync() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let user = user_lock.read().await;
+    // Check authorization before looking up a request, so forbidden and absent
+    // queues have the same response and never disclose requester details.
+    let key = match bootstrap_admin_key(&user, &database_id).await {
+        Ok(Some(key)) => key,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let pending = match user.pending_bootstrap_requests(&sync).await {
+        Ok(pending) => pending,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if !pending
+        .iter()
+        .any(|(id, request)| id == &form.request_id && request.tree_id == database_id)
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            "No matching pending request; refresh the list",
+        )
+            .into_response();
+    }
+    // Native APIs recheck current Auth, priority bounds and terminal state.
+    // These are local decisions, not peer network waits.
+    let result = if form.decision == "approve" {
+        user.approve_bootstrap_request(&sync, &form.request_id, &key)
+            .await
+    } else {
+        user.reject_bootstrap_request(&sync, &form.request_id, &key)
+            .await
+    };
+    match result {
+        Ok(()) => Html(crate::templates::access_result_page(
+            if form.decision == "approve" { "Request approved" } else { "Request rejected" },
+            if form.decision == "approve" {
+                "Approval was recorded. The requester must explicitly retry to transfer the database and record local access."
+            } else {
+                "Rejection was recorded and is terminal for this request. No access was granted by this decision."
+            },
+            None,
+        )).into_response(),
+        Err(e) => (StatusCode::CONFLICT, Html(crate::templates::access_result_page(
+            "Decision not confirmed",
+            &format!("{e}. A grant may have persisted before a later bookkeeping error. Refresh the queue and check current database Auth before retrying; this is not confirmation of a new grant."),
+            None,
+        ))).into_response(),
+    }
+}
+
+/// Save only the authenticated account's existing tracked-database preferences.
+async fn handle_sync_preferences(
+    State(state): State<AppState>,
+    cookies: Cookies,
+    headers: HeaderMap,
+    Form(form): Form<SyncPreferencesForm>,
+) -> Response {
+    if let Err(code) = form_origin(&headers) {
+        return code.into_response();
+    }
+    let Some(cookie) = cookies.get(SESSION_COOKIE) else {
+        return Redirect::to("/login").into_response();
+    };
+    let Some(user_lock) = state.sessions.get_user(cookie.value()).await else {
+        return Redirect::to("/login").into_response();
+    };
+    let database_id = match ID::parse(&form.id) {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid database ID").into_response(),
+    };
+    // Blank means the existing background default, not a new explicit interval.
+    let interval = if form.interval_seconds.is_empty() {
+        None
+    } else {
+        match form.interval_seconds.parse::<u64>() {
+            Ok(seconds) if seconds > 0 && std::time::Instant::now()
+                .checked_add(Duration::from_secs(seconds)).is_some() => Some(seconds),
+            _ => return (StatusCode::BAD_REQUEST,
+                "Interval must be a positive, timer-representable number of seconds, or blank for default").into_response(),
+        }
+    };
+
+    // Serialize the complete read/modify/signed-write within this browser session.
+    // Other sessions/devices still use ordinary CRDT transaction semantics.
+    let mut user = user_lock.write().await;
+    match user
+        .set_sync_preferences(&database_id, form.enabled, form.sync_on_commit, interval)
+        .await
+    {
+        Ok(()) => Redirect::to(&format!("/dashboard/database?id={database_id}")).into_response(),
+        Err(eidetica::Error::Account(e))
+            if matches!(*e, AccountError::DatabaseNotTracked { .. }) =>
+        {
+            (
+                StatusCode::NOT_FOUND,
+                "Database not tracked by this account",
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Html(crate::templates::sync_preferences_error(
+                &e.to_string(),
+                &database_id.to_string(),
+            )),
+        )
+            .into_response(),
+    }
+}
+
 /// Handler for POST /dashboard/track - Request database access (bootstrap)
 async fn handle_track_database(
     State(state): State<AppState>,
@@ -598,7 +812,7 @@ async fn handle_track_database(
         }
     };
 
-    let (key_id, signing_key) = {
+    let (key_id, signing_key, original) = {
         let user = user_lock.read().await;
         let key_id = match user.get_default_key() {
             Ok(key) => key,
@@ -612,8 +826,24 @@ async fn handle_track_database(
         };
         // Taken under the same lock: the bootstrap request is signed with this
         // key to prove we hold it.
+        let original = match user.databases().await {
+            Ok(databases) => databases
+                .into_iter()
+                .find(|db| &db.database_id == ticket.database_id()),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html(crate::templates::access_result_page(
+                        "Request not sent",
+                        &format!("Could not read existing Account preferences: {e}"),
+                        None,
+                    )),
+                )
+                    .into_response();
+            }
+        };
         match user.get_signing_key(&key_id) {
-            Ok(signing_key) => (key_id, signing_key),
+            Ok(signing_key) => (key_id, signing_key, original),
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -632,26 +862,81 @@ async fn handle_track_database(
         .bootstrap_with_ticket(&ticket, &signing_key, &key_name, permission, None)
         .await;
 
-    // Re-acquire only for the cheap, local SigKey-mapping write.
+    if let Err(e) = network_result {
+        let (status, title, message, retry) = match &e {
+            eidetica::Error::Sync(error) => match error.as_ref() {
+                SyncError::BootstrapPending { request_id, .. } => (
+                    StatusCode::ACCEPTED,
+                    "Access pending approval",
+                    format!(
+                        "Request {request_id} for {} is pending. No new local access mapping or preferences were recorded. Retry explicitly after approval.",
+                        ticket.database_id()
+                    ),
+                    true,
+                ),
+                SyncError::BootstrapRejected { request_id, .. } => (
+                    StatusCode::FORBIDDEN,
+                    "Access request rejected",
+                    format!(
+                        "Request {request_id} for {} was rejected. Rejection is terminal for this request; no local access was recorded.",
+                        ticket.database_id()
+                    ),
+                    false,
+                ),
+                _ => (
+                    StatusCode::BAD_GATEWAY,
+                    "Access not confirmed",
+                    format!(
+                        "{e}. No local access was recorded. A peer request or grant may still exist; retry explicitly to check."
+                    ),
+                    true,
+                ),
+            },
+            _ => (
+                StatusCode::BAD_GATEWAY,
+                "Access not confirmed",
+                format!(
+                    "{e}. No local access was recorded. Retry explicitly to check the peer outcome."
+                ),
+                true,
+            ),
+        };
+        return (
+            status,
+            Html(crate::templates::access_result_page(
+                title,
+                &message,
+                retry.then_some((form.ticket.as_str(), form.permission.as_str())),
+            )),
+        )
+            .into_response();
+    }
+
+    // Re-acquire only for local bookkeeping. Reuse the native observed-state
+    // check so a preference change during the network wait isn't overwritten.
     let bootstrap_result = {
         let mut user = user_lock.write().await;
-        user.record_database_access(ticket.database_id(), &key_id, sync_settings, network_result)
-            .await
+        user.record_database_access_if_unchanged(
+            ticket.database_id(),
+            &key_id,
+            sync_settings,
+            Ok(()),
+            original,
+        )
+        .await
     };
 
     match bootstrap_result {
-        Ok(_) => {
-            tracing::info!(
-                "Successfully bootstrapped database {}",
-                ticket.database_id()
-            );
-            Redirect::to("/dashboard").into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to request database access: {e}"),
-        )
-            .into_response(),
+        Ok(()) => Html(crate::templates::access_result_page(
+            "Access granted and recorded locally",
+            &format!("Database {} was transferred and its local access bookkeeping completed. This does not enroll a device or promise ongoing private replication.", ticket.database_id()),
+            None,
+        )).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Html(crate::templates::access_result_page(
+            "Access transferred; local bookkeeping not confirmed",
+            &format!("Database {} was transferred, but recording Account access returned: {e}. Local metadata may already have persisted. Retry explicitly to repair; this is not confirmation of usable local access.", ticket.database_id()),
+            Some((&form.ticket, &form.permission)),
+        ))).into_response(),
     }
 }
 
@@ -746,6 +1031,9 @@ async fn handle_sync_request(
 }
 
 #[cfg(test)]
+mod access_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -791,3 +1079,6 @@ mod tests {
         assert_eq!(form_origin(&headers("[::1]", Some("http://[::1]"))), Ok(()));
     }
 }
+
+#[cfg(test)]
+mod sync_preferences_tests;

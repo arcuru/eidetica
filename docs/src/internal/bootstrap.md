@@ -96,6 +96,10 @@ user.reject_bootstrap_request(&sync, request_id, &admin_key_id).await?;
 The lower-level `Sync::approve_bootstrap_request_with_key` and
 `Sync::reject_bootstrap_request_with_key` methods take `&DatabaseKey` and also
 require current Admin permission.
+Creating a grant cannot exceed the approving key's permission and priority;
+an `Admin(5)` key can grant `Admin(5)` or lower authority, but not `Admin(0)`.
+If sufficient authority already exists, approval only records the decision without
+creating another grant.
 
 ## Request Status
 

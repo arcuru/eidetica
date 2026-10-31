@@ -3,32 +3,23 @@
 //! This module contains the database schema used by SQL backends.
 //! The schema is designed to be portable between SQLite and Postgres.
 //!
-//! # Migration System
-//!
-//! The migration system uses code-based migrations rather than SQL files to handle
-//! dialect differences between SQLite and PostgreSQL. Each migration is a function
-//! that receives the backend and can execute database-specific SQL as needed.
-//!
-//! ## Adding a New Migration
-//!
-//! 1. Increment `SCHEMA_VERSION`
-//! 2. Add a new `migrate_vN_to_vM` async function
-//! 3. Have that function update `schema_version` to its target version inside
-//!    the same transaction as its schema changes, so the version write and the
-//!    schema change commit or roll back together
-//! 4. Add the migration to the match statement in `run_migration`
-//! 5. Document what the migration does
+//! Mainline v0 migrates directly to v3 in one transaction. v2 adds cache
+//! accounting without verification repair. Version 1
+//! belonged to an unsupported prefix-tracking candidate and is refused before
+//! schema writes. Ordinary v3 opens neither backfill nor reconstruct verification history.
 
 use crate::Result;
 use crate::backend::errors::BackendError;
 
 use super::{SqlxBackend, SqlxResultExt};
 
-/// Current schema version.
-///
-/// Increment this when making schema changes that require migration.
-/// Version 0 is fully unstable and should not be used in production.
-pub const SCHEMA_VERSION: i64 = 0;
+#[cfg(test)]
+mod tests;
+
+/// Internal SQL format revision counter, independent of release versions and
+/// the InMemory persistence counter. Increment for changes requiring migration,
+/// with an explicit forward path from each supported stored format.
+pub const SCHEMA_VERSION: i64 = 3;
 
 const CREATE_STORE_STATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
@@ -42,6 +33,16 @@ const CREATE_STORE_STATE_TABLES: &[&str] = &[
         projection_version BIGINT NOT NULL,
         source_key BYTEA NOT NULL,
         created_revision BIGINT,
+        -- Total record bytes (key plus value) of the published namespace.
+        -- Computed atomically in the publish transaction; bounds the cache
+        -- by bytes without scanning records on every eviction check.
+        size_bytes BIGINT NOT NULL DEFAULT 0,
+        -- Last-access tick for durable approximate LRU. Assigned from a
+        -- per-backend monotonic clock, touched in memory on every hit and
+        -- flushed in batches (never one write per hit). A crash loses only
+        -- recent recency metadata, never cached values. Rows predating this
+        -- column read as 0 and sort as coldest.
+        last_access_tick BIGINT NOT NULL DEFAULT 0,
         UNIQUE (database_id, store_name, lifecycle, status, scope_user_uuid,
                 projection_name, projection_version, source_key)
     )",
@@ -112,6 +113,12 @@ pub const CREATE_TABLES: &[&str] = &[
         store_name TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (entry_id, tree_id, store_name)
     )",
+    // Only frontier-width verification state; statuses prove interior membership.
+    "CREATE TABLE IF NOT EXISTS verified_tips (
+        tree_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        PRIMARY KEY (tree_id, entry_id)
+    )",
     // Instance metadata (singleton row pattern)
     // Contains device key and system database IDs.
     // Uses singleton=1 constraint to ensure only one row exists.
@@ -149,129 +156,362 @@ pub const CREATE_INDEXES: &[&str] = &[
 /// Initialize the database schema.
 ///
 /// Creates tables and indexes if they don't exist, and handles migrations
-/// if the schema version has changed.
+/// if the schema version has changed. Refuses newer schemas before initialization DDL.
 pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
     let pool = backend.pool();
 
-    // Create tables, adapting dialect-specific types
-    let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
-    for statement in CREATE_TABLES {
-        // SAFETY: both the source statement and replacement type are compile-time
-        // constants; no external data is interpolated into schema SQL.
-        let statement = statement.replace("BLOB", blob_type);
-        sqlx::query(sqlx::AssertSqlSafe(statement))
-            .execute(pool)
-            .await
-            .sql_context("Schema creation failed")?;
-    }
-
-    // Check current schema version
-    let row: Option<(i64,)> = sqlx::query_as("SELECT version FROM schema_version")
-        .fetch_optional(pool)
+    // A fresh database has no version table. Inspect existing markers before any
+    // schema DDL so an unsupported database is not modified by initialization.
+    let exists_query = if backend.is_sqlite() {
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+    } else {
+        "SELECT COUNT(*) FROM pg_catalog.pg_class WHERE oid = to_regclass('schema_version')"
+    };
+    let (exists,): (i64,) = sqlx::query_as(exists_query)
+        .fetch_one(pool)
         .await
-        .sql_context("Failed to check schema version")?;
-
-    initialize_store_state_tables(backend).await?;
-
-    if row.is_none() {
-        sqlx::query("INSERT INTO schema_version (version) VALUES ($1)")
-            .bind(SCHEMA_VERSION)
-            .execute(pool)
+        .sql_context("Failed to check schema version table")?;
+    let versions: Vec<(i64,)> = if exists > 0 {
+        sqlx::query_as("SELECT version FROM schema_version")
+            .fetch_all(pool)
             .await
-            .sql_context("Failed to initialize schema version")?;
-    } else if let Some((current_version,)) = row
-        && current_version < SCHEMA_VERSION
+            .sql_context("Failed to check schema version")?
+    } else {
+        Vec::new()
+    };
+    if versions.len() > 1 {
+        return Err(malformed("multiple schema version markers"));
+    }
+    let row = versions.first().copied();
+    if let Some((stored_version,)) = row
+        && stored_version > SCHEMA_VERSION
     {
-        // Run migrations
-        migrate(backend, current_version, SCHEMA_VERSION).await?;
+        return Err(BackendError::SqlxError {
+            reason: format!(
+                "Unsupported SQL schema version {stored_version}; supported version is {SCHEMA_VERSION}"
+            ),
+            source: None,
+        }
+        .into());
     }
 
-    // Create indexes
-    for statement in CREATE_INDEXES {
-        sqlx::query(*statement)
-            .execute(pool)
-            .await
-            .sql_context("Index creation failed")?;
+    // Version 1 was an unreleased prefix-tracking candidate, not mainline.
+    // Never reinterpret it or silently erase its data. A trust reset is not a migration.
+    let prefix_query = if backend.is_sqlite() {
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'verified_prefix'"
+    } else {
+        "SELECT COUNT(*) FROM pg_catalog.pg_class WHERE oid = to_regclass('verified_prefix')"
+    };
+    let (prefix_tables,): (i64,) = sqlx::query_as(prefix_query)
+        .fetch_one(pool)
+        .await
+        .sql_context("Failed to inspect legacy verification storage")?;
+    if row == Some((1,)) || prefix_tables != 0 {
+        return Err(BackendError::SqlxError {
+            reason: "Unsupported prefix-tracking candidate format; back up and recreate with a supported format (trust reset does not convert schemas)".into(),
+            source: None,
+        }.into());
+    }
+    if let Some((version,)) = row
+        && version < 0
+    {
+        return Err(BackendError::SqlxError {
+            reason: format!("Unknown migration path: v{version} to v{}", version + 1),
+            source: None,
+        }
+        .into());
     }
 
-    Ok(())
-}
+    validate_layout(backend, row.map(|(v,)| v)).await?;
 
-async fn initialize_store_state_tables(backend: &SqlxBackend) -> Result<()> {
-    let mut tx = backend
-        .pool()
+    // Schema, repair, cache-column backfill, and version publication roll back
+    // together. Backend ownership excludes other instances during open.
+    let mut tx = pool
         .begin()
         .await
         .sql_context("Failed to begin schema initialization")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to lock schema initialization")?;
+    }
     let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
-    for statement in CREATE_STORE_STATE_TABLES {
-        // SAFETY: both the source statement and replacement type are compile-time
-        // constants; no external data is interpolated into schema SQL.
-        let statement = statement.replace("BYTEA", blob_type);
+    for statement in CREATE_TABLES.iter().chain(CREATE_STORE_STATE_TABLES) {
+        // SAFETY: schema statements and dialect replacements are constants.
+        let statement = statement
+            .replace("BYTEA", blob_type)
+            .replace("BLOB", blob_type);
         sqlx::query(sqlx::AssertSqlSafe(statement))
             .execute(&mut *tx)
             .await
-            .sql_context("Failed to create Store-state tables")?;
+            .sql_context("Schema creation failed")?;
+    }
+    if row != Some((SCHEMA_VERSION,)) {
+        ensure_store_state_cache_columns(backend, &mut tx).await?;
+    }
+    for statement in CREATE_INDEXES {
+        sqlx::query(*statement)
+            .execute(&mut *tx)
+            .await
+            .sql_context("Index creation failed")?;
+    }
+    if row == Some((0,)) {
+        let trees: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT tree_id FROM entries")
+            .fetch_all(&mut *tx)
+            .await
+            .sql_context("Failed to list migration trees")?;
+        for (tree,) in trees {
+            super::verified::repair_in_tx(&mut tx, &crate::entry::ID::parse(&tree)?).await?;
+        }
+    }
+    if matches!(row, Some((0 | 2,))) {
+        sqlx::query("UPDATE schema_version SET version = $1")
+            .bind(SCHEMA_VERSION)
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to publish schema migration")?;
+    } else if row.is_none() {
+        sqlx::query("INSERT INTO schema_version (version) VALUES ($1)")
+            .bind(SCHEMA_VERSION)
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to initialize schema version")?;
     }
     tx.commit()
         .await
-        .sql_context("Failed to commit Store-state table initialization")
+        .sql_context("Failed to commit schema initialization")
 }
 
-/// Run migrations sequentially from one schema version to another.
-///
-/// Migrations are run one step at a time, each advancing the schema by a single
-/// version. This function only tracks the step it is on; persisting the new
-/// `schema_version` is the responsibility of each migration function, which
-/// writes it in the same transaction as its schema changes. A failed step
-/// therefore leaves the recorded version at the last successfully committed
-/// migration.
-async fn migrate(backend: &SqlxBackend, from: i64, to: i64) -> Result<()> {
-    tracing::info!(from, to, "Starting SQL schema migration");
-
-    let mut current = from;
-    while current < to {
-        let next = current + 1;
-        tracing::info!(from = current, to = next, "Running migration");
-
-        run_migration(backend, current, next).await?;
-
-        tracing::info!(version = next, "Migration completed");
-        current = next;
+fn malformed(reason: &str) -> crate::Error {
+    BackendError::SqlxError {
+        reason: format!("Malformed SQL layout: {reason}"),
+        source: None,
     }
+    .into()
+}
 
-    tracing::info!(from, to, "All migrations completed successfully");
+async fn columns(backend: &SqlxBackend, table: &str) -> Result<Vec<(String,)>> {
+    let query = if backend.is_sqlite() {
+        "SELECT name FROM pragma_table_info($1)"
+    } else {
+        "SELECT column_name::text FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1"
+    };
+    sqlx::query_as(query)
+        .bind(table)
+        .fetch_all(backend.pool())
+        .await
+        .sql_context("Failed to inspect SQL layout")
+}
+
+/// A marker is not permission to silently create missing authoritative tables.
+/// Check supported layouts before any schema writes; v2 alone may lack the two
+/// additive cache counters. An empty fresh marker table is harmless.
+async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<()> {
+    let tables: &[(&str, &[&str])] = &[
+        (
+            "entries",
+            &[
+                "id",
+                "tree_id",
+                "is_root",
+                "verification_status",
+                "height",
+                "entry_cbor",
+            ],
+        ),
+        ("tree_parents", &["child_id", "parent_id"]),
+        (
+            "subtrees",
+            &["tree_id", "entry_id", "store_name", "height", "data"],
+        ),
+        ("store_parents", &["child_id", "parent_id", "store_name"]),
+        ("tips", &["entry_id", "tree_id", "store_name"]),
+        ("instance_metadata", &["singleton", "data"]),
+        ("instance_secrets", &["singleton", "data"]),
+        ("verified_tips", &["tree_id", "entry_id"]),
+        (
+            "store_state_namespaces",
+            &[
+                "namespace_id",
+                "database_id",
+                "store_name",
+                "lifecycle",
+                "status",
+                "scope_user_uuid",
+                "projection_name",
+                "projection_version",
+                "source_key",
+                "created_revision",
+            ],
+        ),
+        (
+            "store_state_records",
+            &["namespace_id", "record_key", "record_value"],
+        ),
+    ];
+    for (table, required) in tables {
+        let existing = columns(backend, table).await?;
+        if version.is_none() {
+            if !existing.is_empty() {
+                return Err(malformed("unversioned application tables"));
+            }
+            continue;
+        }
+        if version == Some(0)
+            && matches!(
+                *table,
+                "verified_tips" | "store_state_namespaces" | "store_state_records"
+            )
+        {
+            continue;
+        }
+        if required
+            .iter()
+            .any(|column| !existing.iter().any(|(name,)| name == column))
+        {
+            return Err(malformed(&format!("missing columns in {table}")));
+        }
+        if *table == "store_state_namespaces"
+            && version == Some(SCHEMA_VERSION)
+            && ["size_bytes", "last_access_tick"]
+                .iter()
+                .any(|column| !existing.iter().any(|(name,)| name == column))
+        {
+            return Err(malformed("v3 cache counters missing"));
+        }
+    }
     Ok(())
 }
 
-/// Execute a single migration step.
-///
-/// Each migration is a separate async function that handles the schema change.
-/// Add new migrations here as match arms.
-///
-/// # Adding a New Migration
-///
-/// When incrementing `SCHEMA_VERSION`, add a match arm here:
-///
-/// ```ignore
-/// match (from, to) {
-///     (1, 2) => migrate_v1_to_v2(backend).await,
-///     // ... existing migrations ...
-///     _ => { /* error handling */ }
-/// }
-/// ```
-///
-/// The migration function is responsible for persisting the new
-/// `schema_version` itself, inside the same transaction as its schema changes.
-async fn run_migration(backend: &SqlxBackend, from: i64, to: i64) -> Result<()> {
-    let _ = backend;
-
-    Err(BackendError::SqlxError {
-        reason: format!(
-            "Unknown migration path: v{from} to v{to}. \
-             This likely means SCHEMA_VERSION was incremented without adding a migration."
+/// Add/backfill cache accounting once, during a supported migration. Existing
+/// durable access ticks are preserved; ordinary v3 reopen never backfills.
+async fn ensure_store_state_cache_columns(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+) -> Result<()> {
+    let existing: Vec<(String,)> = if backend.is_sqlite() {
+        sqlx::query_as("SELECT name FROM pragma_table_info('store_state_namespaces')")
+            .fetch_all(&mut **tx)
+            .await
+            .sql_context("Failed to inspect Store-state columns")?
+    } else {
+        sqlx::query_as(
+            "SELECT column_name::text FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'store_state_namespaces'",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .sql_context("Failed to inspect Store-state columns")?
+    };
+    for (column, ddl) in [
+        (
+            "size_bytes",
+            "ALTER TABLE store_state_namespaces ADD COLUMN size_bytes BIGINT NOT NULL DEFAULT 0",
         ),
-        source: None,
+        (
+            "last_access_tick",
+            "ALTER TABLE store_state_namespaces ADD COLUMN last_access_tick BIGINT NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !existing.iter().any(|(name,)| name == column) {
+            sqlx::query(ddl)
+                .execute(&mut **tx)
+                .await
+                .sql_context("Failed to add Store-state cache column")?;
+        }
     }
-    .into())
+    // Backfill sizes for ready rows that predate the column. Staging rows
+    // get their true size in the publish transaction; recomputing them here
+    // would only be overwritten.
+    let key_len = if backend.is_sqlite() {
+        "length(r.record_key)"
+    } else {
+        "octet_length(r.record_key)"
+    };
+    let value_len = if backend.is_sqlite() {
+        "length(r.record_value)"
+    } else {
+        "octet_length(r.record_value)"
+    };
+    // SAFETY: both length expressions are dialect constants; no external
+    // data is interpolated into the backfill statement.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE store_state_namespaces AS n SET size_bytes = COALESCE(
+             (SELECT SUM({key_len} + {value_len}) FROM store_state_records AS r
+              WHERE r.namespace_id = n.namespace_id), 0)
+         WHERE n.size_bytes = 0 AND n.status IN (1, 2, 3)"
+    )))
+    .execute(&mut **tx)
+    .await
+    .sql_context("Failed to backfill Store-state sizes")?;
+    Ok(())
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod migration_tests {
+    use super::*;
+    use crate::entry::Entry;
+
+    fn test_chain() -> Vec<Entry> {
+        let root = Entry::root_builder().build().expect("root builds");
+        let root_id = root.id();
+        let a = Entry::builder(root_id.clone())
+            .set_height(1)
+            .add_parent(root_id.clone())
+            .set_subtree_data("test", b"a")
+            .build()
+            .expect("child a builds");
+        let b = Entry::builder(root_id.clone())
+            .set_height(2)
+            .add_parent(a.id())
+            .set_subtree_data("test", b"b")
+            .build()
+            .expect("child b builds");
+        vec![root, a, b]
+    }
+
+    /// Reopening a current database reads the persisted frontier without
+    /// rebuilding: wiping the table without resetting the version leaves the
+    /// (now empty) retained state in place rather than resurrecting it.
+    #[tokio::test]
+    async fn current_reopen_reads_persisted_state_without_rebuilding() {
+        use crate::backend::VerificationStatus;
+
+        let backend = super::super::Sqlite::in_memory()
+            .await
+            .expect("sqlite backend");
+        let entries = test_chain();
+        let tree = entries[0].id();
+        for entry in &entries {
+            super::super::storage::put(&backend, entry.clone())
+                .await
+                .unwrap();
+            super::super::verified::update_verification_status(
+                &backend,
+                &entry.id(),
+                VerificationStatus::Verified,
+            )
+            .await
+            .unwrap();
+        }
+        // Wipe retained rows but keep the current version: a plain open must not
+        // rescan history to fill them back in.
+        sqlx::query("DELETE FROM verified_tips")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+        initialize(&backend).await.unwrap();
+        let snapshot = super::super::verified::verified_snapshot(&backend, &tree)
+            .await
+            .unwrap();
+        assert!(snapshot.is_empty());
+        // Explicit repair restores the frontier without demoting valid labels.
+        let repaired = super::super::verified::repair_verification(&backend, &tree)
+            .await
+            .unwrap();
+        assert_eq!(repaired.demoted, 0);
+        assert_eq!(repaired.snapshot.tips(), &[entries[2].id()]);
+    }
 }
