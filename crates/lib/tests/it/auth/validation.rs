@@ -22,7 +22,7 @@ use crate::create_auth_keys;
 // Auth validation tests exercise signing/verification paths that need a
 // local backend; bypass the service routing for the default `setup_db`.
 use crate::helpers::test_local_instance_with_user;
-async fn setup_db() -> (eidetica::Instance, eidetica::user::User) {
+async fn setup_db() -> (eidetica::Instance, eidetica::account::AccountSession) {
     test_local_instance_with_user("test_user").await
 }
 
@@ -77,7 +77,7 @@ async fn test_permission_checking_admin_operations() {
     let (instance, user, tree, key_ids) =
         setup_complete_auth_environment_with_user("test_user", &keys).await;
 
-    // Get signing keys using User API (index 1 = WRITE_KEY)
+    // Get signing keys using AccountSession API (index 1 = WRITE_KEY)
     let write_signing_key = user
         .get_signing_key(&key_ids[1])
         .expect("Failed to get write key")
@@ -217,37 +217,39 @@ async fn test_entry_validation_with_corrupted_auth_section() {
     let signature = sign_entry(&entry, &signing_key).unwrap();
     let entry = entry.with_auth(|auth| auth.signature = Some(signature));
 
-    // Test with no auth section at all
-    let empty_auth_settings = AuthSettings::new();
-    let result = validator
-        .validate_entry(&entry, &empty_auth_settings, None)
-        .await;
-    assert!(
-        result.is_ok(),
-        "Should allow unsigned when no auth configured"
-    );
+    let unsigned_entry = Entry::root_builder()
+        .build()
+        .expect("Unsigned entry should build");
 
-    // Test with settings containing non-map auth section
-    let mut corrupted_settings = Doc::new();
-    corrupted_settings.set("auth", "invalid_string_value");
+    for (case, auth_value) in [
+        ("absent", None),
+        ("non-map", Some(Value::from("invalid_string_value"))),
+        ("deleted", Some(Value::Deleted)),
+    ] {
+        let mut settings = Doc::new();
+        if let Some(value) = auth_value {
+            settings.set("auth", value);
+        }
+        let auth_settings = match settings.get("auth") {
+            Some(Value::Doc(auth_doc)) => AuthSettings::from(auth_doc.clone()),
+            _ => AuthSettings::new(),
+        };
 
-    // Extract auth settings (will be empty since auth is not a Doc)
-    let corrupted_auth_settings = AuthSettings::new();
-    let result = validator
-        .validate_entry(&entry, &corrupted_auth_settings, None)
-        .await;
-    assert!(result.is_ok(), "Should allow unsigned when auth is invalid");
-
-    // Test with settings containing deleted auth section
-    let mut deleted_settings = Doc::new();
-    deleted_settings.set("auth", Value::Deleted);
-
-    // Extract auth settings (will be empty since auth is deleted)
-    let deleted_auth_settings = AuthSettings::new();
-    let result = validator
-        .validate_entry(&entry, &deleted_auth_settings, None)
-        .await;
-    assert!(result.is_ok(), "Should allow unsigned when auth is deleted");
+        assert!(
+            !validator
+                .validate_entry(&entry, &auth_settings, None)
+                .await
+                .expect("Signed entry validation should return a verdict"),
+            "Signed entry must be rejected with {case} auth"
+        );
+        assert!(
+            validator
+                .validate_entry(&unsigned_entry, &auth_settings, None)
+                .await
+                .expect("Unsigned entry validation should return a verdict"),
+            "Unsigned entry must be accepted with {case} auth"
+        );
+    }
 }
 
 #[tokio::test]
@@ -261,7 +263,7 @@ async fn test_entry_validation_with_mixed_key_states() {
     let (instance, user, tree, key_ids) =
         setup_complete_auth_environment_with_user("test_user", &keys).await;
 
-    // Get signing keys using User API (index 1 = ACTIVE_KEY)
+    // Get signing keys using AccountSession API (index 1 = ACTIVE_KEY)
     let active_signing_key = user
         .get_signing_key(&key_ids[1])
         .expect("Failed to get active key")

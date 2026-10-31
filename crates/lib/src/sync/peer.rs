@@ -9,7 +9,7 @@ use super::{
     Address, ConnectionState, PeerId, PeerInfo, PeerStatus, Sync, SyncError, SyncHandle,
     SyncPeerInfo, SyncStatus, background::SyncCommand, peer_manager::PeerManager,
 };
-use crate::{Result, auth::crypto::PublicKey, entry::ID};
+use crate::{Result, Snapshot, auth::crypto::PublicKey, entry::ID};
 
 impl Sync {
     // === Peer Management Methods ===
@@ -226,11 +226,23 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or an error.
     pub async fn add_tree_sync(&self, peer_pubkey: &PublicKey, tree_root_id: &ID) -> Result<()> {
-        let txn = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&txn)
-            .add_tree_sync(peer_pubkey, tree_root_id)
-            .await?;
-        txn.commit().await?;
+        let instance = self.instance()?;
+        self.sync_tree.snapshot().await?;
+        let guard = instance
+            .tree_lock(self.sync_tree.root_id())
+            .lock_owned()
+            .await;
+        let snapshot = Snapshot::from(self.sync_tree.verified_frontier().await?);
+        let txn = self.sync_tree.new_transaction_at(&snapshot).await?;
+        let manager = PeerManager::new(&txn);
+        if manager
+            .is_tree_synced_with_peer(peer_pubkey, tree_root_id)
+            .await?
+        {
+            return Ok(());
+        }
+        manager.add_tree_sync(peer_pubkey, tree_root_id).await?;
+        txn.commit_under_tree_lock(guard).await?;
         Ok(())
     }
 
@@ -315,6 +327,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::ConnectToPeer {
+                span: tracing::Span::current(),
                 address: address.clone(),
                 cancel,
                 response: tx,
@@ -324,6 +337,21 @@ impl Sync {
 
         rx.await
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Account for the initial handshake of an address-based sync operation.
+    pub(super) async fn connect_for_operation(
+        &self,
+        address: &Address,
+        operation: &mut super::operation::SyncOperation,
+    ) -> Result<PublicKey> {
+        operation.routes(1, 1);
+        let result = self.connect_to_peer(address).await;
+        match &result {
+            Ok(_) => operation.selected(address),
+            Err(error) => operation.failed_route(error, false),
+        }
+        result
     }
 
     /// Update the connection state of a peer.
@@ -389,12 +417,24 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or an error.
     pub async fn add_peer_address(&self, peer_pubkey: &PublicKey, address: Address) -> Result<()> {
-        // Update sync tree via PeerManager
-        let txn = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&txn)
-            .add_address(peer_pubkey, address)
-            .await?;
-        txn.commit().await?;
+        let instance = self.instance()?;
+        self.sync_tree.snapshot().await?;
+        let guard = instance
+            .tree_lock(self.sync_tree.root_id())
+            .lock_owned()
+            .await;
+        let snapshot = Snapshot::from(self.sync_tree.verified_frontier().await?);
+        let txn = self.sync_tree.new_transaction_at(&snapshot).await?;
+        let manager = PeerManager::new(&txn);
+        let info = manager
+            .get_peer_info(peer_pubkey)
+            .await?
+            .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
+        if info.addresses.contains(&address) {
+            return Ok(());
+        }
+        manager.add_address(peer_pubkey, address).await?;
+        txn.commit_under_tree_lock(guard).await?;
 
         // Background sync will read updated peer info directly from sync tree when needed
         Ok(())

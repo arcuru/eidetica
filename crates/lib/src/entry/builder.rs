@@ -390,29 +390,14 @@ impl EntryBuilder {
 
     /// Set the parent IDs for a specific named subtree's history.
     /// The provided vector will be sorted in CID order and de-duplicated during the `build()` process.
-    /// If the subtree does not exist, it will be created with empty data ("{}").
+    /// If the subtree does not exist, it will be created with no data (`None`).
     /// The list of subtrees will be sorted by name when `build()` is called.
     pub fn set_subtree_parents(
         mut self,
         subtree_name: impl Into<String>,
         parents: Vec<ID>,
     ) -> Self {
-        let subtree_name = subtree_name.into();
-        if let Some(node) = self
-            .subtrees
-            .iter_mut()
-            .find(|node| node.name == subtree_name)
-        {
-            node.parents = parents;
-        } else {
-            // Create new SubTreeNode if it doesn't exist, then set parents
-            self.subtrees.push(SubTreeNode {
-                name: subtree_name,
-                data: None,
-                parents,
-                height: None,
-            });
-        }
+        self.set_subtree_parents_mut(subtree_name, parents);
         self
     }
 
@@ -450,21 +435,7 @@ impl EntryBuilder {
     /// Parent IDs will be sorted and de-duplicated during the `build()` process.
     /// The list of subtrees will be sorted by name when `build()` is called.
     pub fn add_subtree_parent(mut self, subtree_name: impl Into<String>, parent_id: ID) -> Self {
-        let subtree_name = subtree_name.into();
-        if let Some(node) = self
-            .subtrees
-            .iter_mut()
-            .find(|node| node.name == subtree_name)
-        {
-            node.parents.push(parent_id);
-        } else {
-            self.subtrees.push(SubTreeNode {
-                name: subtree_name,
-                data: None,
-                parents: vec![parent_id],
-                height: None,
-            });
-        }
+        self.add_subtree_parent_mut(subtree_name, parent_id);
         self
     }
 
@@ -580,21 +551,7 @@ impl EntryBuilder {
         subtree_name: impl Into<String>,
         height: Option<u64>,
     ) -> Self {
-        let subtree_name = subtree_name.into();
-        if let Some(node) = self
-            .subtrees
-            .iter_mut()
-            .find(|node| node.name == subtree_name)
-        {
-            node.height = height;
-        } else {
-            self.subtrees.push(SubTreeNode {
-                name: subtree_name,
-                data: None,
-                parents: vec![],
-                height,
-            });
-        }
+        self.set_subtree_height_mut(subtree_name, height);
         self
     }
 

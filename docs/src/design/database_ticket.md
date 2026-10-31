@@ -120,9 +120,9 @@ Collects server addresses from all running transports and bundles them with
 the database ID into a `DatabaseTicket`. Lower-level helper that does not
 touch user-level sync preferences.
 
-### User-scoped ticket lookup
+### Session-scoped ticket lookup
 
-A `Database` opened or created by a `User` is the high-level API for making a
+A `Database` opened or created by an `AccountSession` is the high-level API for making a
 tracked database shareable. It deliberately does not combine the process into
 one atomic call:
 
@@ -140,6 +140,34 @@ back because setting the preference is idempotent.
 A `DatabaseTicket` is a locator, not a capability: its database ID and address
 hints do not grant database permission. Authorization and bootstrap approval
 remain separate.
+
+## Joining through a client or daemon
+
+`AccountSession::join` is the high-level consumer of a ticket. On an embedded instance it
+uses the existing `request_database_access` facility. On a connected instance the
+daemon owns transports, while the client retains the user's private signing key.
+Neither a second client sync engine nor daemon custody of that key is needed.
+
+A request proof binds the answering peer, database and advertised tips, so a
+connected client cannot sign before the daemon selects a route. Prepare returns
+that route and peer with empty tips, without reading local database state. The
+client signs, and execution checks session-key possession and the proof, then
+re-handshakes the selected route before recording it. Tickets remain locators,
+not access grants. See [ticket bootstrap](../internal/service.md#ticket-bootstrap)
+for the wire exchange.
+
+The interface composes existing facilities rather than making them one atomic
+operation: [bootstrap transfer and approval](../internal/bootstrap.md),
+[Account mapping persistence](accounts.md#mapping-persistence-and-retry-safety), and
+[service framing](../internal/service.md#cancellation-and-frame-integrity) have
+separate failure boundaries. Success returns an opened database after verified
+transfer, Account bookkeeping and a final requested-permission check. Pending requires
+an explicit retry and writes no Account state; an error does not imply rollback.
+
+This is not device enrollment or a durable completion job. Later daemon sync uses
+its device key and needs separate authority or a global grant. The existing
+held-tree Read gate and native authority semantics remain unchanged; see the
+[recovery limits](../user_guide/bootstrap.md#current-recovery-limits).
 
 ## Forward Compatibility
 

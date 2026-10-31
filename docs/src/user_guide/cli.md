@@ -91,7 +91,8 @@ EIDETICA_ADMIN_PASSWORD=… eidetica daemon --data-dir /var/lib/eidetica init --
 eidetica daemon --data-dir ~/.local/share/eidetica init --username me --passwordless
 ```
 
-Backend options (`--backend`, `--data-dir`, `--postgres-url`) go before the `init` subcommand and are shared with `daemon` (see below).
+Backend options (`--backend`, `--data-dir`, `--postgres-url`,
+`--cache-bytes`, `--cache-namespaces`) go before the `init` subcommand and are shared with `daemon` (see below).
 
 ### `daemon`
 
@@ -110,6 +111,16 @@ eidetica daemon [OPTIONS]
 | `--backend`        | `-b`  | `sqlite`      | `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
 | `--data-dir`       | `-d`  | current dir   | `EIDETICA_DATA_DIR`       | Data directory for storage files                                |
 | `--postgres-url`   |       | —             | `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL (required when backend is `postgres`) |
+
+All commands opening a backend also accept `--cache-bytes`
+(`EIDETICA_CACHE_BYTES`) and `--cache-namespaces`
+(`EIDETICA_CACHE_NAMESPACES`, default `1024`). The byte defaults are `268435456`
+for InMemory and `4294967296` for file-backed SQL. These count live derived
+record key/value payload, not total memory or physical disk use. Zero disables
+retention; oversized derived materializations use history instead. The daemon
+installs these bounds before startup trim; remote clients cannot override them.
+See [cache retention](../internal/cache.md#retention-and-verification-boundaries)
+for reader-generation costs and legacy-client limits.
 
 The daemon runs until interrupted with SIGINT or SIGTERM. Clients connect using `Instance::connect("unix://...")`. See [Service (Daemon) Mode](service.md) for full documentation.
 
@@ -202,7 +213,8 @@ eidetica db reset-local-verification --backend sqlite --data-dir /var/lib/eideti
 
 The command does not run during startup or schema migration. **Skipping it can
 leave old `Verified` labels trusted under the new rules.** It resets _all_
-local statuses (`Verified` and `Failed` included) to `Unverified`, discards
+local statuses (`Verified` and `Failed` included) to `Unverified`, clears the
+retained Verified frontier in the same step, discards
 derived and incomplete Store-state namespaces, and keeps every immutable Entry
 and authoritative Store state. It does not verify entries itself. Start the new
 version only after the command succeeds, and follow the
@@ -224,6 +236,82 @@ readers, whereas the trust reset deliberately drops it. The in-memory JSON
 persistence path has no cross-process ownership lock. On platforms without
 atomic replacement rename, take an offline backup and verify the reopened
 file before starting the service.
+
+### `db repair-verification` (offline conservative repair)
+
+Stop all users of the backend and make an offline backup first, just as for reset.
+Select an existing database and one tree explicitly:
+
+```bash
+eidetica db repair-verification --backend sqlite --data-dir /var/lib/eidetica --tree <ROOT_ID> --confirm
+# Or: --backend inmemory --data-dir <directory containing eidetica.json>
+# Or: --backend postgres --postgres-url <instance connection URL>
+```
+
+Repair preserves valid Verified history and existing Failed decisions, demotes only
+inconsistent Verified entries and their dependent region to Unverified, and rebuilds
+the tree's Verified tips atomically. Missing or foreign parents cannot establish trust;
+malformed immutable data and storage errors abort without partial status/tip changes.
+The printed demotion count is not a count of successfully verified entries.
+Repeat repair is idempotent. Entries, authoritative Store records, and the independent
+materialization cache are not cleared. Use the SDK re-verification procedure below
+when missing ancestors arrive; repair never promotes entries.
+
+`BackendImpl::repair_verification` exposes the same maintenance operation locally.
+Custom backends must implement atomic repair or return an explicit unsupported error.
+There is no service-wire repair endpoint. Unlike repair, reset clears **all** local
+trust decisions and disposable state. Neither command creates a missing persistence
+file or treats corrupt JSON as an empty instance.
+
+#### Storage compatibility and older candidate data
+
+SQL schema and InMemory persistence versions are independent internal integer
+format counters, not release versions or stability levels. SQL currently uses `3`
+and InMemory uses `2`. Mainline SQL schema `0` migrates directly to `3`; unversioned or explicit
+`_v: 0` InMemory files reconstruct retained state on load and write `2` on next save.
+Migration reuses conservative repair, not cryptographic re-verification; SQL schema,
+version, and label/tip changes commit together. Clean current-format opens load
+persisted tips without a history scan. See the canonical
+[supported migration matrix](../design/verification.md#persistence-restart-and-forward-migration).
+The unreleased version-1 prefix-tracking format is **unsupported** and refused before
+SQL schema initialization; InMemory version-1 files are also refused.
+A trust reset does **not** convert that schema or file format.
+
+For an old candidate instance, keep it stopped and retain an untouched offline
+backup (including SQLite WAL/SHM files when present, or a consistent PostgreSQL
+backup). Do not edit its version marker, drop tables, or overwrite the original.
+A supported recovery path is to restore a known mainline-format backup into a
+**separate** location and let the new version migrate that copy, then reverify and
+compare required Entries and authoritative records before changing application paths.
+Alternatively create a separate empty current-format instance and repopulate it through
+normal ingest/replication from a complete trusted source, followed by verification.
+That is recreation, not conversion: instance-local credentials and authoritative
+Store records are not guaranteed to replicate. If either is irreplaceable and no
+mainline backup exists, keep the old copy and stop for an explicit recovery plan.
+The migration fixtures verify mainline-copy repair and old-format refusal; no
+in-place version-1 conversion or automatic deletion is provided.
+
+#### Upgrading a verification-only version-2 database
+
+Existing tips-only version-2 SQL databases migrate atomically to **version 3**,
+adding `size_bytes` and `last_access_tick` when absent. Record sizes are backfilled
+once; existing valid durable ticks are preserved. This migration preserves Entries,
+statuses, retained Verified tips and authoritative records without verification
+repair. Only the supported v0 transition repairs verification closure. Ordinary
+v3 open does not backfill or repair. InMemory version-2 files are unchanged;
+derived records and recency remain ephemeral.
+
+Stop all users of the backend and retain a consistent offline backup before
+upgrading. Snapshot digest keys miss old-key cache rows and rebuild from immutable
+Entries; old keys are never relabelled. Exclusive startup reclaims abandoned and
+retired derived generations, seeds recency and enforces the configured budget
+before exposing storage. This does not require a trust reset.
+
+Pinned older version-2 constructors refuse the version-3 marker. Binary rollback
+requires restoring a compatible pre-upgrade backup in a separate location, not
+lowering the marker or opening the upgraded database with old software. Malformed,
+newer and unsupported version-1/prefix layouts are refused. No rollout or deployed
+client/server compatibility inventory is implied by these migration checks.
 
 ### Re-verification after reset or incomplete proof
 

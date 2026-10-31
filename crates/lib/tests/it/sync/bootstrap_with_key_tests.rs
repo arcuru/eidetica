@@ -2,7 +2,7 @@
 //!
 //! This module tests the new `sync_with_peer_for_bootstrap_with_key()` method that
 //! accepts a public key string directly instead of looking it up from backend storage.
-//! This is essential for working with User API managed keys that are stored in memory.
+//! This is essential for working with AccountSession API managed keys that are stored in memory.
 
 use super::helpers::*;
 use eidetica::{
@@ -416,7 +416,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
-    // Setup client with user-managed key (simulating User API)
+    // Setup client with user-managed key (simulating AccountSession API)
     let (client_signing_key, client_verifying_key) = generate_keypair();
     let client_key_id = client_verifying_key.to_string();
 

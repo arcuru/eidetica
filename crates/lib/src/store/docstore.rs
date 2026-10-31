@@ -1047,7 +1047,7 @@ impl DocStore {
 ///
 /// Each Store module ships its own extension trait so the builder's core API
 /// stays minimal — only the generic
-/// [`DatabaseBuilder::initialize_store`](crate::user::DatabaseBuilder::initialize_store)
+/// [`DatabaseBuilder::initialize_store`](crate::account::DatabaseBuilder::initialize_store)
 /// primitive. User-defined Stores follow the same pattern.
 pub trait DocStoreInit<'u> {
     /// Register a DocStore prepopulated with the contents of `doc`.
@@ -1057,14 +1057,22 @@ pub trait DocStoreInit<'u> {
     /// a single `set_json("data", ...)` blob, nested values, whatever the
     /// downstream use case wants — by how they build the Doc before passing
     /// it in.
-    fn initialize_doc(self, name: impl Into<String>, doc: Doc) -> crate::user::DatabaseBuilder<'u>;
+    fn initialize_doc(
+        self,
+        name: impl Into<String>,
+        doc: Doc,
+    ) -> crate::account::DatabaseBuilder<'u>;
 
     /// Register an empty DocStore.
-    fn empty_doc(self, name: impl Into<String>) -> crate::user::DatabaseBuilder<'u>;
+    fn empty_doc(self, name: impl Into<String>) -> crate::account::DatabaseBuilder<'u>;
 }
 
-impl<'u> DocStoreInit<'u> for crate::user::DatabaseBuilder<'u> {
-    fn initialize_doc(self, name: impl Into<String>, doc: Doc) -> crate::user::DatabaseBuilder<'u> {
+impl<'u> DocStoreInit<'u> for crate::account::DatabaseBuilder<'u> {
+    fn initialize_doc(
+        self,
+        name: impl Into<String>,
+        doc: Doc,
+    ) -> crate::account::DatabaseBuilder<'u> {
         self.initialize_store::<DocStore, _, _>(name, move |s| async move {
             for (key, value) in doc.iter() {
                 s.set(key.clone(), value.clone()).await?;
@@ -1073,7 +1081,7 @@ impl<'u> DocStoreInit<'u> for crate::user::DatabaseBuilder<'u> {
         })
     }
 
-    fn empty_doc(self, name: impl Into<String>) -> crate::user::DatabaseBuilder<'u> {
+    fn empty_doc(self, name: impl Into<String>) -> crate::account::DatabaseBuilder<'u> {
         self.initialize_store::<DocStore, _, _>(name, |_| async { Ok(()) })
     }
 }

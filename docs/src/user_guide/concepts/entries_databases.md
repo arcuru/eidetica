@@ -60,7 +60,7 @@ You interact with Databases through Transactions:
 #     let backend = Sqlite::in_memory().await?;
 #     let (instance, mut user) = eidetica::Instance::create_backend(
 #         Box::new(backend),
-#         eidetica::NewUser::passwordless("alice"),
+#         eidetica::NewAccount::passwordless("alice"),
 #     ).await?;
 #     let mut settings = Doc::new();
 #     settings.set("name", "test");
@@ -92,7 +92,7 @@ Each Database maintains its settings as a key-value store in a special "settings
 # // Setup database for testing
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings_doc = Doc::new();
 # settings_doc.set("name", "example_database");
@@ -120,7 +120,7 @@ transaction.commit().await?;
 
 Common settings include:
 
-- `name`: The identifier for the database (used by `User::find_database`). This is the primary standard setting currently used.
+- `name`: The identifier for the database (used by `AccountSession::find_database`). This is the primary standard setting currently used.
 - _Other application-specific settings can be stored here._
 
 <!-- TODO: Define more standard database settings if they emerge, e.g., for schema information or access control -->

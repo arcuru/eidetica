@@ -34,7 +34,7 @@ ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 hex = { workspace = true }
 blake3 = { workspace = true }
 cid = { workspace = true }

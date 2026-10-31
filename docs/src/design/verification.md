@@ -1,275 +1,342 @@
-> ✅ **Status: Implemented** (entry verification status, pinned-settings
-> validation, Verified-frontier reads).
-> ⚠️ **Known boundary:** causal authority reduction is enforced, but
-> retroactive branch invalidation is **not implemented** — see
-> [Authority Reduction](#authority-reduction-revocation--the-known-gap).
-
 # Verification Model
 
-Eidetica entries carry a **verification status** that records whether _this
-node_ has checked the entry's signature and authorization, and what the
-outcome was. This document is the canonical description of that model: the
-three-state enum, why a status can never be asserted by a caller, how
-pinned-settings validation makes verification a content-addressed (not
-time-sensitive) decision, what reads expose by default, the accepted
-trade-offs of the disclosure posture, and the one piece the model
-deliberately does **not** yet solve.
+**Implemented:** local entry status, causal authorization, ancestor-closed
+promotion, retained Verified tips, cascading demotion and conservative repair.
+**Not implemented:** retroactive branch invalidation, peer-attested `Trusted`
+status, automatic dependency acquisition or dependency-first verification.
 
-Verification status is **orthogonal to signature/permission validity** — the
-latter answers "is this entry correctly signed by an authorized key, given
-some auth settings?"; the former records whether and with what result this
-node ran that check. The validity rules themselves live in the
-[authentication design doc](authentication.md#verification-status-vs-signature-validity);
-this doc covers the status that wraps them.
+This is the canonical contract for local verification status and visibility.
+The [authentication design](authentication.md#causal-snapshot-validation) defines
+signature, permission and delegation validity. Verification status records the
+local outcome of applying those rules; it is not part of an immutable Entry or
+an assertion accepted from its author.
 
 ## The three states
 
-`VerificationStatus` is an honest three-state enum:
+| Status       | Meaning on this node                                                                                                             |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `Unverified` | New or undecidable: not checked yet, or main/settings/delegated proof is missing or not yet locally `Verified`.                  |
+| `Verified`   | Accepted by the local validator against causal pre-write settings, with locally `Verified` main ancestry.                        |
+| `Failed`     | Definitively rejected: for example, an invalid signature, insufficient authority, a forged causal pin or a `Failed` main parent. |
 
-- **`Verified`** — this node accepted the entry against its causal pre-write
-  settings, including its signature, permissions and delegated snapshot proofs.
-- **`Unverified`** — not yet checked, _or_ checked-but-undecidable because
-  main/settings/delegated ancestry is missing or delegated proof is not yet locally `Verified`. A
-  **transient, normally monotonic** state: it resolves toward `Verified` or
-  `Failed` as more of the DAG arrives.
-- **`Failed`** — checked and **definitively rejected** (bad signature, or
-  signed by a key without the claimed authority under the pinned settings).
-  Terminal during ordinary verification; an explicit offline trust reset clears it.
+`Unverified` is retryable, not a weaker acceptance. It can remain unsettled
+indefinitely without the required dependencies and another verification attempt.
+`Failed` is terminal during ordinary operation; repeated receipt or verification
+does not clear it. An explicit offline trust reset is the exception.
 
-The `Unverified`/`Failed` split is load-bearing. A single "not Verified"
-state would conflate "I can't tell yet" (normal under partial sync) with "I
-checked and this is bad", forcing either false rejection of legitimate
-in-flight data or acceptance of definitively-bad data. They are distinct
-states for that reason.
+### State transitions
 
-## Status is never caller-assertable
+| Operation                             | Transition and boundary                                                                                                       |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Ingest a new Entry                    | Store `Unverified`, regardless of source.                                                                                     |
+| Ingest an already-held Entry          | No change to content, status or retained Verified tips.                                                                       |
+| Local validation succeeds             | `Unverified` → `Verified`, subject to the backend's atomic parent guard.                                                      |
+| Local validation cannot decide        | Remain `Unverified`; retry after dependencies arrive or verify.                                                               |
+| Local validation definitively rejects | `Unverified` → `Failed`.                                                                                                      |
+| Privileged local demotion             | `Verified` → `Unverified` or `Failed`; dependent `Verified` descendants become `Unverified` atomically with the new frontier. |
+| Conservative repair                   | Only inconsistent `Verified` entries become `Unverified`; no promotion and no clearing `Failed`.                              |
+| Offline trust reset                   | All labels, including `Failed`, become `Unverified`; all retained Verified tips and disposable Store state are cleared.       |
 
-The storage layer stores **every** entry as `Unverified` on write and
-accepts no caller-chosen status on ingest. A service client or sync peer has no
-status-promotion operation; privileged local backend status APIs are for the
-validator and offline maintenance, not untrusted callers. An entry
-becomes `Verified` only through a **local** validation pass (a `Transaction`
-commit, or an explicit `Database::verify()`), which stores via the normal
-write path and then promotes the entry locally.
+Assigning the same status is a no-op. Ordinary `Database::verify()` skips settled
+`Verified` and `Failed` boundaries: it is not a rule-upgrade revalidation pass.
+A descendant demoted to `Unverified` after a parent fails is not immediately
+labelled `Failed` by backend maintenance. A later validator pass can make that
+rejection once it examines the descendant.
 
-This is a hard boundary, not a convenience default: a sync peer or a
-service-protocol client **cannot** inject a "pre-verified" entry. Entries
-arriving from sync, bootstrap, or the service wire are consequently stored
-`Unverified` and must earn `Verified` locally. See
-[Synchronization › Verification on Receipt](synchronization.md#verification-on-receipt)
-and [Bootstrap › Verification of Transferred Entries](bootstrap.md#verification-of-transferred-entries)
-for how this plays out across peers.
+## Trust boundaries and responsibilities
 
-## Pinned-settings validation
+### Callers, peers and service clients
+
+A **new** Entry enters storage as `Unverified`. The wire carries no verification
+label, and neither a sync peer nor a service client can invoke status promotion,
+repair or trust reset. Re-receiving an Entry cannot overwrite this node's prior
+decision. Authenticating a peer or a service session does not authenticate every
+Entry it submits.
+
+A local `Transaction::commit()` validates before storage, then stores the Entry
+through the Unverified-only ingest path and promotes it locally. On the service
+wire, `SubmitSignedEntry` stores `Unverified` and invokes the **server's**
+verification pass. Client-side signing is not server-side acceptance. A submit
+can retain an undecidable Entry without making it visible in default reads.
+
+Privileged `BackendImpl` status methods are a trusted, local validator/maintenance
+surface, not an alternative public authorization API. They enforce ancestry but
+do not independently prove a signer's authority. Code with direct backend access
+can read stored Entries regardless of status. Verification is not a storage
+confidentiality boundary; read/session permissions and encryption remain separate.
+
+### Validator: signatures, settings and delegation
 
 The signed `settings_tips` metadata must equal the complete canonical `_settings`
-frontier derived from the entry's **main parents**. A signature protects those
-bytes from alteration but does not make a writer-selected pin authoritative.
-Verification derives the causal frontier independently; a complete but older or
-non-settings pin is invalid, even if its signature is cryptographically correct.
-Only a genuine genesis entry can bootstrap against its own initial settings.
+frontier derived from the Entry's **main parents**, excluding settings written by
+that Entry. A signature protects the pin's bytes; it does not make a writer's
+choice of pin authoritative. A complete but stale or non-settings pin is invalid.
+Only genuine genesis can bootstrap against its own initial settings.
 
-Both local commits and remote verification use that pre-write authority, not the
-live head and not a non-genesis entry's newly written settings. The resulting
-post-entry settings separately determine delegation-pointer floors and effective
-removal. The [causal authorization contract](authentication.md#causal-snapshot-validation)
-defines those rules and examples; [Settings Storage](settings_storage.md#entry-metadata)
-describes the metadata.
+Both local commits and remote verification use this pre-write authority, not the
+live head or a non-genesis Entry's newly staged grants. The resulting post-entry
+settings separately determine delegation-pointer floors and effective removal.
+See the [causal authorization contract](authentication.md#causal-snapshot-validation)
+and [settings metadata](settings_storage.md#entry-metadata).
 
-The decision needs complete main/settings ancestry and, for delegation, complete
-locally `Verified` ancestry at every claimed/configured snapshot. Missing or
-present-but-`Unverified` proof leaves the dependent entry `Unverified`; a complete
-invalid proof is `Failed`. Operational backend/cache errors propagate instead
-of becoming a denial or an empty floor. A later grant cannot make an unauthorized
-historical entry valid, and an unrelated later revocation cannot invalidate a
-valid pre-revocation sibling.
+For delegation, configured pointers and signed claims require correct tree
+membership and complete, locally `Verified` ancestry at every required snapshot.
+Claims must cover the configured pointer and inherited per-root floors; a
+`Verified` tip alone is not sufficient proof. A published derived authorization
+projection is not a status promotion and cannot substitute for this check.
 
-Receiving dependency bytes does not necessarily settle them. Access/sync may
-attempt verification, but the validator does not fetch dependencies or recursively
-verify another tree under its lock. Explicitly verify dependencies first, then
-retry the dependent database. Automatic acquisition and dependency-first retry
-are deferred to [PR #126](https://github.com/arcuru/eidetica/pull/126).
+Missing or present-but-`Unverified` proof leaves the dependent Entry `Unverified`.
+A complete invalid proof produces `Failed`. Operational storage errors and uncertain cache outcomes
+propagate rather than becoming a denial, an empty floor or an acceptance.
+
+`Database::verify()` holds a per-tree lock, walks the Unverified region from raw
+tips and processes it parents-before-children. Access-time verification is
+suppressed within that pass. The validator neither fetches dependencies nor
+recursively verifies another tree under the lock. Verify delegated dependencies
+first, then retry their dependents. A `VerifyReport` counts entries considered
+in that pass, not all stored failures; an empty report is not a health inventory.
+
+### Height monotonicity
+
+Before promotion, the verifier requires the main-tree height to be strictly
+greater than each locally `Verified` main parent's height. Equal or decreasing
+heights produce `Failed`, as does a `Failed` parent; missing or `Unverified`
+parents otherwise leave the Entry retryable. Heights need not equal
+`max(parent heights) + 1`: timestamp heights and gaps remain valid.
+
+This checks main-tree heights only. Store heights have independent strategy
+and inheritance rules. Height-based consumers such as `Database::ids_added`
+retain their best-effort behavior for raw, unsettled history. Existing
+`Verified` entries are not rechecked automatically; use the
+[offline trust reset](#explicit-trust-reset-on-verification-rule-upgrades)
+before relying on the new rule for previously accepted history.
+
+### Backend: same-tree ancestor closure
+
+Promotion requires every direct main parent to exist in the Entry's canonical
+storage tree and already be `Verified`. A root's tree ID is its own ID; a
+non-root's is its declared root ID. An Entry's own ID does not create another
+verification namespace in which that non-root can masquerade as a root.
+
+The parent check, label update and retained-tip publication share one backend
+serialization boundary. A missing, foreign or unsettled parent rejects promotion
+without changing labels or tips. There is no provisional `Verified` label
+waiting for its parent. Checking direct parents suffices inductively because
+supported promotion and demotion maintain closure. It does **not** replace
+signature, causal-settings or delegated-proof validation.
 
 ## Prefix-closed reads: the Verified frontier
 
-Verification is **prefix-closed**: an entry is promoted to `Verified` only
-once its entire ancestor history is `Verified`. A `Failed` ancestor taints
-descendants to `Failed`; an `Unverified`/not-yet-held ancestor leaves the
-entry `Unverified` for a later pass. Supported validation therefore maintains an ancestor-closed `Verified` set.
-This assumes validator-owned labels: manual low-level promotion or legacy labels
-retained without the required trust reset are not proof of that invariant.
+For one tree, let `V` be the accepted set: entries labelled `Verified` whose
+parents are all in `V`. The **Verified frontier** is the entries in `V` that
+have no child in `V`. An unverified root therefore has an empty frontier. A
+frontier can include an interior Entry of the raw DAG when its children are
+not accepted.
 
-By default a `Database` read exposes only the **Verified frontier** — the
-maximal ancestor-closed all-`Verified` prefix. `Failed` entries are dropped
-from reads in all cases. A caller that explicitly wants the
-pre-verification view (including `Unverified` tips) opts in with
-`.allow_unverified()`.
+The raw frontier instead contains entries with no held child in that tree,
+regardless of verification status. Raw and Verified frontiers can differ even
+when every Entry byte is present. Ingest and verification are separate events.
 
-This is the **disclosure model**: the DAG stays complete and trust is a
-query-time projection over it (the same posture as git signatures or DKIM —
-nothing is hidden from storage; the _trust label_ is computed on read).
-Only `Failed` is ever hard-dropped; `Unverified` data is retained, just not
-surfaced by the safe-default getter.
+Concrete InMemory and SQL backends retain **only the Verified tips**, not a
+second membership set for the entire accepted history. Authoritative per-entry
+labels establish interior membership. Promotion removes direct parents from the
+retained tips and inserts the child; forks retain multiple tips and a verified
+join replaces them. This operation does not scan accepted history.
 
-## Accepted trade-offs of the disclosure posture
+### Default reads and `.allow_unverified()`
 
-These are deliberate consequences of the model, not defects:
+A local `Database::snapshot()` normally returns the retained Verified frontier.
+When raw and Verified tips agree, it performs retained lookups without a history
+walk or per-entry status probes. If a raw tip is unsettled, access can attempt
+best-effort verification before selecting the read boundary. A read is therefore
+not a promise that no validation work occurs; only the settled path is scan-free.
 
-- **Verified-frontier computation cost.** Resolving the Verified frontier on
-  a default read walks verification status across the relevant DAG region
-  rather than returning raw tips directly. This is the price of a
-  safe-by-default read; it is a known performance characteristic of the
-  disclosure posture, optimisable behind the same API without changing
-  semantics.
-- **Sync no longer makes data visible by default.** Before this model, a
-  synced entry was immediately readable. Now freshly synced or freshly
-  bootstrapped data is **invisible to default reads until verified** — a
-  database may briefly read as empty in the instant between transfer and the
-  local verification pass. This is an intentional behaviour change; callers
-  that need the old semantics use `.allow_unverified()`. Integrators
-  upgrading across this change should treat it as a migration-relevant
-  behaviour change, not a regression.
-- **`Unverified` tips are admitted into normal operation.** Normal writes
-  may build on `Unverified` tips, and an `Unverified` entry may itself be a
-  tip. Selecting such a parent is not permission to promote its child while
-  that parent remains unsettled. The liveness/DoS surface is bounded
-  by ingest/resource controls, not by assuming every submitter is authorized.
-  An undecidable proof can remain `Unverified` indefinitely without dependency
-  acquisition and a subsequent verification attempt.
+`.allow_unverified()` opts into raw tips with `Failed` **tips** removed, rather
+than the Verified frontier. It is a diagnostic/partial-data view, not proof of
+an accepted prefix. The filter does not recursively prune every failed or
+missing ancestor from arbitrary raw history. Low-level Entry retrieval also
+retains rejected data. No status deletes immutable bytes.
 
-The default-safe posture (Verified-frontier-by-default, opt-in to see
-`Unverified`) is the intended steady state; the re-verification/promotion
-pass that drains `Unverified` over time is a **quality** feature (the signal
-de-noises as the DAG completes), not a correctness prerequisite.
+A remote service handle's `snapshot()` returns the server-selected Verified
+frontier; the client does not run local status machinery. Service operations
+that carry a `ReadScope`, such as transaction context and Store-entry queries,
+let the server select the requested scope. Calling `.allow_unverified()` is
+not a wire-level status override. See [service read scope](../internal/service.md#read-scope).
 
-## Writes inherit the caller's read projection
+This is the **disclosure model**: retain the DAG, project locally accepted
+history by default. Freshly synced or bootstrapped data can be absent from
+default reads until local verification succeeds. Retrying undecidable Entries
+improves availability; it is not permission to expose them as Verified.
 
-A write's parent tips are the tips of **the same projection the caller is
-reading** — this is not a separate policy. A caller on the default
-(Verified-frontier) posture parents new entries onto the Verified frontier; a
-caller that opted into `.allow_unverified()` parents onto raw tips. _What you
-can see is what you build on._
+### Writes inherit the selected boundary, not weaker validation
 
-This is deliberate and removes any global parent-selection rule:
+Transaction parents come from the caller's selected snapshot (or an explicit
+historical boundary). A default writer can extend the Verified frontier while
+an unsettled raw branch exists, creating a fork around that branch rather than
+silently incorporating it. Its settings pin is derived from those exact parents.
 
-- It keeps default-posture history **ancestor-closed `Verified` by
-  construction**: a default writer never extends from an `Unverified` tip it
-  cannot see, so it neither forks history away from in-flight unverified data
-  nor silently entangles itself with it.
-- Building on `Unverified` tips stays possible but is now the caller's
-  **explicit, owned** choice (it asked for `.allow_unverified()`), not a
-  silent default — and only such a caller is ever exposed to `Unverified`
-  tip identifiers.
-- Parent tips are additionally bounded by the caller's
-  authorization/settings: a write can only parent onto tips the caller is
-  permitted to read. Read scope and authority scope jointly define the
-  buildable frontier.
+An opt-in transaction can **select** Unverified parents, but a signed local
+commit rejects them before storage, even if a derived projection for them was
+previously published. The backend parent guard also prevents promotion if a
+parent loses Verified status before publication. Selecting a raw boundary does
+not grant a successful commit against unsettled ancestry. Remote ingest can
+retain such a child as `Unverified`; it cannot promote it until the proof settles.
 
-The signed local commit gate rejects an `Unverified` parent even if its derived
-projection was published earlier. Remote ingest can retain a child of unsettled
-parents, but verification defers its promotion. Thus `.allow_unverified()` changes
-read/parent selection, not the proof required to earn `Verified`.
+## Atomic publication, demotion and repair
 
-This composes with [pinned-settings validation](#pinned-settings-validation):
-the entry pins the `_settings` frontier derived from exactly those parents,
-not arbitrary settings the writer chose.
+| Backend    | Serialization boundary for status and Verified tips                                                                                                  |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| InMemory   | One write lock; compute a repair plan before mutating live maps.                                                                                     |
+| SQLite     | One writer transaction acquired with `BEGIN IMMEDIATE`; failures roll back labels and tips together.                                                 |
+| PostgreSQL | One transaction with a schema-and-tree-scoped advisory transaction lock, acquired before mutable eligibility checks; released on commit or rollback. |
+
+These guarantees apply to each status mutation or tree repair, not to an entire
+multi-entry verification pass. Readers can observe progress between promotions,
+but not half-published label/tip state from one mutation. Raw ingest is separate
+and may be visible before promotion.
+
+Demotion of a Verified Entry recomputes closure for the affected tree and changes
+its dependent Verified region to `Unverified`. Other accepted forks remain.
+There is no cross-tree cascade through delegation references. Demotion and repair
+may load the entire affected tree temporarily; the retained state still scales
+with frontier width, not history size.
+
+`BackendImpl::repair_verification(tree)` reconstructs closure from immutable main
+ancestry and current labels, not stored heights or retained tips. Missing/foreign
+parents exclude their dependent region. Malformed Entries, cycles or storage
+errors abort without partial publication. Repair preserves `Failed`, never
+promotes, and does not rerun cryptographic authorization. Repeating it is
+idempotent. Entries and Store-state records are unchanged.
+
+The default custom-backend `verified_snapshot` is a read-only history-based
+reconstruction oracle, not the concrete backends' retained fast path or a label
+repair. Custom backends must implement atomic repair explicitly; the default
+repair method returns unsupported instead of attempting non-atomic mutation.
+
+The offline [repair command](../user_guide/cli.md#db-repair-verification-offline-conservative-repair)
+backs this local maintenance surface. It is different from both verification and
+[trust reset](#explicit-trust-reset-on-verification-rule-upgrades).
+
+### Existing snapshots and events
+
+A previously acquired Snapshot, transaction boundary or resolved historical
+Store view may keep its old boundary after demotion. This change does not revoke
+already-acquired readers or retroactively invalidate cached historical state.
+Acquire a new default boundary to observe the repaired frontier; offline trust
+reset requires stopping all readers as well as writers.
+
+`WriteEvent`/notification cursors remain **raw DAG frontiers**. Verification can
+emit a batched settled-write notification without changing those raw tips.
+A cursor is not a Verified membership proof; consumers use the appropriate
+Database read projection rather than treating notification IDs as accepted data.
+
+## Worked examples
+
+- **Fork and join.** Start with Verified `R`. Ingest siblings `A` and `B`, then
+  verify only `A`. Raw tips are `{A, B}`, Verified tips `{A}`. A join `J` with
+  parents `{A, B}` cannot promote while `B` is Unverified; rejection changes
+  nothing. After `B` verifies, tips are `{A, B}`; promoting valid `J` yields
+  `{J}`. Demoting `A` demotes Verified `J` to Unverified and leaves Verified
+  tips `{B}`, not `{R, B}`: `R` still has the accepted child `B`. The retained
+  frontier records maximal accepted entries, not every surviving ancestor.
+- **Missing parent.** A received child `C` names an absent parent `P` in tree
+  `R`. It stays Unverified. Receiving `P` alone is insufficient: verify `P`
+  and its ancestry first, then retry `C`. Conservative repair would demote an
+  old inconsistent Verified `C`, not guess its signature validity or fetch `P`.
+- **Revocation.** Writer `K` is authorized at `R`. A valid sibling write from
+  `R` remains historically valid even if another branch later removes `K`.
+  A descendant whose parents include that removal cannot evade it by signing
+  an older settings pin. This is causal enforcement, not retroactive revocation.
 
 ## Authority reduction (revocation) — the known gap
 
-**Causal reductions are enforced; retroactive branch invalidation is not.**
-A revoked/removed key or reduced permission cannot authorize a descendant whose
-main parents carry that reduction by choosing an older settings pin. Delegated
-claims likewise cannot regress below the configured pointer or inherited
-per-root floor. This closes stale-pin evasion on a branch that has observed the
-reduction.
+**Causal reductions are enforced; retroactive branch invalidation is not.** A
+later grant cannot authorize an invalid historical Entry. Conversely, holding a
+newer revocation elsewhere does not invalidate a valid pre-revocation sibling.
+Delegated claims cannot regress below configured pointers or inherited per-root
+floors. An Admin can intentionally rewind a pointer; retained observations still
+constrain descendants until effective direct removal. The
+[causal examples](authentication.md#causal-snapshot-validation) explain the joins
+and removal rules.
 
-A sibling rooted before the reduction can still be valid, even when a verifier
-already holds a newer revocation elsewhere. Snapshot validation does not assert
-live-head freshness or retroactively erase valid history. An Admin can also
-intentionally rewind a delegation pointer; retained signature observations still
-constrain descendants until effective direct removal. See the
-[causal examples](authentication.md#causal-snapshot-validation).
+A policy that rejects historical branches containing a now-revoked signer's
+writes would be a separate predicate. It needs decisions about concurrency,
+partial sync and orphaned legitimate history. It is not implemented or specified
+here. Today's `Verified` is neither live-head freshness nor immediate revocation
+across a partition. `Admin(priority)` authorizes settings changes; it does not
+replace Doc's deterministic conflict resolution.
 
-A policy that retrospectively rejects branches containing a now-revoked signer's
-writes would be a separate predicate, not a reinterpretation of `Verified`.
-It is not implemented or specified here. It would need decisions about concurrent
-settings, partial sync and the legitimate history orphaned with the revoked
-contributions. The existing `Admin(priority)` rules authorize settings changes;
-they do not replace Doc's deterministic conflict resolution.
-Operators must not treat today's causal verification as such a retroactive
-policy or as immediate revocation across a network partition.
+## Persistence, restart and forward migration
 
-## Future: a `Trusted` peer-attested state
+SQL `schema_version` and InMemory JSON `_v` are **independent internal integer
+format revision counters**. SQL uses `3` and InMemory uses `2`; they are not release
+versions, SemVer or a stability scale. A format change requiring migration
+advances the relevant counter and supplies an explicit supported forward path.
+Do not renumber existing data or infer a migration merely from integer ordering.
+The current supported matrix is:
 
-**Status: potential future direction, not designed, not implemented.** This
-section records the intent so the status representation can be designed to
-accommodate it as a non-breaking extension; the mechanics are explicitly
-TBD.
+| Stored format                                             | Open/load behavior                                                                                                                              |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fresh SQL database (no version row)                       | Initialize current schema and marker `3`. This is initialization, not a promise to repair unmarked populated SQL databases.                     |
+| Mainline SQL `0`                                          | Migrate directly to `3`: create retained tips/cache accounting, conservatively repair each tree, publish schema/labels/tips/version atomically. |
+| SQL `2`                                                   | Add/backfill cache accounting and advance to `3`, preserving labels and Verified tips without verification repair.                              |
+| SQL `3`                                                   | Use persisted labels, Verified tips and cache accounting; no recurring backfill or history repair.                                              |
+| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported experimental prefix-tracking layout before schema initialization.                                                        |
+| SQL above `3`, or below `0`                               | Refuse: newer schema or unknown migration path.                                                                                                 |
+| InMemory absent `_v` or explicit `_v: 0`                  | Reconstruct Verified tips from Entries and labels on load, conservatively demoting inconsistent Verified regions. Next save writes `2`.         |
+| InMemory `_v: 2`                                          | Load persisted labels/tips without history repair.                                                                                              |
+| InMemory other `_v`                                       | Refuse; this includes experimental `1` and future versions. Invalid/out-of-range encodings also fail deserialization.                           |
 
-Today an entry is either locally `Verified` (this node ran the full check
-against the entry's pinned settings) or `Unverified` (this node has not, or
-cannot yet). There is no way to express _"a peer Eidetica node I trust has
-told me it verified this entry."_ A **`Trusted`** state would be that middle
-ground.
+SQL migration preserves immutable Entry bytes, parent/subtree records, raw tips,
+instance metadata/secrets and existing Store-state namespaces/records. It changes
+only inconsistent Verified labels and the retained Verified frontier on the v0
+transition; v2→v3 changes cache accounting and its marker, not trust state.
+Exclusive startup may reclaim disposable retired/abandoned cache rows. Failed decisions remain Failed. Failure rolls back
+the migration; version refusal is not a wholly read-only open, since ownership
+bookkeeping and SQLite WAL setup can precede the schema check.
 
-**Sketch.** `Trusted` = a peer `Instance` this node trusts has asserted that
-_it_ verified the entry, and this node accepts that attestation in lieu of
-re-running full signature/permission validation to the roots itself. It is
-strictly weaker than local `Verified` (we did not check it ourselves) and
-strictly stronger than `Unverified` (a party we trust did). It lets a node
-short-circuit expensive ancestor-closure re-verification when a trusted peer
-has already done the work, while still keeping "I checked it" distinct from
-"someone I trust checked it" — the same instinct as the disclosure model,
-one notch up the trust spectrum.
+InMemory reconstruction builds a new backend before exposing it and does not
+rewrite the source file. Entries, metadata/secrets and raw tips survive; legacy
+CRDT cache bytes are discarded and Store-state namespaces are not persisted by
+this backend. A successful save writes a sibling temporary file and replaces the
+snapshot by rename (atomic replacement on POSIX; see the
+[backend guide](../user_guide/concepts/backends.md#inmemory) for limits). A failed
+load cannot partially migrate the original file.
 
-**Where it sits.** Between `Unverified` and `Verified`. The default read
-posture (Verified frontier) and the `.allow_unverified()` opt-in would need
-a policy decision on whether `Trusted` is surfaced by default, opt-in, or
-configurable per trust relationship.
-
-**Open questions (unsolved — design TBD):**
-
-- _What makes a peer "trusted"?_ Sync-peer identity, an explicit trust list,
-  or a trust level keyed into the existing authentication / priority model?
-- _Is the attestation itself signed and verifiable_, so a trusted peer
-  cannot be impersonated and the assertion is non-repudiable — and does it
-  carry _which settings_ the peer verified against?
-- _When is local re-verification still forced despite `Trusted`_ — e.g. for
-  security-sensitive operations, or once this node later acquires the pinned
-  settings ancestry and could check the entry itself?
-- _Does `Failed` collapse into `Unverified` under this model, or stay a
-  distinct terminal state?_ A trusted peer asserting `Failed` is itself
-  meaningful information.
-- _Transitivity and trust depth._ If peer A trusts peer B, does an A→us sync
-  convey B's attestation, or only A's own verification? Trust depth must be
-  bounded.
-- _Interaction with the [authority-reduction gap](#authority-reduction-revocation--the-known-gap)._
-  A trusted peer's attestation is only as good as that peer's own revocation
-  awareness; `Trusted` does **not** bypass the branch-validity question.
-
-Near-term work uses `Verified` / `Unverified` / `Failed` only. The status
-representation should be chosen so that introducing `Trusted` later is a
-non-breaking extension.
-
-## See also
-
-- [Authentication](authentication.md) — signature/permission validity, the
-  priority system, and key revocation primitives.
-- [Synchronization](synchronization.md#verification-on-receipt) — how
-  verification status behaves for entries arriving from peers.
-- [Bootstrap & Access Control](bootstrap.md#verification-of-transferred-entries)
-  — verification of a freshly transferred database.
-- [Settings Storage](settings_storage.md#entry-metadata) — the
-  `settings_tips` pin mechanics.
+Current-format opens trust retained state; they do not silently repair a missing
+frontier. Use explicit repair for inconsistent local ancestry, or reset for a
+verification-rule upgrade. Neither command converts experimental version `1`.
+Keep an offline backup and follow the
+[unsupported-format recovery guidance](../user_guide/cli.md#storage-compatibility-and-older-candidate-data)
+rather than editing markers or dropping tables to bypass refusal. Downgrading a
+binary does not undo persisted migrations; restore a compatible backup instead.
 
 ## Explicit trust reset on verification-rule upgrades
 
-A verification status is local, not an immutable property of an Entry. When
-an operator upgrades to new delegated-authorization verification rules, the
-old `Verified` and `Failed` decisions and disposable derived Store-state must
-be cleared **before** starting the new version. Use the offline
+Format migration is **not** authorization revalidation. When upgrading to new
+verification rules, stop all users, back up the backend and run the offline
 [`db reset-local-verification` command](../user_guide/cli.md#db-reset-local-verification-offline-trust-reset)
-and follow its dependency-first re-verification procedure from immutable Entries.
-This is deliberately operator-triggered,
-not a schema migration or automatic legacy-version gate. Skipping the procedure
-can leave historical `Verified` labels trusted under the new rules.
+before trusting old decisions under the new rules. It clears old Verified and
+Failed labels, retained tips, derived and incomplete Store state, while keeping
+immutable Entries and authoritative Store state. It does not verify or fetch.
+
+Then use the [dependency-first SDK procedure](../user_guide/cli.md#re-verification-after-reset-or-incomplete-proof),
+inspect unresolved/rejected branches and acquire new read boundaries. There is
+no automatic verification-rule version marker or startup reset. Clearing only
+caches, repairing closure or advancing a format counter cannot substitute for
+this operator-triggered trust reset.
+
+## Deferred work
+
+`Trusted` peer attestations remain an undesigned future possibility, not an
+accepted fourth state or an alternate promotion route. Retroactive revocation,
+automatic dependency acquisition/retry, incremental demotion and materialization
+cache optimization are not implemented by this verification contract. None may
+weaken local validation or silently reinterpret existing statuses.
+
+## See also
+
+- [Authentication](authentication.md) — signatures, causal settings and delegation.
+- [Synchronization](synchronization.md#verification-on-receipt) — receipt and local verification.
+- [Bootstrap & Access Control](bootstrap.md#verification-of-transferred-entries) — transferred Entries and genesis trust.
+- [Internal authentication](../internal/authentication.md#invariant-to-regression-map) — implementation seams and regression filters.

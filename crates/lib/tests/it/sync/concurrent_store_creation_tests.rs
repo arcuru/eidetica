@@ -31,7 +31,7 @@ async fn concurrent_store_creation_after_fork_merges() {
     settings.set("name", "concurrent-store");
     let db0 = net
         .peer_mut(0)
-        .user_mut()
+        .account_session_mut()
         .create_database(settings, &key0)
         .await
         .unwrap();
@@ -47,7 +47,7 @@ async fn concurrent_store_creation_after_fork_merges() {
     net.peer_mut(1).serve(&room).await.unwrap();
     let db1 = net
         .peer_mut(1)
-        .user_mut()
+        .account_session_mut()
         .open_database(&room)
         .await
         .unwrap();

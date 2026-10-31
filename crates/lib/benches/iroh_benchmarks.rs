@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
-    Instance, NewUser,
+    Instance, NewAccount,
     entry::Entry,
     sync::{Sync, peer_types::Address, transports::iroh::IrohTransport},
 };
@@ -23,14 +23,18 @@ async fn setup_iroh_sync_pair() -> (Arc<Instance>, Sync, Arc<Instance>, Sync, Ad
     // backend, so we need the bootstrap path (`create_backend`) rather
     // than the load-only `open_backend`. The initial user is discarded —
     // the bench only needs an Instance that can drive sync.
-    let (instance1, _user1) =
-        Instance::create_backend(test_backend().await, NewUser::passwordless("bench_peer1"))
-            .await
-            .expect("Benchmark setup failed");
-    let (instance2, _user2) =
-        Instance::create_backend(test_backend().await, NewUser::passwordless("bench_peer2"))
-            .await
-            .expect("Benchmark setup failed");
+    let (instance1, _user1) = Instance::create_backend(
+        test_backend().await,
+        NewAccount::passwordless("bench_peer1"),
+    )
+    .await
+    .expect("Benchmark setup failed");
+    let (instance2, _user2) = Instance::create_backend(
+        test_backend().await,
+        NewAccount::passwordless("bench_peer2"),
+    )
+    .await
+    .expect("Benchmark setup failed");
     let base_db1 = Arc::new(instance1);
     let base_db2 = Arc::new(instance2);
 

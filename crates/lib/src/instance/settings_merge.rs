@@ -3,7 +3,7 @@
 //! This module implements the "most aggressive" merge strategy for combining
 //! sync settings from multiple users who are tracking the same database.
 
-use crate::user::types::SyncSettings;
+use crate::account::types::SyncSettings;
 
 /// Merge multiple user sync settings into a single combined setting.
 ///
@@ -22,7 +22,7 @@ use crate::user::types::SyncSettings;
 /// # Examples
 /// ```
 /// use eidetica::instance::settings_merge::merge_sync_settings;
-/// use eidetica::user::types::SyncSettings;
+/// use eidetica::account::types::SyncSettings;
 ///
 /// let settings1 = SyncSettings {
 ///     sync_enabled: true,

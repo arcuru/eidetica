@@ -17,7 +17,7 @@
 //! Client-side signing. The daemon stores and serves encrypted key material and
 //! signed entries but never holds plaintext user signing keys or passwords.
 //!
-//! - **User keys stay client-side**: clients fetch encrypted `UserCredentials` from
+//! - **AccountSession keys stay client-side**: clients fetch encrypted `AccountCredentials` from
 //!   the daemon, derive the key-encryption-key locally (Argon2id), decrypt the user's
 //!   signing key in-process, and sign entries before sending them to the daemon for
 //!   storage. The signing key never crosses the socket.
@@ -71,7 +71,9 @@
 //!   rather than building a client-side sync module that would race the
 //!   daemon's own sync. The daemon runs its persisted sync lifecycle, but
 //!   clients cannot administer transports or peers over the current wire
-//!   surface.
+//!   surface. [`AccountSession::join`](crate::account::AccountSession::join) is the one sync entry
+//!   point: the daemon bootstraps a ticket with a request proof the client
+//!   signs locally.
 
 pub mod client;
 pub mod error;

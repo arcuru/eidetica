@@ -1,10 +1,10 @@
 # Publish workflow — builds artifacts from source and publishes container images.
 #
 # Triggers:
-#   1. workflow_run: After CI passes on main. Pushes `dev`-tagged container
-#      images, warms the Nix binary cache, and tracks binary/container sizes
-#      via Bencher. This runs on every push to main, exercising the same build
-#      and publish pipeline that releases use.
+#   1. workflow_call: CI calls the dev path after main's ARM checks and then its
+#      x86 checks and cache publication pass. It remains inside CI's native
+#      concurrency group through both image builds and the manifest.
+#      Environment secrets stay in this workflow.
 #
 #   2. workflow_dispatch: Triggered by the release-plz workflow after a release
 #      is created, or manually for retrying a failed release. Accepts a tag name
@@ -20,10 +20,27 @@
 name: Publish
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: ["main"]
+  workflow_call:
+    inputs:
+      dev:
+        description: "Publish this successful main CI revision as dev"
+        required: true
+        type: boolean
+    secrets:
+      BENCHER_API_TOKEN:
+        required: true
+      # Callers must name these secrets; their values come from the protected
+      # job environments, which take precedence over caller-level values.
+      NIX_CACHE_ACCESS_KEY_ID:
+        required: true
+      NIX_CACHE_SECRET_ACCESS_KEY:
+        required: true
+      NIX_CACHE_SIGNING_KEY:
+        required: true
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
   release:
     types: [published]
   workflow_dispatch:
@@ -40,6 +57,8 @@ env:
   REGISTRY_GHCR: ghcr.io
   REGISTRY_DOCKER: docker.io
   IMAGE_NAME: ${{ github.repository }}
+  # Dev and independent release runs must not overwrite each other's base image.
+  BASE_TAG_PREFIX: ${{ inputs.dev && 'nix-base-dev' || 'nix-base' }}
 
 jobs:
   build:
@@ -47,19 +66,14 @@ jobs:
     environment: publish
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    # For workflow_run, restrict to a CI run on this repo's own main: the
-    # `branches` filter matches the triggering run's head_branch, which a fork
-    # PR from a branch named "main" also satisfies, and fork code would then be
-    # checked out at head_sha with this job's publish credentials.
-    # workflow_dispatch is allowed alongside push — dispatching CI already
-    # requires write access.
+    # Calls retain the CI event/ref: only successful main push/manual CI may
+    # publish dev. Release and manual release retries keep their own entry path.
     if: |
       github.repository_owner == 'arcuru' &&
-      (github.event_name != 'workflow_run' ||
-       (github.event.workflow_run.conclusion == 'success' &&
-        (github.event.workflow_run.event == 'push' ||
-         github.event.workflow_run.event == 'workflow_dispatch') &&
-        github.event.workflow_run.head_repository.full_name == github.repository))
+      ((inputs.dev && github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) ||
+       (!inputs.dev &&
+        (github.event_name == 'release' || github.event_name == 'workflow_dispatch')))
     strategy:
       matrix:
         include:
@@ -80,12 +94,15 @@ jobs:
       - name: Resolve ref
         id: ref
         env:
+          DEV_PUBLISH: ${{ inputs.dev }}
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.tag_name }}
-          RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RUN_SHA: ${{ github.sha }}
         run: |
-          if [[ "$EVENT_NAME" == "release" ]]; then
+          if [[ "$DEV_PUBLISH" == "true" ]]; then
+            echo "ref=$RUN_SHA" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "release" ]]; then
             echo "ref=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             echo "ref=$INPUT_TAG" >> "$GITHUB_OUTPUT"
@@ -120,21 +137,15 @@ jobs:
             --option substituters 'https://cache.nixos.org' \
             -f ".#legacyPackages.${SYSTEM}.eidetica.release"
 
-      # Warm the cache with all remaining flake check outputs so subsequent CI
-      # runs are faster. Only needed on the dev path (every push to main) —
-      # release runs only build the release artifacts.
-      - name: Warm CI cache
-        if: github.event_name == 'workflow_run'
-        run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }}
+      # Check outputs are not rebuilt here: main CI publishes the x86 outputs it
+      # checked from its own store, and the ARM runner keeps its own store.
 
       - name: Install Bencher CLI
-        if: github.event_name == 'workflow_run'
+        if: inputs.dev
         uses: bencherdev/bencher@5f9d4cf890255c35e0354af1ed325108a6a0babd # v0.6.8
 
       - name: Track artifact sizes
-        if: github.event_name == 'workflow_run'
+        if: inputs.dev
         env:
           BENCHER_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
           SYSTEM: ${{ matrix.system }}
@@ -185,7 +196,7 @@ jobs:
           echo "Loaded Nix image: ${NIX_IMAGE}"
 
           # Push base image to GHCR (buildx needs it accessible from registry)
-          BASE_TAG="nix-base-${PLATFORM}"
+          BASE_TAG="${BASE_TAG_PREFIX}-${PLATFORM}"
           BASE_IMAGE="${REGISTRY_GHCR}/${IMAGE_NAME}:${BASE_TAG}"
           docker tag "${NIX_IMAGE}" "${BASE_IMAGE}"
           docker push "${BASE_IMAGE}"
@@ -197,11 +208,11 @@ jobs:
       - name: Determine tags
         id: tags
         env:
-          EVENT_NAME: ${{ github.event_name }}
+          DEV_PUBLISH: ${{ inputs.dev }}
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag_name }}
           PLATFORM: ${{ matrix.platform }}
         run: |
-          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+          if [[ "$DEV_PUBLISH" == "true" ]]; then
             TAGS="dev-${PLATFORM}"
           else
             # Release or workflow_dispatch — resolve version from tag
@@ -279,13 +290,14 @@ jobs:
       - name: Determine manifest tags
         id: tags
         env:
+          DEV_PUBLISH: ${{ inputs.dev }}
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag_name }}
           IS_PRERELEASE: ${{ github.event.release.prerelease }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+          if [[ "$DEV_PUBLISH" == "true" ]]; then
             TAGS="dev"
           else
             VERSION="${RELEASE_TAG#v}"
@@ -334,13 +346,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
-          # Delete the nix-base-* intermediate images from GHCR
+          # Delete only this path's dev or release intermediate images.
           for PLATFORM in amd64 arm64; do
-            echo "Deleting nix-base-${PLATFORM}..."
+            echo "Deleting ${BASE_TAG_PREFIX}-${PLATFORM}..."
             gh api --method DELETE "/users/${REPO_OWNER}/packages/container/eidetica/versions/$(
               gh api "/users/${REPO_OWNER}/packages/container/eidetica/versions" \
-                --jq ".[] | select(.metadata.container.tags[] == \"nix-base-${PLATFORM}\") | .id"
-            )" 2>/dev/null || echo "Could not delete nix-base-${PLATFORM} (may not exist or lack permissions)"
+                --jq ".[] | select(.metadata.container.tags[] == \"${BASE_TAG_PREFIX}-${PLATFORM}\") | .id"
+            )" 2>/dev/null || echo "Could not delete ${BASE_TAG_PREFIX}-${PLATFORM} (may not exist or lack permissions)"
           done
 
       - name: Update Docker Hub description

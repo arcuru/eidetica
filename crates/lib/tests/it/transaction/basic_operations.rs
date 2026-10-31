@@ -133,3 +133,50 @@ async fn test_transaction_parent_relationships() {
     // Verify both entries are included in merged data using helpers
     assert_map_data(&all_data, &[("first", "entry"), ("second", "entry")]);
 }
+
+#[tokio::test]
+async fn test_get_store_preserves_malformed_registry_entry() {
+    let ctx = TestContext::new().with_database().await;
+    let tx = ctx.database().new_transaction().await.unwrap();
+    let index = tx.get_store::<DocStore>("_index").await.unwrap();
+    index.set("broken", "not metadata").await.unwrap();
+
+    let err = tx.get_store::<DocStore>("broken").await.err().unwrap();
+    assert!(err.to_string().contains("metadata is not a Doc"), "{err}");
+    assert_eq!(index.get_string("broken").await.unwrap(), "not metadata");
+
+    // Absence still registers a store, and repeated loads see staged metadata.
+    let store = tx.get_store::<DocStore>("new").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    let loaded = tx.get_store::<DocStore>("new").await.unwrap();
+    assert_eq!(loaded.get_string("key").await.unwrap(), "value");
+}
+
+#[tokio::test]
+async fn test_transaction_late_store_load_uses_parent_boundary() {
+    let ctx = TestContext::new().with_database().await;
+    let base = create_simple_operation(ctx.database(), "data", "base", "value").await;
+    let old = ctx.database().new_transaction().await.unwrap();
+
+    // Advance current tips before the old transaction has even opened this store.
+    let concurrent = create_simple_operation(ctx.database(), "data", "other", "value").await;
+    let store = old.get_store::<DocStore>("data").await.unwrap();
+    assert_key_not_found(store.get("other").await);
+    store.set("branch", "value").await.unwrap();
+    let branch = old.commit().await.unwrap();
+    let entry = ctx
+        .database()
+        .backend()
+        .unwrap()
+        .get(&branch)
+        .await
+        .unwrap();
+    assert_eq!(entry.parents().unwrap(), vec![base.clone()]);
+    assert_eq!(entry.subtree_parents("data").unwrap(), vec![base]);
+
+    // A new request must see both concurrent branches, not old transaction state.
+    let current = ctx.database().new_transaction().await.unwrap();
+    let store = current.get_store::<DocStore>("data").await.unwrap();
+    assert_dict_contains(&store, &[("other", "value"), ("branch", "value")]).await;
+    assert_ne!(concurrent, branch);
+}

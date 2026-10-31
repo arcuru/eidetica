@@ -571,7 +571,8 @@ Both transports expose `get_server_address()` for addresses used in
 #### Verification on Receipt
 
 Entries do **not** become trusted simply by arriving from an authenticated
-peer. The storage layer stores every received entry as `Unverified` — the
+peer. The storage layer stores every new received entry as `Unverified`
+(duplicate receipt preserves existing local status) — the
 sync protocol carries no way for a peer to assert a verification status, so a
 malicious-but-authenticated peer cannot inject "pre-verified" data.
 
@@ -594,8 +595,10 @@ is a terminal rejection.
 Consequently a `Database` read exposes only the **Verified frontier** (the
 maximal ancestor-closed all-`Verified` prefix) by default; freshly synced,
 not-yet-verified data is invisible until verified, unless the caller opts in
-with `.allow_unverified()`. `Failed` entries are dropped from reads in all
-cases.
+with `.allow_unverified()`. That opt-in filters `Failed` tips, not every ancestor
+of raw history; it is not an accepted-prefix proof. Rejected Entries remain in
+storage. The [verification contract](verification.md#default-reads-and-allow_unverified)
+distinguishes these read boundaries from raw Entry access.
 
 #### Trust Model
 

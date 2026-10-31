@@ -312,7 +312,7 @@ mod tests {
         // Bootstrap "test" as the initial user, who is automatically Admin.
         let (instance, mut user) = Instance::create_backend(
             Box::new(InMemory::new()),
-            crate::NewUser::passwordless("test"),
+            crate::NewAccount::passwordless("test"),
         )
         .await
         .expect("Failed to create test instance");

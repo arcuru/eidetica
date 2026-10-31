@@ -49,7 +49,7 @@ auth_settings.add_key(
 
 settings.set("auth", auth_settings.to_doc());
 
-// Create database through User API (specified key gets Admin)
+// Create database through AccountSession API (specified key gets Admin)
 let key_id = user.get_default_key()?;
 let database = user.create_database(settings, &key_id).await?;
 ```
@@ -74,7 +74,7 @@ The client initiates a bootstrap request when it needs access to a synchronized 
 <!-- Code block ignored: Example client workflow code demonstrating bootstrap API usage -->
 
 ```rust,ignore
-// Request database access through User API
+// Request database access through AccountSession API
 user.request_database_access(
     &sync,
     &ticket,
@@ -84,6 +84,43 @@ user.request_database_access(
     None,
 ).await
 ```
+
+`AccountSession::join` takes the same arguments without the `Sync` handle and returns the opened database.
+It uses the instance's own sync engine when embedded and the daemon's when connected to a [service daemon](service.md), where the user's private key stays in the client process:
+
+<!-- Code block ignored: Example client workflow code demonstrating bootstrap API usage -->
+
+```rust,ignore
+let database = user
+    .join(&ticket, &key_id, Permission::Write(5), SyncSettings::on_commit(), None)
+    .await?;
+```
+
+`join` has the same interface in embedded and connected modes and waits for the peer's answer.
+A ticket is a locator, not an access grant.
+Success returns a `Database` after recording the selected user key's SigKey mapping and the caller's `SyncSettings`, so `user.open_database()` can open it again.
+`SyncError::BootstrapPending` changes no Account mappings or preferences: explicitly retry `join` with the same arguments after approval.
+`SyncError::BootstrapRejected` is terminal for that request and records no new mapping or preferences.
+
+Success means the finite supplied response and its ancestry have verified locally and the selected key currently satisfies the requested permission; it is not global catch-up.
+Identical completed Account settings and established routing are not written again.
+Newer preferences observed after the network wait are preserved, and legacy provisional mappings are not deleted on Pending or rejection.
+An error, dropped future or disconnected caller can leave a peer request, replicated entries, routing or a committed Account Entry without its acknowledgement.
+Reconnect and retry explicitly; a failed call does not imply rollback.
+There is no cancellation API, automatic restart-safe completion, or device enrollment.
+The client holds and signs with the user's private keys; the daemon owns networking, without a second client sync engine.
+Later daemon replication uses its device key, which needs its own authorization or a global grant.
+User-key access alone does not promise ongoing private background replication.
+
+### Current recovery limits
+
+Acquisition of an already-held database that the requesting key cannot read, including an orphan replica, remains refused.
+Join advertises empty tips and never sends local entries back, but this does not resolve native competing grant/revocation semantics.
+Missing delegated signing history leaves the affected entries Unverified and the transfer incomplete, not successful or terminally Failed.
+Native verification supports supplying and verifying the missing history before manually retrying on the same replica; `join` does not acquire that history automatically or bypass the held-tree Read gate.
+Complete held/unreadable, orphan and second-user recovery remains unsupported.
+The basic API uses existing native authority semantics; it does not fix competing grant/revocation resolution or guarantee that stale grants cannot restore access after ingestion.
+See the [verification model](../design/verification.md) for those native limitations.
 
 ### 2. Response Handling
 
@@ -127,10 +164,10 @@ While the request is pending, the client has several options:
 <!-- Code block ignored: Example retry logic implementation for bootstrap workflow -->
 
 ```rust,ignore
-use eidetica::{sync::DatabaseTicket, user::types::SyncSettings};
+use eidetica::{sync::DatabaseTicket, account::types::SyncSettings};
 
 async fn bootstrap_with_retry(
-    user: &mut User,
+    user: &mut AccountSession,
     sync: &Sync,
     ticket: &DatabaseTicket,
     key_id: &PublicKey,
@@ -181,7 +218,7 @@ for (request_id, request) in pending {
     );
 }
 
-// 2. Approve a request (using User API)
+// 2. Approve a request (using AccountSession API)
 user.approve_bootstrap_request(
     &sync,
     "bootstrap_a1b2c3d4...",
@@ -205,7 +242,7 @@ user.reject_bootstrap_request(
 let bootstrap_result = user.request_database_access(
     &sync,
     &ticket,
-    &key_id,  // User's key ID from user.add_private_key()
+    &key_id,  // Account's key ID from user.add_private_key()
     Permission::Write(5),
     SyncSettings::on_commit(),
     None,

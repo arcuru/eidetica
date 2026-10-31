@@ -281,17 +281,20 @@ fn test_list_insert_at_valid_indices() {
     let mut list = List::new();
 
     // Insert at beginning of empty list
-    assert!(list.insert(0, "first").is_ok());
+    list.insert(0, "first")
+        .expect("Insertion at a valid index should succeed");
     assert_eq!(list.len(), 1);
     assert_eq!(list.get(0).unwrap().as_text(), Some("first"));
 
     // Insert at end
-    assert!(list.insert(1, "last").is_ok());
+    list.insert(1, "last")
+        .expect("Insertion at a valid index should succeed");
     assert_eq!(list.len(), 2);
     assert_eq!(list.get(1).unwrap().as_text(), Some("last"));
 
     // Insert in middle
-    assert!(list.insert(1, "middle").is_ok());
+    list.insert(1, "middle")
+        .expect("Insertion at a valid index should succeed");
     assert_eq!(list.len(), 3);
     assert_eq!(list.get(0).unwrap().as_text(), Some("first"));
     assert_eq!(list.get(1).unwrap().as_text(), Some("middle"));
@@ -306,7 +309,8 @@ fn test_list_insert_at_beginning() {
     list.push("third");
 
     // Insert at beginning
-    assert!(list.insert(0, "first").is_ok());
+    list.insert(0, "first")
+        .expect("Insertion at a valid index should succeed");
     assert_eq!(list.len(), 3);
     assert_eq!(list.get(0).unwrap().as_text(), Some("first"));
     assert_eq!(list.get(1).unwrap().as_text(), Some("second"));
@@ -321,7 +325,8 @@ fn test_list_insert_at_end() {
     list.push("second");
 
     // Insert at end (equivalent to push)
-    assert!(list.insert(2, "third").is_ok());
+    list.insert(2, "third")
+        .expect("Insertion at a valid index should succeed");
     assert_eq!(list.len(), 3);
     assert_eq!(list.get(2).unwrap().as_text(), Some("third"));
 }
@@ -332,7 +337,6 @@ fn test_list_insert_index_out_of_bounds() {
 
     // Insert beyond bounds in empty list
     let result = list.insert(1, "invalid");
-    assert!(result.is_err());
     match result.unwrap_err() {
         CRDTError::ListIndexOutOfBounds { index, len } => {
             assert_eq!(index, 1);
@@ -347,7 +351,6 @@ fn test_list_insert_index_out_of_bounds() {
 
     // Insert way beyond bounds
     let result = list.insert(10, "invalid");
-    assert!(result.is_err());
     match result.unwrap_err() {
         CRDTError::ListIndexOutOfBounds { index, len } => {
             assert_eq!(index, 10);
@@ -363,8 +366,10 @@ fn test_list_insert_mixed_with_push() {
 
     // Mix insert and push operations
     let idx1 = list.push("a");
-    assert!(list.insert(1, "c").is_ok());
-    assert!(list.insert(1, "b").is_ok());
+    list.insert(1, "c")
+        .expect("Insertion at a valid index should succeed");
+    list.insert(1, "b")
+        .expect("Insertion at a valid index should succeed");
     let idx4 = list.push("d");
 
     assert_eq!(idx1, 0);
@@ -387,13 +392,16 @@ fn test_list_insert_maintains_stable_ordering() {
     list.push("third");
 
     // Insert in middle
-    assert!(list.insert(1, "second").is_ok());
+    list.insert(1, "second")
+        .expect("Insertion at a valid index should succeed");
 
     // Create another list with same operations
     let mut list2 = List::new();
     list2.push("first");
     list2.push("third");
-    assert!(list2.insert(1, "second").is_ok());
+    list2
+        .insert(1, "second")
+        .expect("Insertion at a valid index should succeed");
 
     // Both lists should have same order
     assert_eq!(list.len(), list2.len());
@@ -419,8 +427,10 @@ fn test_list_insert_with_nested_values() {
     nested_list.push(2);
     nested_list.push(3);
 
-    assert!(list.insert(0, nested_map).is_ok());
-    assert!(list.insert(1, nested_list).is_ok());
+    list.insert(0, nested_map)
+        .expect("Insertion at a valid index should succeed");
+    list.insert(1, nested_list)
+        .expect("Insertion at a valid index should succeed");
 
     assert_eq!(list.len(), 2);
     assert!(list.get(0).unwrap().as_doc().is_some());
@@ -450,7 +460,8 @@ fn test_list_insert_after_removals() {
     assert_eq!(list.len(), 2);
 
     // Insert should work correctly
-    assert!(list.insert(1, "new").is_ok());
+    list.insert(1, "new")
+        .expect("Insertion at a valid index should succeed");
     assert_eq!(list.len(), 3);
     assert_eq!(list.get(1).unwrap().as_text(), Some("new"));
 }
@@ -461,10 +472,11 @@ fn test_list_insert_after_removals() {
 fn test_list_error_integration() {
     let mut list = List::new();
 
-    let result = list.insert(5, "test");
-    assert!(result.is_err());
-
-    let error = result.unwrap_err();
+    let error = list.insert(5, "test").unwrap_err();
+    assert!(matches!(
+        error,
+        CRDTError::ListIndexOutOfBounds { index: 5, len: 0 }
+    ));
     assert!(error.is_list_error());
     assert!(!error.is_merge_error());
     assert!(!error.is_serialization_error());

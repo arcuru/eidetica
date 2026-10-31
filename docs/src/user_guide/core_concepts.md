@@ -202,7 +202,7 @@ Eidetica is under active development, and some features mentioned in this docume
 - Tombstone support for proper deletion handling in distributed environments
 - Signature-based authentication with crypto-agile key types and granular permissions
 - Per-entry verification status with prefix-closed verification and Verified-frontier reads
-- User identity and session management with encrypted key storage
+- Account identity and session management with encrypted key storage
 - Peer-to-peer synchronization via Iroh and HTTP transports
 - Local service (daemon) mode for multi-process shared access over Unix sockets
 

@@ -83,6 +83,36 @@ NixOS module opens the port when `openFirewall = true` and a web listener
 at `dataDir/service.sock` (not in systemd's private `/tmp`); client processes
 need owner-approved access to that directory.
 
+### Dashboard sync preferences
+
+Open a tracked database's detail page to edit **your account's** sync-enabled,
+sync-on-commit, and periodic-interval preferences.
+Blank interval means the background default; explicit intervals must be positive
+whole seconds representable by the server's timer.
+Saving retains the recorded key mapping, additional sync properties, and unrelated
+account settings.
+Only an already tracked database whose recorded key/mapping still authorizes reads
+can be updated; this form cannot create a tracking record or repair access.
+
+These are preferences, not global daemon switches or a report of network health.
+The ordinary signed write and daemon reconciliation combine the enabled accounts'
+preferences: sync-on-commit uses OR and explicit intervals use the minimum.
+Another account can therefore keep requesting sync after you disable it.
+Disabling neither cancels in-flight work nor revokes access.
+The current background scheduler uses a shared timer, so this is not an exact
+per-database deadline.
+
+Requests from one browser session hold its write lock through the complete
+read/modify/commit; reads in that session take the corresponding read lock.
+Separate logins, socket clients and replicas do not share that browser lock.
+They use normal snapshot transactions and the Table's row-level LWW merge,
+not distributed compare-and-swap or stale-form detection.
+Saving submits all three displayed preferences, so an older form can replace a
+newer edit; concurrent updates to the same row need not preserve each other's fields.
+Reload before editing to see current values.
+A commit error or lost response is not proof of rollback: the error page links to
+reload the actual preferences before retrying.
+
 ### Default Socket Path
 
 If no `--socket` is specified, the daemon uses:
@@ -131,15 +161,15 @@ let instance = Instance::connect(eidetica::service::default_socket_url()).await?
 // an initial admin user via `eidetica daemon init --username ops`
 // (see the CLI reference); log in as that user, then create application
 // users via the admin path.
-let admin = instance.login_user("ops", None).await?;
-admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-let mut user = instance.login_user("alice", None).await?;
+let admin = instance.login_account("ops", None).await?;
+admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
+let mut user = instance.login_account("alice", None).await?;
 
 let default_key = user.get_default_key()?;
 let db = user.create_database(eidetica::crdt::Doc::new(), &default_key).await?;
 ```
 
-The returned Instance is fully transparent -- all downstream code (Database, Transaction, Store, User) works identically whether the Instance is local or connected to a daemon.
+The returned Instance is fully transparent -- all downstream code (Database, Transaction, Store, AccountSession) works identically whether the Instance is local or connected to a daemon.
 
 ## Security Model
 
@@ -183,19 +213,19 @@ An adjacent lock coordinates cooperating daemons, stale sockets are recovered, a
 
 ## Multiple Clients
 
-Multiple clients can connect to the same daemon simultaneously. Each client maintains its own connection and User session:
+Multiple clients can connect to the same daemon simultaneously. Each client maintains its own connection and AccountSession:
 
 <!-- Code block ignored: Requires a running daemon -->
 
 ```rust,ignore
 // Client 1: an admin session creates the new user via the InstanceAdmin path.
 let instance1 = Instance::connect(eidetica::service::default_socket_url()).await?;
-let admin = instance1.login_user("ops", None).await?;
-admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
+let admin = instance1.login_account("ops", None).await?;
+admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
 
 // Client 2 (separate process or task): log in as the user that was just created.
 let instance2 = Instance::connect(eidetica::service::default_socket_url()).await?;
-let user = instance2.login_user("alice", None).await?;
+let user = instance2.login_account("alice", None).await?;
 ```
 
 All clients share the same underlying storage through the daemon's backend.
@@ -223,7 +253,7 @@ the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
 
 ## Limitations
 
-- **Sync management is server-side.** The daemon always loads persisted sync state, starts its Iroh listener, and keeps syncing without connected service clients. Use `--sync-ticket <TICKET>` for owner-side bootstrap and peer setup; the resulting relationships persist across restart. A connected client can't drive that lifecycle over the wire; `enable_sync()` on a remote Instance remains a no-op. User tracking changes made through the socket are reconciled by the daemon's Instance callbacks.
+- **Sync management is server-side.** The daemon always loads persisted sync state, starts its Iroh listener, and keeps syncing without connected service clients. Use `--sync-ticket <TICKET>` for owner-side bootstrap and peer setup; the resulting relationships persist across restart. A connected client can't drive that lifecycle over the wire; `enable_sync()` on a remote Instance remains a no-op. To join a database from a ticket, a connected client calls `AccountSession::join`: the daemon performs the network exchange, while the client holds its private key and signs the access request. Success returns an opened database after recording the account's key mapping and sync preferences; pending approval requires an explicit retry. Pending and rejection create no new Account state. Failed or interrupted calls can leave committed effects; retry explicitly rather than assuming rollback. There is no automatic restart-safe completion, cancellation API, or device enrollment. Held/unreadable acquisition, automatic delegated-history acquisition and stronger authority recovery remain unsupported; see [current recovery limits](bootstrap.md#current-recovery-limits). Ongoing daemon replication needs device-key authorization or a global grant; account-key access alone does not supply private background authority. Account tracking changes made through the socket are reconciled by the daemon's Instance callbacks.
 - **Unix-only.** The service module requires Unix domain sockets and is not available on Windows.
 - **Feature flag required.** The `service` feature must be enabled (included in the default `full` feature set).
 
@@ -275,3 +305,32 @@ These leases are advisory, not external exactly-once guarantees.
 A paused or disconnected old holder can still finish an already-started effect.
 Use idempotency keys and persist progress; stop voluntarily on loss.
 Ordinary database writes and replication are not fenced by leases.
+
+## Dashboard access requests
+
+An authenticated dashboard session can open **Manage pending database access requests**
+(`/dashboard/requests`).
+Only requests for databases where a held, mapped Account key currently has Admin
+permission are displayed; instance-admin status alone does not grant this authority.
+Each request shows its exact database ID, requester public key, requester-supplied
+key name, requested permission/priority and Pending lifecycle state.
+A key identifies a cryptographic signer, not an independently verified person.
+
+**Approve exact request** and **Reject request** are explicit same-origin form
+submissions bound to both the request ID and database ID.
+Approval uses the requested permission and priority, subject to existing Auth rules;
+an admin cannot create a higher-priority key than its own.
+There is no automatic approval or new device authorization.
+Refresh before deciding a stale request: already-decided requests are no longer
+in the pending list, and opposite decisions cannot reverse a terminal result.
+
+The requesting dashboard distinguishes pending approval, terminal rejection,
+network failure and completed access.
+Pending requests require an explicit **Retry request** after approval; they do
+not create new Account mappings or preferences.
+A successful transfer followed by a local bookkeeping error is reported separately,
+not as usable local access: local metadata may have persisted despite the error.
+Retry explicitly to repair or inspect the recorded state.
+The network wait does not hold the per-session lock, and bookkeeping preserves a
+tracked preference/key selection changed while that request was waiting.
+This observed-state check is not distributed compare-and-set or background completion.

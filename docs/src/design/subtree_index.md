@@ -23,7 +23,7 @@ The `_index` subtree is a special system subtree that serves as a registry for a
 
 - **Automatic Registration**: Subtrees are automatically registered when first accessed via `get_store()`
 - **Type Metadata**: Stores the Store type identifier (e.g., "docstore:v0", "table:v0")
-- **Configuration Storage**: Stores Store-specific configuration as JSON
+- **Configuration Storage**: Stores Store-specific configuration as a `Doc`
 - **Query API**: Provides Registry for querying registered subtrees
 
 ## Design Goals
@@ -81,11 +81,11 @@ Each registered subtree has an entry in `_index` with the following structure:
   "_index": {
     "users": {
       "type": "table:v0",
-      "config": "{}"
+      "config": {}
     },
     "documents": {
       "type": "ydoc:v0",
-      "config": "{\"compression\":\"zstd\"}"
+      "config": { "compression": "zstd" }
     }
   }
 }
@@ -98,7 +98,13 @@ Each registered subtree has an entry in `_index` with the following structure:
 
 ### Auto-Registration
 
-Subtrees are automatically registered in `_index` when first accessed via `Transaction::get_store()`. The Store's `init()` method handles both creation and registration.
+`Transaction::get_store()` calls `Store::register()` only when the named `_index` entry is missing.
+For an existing registration, it checks `Registered::supports_type_id()` before calling `Store::load()`.
+Malformed metadata and registry read errors propagate without loading or registering the Store, so catching an error and committing does not replace the registration.
+System subtrees bypass registration; their locking rules still apply.
+
+The registry reader preserves its existing config defaults: missing config and values other than `Doc` or text default to an empty `Doc`.
+Legacy text `"{}"` also normalizes to an empty `Doc`; other text config is rejected.
 
 Manual registration via `Registry::set_entry()` allows pre-configuring subtrees with custom settings before first access.
 
@@ -134,7 +140,8 @@ The `Registered` trait provides type identification for registry integration:
 The `Store` trait extends `Registered` and provides methods for registry integration:
 
 - **`default_config()`**: Returns default configuration as a `Doc`
-- **`init()`**: Creates store and registers it in `_index`
+- **`load()`**: Creates a Store handle without registering it
+- **`register()`**: Creates a Store and registers its type and default config in `_index`
 - **`get_config()` / `set_config()`**: Read/write configuration in `_index`
 
 ### Registry API
@@ -164,7 +171,7 @@ Access via `Transaction::get_index()`.
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -203,7 +210,7 @@ assert!(info.config.is_empty());
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -249,7 +256,7 @@ assert!(info.config.contains_key("compression"));
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");

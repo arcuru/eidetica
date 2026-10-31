@@ -6,6 +6,7 @@
 
 use eidetica::{
     Database, Instance, Result,
+    account::AccountSession,
     auth::{
         crypto::{PrivateKey, PublicKey},
         types::{
@@ -19,7 +20,6 @@ use eidetica::{
     database::DatabaseKey,
     entry::ID,
     store::DocStore,
-    user::User,
 };
 
 use super::helpers::*;
@@ -794,13 +794,13 @@ struct DelegationPair {
 
 /// Create a (identity_db, target_db) pair wired for delegation.
 ///
-/// - `identity_db` is created via the User API so the user holds its admin key.
+/// - `identity_db` is created via the AccountSession API so the user holds its admin key.
 /// - `target_db` is created with a standalone admin key (NOT in the user's keyring),
 ///   so the user's only access path is through delegation.
 /// - A `DelegatedTreeRef` with `max_permission` is added to target_db's settings.
 async fn setup_delegation_pair(
     instance: &Instance,
-    user: &mut User,
+    user: &mut AccountSession,
     max_permission: Permission,
 ) -> Result<DelegationPair> {
     let user_key_id = user.add_private_key(Some("user")).await?;
@@ -880,7 +880,7 @@ async fn test_delegated_write_database_api() -> Result<()> {
     Ok(())
 }
 
-/// Test full User API flow: track_database discovers delegation, open_database uses it
+/// Test full AccountSession API flow: track_database discovers delegation, open_database uses it
 #[tokio::test]
 async fn test_delegated_write_user_api_flow() -> Result<()> {
     let (instance, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
@@ -894,7 +894,7 @@ async fn test_delegated_write_user_api_flow() -> Result<()> {
     )
     .await?;
 
-    // Open target_db via User API -- should use delegation SigKey
+    // Open target_db via AccountSession API -- should use delegation SigKey
     let opened_db = user.open_database(pair.target_db.root_id()).await?;
 
     // Verify the database was opened with a delegation identity pointing to identity_db
@@ -1062,7 +1062,7 @@ async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
     // they arrive over sync: stored Unverified, no asserted status.
     let (instance_b, _admin) = Instance::create_backend(
         crate::helpers::test_backend().await,
-        eidetica::NewUser::passwordless("receiver"),
+        eidetica::NewAccount::passwordless("receiver"),
     )
     .await?;
     for root in [pair.identity_db.root_id(), pair.target_db.root_id()] {

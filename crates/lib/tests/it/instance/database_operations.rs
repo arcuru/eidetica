@@ -22,7 +22,7 @@ async fn test_database_authentication_scenarios() {
     let (_instance, mut user) = test_instance_with_user("auth_user").await;
     let key_id = user
         .get_default_key()
-        .expect("User should have default key");
+        .expect("AccountSession should have default key");
 
     // Test tree creation with authentication
     let tree1 = user

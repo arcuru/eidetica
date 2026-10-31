@@ -101,7 +101,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
     Ok(())
 }
 
-/// Test concurrent key approval requests from multiple clients using User API.
+/// Test concurrent key approval requests from multiple clients using AccountSession API.
 ///
 /// Verifies that when multiple clients request key approval simultaneously,
 /// all requests are processed correctly without race conditions.
@@ -154,7 +154,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
             .await
             .unwrap();
 
-            // Verify client can now load the database using User API
+            // Verify client can now load the database using AccountSession API
             let client_db = client_user.open_database(&tree_id).await.unwrap();
 
             // Verify client's key was added to auth settings

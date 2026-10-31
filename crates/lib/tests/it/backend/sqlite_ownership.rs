@@ -259,7 +259,7 @@ async fn failed_sqlite_initialization_releases_ownership() {
         Err(error) => error,
     };
     assert!(
-        error.to_string().contains("Index creation failed"),
+        error.to_string().contains("Malformed SQL layout"),
         "expected a schema initialization failure, got {error:?}"
     );
 

@@ -62,13 +62,13 @@ Template for examples that should be compiled and validated (it might be best to
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, NewUser};
+# use eidetica::{Instance, NewAccount};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 // Open an Instance by URL — `memory://` is an ephemeral in-process backend.
 let (_instance, _) =
-    Instance::connect_or_create("memory://", NewUser::passwordless("alice")).await?;
+    Instance::connect_or_create("memory://", NewAccount::passwordless("alice")).await?;
 
 // Your example code here
 # Ok(())

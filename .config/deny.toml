@@ -38,4 +38,5 @@ exceptions = [
     { allow = ["AGPL-3.0-or-later"], crate = "eidetica-book-tests" },
     { allow = ["AGPL-3.0-or-later"], crate = "example-chat" },
     { allow = ["AGPL-3.0-or-later"], crate = "example-todo" },
+    { allow = ["AGPL-3.0-or-later"], crate = "shistory" },
 ]

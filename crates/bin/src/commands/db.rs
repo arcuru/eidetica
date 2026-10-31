@@ -3,7 +3,7 @@
 use eidetica::{Instance, backend::BackendImpl};
 
 use crate::backend::create_backend;
-use crate::cli::{Backend, DbListArgs, DbResetArgs};
+use crate::cli::{Backend, BackendConfig, DbListArgs, DbRepairArgs, DbResetArgs};
 use crate::output::{OutputFormat, print_table};
 
 /// Run the `db list` command
@@ -76,7 +76,40 @@ pub async fn reset_local_verification(
     if !args.confirm {
         return Err("Pass --confirm to reset all local verification statuses".into());
     }
-    let config = &args.backend_config;
+    let (backend, save_path) = open_existing(&args.backend_config).await?;
+    backend.reset_local_verification().await?;
+    save_if_needed(&*backend, save_path.as_deref())?;
+    println!("Local verification reset; restart and reverify all databases before trusting reads.");
+    Ok(())
+}
+
+/// Repair never claims successful cryptographic verification or resets Failed decisions.
+pub async fn repair_verification(args: &DbRepairArgs) -> Result<(), Box<dyn std::error::Error>> {
+    if !args.confirm {
+        return Err("Pass --confirm to repair local verification".into());
+    }
+    let tree = eidetica::entry::ID::parse(&args.tree)?;
+    let (backend, save_path) = open_existing(&args.backend_config).await?;
+    let root = backend.get(&tree).await?;
+    if !root.is_root() {
+        return Err("--tree must identify a stored root Entry".into());
+    }
+    let result = backend.repair_verification(&tree).await?;
+    save_if_needed(&*backend, save_path.as_deref())?;
+    println!(
+        "Verification repaired: {} demoted to Unverified; {} verified tips. No entries were verified.",
+        result.demoted,
+        result.snapshot.len()
+    );
+    Ok(())
+}
+
+/// Maintenance must not use the general factory, which creates missing targets
+/// and treats corrupt in-memory persistence as empty.
+async fn open_existing(
+    config: &BackendConfig,
+) -> Result<(Box<dyn BackendImpl>, Option<std::path::PathBuf>), Box<dyn std::error::Error>> {
+    let policy = crate::backend::cache_policy(config);
     match config.backend {
         Backend::Inmemory => {
             let dir = config
@@ -87,8 +120,7 @@ pub async fn reset_local_verification(
             let backend = eidetica::backend::database::InMemory::try_load_from_file(&path)
                 .await?
                 .ok_or("In-memory persistence file does not exist")?;
-            backend.reset_local_verification().await?;
-            backend.save_to_file(&path)?;
+            Ok((Box::new(backend), Some(path)))
         }
         Backend::Sqlite => {
             let dir = config
@@ -99,22 +131,40 @@ pub async fn reset_local_verification(
             if !path.is_file() {
                 return Err("SQLite database file does not exist".into());
             }
-            eidetica::backend::database::Sqlite::open(&path)
-                .await?
-                .reset_local_verification()
-                .await?;
+            Ok((
+                Box::new(
+                    eidetica::backend::database::Sqlite::open_with_cache_policy(&path, policy)
+                        .await?,
+                ),
+                None,
+            ))
         }
         Backend::Postgres => {
             let url = config
                 .postgres_url
                 .as_ref()
                 .ok_or("Specify --postgres-url explicitly")?;
-            eidetica::backend::database::Postgres::connect(url)
-                .await?
-                .reset_local_verification()
-                .await?;
+            Ok((
+                Box::new(
+                    eidetica::backend::database::Postgres::connect_with_cache_policy(url, policy)
+                        .await?,
+                ),
+                None,
+            ))
         }
     }
-    println!("Local verification reset; restart and reverify all databases before trusting reads.");
+}
+
+fn save_if_needed(
+    backend: &dyn BackendImpl,
+    path: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(path) = path {
+        backend
+            .as_any()
+            .downcast_ref::<eidetica::backend::database::InMemory>()
+            .expect("only InMemory needs explicit save")
+            .save_to_file(path)?;
+    }
     Ok(())
 }

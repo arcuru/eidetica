@@ -74,7 +74,7 @@ impl Lease {
                 name,
             },
             #[cfg(all(unix, feature = "service"))]
-            identity: database.ops().remote_identity().unwrap_or_default(),
+            identity: database.ops().remote_identity(),
         }
     }
 
@@ -578,7 +578,7 @@ mod tests {
     #[tokio::test]
     async fn test_lease_watch_drop_unregisters_embedded() {
         let (instance, user) =
-            Instance::connect_or_create("memory://", crate::NewUser::passwordless("admin"))
+            Instance::connect_or_create("memory://", crate::NewAccount::passwordless("admin"))
                 .await
                 .unwrap();
         let mut user = user.unwrap();

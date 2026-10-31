@@ -4,24 +4,25 @@ use std::future::Future;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use super::{
     Address, DatabaseTicket, PeerId, Sync, SyncError,
+    account_sync_manager::AccountSyncManager,
     background::SyncCommand,
+    operation::SyncOperation,
     peer_manager::PeerManager,
     peer_types,
     protocol::{self, SyncRequest, SyncRequestAuth, SyncResponse, SyncTreeRequest},
-    user_sync_manager::UserSyncManager,
 };
 use crate::{
     Database, Entry, Result,
+    account::types::AccountInfo,
     auth::Permission,
     auth::crypto::{PrivateKey, PublicKey},
     crdt::Doc,
     entry::ID,
     store::Table,
-    user::types::UserInfo,
 };
 
 use super::utils::collect_ancestors_to_send;
@@ -53,29 +54,42 @@ impl Sync {
     /// key, which is right when the device itself holds the access (directly or
     /// through a delegated tree). A database that instead granted a *user* key —
     /// the usual outcome of bootstrapping with one — needs that key here.
+    #[tracing::instrument(skip_all, fields(peer = %peer_pubkey, tree = %tree_id))]
     pub async fn sync_tree_with_peer_as(
         &self,
         peer_pubkey: &PublicKey,
         tree_id: &ID,
         signing_key: Option<&PrivateKey>,
     ) -> Result<()> {
+        let mut operation = SyncOperation::new("sync_tree");
+        let span = operation.span();
+
+        let result = self
+            .sync_tree_with_peer_as_in_operation(peer_pubkey, tree_id, signing_key, &mut operation)
+            .instrument(span)
+            .await;
+        operation.finish(&result);
+        result
+    }
+
+    /// Continue a caller-owned diagnostic operation through route selection.
+    pub(super) async fn sync_tree_with_peer_as_in_operation(
+        &self,
+        peer_pubkey: &PublicKey,
+        tree_id: &ID,
+        signing_key: Option<&PrivateKey>,
+        operation: &mut SyncOperation,
+    ) -> Result<()> {
         let addresses = self.peer_addresses(peer_pubkey).await?;
-        let peer = peer_pubkey.clone();
-        let tree = tree_id.clone();
-        let key = signing_key.cloned();
-        self.with_selected_address(&addresses, peer_pubkey, move |sync, addr| {
-            let peer = peer.clone();
-            let tree = tree.clone();
-            let key = key.clone();
-            async move {
-                sync.sync_tree_with_peer_at(&addr, &peer, &tree, key.as_ref())
-                    .await
-            }
+        self.with_selected_address(&addresses, peer_pubkey, operation, |address| async move {
+            self.sync_tree_with_peer_at(&address, peer_pubkey, tree_id, signing_key)
+                .await
         })
         .await
     }
 
     /// One address's attempt at [`Self::sync_tree_with_peer_as`].
+    #[tracing::instrument(name = "sync_tree", skip_all, fields(peer = %peer_pubkey, tree = %tree_id, address = ?address), err)]
     async fn sync_tree_with_peer_at(
         &self,
         address: &Address,
@@ -83,6 +97,7 @@ impl Sync {
         tree_id: &ID,
         signing_key: Option<&PrivateKey>,
     ) -> Result<()> {
+        debug!("Starting tree synchronization");
         // Get our current tips for this tree (empty if tree doesn't exist)
         let our_tips = self.tree_pull_tips(tree_id).await?;
 
@@ -115,6 +130,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
+                span: tracing::Span::current(),
                 address: address.clone(),
                 request: Box::new(request),
                 response: tx,
@@ -124,8 +140,7 @@ impl Sync {
 
         let response = rx
             .await
-            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
-            .map_err(|e| SyncError::Network(format!("Request failed: {e}")))?;
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))??;
 
         match response {
             SyncResponse::Bootstrap(bootstrap_response) => {
@@ -151,6 +166,7 @@ impl Sync {
         // This allows on_local_write() to find this peer when queueing entries
         self.add_tree_sync(peer_pubkey, tree_id).await?;
 
+        debug!("Completed tree synchronization");
         Ok(())
     }
 
@@ -269,6 +285,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
+                span: tracing::Span::current(),
                 address: peer_address.clone(),
                 request: Box::new(request),
                 response: tx,
@@ -279,8 +296,7 @@ impl Sync {
         // Wait for acknowledgment
         let response = rx
             .await
-            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
-            .map_err(|e| SyncError::Network(format!("Request failed: {e}")))?;
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))??;
 
         match response {
             protocol::SyncResponse::Ack | protocol::SyncResponse::Count(_) => {
@@ -449,7 +465,7 @@ impl Sync {
 
         // Look up combined settings for this database
         let tx = self.sync_tree.new_transaction().await?;
-        let user_mgr = UserSyncManager::new(&tx);
+        let user_mgr = AccountSyncManager::new(&tx);
         let peer_mgr = PeerManager::new(&tx);
 
         let combined_settings = match user_mgr.get_combined_settings(database.root_id()).await? {
@@ -511,29 +527,29 @@ impl Sync {
     /// This is called during Sync initialization. For new sync trees (just created),
     /// it scans the _users database to register all existing users. For existing
     /// sync trees (loaded), it updates combined settings for already-tracked users.
-    pub(super) async fn initialize_user_settings(&self) -> Result<()> {
-        self.reconcile_user_settings().await
+    pub(super) async fn initialize_account_settings(&self) -> Result<()> {
+        self.reconcile_account_settings().await
     }
 
     /// Reconcile the persisted user directory and every tracked preferences tree.
     ///
     /// The daemon calls this at startup and whenever a service client changes
-    /// either source tree. It is intentionally idempotent: `sync_user` compares
+    /// either source tree. It is intentionally idempotent: `sync_account` compares
     /// the persisted preferences cursor before updating combined settings.
-    pub(crate) async fn reconcile_user_settings(&self) -> Result<()> {
+    pub(crate) async fn reconcile_account_settings(&self) -> Result<()> {
         let _guard = self.reconciliation.lock().await;
 
         let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
         let users_db = instance.users_db().await?;
         let users_table = users_db
-            .get_store_viewer::<Table<UserInfo>>("users")
+            .get_store_viewer::<Table<AccountInfo>>("users")
             .await?;
 
         // Always scan `_users`, not only when the sync tree is empty. A daemon
         // may already track some users when another account is created through
         // the service socket.
-        for (user_uuid, user_info) in users_table.search(|_| true).await? {
-            self.sync_user(&user_uuid, &user_info.user_database_id)
+        for (login_id, account_info) in users_table.search(|_| true).await? {
+            self.sync_account(&login_id, &account_info.account_id)
                 .await?;
         }
 
@@ -548,11 +564,11 @@ impl Sync {
         }
         let users_db = instance.users_db().await?;
         let users_table = users_db
-            .get_store_viewer::<Table<UserInfo>>("users")
+            .get_store_viewer::<Table<AccountInfo>>("users")
             .await?;
 
         Ok(users_table
-            .search(|user| &user.user_database_id == database_id)
+            .search(|user| &user.account_id == database_id)
             .await?
             .into_iter()
             .next()
@@ -578,6 +594,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
+                span: tracing::Span::current(),
                 address: address.clone(),
                 request: Box::new(request.clone()),
                 response: tx,
@@ -637,30 +654,44 @@ impl Sync {
     ///
     /// See [`sync_tree_with_peer_as`](Self::sync_tree_with_peer_as) for which
     /// key to pass.
+    #[tracing::instrument(skip_all, fields(address = ?address, tree = ?tree_id))]
     pub async fn sync_with_peer_as(
         &self,
         address: &Address,
         tree_id: Option<&ID>,
         signing_key: Option<&PrivateKey>,
     ) -> Result<()> {
-        // Connect to peer if not already connected
-        let peer_pubkey = self.connect_to_peer(address).await?;
+        let mut operation = SyncOperation::new("sync_address");
+        let span = operation.span();
+        let result = async {
+            // Connect to peer if not already connected
+            let peer_pubkey = self.connect_for_operation(address, &mut operation).await?;
 
-        // Store the address for this peer (needed for sync_tree_with_peer)
-        self.add_peer_address(&peer_pubkey, address.clone()).await?;
+            // Store the address for this peer (needed for sync_tree_with_peer)
+            self.add_peer_address(&peer_pubkey, address.clone()).await?;
 
-        if let Some(tree_id) = tree_id {
-            // Sync specific tree
-            self.sync_tree_with_peer_as(&peer_pubkey, tree_id, signing_key)
+            if let Some(tree_id) = tree_id {
+                // Sync specific tree
+                self.sync_tree_with_peer_as_in_operation(
+                    &peer_pubkey,
+                    tree_id,
+                    signing_key,
+                    &mut operation,
+                )
                 .await?;
-        } else {
-            // TODO: Sync all available trees
-            tracing::warn!(
-                "Syncing all trees not yet implemented - need to enhance discover_peer_trees first"
-            );
-        }
+            } else {
+                // TODO: Sync all available trees
+                tracing::warn!(
+                    "Syncing all trees not yet implemented - need to enhance discover_peer_trees first"
+                );
+            }
 
-        Ok(())
+            Ok(())
+        }
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
     }
 
     /// Sync with a peer using a [`DatabaseTicket`].
@@ -675,12 +706,26 @@ impl Sync {
     /// # Errors
     /// Returns [`SyncError::InvalidAddress`] if the ticket has no address hints.
     /// Returns the last sync error if no address succeeded.
+    #[tracing::instrument(skip_all, fields(tree = %ticket.database_id()))]
     pub async fn sync_with_ticket(&self, ticket: &DatabaseTicket) -> Result<()> {
-        let database_id = ticket.database_id().clone();
-        let (address, peer_pubkey) = self.select_address(ticket.addresses(), None).await?;
-        self.add_peer_address(&peer_pubkey, address.clone()).await?;
-        self.sync_tree_with_peer_at(&address, &peer_pubkey, &database_id, None)
-            .await
+        let mut operation = SyncOperation::new("sync_ticket");
+        let span = operation.span();
+        let result = async {
+            let database_id = ticket.database_id().clone();
+            let (address, peer_pubkey) = self
+                .select_address(ticket.addresses(), None, &mut operation)
+                .await?;
+            self.add_peer_address(&peer_pubkey, address.clone()).await?;
+            let result = self
+                .sync_tree_with_peer_at(&address, &peer_pubkey, &database_id, None)
+                .await;
+            operation.tree_result(&result);
+            result
+        }
+        .instrument(span)
+        .await;
+        operation.finish(&result);
+        result
     }
 
     /// Sync a specific tree with a peer, with optional authentication for bootstrap.
@@ -697,6 +742,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure.
+    #[tracing::instrument(skip_all, fields(peer = %peer_pubkey, tree = %tree_id))]
     pub async fn sync_tree_with_peer_auth(
         &self,
         peer_pubkey: &PublicKey,
@@ -706,35 +752,55 @@ impl Sync {
         requested_permission: Option<Permission>,
         metadata: Option<Doc>,
     ) -> Result<()> {
+        let mut operation = SyncOperation::new("sync_tree_auth");
+        let span = operation.span();
+
+        let result = self
+            .sync_tree_with_peer_auth_in_operation(
+                peer_pubkey,
+                tree_id,
+                requesting_key,
+                requesting_key_name,
+                requested_permission,
+                metadata,
+                &mut operation,
+            )
+            .instrument(span)
+            .await;
+        operation.finish(&result);
+        result
+    }
+
+    /// Continue a caller-owned diagnostic operation through route selection.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn sync_tree_with_peer_auth_in_operation(
+        &self,
+        peer_pubkey: &PublicKey,
+        tree_id: &ID,
+        requesting_key: Option<&PrivateKey>,
+        requesting_key_name: Option<&str>,
+        requested_permission: Option<Permission>,
+        metadata: Option<Doc>,
+        operation: &mut SyncOperation,
+    ) -> Result<()> {
         let addresses = self.peer_addresses(peer_pubkey).await?;
-        let peer = peer_pubkey.clone();
-        let tree = tree_id.clone();
-        let key = requesting_key.cloned();
-        let key_name = requesting_key_name.map(str::to_string);
-        self.with_selected_address(&addresses, peer_pubkey, move |sync, addr| {
-            let peer = peer.clone();
-            let tree = tree.clone();
-            let key = key.clone();
-            let key_name = key_name.clone();
-            let metadata = metadata.clone();
-            async move {
-                sync.sync_tree_with_peer_auth_at(
-                    &addr,
-                    &peer,
-                    &tree,
-                    key.as_ref(),
-                    key_name.as_deref(),
-                    requested_permission,
-                    metadata,
-                )
-                .await
-            }
+        self.with_selected_address(&addresses, peer_pubkey, operation, |address| async move {
+            self.sync_tree_with_peer_auth_at(
+                &address,
+                peer_pubkey,
+                tree_id,
+                requesting_key,
+                requesting_key_name,
+                requested_permission,
+                metadata,
+            )
+            .await
         })
         .await
     }
 
     /// Local tips used in an authenticated pull request.
-    async fn tree_pull_tips(&self, tree_id: &ID) -> Result<crate::Snapshot> {
+    pub(super) async fn tree_pull_tips(&self, tree_id: &ID) -> Result<crate::Snapshot> {
         let backend = self.backend()?;
         let tips = backend
             .snapshot(tree_id)
@@ -769,9 +835,6 @@ impl Sync {
         // Get our current tips for this tree (empty if tree doesn't exist)
         let our_tips = self.tree_pull_tips(tree_id).await?;
 
-        // Get our device public key for automatic peer tracking
-        let our_device_pubkey = self.get_device_pubkey().ok();
-
         // Send the request with proof from the named requesting key. Calls
         // without a named-key request still sign with the device key for
         // authenticated data access where required.
@@ -784,16 +847,40 @@ impl Sync {
             &our_tips,
             instance.clock().now_millis(),
         );
-        let request = SyncRequest::SyncTree(SyncTreeRequest {
+        let request = SyncTreeRequest {
             tree_id: tree_id.clone(),
             our_tips,
-            peer_pubkey: our_device_pubkey,
+            peer_pubkey: self.get_device_pubkey().ok(),
             requesting_key: requesting_key.map(|k| k.public_key()),
             requesting_key_name: requesting_key_name.map(|k| k.to_string()),
             requested_permission,
             metadata,
             auth: Some(auth),
-        });
+        };
+        self.exchange_tree_request_at(address, peer_pubkey, request)
+            .await
+    }
+
+    /// Send one signed tree request through `address` and apply the response.
+    ///
+    /// Shared by requests signed in this process and requests whose proof was
+    /// signed elsewhere (a service client that keeps its key in-process). A
+    /// pending or rejected bootstrap surfaces as the matching [`SyncError`].
+    #[tracing::instrument(name = "sync_tree", skip_all, fields(peer = %peer_pubkey, tree = %request.tree_id, address = ?address), err)]
+    pub(super) async fn exchange_tree_request_at(
+        &self,
+        address: &Address,
+        peer_pubkey: &PublicKey,
+        request: SyncTreeRequest,
+    ) -> Result<()> {
+        debug!("Starting tree synchronization");
+        let tree_id = request.tree_id.clone();
+        let requested_access = request
+            .requesting_key
+            .clone()
+            .zip(request.requested_permission);
+        let pull_only = requested_access.is_some() && request.our_tips.is_empty();
+        let request = SyncRequest::SyncTree(request);
 
         // Send request via background sync command
         let (tx, rx) = oneshot::channel();
@@ -801,6 +888,7 @@ impl Sync {
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
+                span: tracing::Span::current(),
                 address: address.clone(),
                 request: Box::new(request),
                 response: tx,
@@ -811,33 +899,60 @@ impl Sync {
             })?;
 
         // Wait for response
-        let response = rx
-            .await
-            .map_err(|_| {
-                SyncError::CommandSendError("Background sync response channel closed".to_string())
-            })?
-            .map_err(|e| SyncError::Network(format!("Sync request failed: {e}")))?;
+        let response = rx.await.map_err(|_| {
+            SyncError::CommandSendError("Background sync response channel closed".to_string())
+        })??;
 
         // Handle the response (same logic as existing sync_tree_with_peer)
         match response {
             SyncResponse::Bootstrap(bootstrap_response) => {
                 info!(peer = %peer_pubkey, tree = %tree_id, entry_count = bootstrap_response.all_entries.len() + 1, "Received bootstrap response");
 
-                // Store root + all entries as a single batch with callback dispatch
+                // Neither the envelope nor the root may substitute another tree.
+                if bootstrap_response.tree_id != tree_id
+                    || !bootstrap_response.root_entry.is_root()
+                    || bootstrap_response.root_entry.id() != tree_id
+                {
+                    return Err(SyncError::InvalidEntry(
+                        "bootstrap response does not contain the requested root".to_string(),
+                    )
+                    .into());
+                }
                 let mut all_entries = Vec::with_capacity(1 + bootstrap_response.all_entries.len());
                 all_entries.push(bootstrap_response.root_entry);
                 all_entries.extend(bootstrap_response.all_entries);
 
-                // Bootstrap entries come from a peer; stored Unverified.
-                let instance = self.instance()?;
-                instance.put_remote_entries(tree_id, all_entries).await?;
+                self.store_verified_response_entries(&tree_id, all_entries)
+                    .await?;
 
                 info!(peer = %peer_pubkey, tree = %tree_id, "Bootstrap sync completed successfully");
             }
-            SyncResponse::Incremental(incremental_response) => {
+            SyncResponse::Incremental(mut incremental_response) => {
+                if pull_only {
+                    return Err(SyncError::SyncProtocolError(
+                        "ticket bootstrap requires a full response, not incremental send-back"
+                            .to_string(),
+                    )
+                    .into());
+                }
                 info!(peer = %peer_pubkey, tree = %tree_id, missing_count = incremental_response.missing_entries.len(), "Received incremental sync response");
+                // The response handler stores into, and sends back from, the
+                // tree the response names; it must be the one requested.
+                if incremental_response.tree_id != tree_id {
+                    return Err(SyncError::SyncProtocolError(format!(
+                        "incremental response for tree {} does not match requested tree {tree_id}",
+                        incremental_response.tree_id
+                    ))
+                    .into());
+                }
 
-                // Use the enhanced handler that supports bidirectional sync
+                // Do not send anything back or publish routing for an incomplete
+                // supplied closure. Count and raw tips cannot establish readiness.
+                self.store_verified_response_entries(
+                    &tree_id,
+                    std::mem::take(&mut incremental_response.missing_entries),
+                )
+                .await?;
                 self.handle_incremental_response(incremental_response, address)
                     .await?;
 
@@ -876,10 +991,42 @@ impl Sync {
             }
         }
 
-        // Track tree/peer relationship for sync_on_commit to work
-        // This allows on_local_write() to find this peer when queueing entries
-        self.add_tree_sync(peer_pubkey, tree_id).await?;
+        if let Some((key, permission)) = requested_access
+            && !Database::can_access(&self.instance()?, &tree_id, &key, &permission).await?
+        {
+            return Err(SyncError::AuthenticationFailed(
+                "verified transfer does not grant the requested permission".to_string(),
+            )
+            .into());
+        }
+        // Publication follows verified transfer and current requested authority.
+        self.add_tree_sync(peer_pubkey, &tree_id).await?;
 
+        debug!("Completed tree synchronization");
+        Ok(())
+    }
+
+    /// Require the finite supplied closure to be locally verified. Verification
+    /// is prefix-closed, so a Verified supplied entry also proves its ancestry;
+    /// an omitted remote branch is not something this exchange can detect.
+    async fn store_verified_response_entries(
+        &self,
+        tree_id: &ID,
+        entries: Vec<Entry>,
+    ) -> Result<()> {
+        let ids: Vec<_> = entries.iter().map(Entry::id).collect();
+        let instance = self.instance()?;
+        instance.put_remote_entries(tree_id, entries).await?;
+        let backend = instance.require_local_engine()?;
+        for id in ids {
+            let status = backend.get_verification_status(&id).await?;
+            if status != crate::backend::VerificationStatus::Verified {
+                return Err(SyncError::InvalidEntry(format!(
+                    "requested transfer entry {id} is {status:?}, not Verified"
+                ))
+                .into());
+            }
+        }
         Ok(())
     }
 
@@ -947,14 +1094,22 @@ impl Sync {
         &self,
         addresses: &[Address],
         peer_pubkey: &PublicKey,
+        operation: &mut SyncOperation,
         f: F,
     ) -> Result<()>
     where
-        F: Fn(Sync, Address) -> Fut,
-        Fut: Future<Output = Result<()>> + Send + 'static,
+        F: FnOnce(Address) -> Fut,
+        Fut: Future<Output = Result<()>>,
     {
-        let result = match self.select_address(addresses, Some(peer_pubkey)).await {
-            Ok((address, _)) => f(self.clone(), address).await,
+        let result = match self
+            .select_address(addresses, Some(peer_pubkey), operation)
+            .await
+        {
+            Ok((address, _)) => {
+                let result = f(address).await;
+                operation.tree_result(&result);
+                result
+            }
             Err(error) => Err(error),
         };
         if let Err(e) = &result {
@@ -962,7 +1117,7 @@ impl Sync {
                 peer = %peer_pubkey,
                 attempted = ?addresses,
                 error = %e,
-                "No address answered for this peer"
+                "Sync operation failed"
             );
         }
         result
@@ -998,7 +1153,9 @@ impl Sync {
         &self,
         addresses: &[Address],
         expected: Option<&PublicKey>,
+        operation: &mut SyncOperation,
     ) -> Result<(Address, PublicKey)> {
+        operation.routes(addresses.len(), addresses.len());
         if addresses.is_empty() {
             return Err(SyncError::InvalidAddress("Ticket has no address hints".into()).into());
         }
@@ -1017,45 +1174,52 @@ impl Sync {
             let addr = addr.clone();
             let addr_info = addr.clone();
             let cancel = cancel.subscribe();
-            tokio::spawn(async move {
-                let result = tokio::time::timeout(
-                    Self::ADDRESS_ATTEMPT_TIMEOUT,
-                    sync.connect_to_peer_with_cancel(&addr, cancel),
-                )
-                .await;
-                let result = match result {
-                    Ok(Ok(peer_pubkey)) => Ok((addr, peer_pubkey)),
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => {
-                        warn!(
-                            address = ?addr_info,
-                            "Address attempt timed out after {:?}",
-                            Self::ADDRESS_ATTEMPT_TIMEOUT,
-                        );
-                        Err(SyncError::Network(format!(
-                            "Address attempt timed out after {:?}",
-                            Self::ADDRESS_ATTEMPT_TIMEOUT,
-                        ))
-                        .into())
+            tokio::spawn(
+                async move {
+                    let result = tokio::time::timeout(
+                        Self::ADDRESS_ATTEMPT_TIMEOUT,
+                        sync.connect_to_peer_with_cancel(&addr, cancel),
+                    )
+                    .await;
+                    let attempt_timed_out = result.is_err();
+                    let result = match result {
+                        Ok(Ok(peer_pubkey)) => Ok((addr, peer_pubkey)),
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => {
+                            warn!(
+                                address = ?addr_info,
+                                "Address attempt timed out after {:?}",
+                                Self::ADDRESS_ATTEMPT_TIMEOUT,
+                            );
+                            Err(SyncError::Network(format!(
+                                "Address attempt timed out after {:?}",
+                                Self::ADDRESS_ATTEMPT_TIMEOUT,
+                            ))
+                            .into())
+                        }
+                    };
+                    match &result {
+                        Ok(_) => debug!(address = ?addr_info, "Address attempt succeeded"),
+                        Err(e) => {
+                            debug!(address = ?addr_info, error = %e, "Address attempt failed")
+                        }
                     }
-                };
-                match &result {
-                    Ok(_) => debug!(address = ?addr_info, "Address attempt succeeded"),
-                    Err(e) => debug!(address = ?addr_info, error = %e, "Address attempt failed"),
+                    // Ignore send errors — the receiver is dropped once a winner
+                    // was selected and this loser's dial has been abandoned.
+                    let _ = tx.send((result, attempt_timed_out)).await;
                 }
-                // Ignore send errors — the receiver is dropped once a winner
-                // was selected and this loser's dial has been abandoned.
-                let _ = tx.send(result).await;
-            });
+                .in_current_span(),
+            );
         }
         // Drop our sender so the channel closes when all tasks finish.
         drop(tx);
 
         let mut last_err = None;
-        while let Some(result) = rx.recv().await {
+        while let Some((result, attempt_timed_out)) = rx.recv().await {
             match result {
                 Ok((addr, answered)) => match expected {
                     Some(want) if want != &answered => {
+                        operation.wrong_peer();
                         warn!(
                             address = ?addr,
                             expected = %want,
@@ -1069,9 +1233,16 @@ impl Sync {
                             .into(),
                         );
                     }
-                    _ => return Ok((addr, answered)),
+                    _ => {
+                        operation.selected(&addr);
+                        debug!(address = ?addr, "Selected sync route");
+                        return Ok((addr, answered));
+                    }
                 },
-                Err(e) => last_err = Some(e),
+                Err(e) => {
+                    operation.failed_route(&e, attempt_timed_out);
+                    last_err = Some(e);
+                }
             }
         }
 
@@ -1082,13 +1253,15 @@ impl Sync {
 #[cfg(test)]
 mod orphan_bootstrap_tests {
     use super::*;
-    use crate::{Instance, NewUser, backend::database::InMemory, store::DocStore};
+    use crate::{Instance, NewAccount, backend::database::InMemory, store::DocStore};
 
     #[tokio::test]
     async fn orphan_descendants_request_bootstrap_instead_of_incremental_sync() -> Result<()> {
-        let (source, mut owner) =
-            Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("source"))
-                .await?;
+        let (source, mut owner) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            NewAccount::passwordless("source"),
+        )
+        .await?;
         let key = owner.get_default_key()?;
         let db = owner.create_database(Doc::new(), &key).await?;
         let tree_id = db.root_id().clone();
@@ -1108,7 +1281,7 @@ mod orphan_bootstrap_tests {
 
         let (recipient, _user) = Instance::create_backend(
             Box::new(InMemory::new()),
-            NewUser::passwordless("recipient"),
+            NewAccount::passwordless("recipient"),
         )
         .await?;
         assert!(

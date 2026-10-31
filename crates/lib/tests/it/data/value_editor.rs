@@ -286,7 +286,7 @@ async fn test_value_editor_delete_methods() -> Result<()> {
     let txn_viewer = tree.new_transaction().await?;
     let viewer_dict = setup_dict_subtree(&txn_viewer, "editor_test_store").await?;
 
-    // User exists but has no role or profile
+    // AccountSession exists but has no role or profile
     match viewer_dict.get("user").await? {
         Value::Doc(map) => {
             // Check that the entries are properly marked as deleted (tombstones)

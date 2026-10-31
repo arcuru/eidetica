@@ -2,20 +2,21 @@ mod helpers;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
-    Database, Instance, backend::database::InMemory, crdt::Doc, store::DocStore, user::User,
+    Database, Instance, account::AccountSession, backend::database::InMemory, crdt::Doc,
+    store::DocStore,
 };
 use std::hint::black_box;
 use tokio::runtime::Runtime;
 
 use helpers::setup_tree_async;
 
-fn setup_tree(rt: &Runtime) -> (Instance, User, Database) {
+fn setup_tree(rt: &Runtime) -> (Instance, AccountSession, Database) {
     rt.block_on(setup_tree_async())
 }
 
 /// Creates a tree pre-populated with the specified number of key-value entries
 /// Each entry has format "key_N" -> "value_N" where N is the entry index
-async fn setup_tree_with_entries_async(entry_count: usize) -> (Instance, User, Database) {
+async fn setup_tree_with_entries_async(entry_count: usize) -> (Instance, AccountSession, Database) {
     let (instance, user, tree) = setup_tree_async().await;
 
     for i in 0..entry_count {
@@ -39,7 +40,10 @@ async fn setup_tree_with_entries_async(entry_count: usize) -> (Instance, User, D
     (instance, user, tree)
 }
 
-fn setup_tree_with_entries(rt: &Runtime, entry_count: usize) -> (Instance, User, Database) {
+fn setup_tree_with_entries(
+    rt: &Runtime,
+    entry_count: usize,
+) -> (Instance, AccountSession, Database) {
     rt.block_on(setup_tree_with_entries_async(entry_count))
 }
 
@@ -246,10 +250,10 @@ fn bench_tree_operations(c: &mut Criterion) {
             rt.block_on(async {
                 let backend = Box::new(InMemory::new());
                 // Bootstrap "bench_user" as the initial admin. They double
-                // as the benchmark's only User session.
+                // as the benchmark's only AccountSession.
                 let (_instance, mut user) = Instance::create_backend(
                     backend,
-                    eidetica::NewUser::passwordless("bench_user"),
+                    eidetica::NewAccount::passwordless("bench_user"),
                 )
                 .await
                 .expect("Benchmark setup failed");

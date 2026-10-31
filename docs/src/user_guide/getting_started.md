@@ -26,15 +26,15 @@ To start using Eidetica, you need to:
 
 1. Choose and initialize a **Backend** (storage mechanism)
 2. Create an **Instance** (the infrastructure manager)
-3. **Create and login a User** (authentication and session)
-4. Create or access a **Database** through the User (logical container for data)
+3. **Create an Account and log in** (authentication and session)
+4. Create or access a **Database** through the AccountSession (logical container for data)
 
 Here's a simple example:
 
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, NewUser, crdt::Doc};
+# use eidetica::{Instance, NewAccount, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -44,7 +44,7 @@ Here's a simple example:
     // Admin on the system databases.
     let (_instance, maybe_user) = Instance::connect_or_create(
         "memory://",
-        NewUser::passwordless("alice"),
+        NewAccount::passwordless("alice"),
     ).await?;
     let mut user = maybe_user.expect("memory:// is always fresh");
 
@@ -60,7 +60,7 @@ Here's a simple example:
 }
 ```
 
-**Note**: This example uses a passwordless user for simplicity, which is perfect for embedded applications and CLI tools. For multi-user scenarios, create password-protected users with `NewUser::with_password("alice", "pwd")` instead.
+**Note**: This example uses a passwordless user for simplicity, which is perfect for embedded applications and CLI tools. For multi-user scenarios, create password-protected users with `NewAccount::with_password("alice", "pwd")` instead.
 
 The URL passed to [`Instance::connect_or_create`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.connect_or_create) selects the backend. Some other common forms:
 
@@ -75,20 +75,20 @@ For persistent storage, swap the URL:
 <!-- Code block ignored: Requires file system access during testing -->
 
 ```rust,ignore
-use eidetica::{Instance, NewUser, crdt::Doc};
+use eidetica::{Instance, NewAccount, crdt::Doc};
 
 #[tokio::main]
 async fn main() -> eidetica::Result<()> {
     // First run: bootstrap a fresh persistent instance.
-    // Subsequent runs: load the existing instance (Option<User> is None).
+    // Subsequent runs: load the existing instance (Option<AccountSession> is None).
     let (instance, maybe_user) = Instance::connect_or_create(
         "sqlite://./my_data.db",
-        NewUser::passwordless("alice"),
+        NewAccount::passwordless("alice"),
     ).await?;
 
     let mut user = match maybe_user {
         Some(u) => u,
-        None => instance.login_user("alice", None).await?,
+        None => instance.login_account("alice", None).await?,
     };
     // ... all changes are automatically persisted to my_data.db
 
@@ -107,21 +107,21 @@ use eidetica::Instance;
 async fn main() -> eidetica::Result<()> {
     // Strict load — errors if the database isn't initialised yet.
     let instance = Instance::connect("sqlite://./my_data.db").await?;
-    let user = instance.login_user("alice", None).await?;
+    let user = instance.login_account("alice", None).await?;
     // ... data persists across restarts
 
     Ok(())
 }
 ```
 
-## User-Centric Architecture
+## Session-Centric Architecture
 
 Eidetica uses a user-centric architecture:
 
 - **Instance**: Manages infrastructure (user accounts, backend, system databases)
-- **User**: Handles all contextual operations (database creation, key management)
+- **AccountSession**: Handles all contextual operations (database creation, key management)
 
-All database and key operations happen through a User session after login. This provides:
+All database and key operations happen through an AccountSession after login. This provides:
 
 - **Clear separation**: Infrastructure management vs. contextual operations
 - **Strong isolation**: Each user has separate keys and preferences
@@ -130,20 +130,20 @@ All database and key operations happen through a User session after login. This 
 **Passwordless Users** (embedded/single-user apps):
 
 ```rust,ignore
-let admin = instance.login_user("admin", None).await?;
-admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-let user = instance.login_user("alice", None).await?;
+let admin = instance.login_account("admin", None).await?;
+admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
+let user = instance.login_account("alice", None).await?;
 ```
 
 **Password-Protected Users** (multi-user apps):
 
 ```rust,ignore
-let admin = instance.login_user("admin", None).await?;
-admin.admin().await?.create_user(eidetica::NewUser::with_password("bob", "password123")).await?;
-let user = instance.login_user("bob", Some("password123")).await?;
+let admin = instance.login_account("admin", None).await?;
+admin.admin().await?.create_account(eidetica::NewAccount::with_password("bob", "password123")).await?;
+let user = instance.login_account("bob", Some("password123")).await?;
 ```
 
-The downside of password protection is a slow login. `instance.login_user` needs to verify the password and decrypt keys, which by design is a relatively slow operation.
+The downside of password protection is a slow login. `instance.login_account` needs to verify the password and decrypt keys, which by design is a relatively slow operation.
 
 ## Working with Data
 
@@ -176,7 +176,7 @@ All operations in Eidetica happen within an atomic **Transaction**:
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -218,7 +218,7 @@ txn.commit().await?;
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -267,7 +267,7 @@ for (id, person) in all_people {
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -313,7 +313,7 @@ txn.commit().await?;
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -337,7 +337,7 @@ txn.commit().await?;
 For complete working examples, see:
 
 - **[Chat Example](https://github.com/arcuru/eidetica/blob/main/examples/chat/README.md)** - Multi-user chat application demonstrating:
-  - User accounts and authentication
+  - Accounts and authentication
   - Real-time synchronization with HTTP and Iroh transports
   - Bootstrap protocol for joining rooms
   - TUI interface with Ratatui

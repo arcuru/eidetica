@@ -17,14 +17,14 @@ Every Eidetica database requires authentication. Here's the minimal setup:
 # let backend = Sqlite::in_memory().await?;
 # let (instance, _) = Instance::connect_or_create_backend(
 #     Box::new(backend),
-#     eidetica::NewUser::passwordless("admin"),
+#     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 #
 // Create and login a passwordless user via the bootstrapped admin
 // (the new user gets an Ed25519 keypair automatically)
-let admin = instance.login_user("admin", None).await?;
-admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-let mut user = instance.login_user("alice", None).await?;
+let admin = instance.login_account("admin", None).await?;
+admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
+let mut user = instance.login_account("alice", None).await?;
 
 // Create a database using the user's default key
 let mut settings = Doc::new();
@@ -44,10 +44,10 @@ txn.commit().await?;  // Automatically signed
 
 **Mandatory Authentication**: Every entry must be signed - no exceptions.
 
-**First User Becomes Admin**: Whoever is named in the [`NewUser`] passed to `Instance::connect_or_create` (URL-based) or [`Instance::create_backend`] (pre-built backend) is the instance's first user **and** is automatically granted `Admin(0)` on the system databases (`_users`, `_databases`). There is no hidden default account: production deployments run `eidetica daemon init --username <NAME> [--password PASS | --passwordless]` with explicit credentials. Subsequent users are created by an existing admin via `admin.admin().await?.create_user(NewUser::…)` and land as non-admins until promoted.
+**First Account Becomes Admin**: Whoever is named in the [`NewAccount`] passed to `Instance::connect_or_create` (URL-based) or [`Instance::create_backend`] (pre-built backend) is the instance's first user **and** is automatically granted `Admin(0)` on the system databases (`_users`, `_databases`). There is no hidden default account: production deployments run `eidetica daemon init --username <NAME> [--password PASS | --passwordless]` with explicit credentials. Subsequent users are created by an existing admin via `admin.admin().await?.create_account(NewAccount::…)` and land as non-admins until promoted.
 
 [`Instance::create_backend`]: https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.create_backend
-[`NewUser`]: https://docs.rs/eidetica/latest/eidetica/instance/struct.NewUser.html
+[`NewAccount`]: https://docs.rs/eidetica/latest/eidetica/instance/struct.NewAccount.html
 
 **Permission Levels**:
 
@@ -75,7 +75,7 @@ Give other users access to your database:
 # // Setup database for testing
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "auth_example");
@@ -111,7 +111,7 @@ Allow anyone to read your database:
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -146,7 +146,7 @@ Create a collaborative database where anyone can read and write without individu
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "collaborative_notes");
@@ -185,11 +185,11 @@ use eidetica::{Instance, backend::database::Sqlite};
 let instance = Instance::open_backend(Box::new(Sqlite::in_memory().await?)).await?;
 
 // Log in as an existing user
-let mut user = instance.login_user("bob", None).await?;
+let mut user = instance.login_account("bob", None).await?;
 
 let database_root_id = /* ID from existing collaborative database */;
 
-// Open the database — the User resolves the signing key automatically
+// Open the database — the AccountSession resolves the signing key automatically
 let database = user.open_database(&database_root_id).await?;
 
 // Create transactions as usual — automatically signed with the user's key
@@ -224,7 +224,7 @@ Remove a user's access:
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -251,7 +251,17 @@ transaction.commit().await?;
 
 Note: Historical entries created by revoked keys remain valid.
 
-## Multi-User Setup Example
+### Historical Signatures and Operating Keys
+
+`Database::verify_entry_signature(id)` checks historical authorization and the signature, not current authority or application identity.
+Service clients run the same check on the daemon; the handle's acting identity needs current Read on the target and every claimed delegated database, not Write or Admin.
+Missing evidence or an unsupported query is not success.
+
+To identify an operating key, fetch the Entry through an authorized handle, require historical verification to succeed, then call `auth::crypto::verify_entry_signature(&entry, &public_key)` with concrete authorized keys.
+Read the identity database through its own authorized handle, and test each candidate if key names collide; names, hints and record labels do not identify a signer.
+Check current membership and application policy separately: later revocation does not invalidate historical signatures.
+
+## Multi-Account Setup Example
 
 ```rust
 # extern crate eidetica;
@@ -265,7 +275,7 @@ Note: Historical entries created by revoked keys remain valid.
 # // Setup database for testing
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "multi_user_example");
@@ -333,7 +343,7 @@ When you delegate to another database:
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let default_key = user.get_default_key()?;
 #
@@ -390,7 +400,7 @@ Delegations are stored in the **delegating database's** auth settings by the del
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let default_key = user.get_default_key()?;
 # let alice_db = user.create_database(Doc::new(), &default_key).await?;
@@ -435,7 +445,7 @@ These are names in the **delegated database's** auth settings that point to **pu
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let default_key_id = user.get_default_key()?;
 # let alice_db = user.create_database(Doc::new(), &default_key_id).await?;
@@ -486,7 +496,7 @@ A delegation path is a sequence of steps that traverses from the delegating data
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let default_key = user.get_default_key()?;
 # let project_db = user.create_database(Doc::new(), &default_key).await?;
@@ -526,9 +536,9 @@ let delegation_path = SigKey::Delegation {
 Permissions from delegated databases are automatically clamped:
 
 ```text
-User DB key: Admin(5)     →  Project DB clamps to: Write(15)  (max bound)
-User DB key: Write(10)    →  Project DB keeps:      Write(10) (within bounds)
-User DB key: Read         →  Project DB keeps:      Read      (above min bound)
+Account DB key: Admin(5)  →  Project DB clamps to: Write(15)  (max bound)
+Account DB key: Write(10) →  Project DB keeps:      Write(10) (within bounds)
+Account DB key: Read      →  Project DB keeps:      Read      (above min bound)
 ```
 
 **Rules**:
@@ -538,7 +548,7 @@ User DB key: Read         →  Project DB keeps:      Read      (above min bound
 - Permissions within bounds are preserved
 - Admin permissions only apply within the delegated database
 
-This makes it convenient to reuse the same validation rules across both databases. Only an Admin can grant permissions to a database by modifying the Auth Settings, but we can grant lower access to a User, and allow them to use any key they want, by granting access to a User controlled database and giving **that** the desired permissions. The User can then manage their own keys using their own Admin keys, under exactly the same rules.
+This makes it convenient to reuse the same validation rules across both databases. Only an Admin can grant permissions to a database by modifying the Auth Settings, but we can grant lower access to an Account, and allow it to use any key they want, by granting access to an Account-controlled database and giving **that** the desired permissions. The Account can then manage its own keys using its own Admin keys, under exactly the same rules.
 
 ### Multi-Level Delegation
 
@@ -578,7 +588,7 @@ Each level applies its own permission clamping, with the final effective permiss
 
 ### Common Delegation Patterns
 
-**User-Managed Access**:
+**Account-Managed Access**:
 
 ```text
 Project DB → delegates to → Alice's Personal DB
@@ -589,7 +599,7 @@ Project DB → delegates to → Alice's Personal DB
 **Team Hierarchy**:
 
 ```text
-Main DB → delegates to → Team DB → delegates to → User DB
+Main DB → delegates to → Team DB → delegates to → Account DB
           (max: Admin)            (max: Write)
 ```
 
@@ -700,13 +710,13 @@ By default, bootstrap requests are **rejected** for security:
 <!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
-use eidetica::{sync::DatabaseTicket, user::types::SyncSettings};
+use eidetica::{sync::DatabaseTicket, account::types::SyncSettings};
 
 // Bootstrap will fail without explicit policy configuration
 user.request_database_access(
     &sync,
     &ticket,
-    &key_id,  // User's key ID
+    &key_id,  // Account's key ID
     Permission::Write(100),
     SyncSettings::disabled(),
     None,
@@ -728,7 +738,7 @@ The simplest approach for collaborative databases is to use global wildcard perm
 # async fn main() -> eidetica::Result<()> {
 # let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
-#     eidetica::NewUser::passwordless("alice"),
+#     eidetica::NewAccount::passwordless("alice"),
 # ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "wildcard_example");

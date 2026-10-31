@@ -39,7 +39,7 @@ async fn test_multiple_settings_updates() {
     // Create tree and perform multiple settings updates
     let key_id = user
         .get_default_key()
-        .expect("User should have default key");
+        .expect("AccountSession should have default key");
     let tree = user
         .create_database(Doc::new(), &key_id)
         .await
@@ -134,7 +134,7 @@ async fn test_metadata_helper_functions() {
 
     let key_id = user
         .get_default_key()
-        .expect("User should have default key");
+        .expect("AccountSession should have default key");
     let tree = user
         .create_database(Doc::new(), &key_id)
         .await
@@ -169,7 +169,7 @@ async fn test_settings_with_complex_values() {
 
     let key_id = user
         .get_default_key()
-        .expect("User should have default key");
+        .expect("AccountSession should have default key");
     let tree = user
         .create_database(Doc::new(), &key_id)
         .await
@@ -301,7 +301,7 @@ async fn test_empty_and_edge_case_settings() {
 
     let key_id = user
         .get_default_key()
-        .expect("User should have default key");
+        .expect("AccountSession should have default key");
     let tree = user
         .create_database(Doc::new(), &key_id)
         .await

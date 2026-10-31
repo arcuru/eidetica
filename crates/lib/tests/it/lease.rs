@@ -11,7 +11,7 @@ use tokio::time::timeout;
 
 async fn setup() -> (Instance, Database) {
     let instance = crate::helpers::test_local_instance().await;
-    let mut user = instance.login_user("admin", None).await.unwrap();
+    let mut user = instance.login_account("admin", None).await.unwrap();
     let key = user.get_default_key().unwrap();
     let db = user.create_database(Doc::new(), &key).await.unwrap();
     (instance, db)
@@ -47,7 +47,7 @@ async fn test_lease_embedded_clones_and_independent_keys() {
     assert_eq!(status, lease.status().await.unwrap());
     assert_eq!(status.generation, 1);
     let _different_name = granted(db.lease("standby").try_acquire().await.unwrap());
-    let mut user = instance.login_user("admin", None).await.unwrap();
+    let mut user = instance.login_account("admin", None).await.unwrap();
     let key = user.get_default_key().unwrap();
     let other = user.create_database(Doc::new(), &key).await.unwrap();
     let _different_db = granted(other.lease("runtime").try_acquire().await.unwrap());

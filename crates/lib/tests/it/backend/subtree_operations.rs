@@ -1120,7 +1120,7 @@ async fn historical_store_snapshot_rejects_missing_or_foreign_ancestry() {
         .build()
         .unwrap();
     let root_id = root.id();
-    backend.put_verified(root).await.unwrap();
+    backend.put(root).await.unwrap();
 
     let missing = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
@@ -1135,7 +1135,7 @@ async fn historical_store_snapshot_rejects_missing_or_foreign_ancestry() {
         .build()
         .unwrap();
     let child_id = child.id();
-    backend.put_verified(child).await.unwrap();
+    backend.put(child).await.unwrap();
     let missing_error = backend
         .store_snapshot_at(&root_id, store, &Snapshot::from([child_id]))
         .await
@@ -1147,7 +1147,7 @@ async fn historical_store_snapshot_rejects_missing_or_foreign_ancestry() {
         .build()
         .unwrap();
     let foreign_id = foreign_root.id();
-    backend.put_verified(foreign_root).await.unwrap();
+    backend.put(foreign_root).await.unwrap();
     let foreign_error = backend
         .store_snapshot_at(&root_id, store, &Snapshot::from([foreign_id.clone()]))
         .await
@@ -1159,7 +1159,7 @@ async fn historical_store_snapshot_rejects_missing_or_foreign_ancestry() {
         .build()
         .unwrap();
     let mixed_id = mixed.id();
-    backend.put_verified(mixed).await.unwrap();
+    backend.put(mixed).await.unwrap();
     let mixed_error = backend
         .store_snapshot_at(&root_id, store, &Snapshot::from([mixed_id]))
         .await

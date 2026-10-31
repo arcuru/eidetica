@@ -1,8 +1,8 @@
 //! Tests for authentication validation
 //!
 //! These tests directly generate keypairs to test auth primitives (signatures, permissions,
-//! delegation) without going through the User API. This is intentional - we're testing the
-//! underlying auth mechanics, not the User API layer.
+//! delegation) without going through the AccountSession API. This is intentional - we're testing the
+//! underlying auth mechanics, not the AccountSession API layer.
 
 use super::entry::AuthValidator;
 use crate::{
@@ -373,7 +373,7 @@ async fn test_complete_delegation_workflow() {
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
     let (instance, _admin) =
-        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+        Instance::create_backend(backend, crate::NewAccount::passwordless("admin"))
             .await
             .expect("Failed to create test instance");
 
@@ -476,7 +476,7 @@ async fn test_delegated_tree_requires_tips() {
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
     let (instance, _admin) =
-        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+        Instance::create_backend(backend, crate::NewAccount::passwordless("admin"))
             .await
             .expect("Failed to create test instance");
 
@@ -561,7 +561,7 @@ async fn test_nested_delegation_with_permission_clamping() {
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
     let (instance, _admin) =
-        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+        Instance::create_backend(backend, crate::NewAccount::passwordless("admin"))
             .await
             .expect("Failed to create test instance");
 
@@ -649,7 +649,7 @@ async fn test_nested_delegation_with_permission_clamping() {
         .unwrap();
     txn.commit().await.unwrap();
 
-    // 4. Test nested delegation resolution: Main -> Intermediate -> User
+    // 4. Test nested delegation resolution: Main -> Intermediate -> AccountSession
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree
         .get_settings()
@@ -662,7 +662,7 @@ async fn test_nested_delegation_with_permission_clamping() {
     // Create nested delegation SigKey:
     // Main tree delegates to intermediate_tree (by root ID) ->
     // Intermediate tree delegates to user_tree (by root ID) ->
-    // User tree resolves key by pubkey hint
+    // AccountSession tree resolves key by pubkey hint
     let nested_sig_key = SigKey::Delegation {
         path: vec![
             DelegationStep {
@@ -691,7 +691,7 @@ async fn test_nested_delegation_with_permission_clamping() {
     let resolved = result.unwrap();
 
     // The permission should be clamped at each level:
-    // 1. User tree has Admin(3) (high permission)
+    // 1. AccountSession tree has Admin(3) (high permission)
     // 2. Intermediate tree clamps Admin(3) to Write(8) due to max bound
     // 3. Main tree clamps Write(8) with max bound Write(5) -> no change since Write(8) is more restrictive
     // Final result should be Write(8) - the most restrictive bound in the chain
@@ -910,7 +910,7 @@ async fn setup_delegation_with_floor(
 
     let backend = Box::new(InMemory::new());
     let (instance, _admin) =
-        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+        Instance::create_backend(backend, crate::NewAccount::passwordless("admin"))
             .await
             .expect("Failed to create test instance");
 
@@ -1167,7 +1167,7 @@ async fn test_delegation_reads_auth_state_at_pinned_tips_not_live_head() {
 
     let backend = Box::new(InMemory::new());
     let (instance, _admin) =
-        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+        Instance::create_backend(backend, crate::NewAccount::passwordless("admin"))
             .await
             .unwrap();
 

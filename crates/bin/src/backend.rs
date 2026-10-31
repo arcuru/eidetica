@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use eidetica::backend::{
-    BackendImpl,
+    BackendImpl, DerivedCachePolicy,
     database::{InMemory, Postgres, Sqlite},
 };
 
@@ -25,6 +25,20 @@ pub fn redact_postgres_url(url: &str) -> String {
     }
 }
 
+/// Select host-owned live-cache bounds before any persistent backend opens.
+pub fn cache_policy(config: &BackendConfig) -> DerivedCachePolicy {
+    let mut policy = if matches!(config.backend, Backend::Inmemory) {
+        DerivedCachePolicy::default()
+    } else {
+        DerivedCachePolicy::persistent()
+    };
+    policy.max_namespaces = config.cache_namespaces;
+    if let Some(bytes) = config.cache_bytes {
+        policy.max_bytes = bytes;
+    }
+    policy
+}
+
 /// Create the appropriate backend based on configuration
 pub async fn create_backend(
     config: &BackendConfig,
@@ -37,11 +51,15 @@ pub async fn create_backend(
     // Ensure data directory exists
     tokio::fs::create_dir_all(&data_dir).await?;
 
+    let policy = cache_policy(config);
+
     match config.backend {
         Backend::Sqlite => {
             let db_path = data_dir.join("eidetica.db");
             tracing::info!("Using SQLite backend at {}", db_path.display());
-            Ok(Box::new(Sqlite::open(&db_path).await?))
+            Ok(Box::new(
+                Sqlite::open_with_cache_policy(&db_path, policy).await?,
+            ))
         }
         Backend::Postgres => {
             let url = config
@@ -52,7 +70,7 @@ pub async fn create_backend(
             let display_url = redact_postgres_url(url);
             tracing::info!("Connecting to PostgreSQL backend at {}", display_url);
 
-            match Postgres::connect(url).await {
+            match Postgres::connect_with_cache_policy(url, policy).await {
                 Ok(backend) => {
                     tracing::info!("Connected to PostgreSQL successfully");
                     Ok(Box::new(backend))
@@ -68,14 +86,14 @@ pub async fn create_backend(
                 "Using in-memory backend with persistence at {}",
                 json_path.display()
             );
-            match InMemory::load_from_file(&json_path).await {
+            match InMemory::load_from_file_with_cache_policy(&json_path, policy).await {
                 Ok(backend) => {
                     tracing::info!("Loaded existing data from {}", json_path.display());
                     Ok(Box::new(backend))
                 }
                 Err(_) => {
                     tracing::info!("Starting with fresh database");
-                    Ok(Box::new(InMemory::new()))
+                    Ok(Box::new(InMemory::new_with_cache_policy(policy)))
                 }
             }
         }
@@ -104,5 +122,58 @@ pub fn backend_label(config: &BackendConfig) -> String {
             let json_path = data_dir.join("eidetica.json");
             format!("inmemory ({})", json_path.display())
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_policy_tests {
+    use super::*;
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> BackendConfig {
+        let cli = Cli::try_parse_from(args).unwrap();
+        let Some(Commands::Daemon(daemon)) = cli.command else {
+            panic!("expected daemon");
+        };
+        daemon.backend_config
+    }
+
+    #[test]
+    fn backend_defaults_and_explicit_live_bounds() {
+        let config = parse(&["eidetica", "daemon", "--backend", "inmemory"]);
+        assert_eq!(
+            cache_policy(&config),
+            DerivedCachePolicy {
+                max_namespaces: 1024,
+                max_bytes: 268435456
+            }
+        );
+        for backend in ["sqlite", "postgres"] {
+            let config = parse(&["eidetica", "daemon", "--backend", backend]);
+            assert_eq!(
+                cache_policy(&config),
+                DerivedCachePolicy {
+                    max_namespaces: 1024,
+                    max_bytes: 4294967296
+                }
+            );
+        }
+        let config = parse(&[
+            "eidetica",
+            "daemon",
+            "--cache-bytes",
+            "0",
+            "--cache-namespaces",
+            "7",
+        ]);
+        assert_eq!(
+            cache_policy(&config),
+            DerivedCachePolicy {
+                max_namespaces: 7,
+                max_bytes: 0
+            }
+        );
+        assert!(Cli::try_parse_from(["eidetica", "daemon", "--cache-bytes", "-1"]).is_err());
     }
 }

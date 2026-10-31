@@ -21,13 +21,13 @@ use crate::{
 /// delegation-chain depth, and checking it here bounds that depth before any
 /// backend work happens. That caps what an unauthenticated signature key can
 /// force the resolver to do before the authorization gate decides.
-const MAX_DELEGATION_STEPS: usize = 10;
+pub(crate) const MAX_DELEGATION_STEPS: usize = 10;
 
 /// Maximum number of claimed tips per delegation step.
 ///
 /// Tips are wire-supplied and each drives DAG traversal; bound the per-step
 /// fan-out. A legitimate tree frontier is small (concurrent heads only).
-pub(super) const MAX_DELEGATION_TIPS: usize = 64;
+pub(crate) const MAX_DELEGATION_TIPS: usize = 64;
 
 /// Check the entries named directly by a delegation step before traversing
 /// between them. This preserves the useful initial dependency set (including
@@ -70,6 +70,10 @@ impl DelegationResolver {
     /// This iteratively processes each step in the delegation path,
     /// applying permission clamping at each level. The final hint
     /// is resolved in the last delegated tree's auth settings.
+    ///
+    /// This low-level resolver needs local verification evidence. Connected
+    /// callers use [`crate::Database::verify_entry_signature`] for the full
+    /// historical check; signature hints alone do not authenticate a signer.
     ///
     /// Resolution is a flat loop, not recursion: the path arrives as a list, so
     /// chain depth is `steps.len()` and is bounded up front by
@@ -143,10 +147,7 @@ impl DelegationResolver {
 
         // Iterate through delegation steps
         let mut current_auth_settings = auth_settings.clone();
-        let current_backend = instance
-            .backend()
-            .local_engine()
-            .expect("delegation validation requires local backend");
+        let current_backend = instance.require_local_engine()?;
         let mut cumulative_bounds: Option<PermissionBounds> = None;
 
         // Process all delegation steps (tree traversal)

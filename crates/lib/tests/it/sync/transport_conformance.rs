@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use eidetica::{
     Database, Instance, Result,
+    account::{AccountSession, types::SyncSettings},
     auth::crypto::PublicKey,
     crdt::Doc,
     store::DocStore,
     sync::Sync,
-    user::{User, types::SyncSettings},
 };
 use tokio::time::sleep;
 
@@ -19,7 +19,14 @@ use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactor
 use crate::helpers::test_local_instance_with_user_and_key as test_instance_with_user_and_key;
 
 /// Set up two Instance instances with users and private keys
-async fn setup_databases() -> Result<(Instance, User, PublicKey, Instance, User, PublicKey)> {
+async fn setup_databases() -> Result<(
+    Instance,
+    AccountSession,
+    PublicKey,
+    Instance,
+    AccountSession,
+    PublicKey,
+)> {
     let (db1, user1, key_id1) = test_instance_with_user_and_key("user1", Some("device_key")).await;
     let (db2, user2, key_id2) = test_instance_with_user_and_key("user2", Some("device_key")).await;
     Ok((db1, user1, key_id1, db2, user2, key_id2))
@@ -88,8 +95,8 @@ where
 /// automatically — no manual `on_write` hooks needed.
 #[allow(clippy::too_many_arguments)]
 async fn setup_sync_hooks(
-    user1: &mut User,
-    user2: &mut User,
+    user1: &mut AccountSession,
+    user2: &mut AccountSession,
     key_id1: &PublicKey,
     key_id2: &PublicKey,
     sync1: &Sync,

@@ -4,6 +4,7 @@
 //! `try_addresses_concurrently`, and `request_database_access`.
 
 use eidetica::{
+    account::types::SyncSettings,
     auth::Permission,
     entry::ID,
     store::DocStore,
@@ -11,7 +12,6 @@ use eidetica::{
         Address, DatabaseTicket,
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
-    user::types::SyncSettings,
 };
 use iroh::RelayMode;
 
@@ -318,7 +318,7 @@ async fn test_bootstrap_with_ticket_authenticated() {
         .await
         .unwrap();
 
-    // Use User API to request access via ticket
+    // Use AccountSession API to request access via ticket
     client_user
         .request_database_access(
             &client_sync,

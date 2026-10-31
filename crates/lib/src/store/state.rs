@@ -74,37 +74,18 @@ pub(crate) async fn load_opaque(
     backend.store_state_record_get(view, OPAQUE_STATE_KEY).await
 }
 
-pub(crate) async fn publish_opaque(
-    backend: &dyn Backend,
-    request: StoreStateRequest,
-    bytes: Vec<u8>,
-) -> Result<RecordView> {
-    let token = backend.begin_store_state_staging(request).await?;
-    let result = async {
-        backend
-            .stage_store_state_records(
-                &token,
-                BTreeMap::from([(OPAQUE_STATE_KEY.to_vec(), Some(bytes))]),
-            )
-            .await?;
-        backend.publish_store_state(token.clone()).await
-    }
-    .await;
-    if result.is_err() {
-        let _ = backend.abort_store_state(token).await;
-    }
-    result
-}
-
-/// Resolve a cached opaque record, treating a missing record substrate as a
-/// miss. Only `StoreStateStorageUnsupported` maps to `None` — an old custom
-/// backend predating the record API. Every other error propagates.
+/// Resolve an optional cached record. Only explicit unsupported/refusal or
+/// invalidated-view conditions are misses; data, proof and decode errors propagate.
 pub(crate) async fn resolve_cached(
     backend: &dyn Backend,
     request: &StoreStateRequest,
 ) -> Result<Option<RecordView>> {
     match backend.resolve_store_state(request).await {
-        Err(err) if err.is_unsupported_store_state() => Ok(None),
+        Err(err)
+            if err.is_optional_store_state_unavailable() || err.is_invalid_store_state_view() =>
+        {
+            Ok(None)
+        }
         result => result,
     }
 }
@@ -126,23 +107,98 @@ pub(crate) async fn load_cached(
         };
         match load_opaque(backend, &view).await {
             Err(err) if err.is_invalid_store_state_view() => continue,
+            Err(err) if err.is_optional_store_state_unavailable() => return Ok(None),
             result => return result,
         }
     }
     Ok(None)
 }
 
-/// Stage and publish an opaque record, skipping backends without the record
-/// substrate. An `Unsupported` at any step aborts the attempt and reports
-/// "not cached" — `publish_opaque` already aborts the token on error, so no
-/// staging namespace leaks. Genuine errors propagate.
-pub(crate) async fn store_cached(
+/// Cache a computed value if optional admission is available. Begin precedes
+/// encoding, so disabled policies avoid serialization/encryption/upload entirely.
+/// Actual oversize refusal preserves the computed value, not an oversized view.
+pub(crate) async fn store_cached<T, F>(
     backend: &dyn Backend,
     request: StoreStateRequest,
-    bytes: Vec<u8>,
-) -> Result<()> {
-    match publish_opaque(backend, request, bytes).await {
-        Err(err) if err.is_unsupported_store_state() => Ok(()),
-        result => result.map(|_| ()),
+    value: T,
+    encode: F,
+) -> Result<T>
+where
+    T: Send,
+    F: FnOnce(&T) -> Result<Vec<u8>> + Send,
+{
+    let token = match backend.begin_store_state_staging(request).await {
+        Err(error) if error.is_optional_store_state_unavailable() => return Ok(value),
+        result => result?,
+    };
+    let bytes = match encode(&value) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let _ = backend.abort_store_state(token).await;
+            return Err(error);
+        }
+    };
+    let result = async {
+        backend
+            .stage_store_state_records(
+                &token,
+                BTreeMap::from([(OPAQUE_STATE_KEY.to_vec(), Some(bytes))]),
+            )
+            .await?;
+        backend.publish_store_state(token.clone()).await
+    }
+    .await;
+    if result.is_err() {
+        let _ = backend.abort_store_state(token).await;
+    }
+    match result {
+        Err(error)
+            if error.is_optional_store_state_unavailable()
+                || error.is_invalid_store_state_view() =>
+        {
+            Ok(value)
+        }
+        result => {
+            result?;
+            Ok(value)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Instance, NewAccount,
+        backend::{DerivedCachePolicy, database::InMemory},
+    };
+
+    #[tokio::test]
+    async fn disabled_opaque_retention_never_calls_encoder() {
+        let (instance, _) = Instance::create_backend(
+            Box::new(InMemory::new_with_cache_policy(DerivedCachePolicy {
+                max_namespaces: 0,
+                max_bytes: 0,
+            })),
+            NewAccount::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+        let request = opaque_request(
+            &ID::from_bytes("db"),
+            "store",
+            ProjectionDescriptor {
+                name: "test/opaque".into(),
+                version: 1,
+            },
+            crate::Snapshot::EMPTY.cache_key_bytes(),
+            CacheScope::Shared,
+        );
+        let value = store_cached(instance.backend().as_ref(), request, 42u64, |_| {
+            panic!("disabled cache must not encode")
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, 42);
     }
 }

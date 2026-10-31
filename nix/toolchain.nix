@@ -68,8 +68,7 @@
       RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
     };
 
-  # Workspace-wide artifact caches per unique build configuration
-  # One artifact per profile is sufficient - package-specific flags are added at build time
+  # Artifact caches must match both profile and resolved dependency features.
 
   # Release deps (workspace-wide, used by lib, bin, and min-versions)
   cargoArtifactsRelease = craneLib.buildDepsOnly (baseArgs
@@ -115,6 +114,55 @@
       CARGO_PROFILE = "dev";
       cargoExtraArgs = "--workspace --all-features";
     });
+
+  # These consumers resolve different dependency features from the all-workspace
+  # graph. Keep their selection flags shared with their dependency builds.
+  minimalDebugArgs = let
+    args =
+      baseArgs
+      // {
+        CARGO_PROFILE = "dev";
+        cargoExtraArgs = "-p eidetica --no-default-features --features testing";
+      };
+  in
+    args
+    // {
+      cargoArtifacts = craneLib.buildDepsOnly (args // {pname = "debug-minimal";});
+    };
+
+  binDebugArgs = let
+    args =
+      baseArgs
+      // {
+        CARGO_PROFILE = "dev";
+        cargoExtraArgs = "-p eidetica-bin";
+      };
+  in
+    args
+    // {
+      cargoArtifacts = craneLib.buildDepsOnly (args
+        // {
+          pname = "debug-bin";
+          doCheck = false;
+        });
+    };
+
+  docApiArgs = let
+    args =
+      baseArgs
+      // {
+        CARGO_PROFILE = "dev";
+        cargoExtraArgs = "--locked -p eidetica --all-features";
+      };
+  in
+    args
+    // {
+      cargoArtifacts = craneLib.buildDepsOnly (args
+        // {
+          pname = "debug-doc-api";
+          doCheck = false;
+        });
+    };
 
   # Nightly base args for sanitizer builds (need -Z flags)
   baseArgsNightly =
@@ -241,6 +289,9 @@ in {
     releaseCargoExtraArgs
     benchArgs
     debugArgs
+    minimalDebugArgs
+    binDebugArgs
+    docApiArgs
     debugArgsNightly
     asanArgs
     lsanArgs

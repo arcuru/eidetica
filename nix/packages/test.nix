@@ -2,6 +2,7 @@
 {
   craneLib,
   debugArgs,
+  minimalDebugArgs,
   baseArgs,
   pkgs,
   lib,
@@ -11,24 +12,8 @@
   # Args for interactive runners (progress bar, only show failures)
   nextestRunnerArgs = "--no-fail-fast --show-progress=bar --status-level fail";
 
-  # Nextest archive for interactive runners (internal)
-  # Packages pre-built test binaries into a portable archive format
-  # Used by test-runner-* to enable --workspace-remap for local source
-  test-archive = craneLib.mkCargoDerivation (debugArgs
-    // {
-      cargoArtifacts = testCheckArtifacts;
-      pname = "test-archive";
-      nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.cargo-nextest];
-      buildPhaseCargoCommand = ''
-        cargo nextest archive --archive-file archive.tar.zst --workspace --all-features
-      '';
-      installPhase = ''
-        runHook preInstall
-        mkdir -p $out
-        cp archive.tar.zst $out/
-        runHook postInstall
-      '';
-    });
+  # Runtime-only output, shared by backend checks, interactive runners and VMs.
+  test-archive = testCheckArtifacts.archive;
 
   # Helper to create backend-specific test runners
   # These are lightweight shell scripts that run tests from the cached archive
@@ -56,7 +41,7 @@
           echo "Warning: Not in a project directory. Tests requiring source files may fail." >&2
           NEXTEST_WORKSPACE="${baseArgs.src}"
         fi
-        cargo nextest run \
+        cargo-nextest nextest run \
           --archive-file ${test-archive}/archive.tar.zst \
           --workspace-remap "$NEXTEST_WORKSPACE" \
           ${nextestRunnerArgs} \
@@ -133,20 +118,38 @@
     '';
   };
 
-  # Build test binaries for CI checks (reuses debug artifacts)
+  # Compile and archive once, before the Cargo targets are compressed for reuse.
+  # Keep the build artifacts in out and only the runtime archive in archive.
   testCheckArtifacts = craneLib.mkCargoDerivation (debugArgs
     // {
       pname = "test-check-artifacts";
-      buildPhaseCargoCommand = "cargo nextest run --no-run --workspace --all-features";
+      outputs = ["out" "archive"];
+      # The archive must not retain Cargo targets through an unused $out/lib RPATH.
+      NIX_NO_SELF_RPATH = 1;
+      buildPhaseCargoCommand = "cargo nextest archive --archive-file archive.tar.zst --workspace --all-features";
       nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.cargo-nextest];
       doInstallCargoArtifacts = true;
+      installPhaseCommand = ''
+        mkdir -p $out $archive
+        cp archive.tar.zst $archive/
+      '';
     });
 
-  # Args for CI check runners that reuse pre-built test binaries
+  # Run the same workspace tests from the runtime-only archive, without unpacking
+  # the dependency and test Cargo targets for every backend (as in Crane partitions).
   testCheckArgs =
     debugArgs
     // {
-      cargoArtifacts = testCheckArtifacts;
+      cargoArtifacts = null;
+      cargoVendorDir = null;
+      doInstallCargoArtifacts = false;
+      CARGO_PROFILE = "";
+      cargoNextestExtraArgs = "--archive-file ${test-archive}/archive.tar.zst --workspace-remap . ${nextestCheckArgs}";
+      # Keep the runtime archive reachable when successful checks warm the cache.
+      installPhaseCommand = ''
+        mkdir -p $out
+        ln -s ${test-archive}/archive.tar.zst $out/archive.tar.zst
+      '';
     };
 
   # CI check derivations (hermetic, for nix flake check)
@@ -154,20 +157,18 @@
     // {
       pname = "test-check-inmemory";
       TEST_BACKEND = "inmemory";
-      cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
 
   test-check-sqlite = craneLib.cargoNextest (testCheckArgs
     // {
       pname = "test-check-sqlite";
       TEST_BACKEND = "sqlite";
-      cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
 
-  test-check-minimal = craneLib.cargoNextest (debugArgs
+  test-check-minimal = craneLib.cargoNextest (minimalDebugArgs
     // {
       pname = "test-check-minimal";
-      cargoNextestExtraArgs = "-p eidetica --no-default-features --features testing ${nextestCheckArgs}";
+      cargoNextestExtraArgs = nextestCheckArgs;
     });
 
   # Service backend check (Linux only, requires Unix sockets)
@@ -175,7 +176,30 @@
     // {
       pname = "test-check-service";
       TEST_BACKEND = "service";
-      cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
+    });
+
+  test-check-shistory-hooks = craneLib.mkCargoDerivation (debugArgs
+    // {
+      pname = "test-check-shistory-hooks";
+      nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.python3 pkgs.zsh];
+      cargoExtraArgs = "-p shistory";
+      buildPhaseCargoCommand = "cargo build -p shistory";
+      doCheck = true;
+      src = lib.cleanSourceWith {
+        src = ../..;
+        filter = path: type:
+          (baseArgs.src.filter path type)
+          || builtins.match ".*/examples/shistory/tests/hooks\\.zsh" (toString path) != null
+          || builtins.match ".*/examples/shistory/shistory\\.zsh" (toString path) != null;
+      };
+      checkPhase = ''
+        runHook preCheck
+        export SHISTORY_REAL_BIN="$PWD/target/debug/shistory"
+        zsh -d -f "$PWD/examples/shistory/tests/hooks.zsh" | tee summary
+        grep -Fx 'hook checks: 13 passed; 0 failed' summary
+        runHook postCheck
+      '';
+      installPhase = "mkdir -p $out";
     });
 
   # PostgreSQL backend check (Linux only)
@@ -202,7 +226,6 @@
       postCheck = ''
         pg_ctl stop || true
       '';
-      cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
 in {
   # Common build artifacts (compiled test binaries, shared by builds and runners)
@@ -220,6 +243,7 @@ in {
       inmemory = test-check-inmemory;
       sqlite = test-check-sqlite;
       minimal = test-check-minimal;
+      shistory-hooks = test-check-shistory-hooks;
     }
     // lib.optionalAttrs pkgs.stdenv.isLinux {
       service = test-check-service;

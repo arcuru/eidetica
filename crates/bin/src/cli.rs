@@ -62,6 +62,15 @@ pub struct BackendConfig {
     /// PostgreSQL connection URL (required when backend=postgres)
     #[arg(long, env = "EIDETICA_POSTGRES_URL")]
     pub postgres_url: Option<String>,
+
+    /// Live derived key/value bytes (default: 256 MiB RAM, 4 GiB persistent SQL).
+    /// Zero disables retention; this is not an RSS or physical disk quota.
+    #[arg(long, env = "EIDETICA_CACHE_BYTES")]
+    pub cache_bytes: Option<u64>,
+
+    /// Live derived namespace limit. Zero disables retention.
+    #[arg(long, env = "EIDETICA_CACHE_NAMESPACES", default_value_t = 1024)]
+    pub cache_namespaces: usize,
 }
 
 /// Arguments for the serve command
@@ -176,6 +185,8 @@ pub enum DbCommands {
     List(DbListArgs),
     /// Offline operator-triggered reset of local verification and derived state
     ResetLocalVerification(DbResetArgs),
+    /// Offline conservative repair of one tree's verification labels and tips
+    RepairVerification(DbRepairArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -192,4 +203,17 @@ pub struct DbResetArgs {
 pub struct DbListArgs {
     #[command(flatten)]
     pub backend_config: BackendConfig,
+}
+
+/// Offline verification repair requires an explicit database and tree.
+#[derive(clap::Args, Debug)]
+pub struct DbRepairArgs {
+    #[command(flatten)]
+    pub backend_config: BackendConfig,
+    /// Root ID of the tree to repair
+    #[arg(long)]
+    pub tree: String,
+    /// Acknowledge that inconsistent Verified entries will become Unverified
+    #[arg(long, required = true)]
+    pub confirm: bool,
 }

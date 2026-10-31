@@ -1,7 +1,7 @@
 use eidetica::{
-    Entry,
+    Entry, Error,
     sync::{
-        Address,
+        Address, SyncError,
         protocol::SyncRequest,
         transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
     },
@@ -25,12 +25,20 @@ async fn test_transport_interface_consistency() {
     assert!(!iroh_transport.is_server_running());
 
     // Both should fail to get address when not running
-    assert!(http_transport.get_server_address().is_err());
-    assert!(iroh_transport.get_server_address().is_err());
+    assert!(
+        matches!(http_transport.get_server_address().unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
+    assert!(
+        matches!(iroh_transport.get_server_address().unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
 
     // Both should fail to stop when not running
-    assert!(http_transport.stop_server().await.is_err());
-    assert!(iroh_transport.stop_server().await.is_err());
+    assert!(
+        matches!(http_transport.stop_server().await.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
+    assert!(
+        matches!(iroh_transport.stop_server().await.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerNotRunning))
+    );
 
     // Start both servers
     let (_instance, handler) = super::helpers::setup_test_handler().await;
@@ -62,8 +70,12 @@ async fn test_transport_interface_consistency() {
     // Both should fail to start again
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
     let (_instance3, handler3) = super::helpers::setup_test_handler().await;
-    assert!(http_transport.start_server(handler2).await.is_err());
-    assert!(iroh_transport.start_server(handler3).await.is_err());
+    assert!(
+        matches!(http_transport.start_server(handler2).await.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerAlreadyRunning { .. }))
+    );
+    assert!(
+        matches!(iroh_transport.start_server(handler3).await.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ServerAlreadyRunning { .. }))
+    );
 
     // Clean up both
     http_transport.stop_server().await.unwrap();
@@ -83,7 +95,7 @@ async fn test_transport_error_handling_consistency() {
         .build()
         .unwrap();
 
-    // Both should fail to send requests when no server is running
+    // HTTP cannot connect; Iroh rejects the malformed endpoint ticket before connecting
     let entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
@@ -98,8 +110,12 @@ async fn test_transport_error_handling_consistency() {
         )
         .await;
 
-    assert!(http_result.is_err());
-    assert!(iroh_result.is_err());
+    assert!(
+        matches!(http_result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::ConnectionFailed { .. }))
+    );
+    assert!(
+        matches!(iroh_result.unwrap_err(), Error::Sync(e) if matches!(e.as_ref(), SyncError::SerializationError(_)))
+    );
 }
 
 /// Test that transport creation doesn't interfere with each other

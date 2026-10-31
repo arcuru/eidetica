@@ -8,7 +8,7 @@ async fn socket_write_visible_to_dashboard() {
     let instance = eidetica::Instance::connect(format!("unix://{socket}"))
         .await
         .expect("connect to real daemon");
-    let mut admin = instance.login_user("admin", None).await.expect("login");
+    let mut admin = instance.login_account("admin", None).await.expect("login");
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "socket_written_database");
     let key = admin.get_default_key().expect("default key");

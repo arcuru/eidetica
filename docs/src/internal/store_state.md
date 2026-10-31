@@ -10,8 +10,10 @@ The backend does not parse record keys or values and does not know Store types.
 
 `Table` uses the cached record format named `eidetica/table/rows` version 0.
 UTF-8 primary keys are record keys and each JSON row is one record value.
-Building historical cached state streams canonical `Doc` Entry deltas into a
-private build; it does not reconstruct a whole Table. Table mutations are converted
+A cold historical build fetches canonical `Doc` Entry history and accumulates
+its projection in a whole row map before staging it. Encrypted Tables also build
+a physical record map. Warm reads are point/page operations; cold construction
+is not incremental or bounded-memory streaming. Table mutations are converted
 back into the existing canonical `Doc` delta at historical commit, so Entry
 payload and wire semantics are unchanged.
 
@@ -27,7 +29,8 @@ Table handles retain only their name and transaction. `get` deserializes one
 row, `scan_page` reads bounded deterministic pages, and `search` collects those
 pages only because its public return type is a `Vec`. Local and service-backed
 Tables use the same point and page operations. Custom backends without cached-record
-support keep the existing whole-state behavior.
+support, or declining optional retention, fold captured history. This fallback
+still materializes historical state; it is not a streaming-history API.
 
 A record set has one lifecycle:
 
@@ -38,7 +41,9 @@ A record set has one lifecycle:
 Clearing derived state unlinks published record sets and reclaims the generation unlinked by the previous clear. An active reader keeps its view, while a new lookup misses and rebuilds. Authoritative record sets are never selected.
 
 A builder creates private state, writes record chunks, then publishes atomically.
-Aborting or failing publication leaves no published record set and no private build behind.
+A confirmed failed publication does not expose a partial record set. An
+uncertain commit remains an error and must not be retried as assumed nonpublication.
+Abandoned private builds are reclaimed on exclusive startup.
 Two builders can derive the same target concurrently. Publication resolves that race to one shared record set rather than failing the other builder.
 Format descriptors identify the Store-owned record format and version, so cached state from different formats or historical sources cannot collide.
 

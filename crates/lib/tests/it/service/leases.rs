@@ -12,7 +12,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 async fn admin_db(server: &Instance) -> Database {
-    let mut admin = server.login_user("admin", None).await.unwrap();
+    let mut admin = server.login_account("admin", None).await.unwrap();
     let key = admin.get_default_key().unwrap();
     admin.create_database(Doc::new(), &key).await.unwrap()
 }
@@ -26,12 +26,12 @@ struct RawClient {
 impl RawClient {
     async fn login(path: &PathBuf, server: &Instance, name: &str) -> Self {
         let (mut reader, mut writer) = raw_handshake(path).await;
-        let user = server.login_user(name, None).await.unwrap();
+        let user = server.login_account(name, None).await.unwrap();
         let key = user.get_default_key().unwrap();
         let signing_key = user.get_signing_key(&key).unwrap();
         write_frame(
             &mut writer,
-            &ServiceRequest::TrustedLoginUser {
+            &ServiceRequest::TrustedLoginAccount {
                 username: name.into(),
             },
         )
@@ -145,7 +145,7 @@ async fn test_lease_connected_race_and_independent_keys() {
     let _other_db = granted(other_db.lease("runtime").try_acquire().await.unwrap());
     let before = local_db.snapshot().await.unwrap();
     // Holding a lease does not gate normal writes from another connection.
-    let user = clients[loser].login_user("admin", None).await.unwrap();
+    let user = clients[loser].login_account("admin", None).await.unwrap();
     let key = user.get_default_key().unwrap();
     let db = databases[loser]
         .clone()
@@ -390,7 +390,7 @@ async fn test_lease_permissions_unknown_roots_and_name_limit() {
     let db = admin_db(&server).await;
     create_user_via_admin(&server, "reader").await;
     create_user_via_admin(&server, "outsider").await;
-    let reader = server.login_user("reader", None).await.unwrap();
+    let reader = server.login_account("reader", None).await.unwrap();
     let reader_key = reader.get_default_key().unwrap();
     let tx = db.new_transaction().await.unwrap();
     tx.get_settings()
@@ -512,7 +512,7 @@ async fn test_lease_release_and_unwatch_after_permission_revocation() {
     let (path, _shutdown, server, _dir) = start_test_server().await;
     let db = admin_db(&server).await;
     create_user_via_admin(&server, "writer").await;
-    let writer = server.login_user("writer", None).await.unwrap();
+    let writer = server.login_account("writer", None).await.unwrap();
     let key = writer.get_default_key().unwrap();
     let tx = db.new_transaction().await.unwrap();
     tx.get_settings()
@@ -547,7 +547,7 @@ async fn test_lease_owner_can_release_after_connection_relogin() {
     let client = login_client(&path, "admin").await;
     let db = Database::open(&client, local.root_id()).await.unwrap();
     let guard = granted(db.lease("runtime").try_acquire().await.unwrap());
-    client.login_user("other", None).await.unwrap();
+    client.login_account("other", None).await.unwrap();
     assert!(!guard.is_lost()); // ownership belongs to the connection, not the login
     guard.release().await.unwrap();
     assert_eq!(local.lease("runtime").status().await.unwrap().holder, None);

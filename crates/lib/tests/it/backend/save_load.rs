@@ -79,6 +79,7 @@ async fn test_load_invalid_file() {
 
     // Verify it's an error
     assert!(result.is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "{invalid json\n");
 }
 
 #[tokio::test]
@@ -181,22 +182,155 @@ async fn test_save_load_with_various_entries() {
 async fn test_load_wrong_version_fails() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().join("wrong_version.json");
-
-    // Write a valid JSON structure but with wrong version
-    {
-        let mut file = fs::File::create(&path).unwrap();
-        writeln!(
-            file,
-            r#"{{"_v":99,"entries":{{}},"verification_status":{{}},"tips":{{}}}}"#
-        )
+    let backend = InMemory::new();
+    backend
+        .put_verified(Entry::root_builder().build().unwrap())
+        .await
         .unwrap();
+    let mut value = serde_json::to_value(&backend).unwrap();
+    for version in [1, 3, 99] {
+        value["_v"] = version.into();
+        let original = serde_json::to_vec(&value).unwrap();
+        fs::write(&path, &original).unwrap();
+        let error = load_backend(&path).await.unwrap_err();
+        let eidetica::Error::Backend(error) = error else {
+            panic!("expected a backend deserialization error");
+        };
+        let eidetica::backend::BackendError::DeserializationFailed { source } = *error else {
+            panic!("expected a persistence deserialization error");
+        };
+        assert!(
+            source
+                .to_string()
+                .contains(&format!("unsupported persistence version {version}"))
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
     }
+}
 
-    let result = load_backend(&path).await;
-    assert!(
-        result.is_err(),
-        "Should fail to load file with wrong version"
-    );
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
+async fn test_v0_migration_preserves_entries_and_instance_state_across_save() {
+    use eidetica::{
+        auth::crypto::PrivateKey,
+        backend::{InstanceMetadata, VerificationStatus},
+    };
+    let backend = InMemory::new();
+    let root = Entry::root_builder().build().unwrap();
+    let parent = Entry::builder(root.id())
+        .add_parent(root.id())
+        .build()
+        .unwrap();
+    let child = Entry::builder(root.id())
+        .add_parent(parent.id())
+        .build()
+        .unwrap();
+    let failed = Entry::builder(root.id())
+        .add_parent(root.id())
+        .set_subtree_data("data", b"rejected")
+        .build()
+        .unwrap();
+    backend.put_verified(root.clone()).await.unwrap();
+    for entry in [&parent, &child, &failed] {
+        backend.put(entry.clone()).await.unwrap();
+    }
+    backend
+        .update_verification_status(&failed.id(), VerificationStatus::Failed)
+        .await
+        .unwrap();
+    let signing_key = PrivateKey::generate();
+    backend
+        .set_instance_metadata(&InstanceMetadata {
+            id: signing_key.public_key(),
+            users_db: root.id(),
+            databases_db: root.id(),
+            sync_db: Some(root.id()),
+        })
+        .await
+        .unwrap();
+
+    let raw = backend.snapshot(&root.id()).await.unwrap();
+    let mut legacy = serde_json::to_value(&backend).unwrap();
+    legacy["instance_secrets"] = serde_json::json!({"signing_key": signing_key});
+    legacy.as_object_mut().unwrap().remove("verified");
+    legacy["verification_status"][child.id().to_string()] = "Verified".into();
+    legacy["cache"] = serde_json::json!({"legacy": "disposable"});
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("mainline.json");
+    // Mainline files omitted _v; explicit 0 has the same compatibility path.
+    for explicit_version in [false, true] {
+        if explicit_version {
+            legacy["_v"] = 0.into();
+        } else {
+            legacy.as_object_mut().unwrap().remove("_v");
+        }
+        let original = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&path, &original).unwrap();
+        let loaded = load_backend(&path).await.unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            original,
+            "load must not rewrite the source"
+        );
+        assert_eq!(loaded.snapshot(&root.id()).await.unwrap(), raw);
+        assert_eq!(
+            loaded.verified_snapshot(&root.id()).await.unwrap().tips(),
+            &[root.id()]
+        );
+        assert_eq!(
+            loaded.get_verification_status(&child.id()).await.unwrap(),
+            VerificationStatus::Unverified
+        );
+        assert_eq!(
+            loaded.get_verification_status(&failed.id()).await.unwrap(),
+            VerificationStatus::Failed
+        );
+        for entry in [&root, &parent, &child, &failed] {
+            assert_eq!(
+                loaded.get(&entry.id()).await.unwrap().to_dagcbor().unwrap(),
+                entry.to_dagcbor().unwrap()
+            );
+        }
+        save_backend(&loaded, &path).unwrap();
+        let current: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(current["_v"], 2);
+        for field in ["entries", "instance_metadata", "instance_secrets"] {
+            assert_eq!(current[field], legacy[field], "preserve {field}");
+        }
+        assert!(current.get("cache").is_none());
+        let reopened = load_backend(&path).await.unwrap();
+        let reopened_value = serde_json::to_value(&reopened).unwrap();
+        for field in [
+            "_v",
+            "entries",
+            "verification_status",
+            "instance_metadata",
+            "instance_secrets",
+        ] {
+            assert_eq!(
+                reopened_value[field], current[field],
+                "reopen preserves {field}"
+            );
+        }
+        // Tip caches contain HashSets: compare their canonical API snapshots,
+        // not the incidental array ordering in serialized JSON.
+        assert_eq!(reopened.snapshot(&root.id()).await.unwrap(), raw);
+        for store in ["_root", "data"] {
+            let expected = backend.store_snapshot(&root.id(), store).await.unwrap();
+            assert_eq!(
+                loaded.store_snapshot(&root.id(), store).await.unwrap(),
+                expected
+            );
+            assert_eq!(
+                reopened.store_snapshot(&root.id(), store).await.unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            reopened.verified_snapshot(&root.id()).await.unwrap().tips(),
+            &[root.id()]
+        );
+    }
 }
 
 #[tokio::test]

@@ -5,14 +5,14 @@
 use std::{path::Path, time::Duration};
 
 use eidetica::{
-    Instance, NewUser, Result,
+    Instance, NewAccount, Result,
+    account::types::SyncSettings,
     auth::{AuthKey, Permission},
     backend::database::InMemory,
     crdt::Doc,
     service::ServiceServer,
     store::DocStore,
     sync::{peer_types::Address, transports::http::HttpTransport},
-    user::types::SyncSettings,
 };
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -45,7 +45,7 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     let daemon_url = format!("memory://{}", snapshot.display());
 
     let (daemon, _) =
-        Instance::connect_or_create(&daemon_url, NewUser::passwordless("alice")).await?;
+        Instance::connect_or_create(&daemon_url, NewAccount::passwordless("alice")).await?;
     daemon.enable_sync().await?;
     let daemon_sync = daemon.sync().unwrap();
     daemon_sync
@@ -56,7 +56,8 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     let (service_shutdown, service_handle) = start_service(daemon.clone(), &socket).await;
 
     let (peer, mut peer_user) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("bob")).await?;
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("bob"))
+            .await?;
     peer.enable_sync().await?;
     let peer_sync = peer.sync().unwrap();
     peer_sync
@@ -66,7 +67,7 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     let peer_addr = Address::http(peer_sync.get_server_address_for("http").await?);
 
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
-    let mut client = service.login_user("alice", None).await?;
+    let mut client = service.login_account("alice", None).await?;
     let key = client.get_default_key()?;
     let mut settings = Doc::new();
     settings.set("name", "created-by-service-client");
@@ -141,7 +142,7 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     let (service_shutdown, service_handle) = start_service(restarted.clone(), &socket).await;
 
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
-    let client = service.login_user("alice", None).await?;
+    let client = service.login_account("alice", None).await?;
     let client_db = client.open_database(&tree).await?;
     let (fired_tx, mut fired_rx) = tokio::sync::mpsc::unbounded_channel();
     let _callback = client_db

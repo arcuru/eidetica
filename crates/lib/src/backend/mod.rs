@@ -32,13 +32,13 @@ use crate::{
 ///   stores never land here (the daemon has no encryptor key — see
 ///   [`crate::store::PasswordStore`]), so shared state is always plaintext.
 ///
-/// - **User(uuid)**: state a specific user computed and published over the
+/// - **Login(uuid)**: state a specific user computed and published over the
 ///   service wire. The daemon cannot verify the merge result, so it is
 ///   scoped to that user only — alice's publication is invisible to bob.
 ///   This is where encrypted-store materializations live (the client
 ///   decrypts, merges, re-encrypts, and publishes the ciphertext).
 ///
-/// On read, the wire handler resolves `User(session_user)` first and falls
+/// On read, the wire handler resolves `Login(session_user)` first and falls
 /// back to `Shared` on miss — so a remote read of an unencrypted store
 /// benefits from cross-user dedup via the shared scope, while encrypted
 /// store reads only ever hit user-scoped cached state.
@@ -46,8 +46,9 @@ use crate::{
 pub enum CacheScope {
     /// Daemon-computed; visible to every user with database read permission.
     Shared,
-    /// Client-uploaded; visible only to the named user.
-    User(String),
+    /// Client-uploaded; scoped to an instance-local login UUID, not an Account root ID.
+    #[serde(rename = "User")]
+    Login(String),
 }
 
 /// Lifecycle of stored Store state.
@@ -145,13 +146,56 @@ pub struct RecordPage {
 
 impl CacheScope {
     /// Storage key for the scope — `None` encodes [`Self::Shared`], `Some`
-    /// encodes [`Self::User`]. Useful for backends that need a single
+    /// encodes [`Self::Login`]. Useful for backends that need a single
     /// nullable column or a uniform key prefix (e.g. SQL primary keys,
     /// Redis key formatting).
     pub fn storage_key(&self) -> Option<&str> {
         match self {
             CacheScope::Shared => None,
-            CacheScope::User(uuid) => Some(uuid.as_str()),
+            CacheScope::Login(uuid) => Some(uuid.as_str()),
+        }
+    }
+}
+
+/// Bounds for the disposable derived Store-state materialization cache.
+///
+/// This is the one backend cache policy surface: it applies across all
+/// historical Snapshots held as derived (`Derived`) namespaces. Eviction is
+/// performance-only and never changes semantics — an evicted entry is
+/// recomputed from history on the next miss.
+///
+/// Both bounds apply together: eviction trims the least-recently-used live
+/// derived namespaces until the live count is at most `max_namespaces` and
+/// their total bytes are at most `max_bytes`. Oversized publications are refused
+/// without evicting useful state. A zero bound disables derived retention.
+/// Authoritative and staging namespaces are never counted or evicted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedCachePolicy {
+    /// Maximum live derived namespaces retained.
+    pub max_namespaces: usize,
+    /// Maximum total record bytes across live derived namespaces.
+    pub max_bytes: u64,
+}
+
+impl DerivedCachePolicy {
+    /// Default for persistent SQL: 4 GiB of live record payload.
+    pub fn persistent() -> Self {
+        Self {
+            max_bytes: 4 * 1024 * 1024 * 1024,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn admits(&self, size: u64) -> bool {
+        self.max_namespaces != 0 && self.max_bytes != 0 && size <= self.max_bytes
+    }
+}
+
+impl Default for DerivedCachePolicy {
+    fn default() -> Self {
+        Self {
+            max_namespaces: 1024,
+            max_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -276,6 +320,15 @@ pub enum VerificationStatus {
     Failed,
 }
 
+/// Result of a conservative local verification repair (not re-verification).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationRepair {
+    /// Number of inconsistent Verified entries changed to Unverified.
+    pub demoted: usize,
+    /// Reconstructed ancestor-closed verified frontier.
+    pub snapshot: Snapshot,
+}
+
 impl VerificationStatus {
     /// Canonical persistence encoding. The single source of truth for the
     /// integer stored in the `verification_status` column; all backends use
@@ -334,8 +387,10 @@ impl VerificationStatus {
 ///
 /// The backend stores a verification status for each entry, indicating whether
 /// the entry has been authenticated by the higher-level authentication system.
-/// The backend itself does not perform verification - it only stores the status
-/// set by the calling code (typically Database/Transaction implementations).
+/// The backend does not perform cryptographic authorization. Its status mutation
+/// boundary enforces same-tree Verified parents and atomically maintains the
+/// Verified frontier; the local Database/Transaction validator owns the remaining
+/// signature, causal-settings and delegation checks.
 #[async_trait]
 pub trait BackendImpl: Send + Sync + Any {
     /// Look up the published cached state for an exact request. Private
@@ -464,6 +519,13 @@ pub trait BackendImpl: Send + Sync + Any {
     /// re-verification pass). It is local-only — never reachable over the
     /// service wire — so a peer can never assert verification for us.
     ///
+    /// Promotion requires every direct parent to exist in the same tree and be
+    /// Verified, checked atomically with status/tip publication. Invalid promotion
+    /// returns an error without changes. Failed is terminal until an offline reset.
+    /// Demotion cascades to dependent Verified descendants and rebuilds tips once,
+    /// atomically for the affected tree. Existing historical snapshots are unchanged.
+    /// This parent guard does not replace the validator's cryptographic checks.
+    ///
     /// # Arguments
     /// * `id` - The ID of the entry to update
     /// * `verification_status` - The new verification status
@@ -501,6 +563,106 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Arguments
     /// * `tree` - The root ID of the tree to snapshot.
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot>;
+
+    /// Returns the retained verified [`Snapshot`] of `tree` — the tips of the
+    /// maximal ancestor-closed, all-`Verified` prefix of the DAG — without
+    /// scanning history.
+    ///
+    /// Backends maintain this frontier incrementally at the
+    /// [`update_verification_status`](Self::update_verification_status)
+    /// boundary, atomically with the status mutation that moves it. A
+    /// still-`Unverified` tip is replaced by its nearest `Verified`
+    /// ancestors; anything reachable only through an `Unverified` entry is
+    /// excluded. Empty when the root itself is not `Verified`.
+    ///
+    /// The default implementation reconstructs the frontier from history (a
+    /// full-tree load plus one status read per entry). It is a
+    /// read-only reconstruction oracle, not a repair path: concrete backends
+    /// override it with their retained state. Custom backends inherit correct
+    /// behavior automatically.
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the tree to snapshot.
+    async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        use std::collections::{BTreeSet, HashMap, HashSet};
+
+        // `get_tree` order is height-then-ID, but stored heights are not
+        // trusted here: entries built or received without heights order
+        // arbitrarily, so membership runs in Kahn's topological order
+        // (ready set deterministic in height-then-ID) instead of trusting
+        // the load order. In-degree counts only edges inside the held set;
+        // parents outside it are never prefix members, so entries with
+        // missing parents are visited but never admitted.
+        let entries = self.get_tree(tree).await?;
+        let held: HashSet<ID> = entries.iter().map(|e| e.id()).collect();
+        let mut parents_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(entries.len());
+        let mut children_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(entries.len());
+        let mut in_degree: HashMap<ID, usize> = HashMap::with_capacity(entries.len());
+        let mut height_of: HashMap<ID, u64> = HashMap::with_capacity(entries.len());
+        for e in &entries {
+            e.validate()?;
+            let id = e.id();
+            height_of.insert(id.clone(), e.height());
+            let parents = e.parents()?;
+            let mut degree = 0usize;
+            for p in &parents {
+                children_of.entry(p.clone()).or_default().push(id.clone());
+                if held.contains(p) {
+                    degree += 1;
+                }
+            }
+            parents_of.insert(id.clone(), parents);
+            in_degree.insert(id, degree);
+        }
+        let mut ready: BTreeSet<(u64, ID)> = in_degree
+            .iter()
+            .filter(|&(_, &d)| d == 0)
+            .map(|(id, _)| (height_of[id], id.clone()))
+            .collect();
+
+        let mut in_prefix: HashSet<ID> = HashSet::new();
+        let mut covered: HashSet<ID> = HashSet::new();
+        while let Some((_, id)) = ready.pop_first() {
+            if let Some(kids) = children_of.get(&id) {
+                for kid in kids.clone() {
+                    let d = in_degree.get_mut(&kid).expect("in_degree entry exists");
+                    *d -= 1;
+                    if *d == 0 {
+                        ready.insert((height_of[&kid], kid));
+                    }
+                }
+            }
+            if self.get_verification_status(&id).await? != VerificationStatus::Verified {
+                continue;
+            }
+            let empty = Vec::new();
+            let parents = parents_of.get(&id).unwrap_or(&empty);
+            if parents.iter().all(|p| in_prefix.contains(p)) {
+                in_prefix.insert(id.clone());
+                // Every parent now has a verified child, so it is interior to
+                // the prefix and cannot itself be a frontier tip.
+                for p in parents {
+                    covered.insert(p.clone());
+                }
+            }
+        }
+
+        Ok(Snapshot::new(
+            in_prefix
+                .into_iter()
+                .filter(|id| !covered.contains(id))
+                .collect(),
+        ))
+    }
+
+    /// Conservatively repair one tree under a single backend serialization boundary.
+    /// Demotes inconsistent Verified entries to Unverified, never promotes or clears
+    /// Failed decisions, and replaces retained tips atomically. Immutable Entries and
+    /// Store state are unchanged. Structural/storage errors roll back the operation.
+    /// Custom backends must implement this explicitly; no non-atomic default is safe.
+    async fn repair_verification(&self, _tree: &ID) -> Result<VerificationRepair> {
+        Err(BackendError::VerificationRepairUnsupported.into())
+    }
 
     /// Returns the snapshot of a specific store within a given tree.
     ///
@@ -869,7 +1031,21 @@ pub trait BackendImpl: Send + Sync + Any {
 
 #[cfg(test)]
 mod verification_status_codec_tests {
-    use super::VerificationStatus;
+    use super::{CacheScope, VerificationStatus};
+
+    #[test]
+    fn cache_scope_login_preserves_encoding() {
+        let scope = CacheScope::Login("login-uuid".into());
+        let wire = r#"{"User":"login-uuid"}"#;
+        assert_eq!(serde_json::to_string(&scope).unwrap(), wire);
+        assert_eq!(serde_json::from_str::<CacheScope>(wire).unwrap(), scope);
+        assert_eq!(scope.storage_key(), Some("login-uuid"));
+        assert_eq!(
+            serde_json::to_string(&CacheScope::Shared).unwrap(),
+            r#""Shared""#
+        );
+        assert_eq!(CacheScope::Shared.storage_key(), None);
+    }
 
     /// Every variant round-trips through the persistence codec, the codes
     /// are the expected stable values, and they are mutually distinct. This
