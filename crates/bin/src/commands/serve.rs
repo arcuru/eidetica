@@ -54,12 +54,13 @@ struct LoginForm {
     password: Option<String>,
 }
 
-/// Registration form data
+/// Registration form data. Only the username is inspected: self-service
+/// registration is disabled, so the submission is answered with the honest
+/// operator/admin-only notice regardless of the fields sent.
 #[derive(Deserialize)]
 struct RegisterForm {
+    #[allow(dead_code)]
     username: String,
-    password: Option<String>,
-    password_confirm: Option<String>,
 }
 
 /// Track database form data (bootstrap request)
@@ -157,8 +158,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!("  GET  /             - Redirect to login or dashboard");
     println!("  GET  /login        - Login page");
     println!("  POST /login        - Login submission");
-    println!("  GET  /register     - Account registration page");
-    println!("  POST /register     - Account registration submission");
+    println!("  GET  /register    - Registration notice (self-service disabled)");
     println!("  GET  /dashboard    - Account dashboard (requires login)");
     println!("  POST /dashboard/track - Request database access (requires login)");
     println!("  GET  /dashboard/requests - Pending access requests (requires database Admin)");
@@ -407,72 +407,25 @@ async fn handle_register_page(State(state): State<AppState>, cookies: Cookies) -
     Html(crate::templates::register_page(None)).into_response()
 }
 
-/// Handler for POST /register - Process registration
+/// The notice shown in place of the removed self-service registration form.
+const REGISTRATION_DISABLED_MESSAGE: &str = "Self-service registration is disabled. \
+     Accounts are created by the operator via `eidetica daemon init` \
+     (initial account) or by an administrator of this instance.";
+
+/// Handler for POST /register - Registration is disabled; state the boundary
 async fn handle_register_submit(
-    State(state): State<AppState>,
-    cookies: Cookies,
+    State(_state): State<AppState>,
+    _cookies: Cookies,
     headers: HeaderMap,
-    Form(form): Form<RegisterForm>,
+    _form: Form<RegisterForm>,
 ) -> Response {
     if let Err(code) = form_origin(&headers) {
         return code.into_response();
     }
-    if form.username.is_empty() {
-        return Html(crate::templates::register_page(Some(
-            "Username cannot be empty",
-        )))
-        .into_response();
-    }
-
-    let _password: Option<String> = if let Some(ref pwd) = form.password {
-        if pwd.is_empty() {
-            None
-        } else {
-            if form.password_confirm.as_deref() != Some(pwd.as_str()) {
-                return Html(crate::templates::register_page(Some(
-                    "Passwords do not match",
-                )))
-                .into_response();
-            }
-            Some(pwd.clone())
-        }
-    } else {
-        None
-    };
-
-    let _instance = state.instance.clone();
-    let _sessions = state.sessions.clone();
-    let _username = form.username.clone();
-
-    // TODO: Self-service registration needs an admin session on the server
-    // side to drive `InstanceAdmin::create_account`. The previous
-    // `admin/admin` auto-bootstrap is gone; until `serve` accepts admin
-    // credentials via flags/env vars (a follow-up task), web-form
-    // registration is disabled. Operators should create users via
-    // `eidetica daemon init` (initial admin) or programmatically against
-    // an already-initialised instance.
-    let result: Result<Option<String>, String> = Err("Self-service registration is disabled. \
-         Create users via `eidetica daemon init` or contact an administrator."
-        .to_string());
-
-    match result {
-        Ok(Some(session_token)) => {
-            let mut cookie = Cookie::new(SESSION_COOKIE, session_token);
-            cookie.set_http_only(true);
-            cookie.set_same_site(SameSite::Strict);
-            cookie.set_secure(
-                headers
-                    .get(axum::http::header::ORIGIN)
-                    .and_then(|h| h.to_str().ok())
-                    .is_some_and(|o| o.starts_with("https://")),
-            );
-            cookie.set_path("/");
-            cookies.add(cookie);
-            Redirect::to("/dashboard").into_response()
-        }
-        Ok(None) => Redirect::to("/login").into_response(),
-        Err(error_msg) => Html(crate::templates::register_page(Some(&error_msg))).into_response(),
-    }
+    Html(crate::templates::register_page(Some(
+        REGISTRATION_DISABLED_MESSAGE,
+    )))
+    .into_response()
 }
 
 // ============================================================================
@@ -493,15 +446,24 @@ async fn handle_dashboard(State(state): State<AppState>, cookies: Cookies) -> Re
 
     let user = user_lock.read().await;
 
-    let tracked_dbs = user.databases().await.unwrap_or_default();
+    let (databases, list_error) = match user.databases().await {
+        Ok(tracked_dbs) => {
+            let mut databases = Vec::new();
+            for tracked in &tracked_dbs {
+                // Keep the open outcome per row: a database that cannot be
+                // opened must surface its failure, not an empty placeholder.
+                let info = match user.open_database(&tracked.database_id).await {
+                    Ok(ref db) => DatabaseInfo::from_tracked(tracked, Ok(db)).await,
+                    Err(ref e) => DatabaseInfo::from_tracked(tracked, Err(&e.to_string())).await,
+                };
+                databases.push(info);
+            }
+            (databases, None)
+        }
+        Err(e) => (Vec::new(), Some(e.to_string())),
+    };
 
-    let mut databases = Vec::new();
-    for tracked in &tracked_dbs {
-        let db = user.open_database(&tracked.database_id).await.ok();
-        databases.push(DatabaseInfo::from_tracked(tracked, db.as_ref()).await);
-    }
-
-    let html = crate::templates::dashboard_page(&user, databases);
+    let html = crate::templates::dashboard_page(&user, databases, list_error.as_deref());
     Html(html).into_response()
 }
 
@@ -558,15 +520,19 @@ async fn handle_database_detail(
         }
     };
 
-    let db_info = DatabaseInfo::from_tracked(&tracked, Some(&db)).await;
+    let db_info = DatabaseInfo::from_tracked(&tracked, Ok(&db)).await;
 
-    let entries: Vec<String> = db
+    // A failed entry read must not render as an empty database.
+    let entries = db
         .get_all_entries()
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|e| e.id().to_string())
-        .collect();
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|e| e.id().to_string())
+                .collect::<Vec<_>>()
+        })
+        .map_err(|e| e.to_string());
 
     Html(crate::templates::database_detail_page(
         &user, db_info, entries,

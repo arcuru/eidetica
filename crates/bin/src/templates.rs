@@ -160,8 +160,10 @@ pub fn login_page(error: Option<&str>) -> String {
             </div>
             <button type="submit">Login</button>
         </form>
-        <p style="margin-top: 20px; text-align: center;">
-            Don't have an account? <a href="/register">Register here</a>
+        <p style="margin-top: 20px; text-align: center; color: #666;">
+            Accounts are created by the operator of this server
+            (<span class="code">eidetica daemon init</span> or an administrator);
+            self-service registration is not available.
         </p>
     </div>
 </body>
@@ -169,7 +171,12 @@ pub fn login_page(error: Option<&str>) -> String {
     )
 }
 
-/// Render the registration page
+/// Render the registration notice page.
+///
+/// Self-service registration is disabled: accounts are created by the
+/// operator (initial account) or an administrator
+/// ([`eidetica::instance::admin::InstanceAdmin`]). The page states that
+/// boundary instead of presenting a form that can never succeed.
 pub fn register_page(error: Option<&str>) -> String {
     let error_html = error.map_or(String::new(), |e| {
         format!(r#"<div class="error">{}</div>"#, html_escape(e))
@@ -180,34 +187,22 @@ pub fn register_page(error: Option<&str>) -> String {
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Eidetica - Register</title>
+    <title>Eidetica - Registration</title>
     <style>{COMMON_STYLES}</style>
 </head>
 <body>
     <div class="container">
         <h1>Eidetica Sync Server</h1>
-        <h2>Register New Account</h2>
+        <h2>Registration</h2>
         {error_html}
-        <form method="POST" action="/register">
-            <div class="form-group">
-                <label for="username">Username:</label>
-                <input type="text" id="username" name="username" required autofocus
-                       pattern="[a-zA-Z0-9_-]+"
-                       title="Username must contain only letters, numbers, underscores, and hyphens">
-                <small style="color: #666;">Letters, numbers, underscores, and hyphens only</small>
-            </div>
-            <div class="form-group">
-                <label for="password">Password (optional):</label>
-                <input type="password" id="password" name="password">
-                <small style="color: #666;">Leave blank to create a passwordless account</small>
-            </div>
-            <div class="form-group">
-                <label for="password_confirm">Confirm Password:</label>
-                <input type="password" id="password_confirm" name="password_confirm">
-                <small style="color: #666;">Required only if you set a password</small>
-            </div>
-            <button type="submit">Create Account</button>
-        </form>
+        <p>Self-service registration is not available on this server.</p>
+        <p>Accounts are created by the operator or an administrator:</p>
+        <ul>
+            <li>The initial account is created when the server is set up, via
+                <span class="code">eidetica daemon init</span>.</li>
+            <li>Further accounts are created by an administrator of this
+                instance.</li>
+        </ul>
         <p style="margin-top: 20px; text-align: center;">
             Already have an account? <a href="/login">Login here</a>
         </p>
@@ -217,42 +212,101 @@ pub fn register_page(error: Option<&str>) -> String {
     )
 }
 
-/// Render the dashboard page
-pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> String {
-    let databases_html = if databases.is_empty() {
-        r#"<p style="color: #666; font-style: italic;">No databases tracked yet.</p>"#.to_string()
-    } else {
-        let rows: String = databases
-            .iter()
-            .map(|db| {
-                let sync_status = if db.sync_settings.sync_enabled {
-                    r#"<span style="color: #28a745;">✓ Enabled</span>"#
-                } else {
-                    r#"<span style="color: #999;">✗ Disabled</span>"#
-                };
-                let view_link = format!(
-                    r#"<a href="/dashboard/database?id={}" style="color: #0066cc; text-decoration: none;">View</a>"#,
-                    html_escape(&db.root_id)
-                );
+/// Render the dashboard page.
+///
+/// `list_error` is `Some` when the tracked-database list itself could not be
+/// read; it must not be rendered as an empty list.
+pub fn dashboard_page(
+    user: &AccountSession,
+    databases: Vec<DatabaseInfo>,
+    list_error: Option<&str>,
+) -> String {
+    let keys_html = match (user.list_keys(), user.get_default_key()) {
+        (Ok(keys), Ok(default_key)) => {
+            if keys.is_empty() {
+                r#"<p style="color: #666; font-style: italic;">No public keys held by this account.</p>"#
+                    .to_string()
+            } else {
+                let rows: String = keys
+                    .iter()
+                    .map(|key| {
+                        let display_name = user
+                            .key_display_name(key)
+                            .map(|n| format!(" ({})", html_escape(n)))
+                            .unwrap_or_default();
+                        let default_marker = if key == &default_key {
+                            " <strong>(default)</strong>"
+                        } else {
+                            ""
+                        };
+                        format!(
+                            r#"<div class="info-row"><span class="value code">{}</span>{}{}</div>"#,
+                            html_escape(&key.to_string()),
+                            display_name,
+                            default_marker
+                        )
+                    })
+                    .collect();
                 format!(
-                    r#"<tr>
+                    r#"<p style="color: #666;">Public key IDs held by this account (IDs and display names only; key material is never shown).</p>{rows}"#
+                )
+            }
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            format!(
+                r#"<div class="error">Key list unavailable: {}</div>"#,
+                html_escape(&e.to_string())
+            )
+        }
+    };
+
+    let list_error_html = list_error.map_or(String::new(), |e| {
+        format!(
+            r#"<div class="error">Failed to read the tracked-database list: {}</div>
+        <p style="color: #666; font-style: italic;">This is a read failure, not an empty list.</p>"#,
+            html_escape(e)
+        )
+    });
+
+    let databases_html = if list_error.is_some() {
+        // The list itself failed; render the error banner above and no table.
+        String::new()
+    } else {
+        let table_html = if databases.is_empty() {
+            r#"<p style="color: #666; font-style: italic;">No databases tracked yet.</p>"#
+                .to_string()
+        } else {
+            let rows: String = databases
+                .iter()
+                .map(|db| {
+                    let sync_status = if db.sync_settings.sync_enabled {
+                        r#"<span style="color: #28a745;">✓ Enabled</span>"#
+                    } else {
+                        r#"<span style="color: #999;">✗ Disabled</span>"#
+                    };
+                    let view_link = format!(
+                        r#"<a href="/dashboard/database?id={}" style="color: #0066cc; text-decoration: none;">View</a>"#,
+                        html_escape(&db.root_id)
+                    );
+                    format!(
+                        r#"<tr>
                     <td class="code">{}</td>
                     <td>{}</td>
                     <td>{}</td>
                     <td>{}</td>
                     <td>{}</td>
                 </tr>"#,
-                    html_escape(&db.root_id),
-                    html_escape(&db.name),
-                    db.entry_count,
-                    sync_status,
-                    view_link
-                )
-            })
-            .collect();
+                        html_escape(&db.root_id),
+                        db.name_cell(),
+                        db.entry_count_cell(),
+                        sync_status,
+                        view_link
+                    )
+                })
+                .collect();
 
-        format!(
-            r#"<table>
+            format!(
+                r#"<table>
             <tr>
                 <th>Database ID</th>
                 <th>Name</th>
@@ -262,6 +316,11 @@ pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> St
             </tr>
             {rows}
         </table>"#
+            )
+        };
+        format!(
+            r#"{table_html}
+        <p style="color: #666;">Sync Preference is the stored per-account preference; it does not by itself indicate whether synchronization is currently running or healthy.</p>"#
         )
     };
 
@@ -290,10 +349,27 @@ pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> St
             <span class="label">Login ID:</span>
             <span class="value code">{}</span>
         </div>
+        <div class="info-row">
+            <span class="label">Account Root ID:</span>
+            <span class="value code">{}</span>
+        </div>
+        <p style="color: #666; font-size: 0.9em;">
+            Username and Login ID identify this instance's local login record.
+            The Account Root ID is the stable identity of your Account — its
+            private root database — and stays the same regardless of login
+            name changes. An Identity is a separate concept: a database that
+            declares keys and delegation, potentially readable by other
+            parties under its Auth policy. An Account and an Identity need not
+            correspond one-to-one.
+        </p>
+
+        <h2>Public Keys</h2>
+        {}
 
         <p><a href="/dashboard/requests">Manage pending database access requests</a></p>
 
         <h2>Tracked Databases</h2>
+        {}
         {}
 
         <h2>Request Database Access</h2>
@@ -325,6 +401,9 @@ pub fn dashboard_page(user: &AccountSession, databases: Vec<DatabaseInfo>) -> St
         COMMON_STYLES,
         html_escape(user.username()),
         html_escape(user.login_id()),
+        html_escape(&user.account().id().to_string()),
+        keys_html,
+        list_error_html,
         databases_html
     )
 }
@@ -404,42 +483,55 @@ pub fn access_result_page(title: &str, message: &str, retry: Option<(&str, &str)
 }
 
 /// Render the database detail page
+///
+/// `entries` distinguishes an empty database (`Ok(vec![])`) from a failed
+/// entry read (`Err`), which must not render as an empty list.
 pub fn database_detail_page(
     _user: &AccountSession,
     db_info: DatabaseInfo,
-    entries: Vec<String>,
+    entries: Result<Vec<String>, String>,
 ) -> String {
-    let entries_html = if entries.is_empty() {
-        r#"<p style="color: #666; font-style: italic;">No entries in this database yet.</p>"#
-            .to_string()
-    } else {
-        let entry_rows: String = entries
-            .iter()
-            .take(100) // Limit to first 100 entries
-            .map(|entry_id| {
+    let entries_html = match entries {
+        Ok(entries) if entries.is_empty() => {
+            r#"<p style="color: #666; font-style: italic;">No entries in this database yet.</p>"#
+                .to_string()
+        }
+        Ok(entries) => {
+            let entry_rows: String = entries
+                .iter()
+                .take(100) // Limit to first 100 entries
+                .map(|entry_id| {
+                    format!(
+                        r#"<tr><td class="code">{}</td></tr>"#,
+                        html_escape(entry_id)
+                    )
+                })
+                .collect();
+
+            let more_msg = if entries.len() > 100 {
                 format!(
-                    r#"<tr><td class="code">{}</td></tr>"#,
-                    html_escape(entry_id)
+                    "<p style=\"color: #666;\">Showing first 100 of {} entries</p>",
+                    entries.len()
                 )
-            })
-            .collect();
+            } else {
+                String::new()
+            };
 
-        let more_msg = if entries.len() > 100 {
             format!(
-                "<p style=\"color: #666;\">Showing first 100 of {} entries</p>",
-                entries.len()
-            )
-        } else {
-            String::new()
-        };
-
-        format!(
-            r#"{more_msg}
+                r#"{more_msg}
             <table>
                 <tr><th>Entry ID</th></tr>
                 {entry_rows}
             </table>"#
-        )
+            )
+        }
+        Err(e) => {
+            format!(
+                r#"<div class="error">Failed to read entries: {}</div>
+        <p style="color: #666; font-style: italic;">This is a read failure, not an empty database.</p>"#,
+                html_escape(&e)
+            )
+        }
     };
 
     let sync_status = if db_info.sync_settings.sync_enabled {
@@ -467,12 +559,17 @@ pub fn database_detail_page(
 
         <h2>Database: {}</h2>
         <p style="color: #666; font-size: 0.9em; margin-top: -10px;">
-            Your preferences do not indicate global sync activity. Click Refresh to reload this view.
+            This page shows locally stored state. Data from peers appears after
+            synchronization runs; click Refresh to re-read.
         </p>
 
         <div class="info-row">
             <span class="label">Database ID:</span>
             <span class="value code">{}</span>
+        </div>
+        <div class="info-row">
+            <span class="label">Name:</span>
+            <span class="value">{}</span>
         </div>
         <div class="info-row">
             <span class="label">Entry Count:</span>
@@ -486,6 +583,10 @@ pub fn database_detail_page(
             <span class="label">Key ID:</span>
             <span class="value code">{}</span>
         </div>
+        <p style="color: #666; font-size: 0.9em;">
+            Sync Preference is the stored per-account preference; it does not by
+            itself indicate whether synchronization is currently running or healthy.
+        </p>
 
         {}
 
@@ -495,9 +596,10 @@ pub fn database_detail_page(
 </body>
 </html>"#,
         COMMON_STYLES,
-        html_escape(&db_info.name),
+        html_escape(&db_info.name_cell_plain()),
         html_escape(&db_info.root_id),
-        db_info.entry_count,
+        db_info.name_cell(),
+        db_info.entry_count_cell(),
         sync_status,
         html_escape(&db_info.key_id),
         sync_preferences_form(&db_info),
@@ -567,33 +669,43 @@ pub fn sync_preferences_error(error: &str, database_id: &str) -> String {
     )
 }
 
-/// Information about a database for display
+/// Information about a database for display.
+///
+/// `name` and `entry_count` keep their read outcome: an `Err` is a failed
+/// read and must render as unavailable, never as `Unknown`, an empty value,
+/// or a zero count.
+#[derive(Debug, Clone)]
 pub struct DatabaseInfo {
     pub root_id: String,
-    pub name: String,
-    pub entry_count: usize,
+    pub name: Result<String, String>,
+    pub entry_count: Result<usize, String>,
     pub sync_settings: SyncSettings,
     pub key_id: String,
 }
 
 impl DatabaseInfo {
-    /// Create DatabaseInfo from tracked database and database
-    pub async fn from_tracked(tracked: &TrackedDatabase, db: Option<&Database>) -> Self {
-        let name = if let Some(d) = db {
-            d.get_name().await.ok()
-        } else {
-            None
-        }
-        .unwrap_or_else(|| "Unknown".to_string());
-
-        let entry_count = if let Some(d) = db {
-            d.get_all_entries()
-                .await
-                .ok()
-                .map(|entries| entries.len())
-                .unwrap_or(0)
-        } else {
-            0
+    /// Create DatabaseInfo from a tracked database and an open attempt.
+    ///
+    /// `db` is `Ok` when the database opened; `Err` carries the open failure
+    /// so the row reports it instead of degrading to placeholder values.
+    /// A database with no stored name is a genuinely unnamed database, not a
+    /// failed read, and yields an empty name.
+    pub async fn from_tracked(tracked: &TrackedDatabase, db: Result<&Database, &str>) -> Self {
+        let (name, entry_count) = match db {
+            Ok(d) => {
+                let name = match d.get_name().await {
+                    Ok(name) => Ok(name),
+                    Err(e) if is_missing_name(&e) => Ok(String::new()),
+                    Err(e) => Err(e.to_string()),
+                };
+                let entry_count = d
+                    .get_all_entries()
+                    .await
+                    .map(|entries| entries.len())
+                    .map_err(|e| e.to_string());
+                (name, entry_count)
+            }
+            Err(open_error) => (Err(open_error.to_string()), Err(open_error.to_string())),
         };
 
         Self {
@@ -604,6 +716,41 @@ impl DatabaseInfo {
             key_id: tracked.key_id.to_string(),
         }
     }
+
+    /// HTML cell content for the name: the value, or a failure marker.
+    fn name_cell(&self) -> String {
+        match &self.name {
+            Ok(name) => html_escape(name),
+            Err(e) => format!(
+                r#"<span class="error">unavailable: {}</span>"#,
+                html_escape(e)
+            ),
+        }
+    }
+
+    /// Plain name string (already-failed reads yield the failure marker).
+    fn name_cell_plain(&self) -> String {
+        match &self.name {
+            Ok(name) => name.clone(),
+            Err(e) => format!("unavailable: {e}"),
+        }
+    }
+
+    /// HTML cell content for the entry count: the number, or "unknown".
+    fn entry_count_cell(&self) -> String {
+        match &self.entry_count {
+            Ok(count) => count.to_string(),
+            Err(e) => format!(r#"unknown ({})"#, html_escape(e)),
+        }
+    }
+}
+
+/// Whether `e` is only "this database has no name stored".
+fn is_missing_name(e: &eidetica::Error) -> bool {
+    matches!(
+        e,
+        eidetica::Error::Store(se) if matches!(se.as_ref(), eidetica::store::StoreError::KeyNotFound { .. })
+    )
 }
 
 /// Escape HTML special characters

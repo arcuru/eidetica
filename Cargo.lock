@@ -1377,6 +1377,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tower",
  "tower-cookies",
  "tracing",
  "tracing-subscriber",
