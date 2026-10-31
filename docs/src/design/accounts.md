@@ -131,5 +131,7 @@ separate sync-side approval state.
 network wait and preserve a preference change observed when bookkeeping resumes. Mapping repair
 can still proceed without overwriting that changed row. Explicit `track_database()`
 and the split `record_database_access()` form instead treat supplied preferences
-as current intent. This is an observed-state check, not a guarantee against every
-concurrent or distributed preference update.
+as current intent. Split callers can use `record_database_access_if_unchanged()`
+with the row observed before their network wait to preserve an intervening change.
+This is an observed-state check, not a guarantee against every concurrent or
+distributed preference update.

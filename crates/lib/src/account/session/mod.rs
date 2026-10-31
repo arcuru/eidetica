@@ -27,6 +27,7 @@
 //! - **`databases()`** - List all tracked databases
 //! - **`database()`** - Get a specific tracked database
 //! - **`track_database()`** - Add or update a tracked database (upsert)
+//! - **`set_sync_preferences()`** - Update preferences without changing tracking or key mappings
 //! - **`untrack_database()`** - Remove a database from your tracked list
 //! - **`is_sync_enabled()`** - Check this account's sync preference for a database
 //!
@@ -1013,7 +1014,9 @@ impl AccountSession {
 
     /// Approve a bootstrap request and add the requesting key to the target database.
     ///
-    /// The approving key must have Admin permission on the target database.
+    /// The approving key must have current Admin permission on the target database.
+    /// Creating a grant also requires authority at least as high as the requested
+    /// permission and priority; lower priority numbers have higher authority.
     ///
     /// # Arguments
     /// * `sync` - Mutable reference to the Instance's Sync object
@@ -1334,9 +1337,9 @@ impl AccountSession {
     /// the lock held and re-acquire it only for this cheap, local mapping write,
     /// so a slow or hung peer never blocks the rest of the session. The mapping
     /// semantics are identical to `request_database_access`. The split form
-    /// treats supplied preferences as current explicit intent; use `join` or
-    /// `request_database_access` to preserve preferences changed during their
-    /// network wait.
+    /// treats supplied preferences as current explicit intent; use
+    /// [`record_database_access_if_unchanged`](Self::record_database_access_if_unchanged)
+    /// to preserve a tracked row changed during the network wait.
     ///
     /// The `bootstrap_result` is consumed and its outcome re-raised unchanged so
     /// callers can react to [`SyncError::BootstrapPending`] et al.
@@ -1353,6 +1356,33 @@ impl AccountSession {
             sync_settings,
             bootstrap_result,
             None,
+        )
+        .await
+    }
+
+    /// Record a completed bootstrap without replacing tracked preferences changed
+    /// since the caller observed `original` before its network wait.
+    ///
+    /// Like [`record_database_access`](Self::record_database_access), this reports
+    /// Pending, Rejected and network errors without writing Account metadata.
+    /// After successful access, SigKey mapping repair still proceeds; the tracked
+    /// row is only updated if it still equals `original`. This is an observed-state
+    /// check, not distributed compare-and-set. Local persistence errors remain
+    /// errors even when the network grant or Account commit already succeeded.
+    pub async fn record_database_access_if_unchanged(
+        &mut self,
+        database_id: &ID,
+        key_id: &PublicKey,
+        sync_settings: SyncSettings,
+        bootstrap_result: Result<()>,
+        original: Option<TrackedDatabase>,
+    ) -> Result<()> {
+        self.record_database_access_with_expected(
+            database_id,
+            key_id,
+            sync_settings,
+            bootstrap_result,
+            Some(original),
         )
         .await
     }
@@ -1562,6 +1592,59 @@ impl AccountSession {
             Ok(tracked) => Ok(tracked.sync_settings.sync_enabled),
             Err(_) => Ok(false),
         }
+    }
+
+    /// Update this account's sync preferences for an already tracked database.
+    ///
+    /// Requires the recorded key/mapping to still authorize reading the database.
+    /// Does not discover or repair mappings, track a new database, or change
+    /// additional sync properties. The signed preference commit triggers the
+    /// instance's ordinary reconciliation; this is not global runtime control.
+    ///
+    /// The read/modify/write uses an ordinary transaction, not distributed CAS.
+    /// Concurrent sessions follow the database's normal CRDT merge semantics.
+    /// A failed acknowledgement is not proof of rollback; reload before retrying.
+    pub async fn set_sync_preferences(
+        &mut self,
+        database_id: &ID,
+        enabled: bool,
+        on_commit: bool,
+        interval_seconds: Option<u64>,
+    ) -> Result<()> {
+        let tx = self.account.database().new_transaction().await?;
+        let table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
+        let key = database_id.to_string();
+        let mut tracked = match table.get(&key).await {
+            Ok(tracked) => tracked,
+            Err(Error::Store(e)) if matches!(*e, StoreError::KeyNotFound { .. }) => {
+                return Err(AccountError::DatabaseNotTracked {
+                    database_id: database_id.clone(),
+                }
+                .into());
+            }
+            Err(e) => return Err(e),
+        };
+        let database = self
+            .open_database_with_key(database_id, &tracked.key_id)
+            .await?;
+        if database.current_permission().await? < Permission::Read {
+            return Err(AccountError::InsufficientPermissions.into());
+        }
+        let settings = &mut tracked.sync_settings;
+        if (
+            settings.sync_enabled,
+            settings.sync_on_commit,
+            settings.interval_seconds,
+        ) == (enabled, on_commit, interval_seconds)
+        {
+            return Ok(());
+        }
+        settings.sync_enabled = enabled;
+        settings.sync_on_commit = on_commit;
+        settings.interval_seconds = interval_seconds;
+        table.set(&key, tracked).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Stop tracking a database.

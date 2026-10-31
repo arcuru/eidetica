@@ -408,8 +408,8 @@ impl Sync {
     /// Result indicating success or failure of the approval operation.
     ///
     /// # Errors
-    /// Returns `SyncError::InsufficientPermission` if the approving key does not have
-    /// Admin permission on the target database.
+    /// Returns `SyncError::InsufficientPermission` if the approving key lacks current
+    /// Admin permission or a new grant would exceed its permission/priority ceiling.
     pub async fn approve_bootstrap_request_with_key(
         &self,
         request_id: &str,
@@ -498,6 +498,18 @@ impl Sync {
             if seen_authority || snapshot != instance.backend().snapshot(database.root_id()).await?
             {
                 return Err(SyncError::PermissionDenied("approval retry cannot restore reduced, revoked, removed or uncertain authority; explicitly grant access before finalizing".to_string()).into());
+            }
+            // Key creation must obey the same permission/priority ceiling as
+            // ordinary Auth management. Recheck under the target tree lock so
+            // a concurrent downgrade cannot turn an old Admin check into a grant.
+            let permission = database.current_permission().await?;
+            if !permission.can_admin() || permission < request.requested_permission {
+                return Err(SyncError::InsufficientPermission {
+                    request_id: request_id.to_string(),
+                    required_permission: format!("{:?}", request.requested_permission),
+                    actual_permission: permission,
+                }
+                .into());
             }
             settings
                 .set_auth_key(
