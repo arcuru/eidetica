@@ -451,6 +451,7 @@ async fn daemon_refuses_unproven_keys_and_mismatched_proofs() {
         &mut writer,
         &Handshake {
             protocol_version: PROTOCOL_VERSION,
+            features: Vec::new(),
         },
     )
     .await
@@ -741,6 +742,7 @@ async fn disconnected_join_requires_explicit_retry_after_peer_approval() {
         &mut writer,
         &Handshake {
             protocol_version: PROTOCOL_VERSION,
+            features: Vec::new(),
         },
     )
     .await

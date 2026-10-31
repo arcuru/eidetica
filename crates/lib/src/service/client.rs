@@ -18,6 +18,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
+use serde_json::value::RawValue;
 use tokio::net::{
     UnixStream,
     unix::{OwnedReadHalf, OwnedWriteHalf},
@@ -201,6 +202,12 @@ enum SubRole {
 
 /// Internal state for a remote connection, wrapped in Arc for Clone.
 struct RemoteConnectionInner {
+    features: Vec<String>,
+    history_disabled: AtomicBool,
+    delta_disabled: AtomicBool,
+    /// A duplicate descriptor allows synchronous shutdown of both directions
+    /// even while a frame write holds the async writer lock.
+    shutdown_socket: std::os::unix::net::UnixStream,
     /// Owns the write half of the socket. `tokio::sync::Mutex` because
     /// `write_frame` is async (held across awaits). Only ever held for the
     /// duration of one frame's write plus the FIFO push into [`Self::pending`];
@@ -432,6 +439,7 @@ impl RemoteConnectionInner {
     ///    The handle is `take`n so a later `mark_dead` is a no-op.
     fn mark_dead(&self) {
         self.closed.store(true, Ordering::Release);
+        let _ = self.shutdown_socket.shutdown(std::net::Shutdown::Both);
         self.pending_lock().clear();
         self.tree_workers
             .lock()
@@ -512,6 +520,8 @@ impl std::fmt::Debug for RemoteConnection {
 impl RemoteConnection {
     /// Connect to a service server at the given socket path.
     ///
+    /// Negotiates the history extension; all frames remain fixed at 64 MiB.
+    /// Started writes are never replayed.
     /// Performs the protocol handshake, then spawns a background reader
     /// task that demuxes [`ServerFrame`](crate::service::protocol::ServerFrame)s:
     /// `Response` frames pop the next pending oneshot in FIFO order,
@@ -520,21 +530,36 @@ impl RemoteConnection {
     /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
         let stream = UnixStream::connect(path.as_ref()).await?;
+        let shutdown_socket = stream.into_std()?;
+        let stream = UnixStream::from_std(shutdown_socket.try_clone()?)?;
         let (mut reader, mut writer) = stream.into_split();
 
         // Send handshake
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION,
+            features: crate::service::protocol::SUPPORTED_FEATURES
+                .iter()
+                .map(|f| (*f).to_string())
+                .collect(),
         };
         write_frame(&mut writer, &handshake).await?;
 
         // Read ack
-        let ack: HandshakeAck = read_frame(&mut reader).await?.ok_or_else(|| {
+        let raw_ack: Box<RawValue> = read_frame(&mut reader).await?.ok_or_else(|| {
             crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionAborted,
                 "Server closed connection during handshake",
             ))
         })?;
+
+        if !raw_ack.get().starts_with('{') {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "handshake acknowledgement must be an object",
+            )
+            .into());
+        }
+        let ack: HandshakeAck = serde_json::from_str(raw_ack.get())?;
 
         if ack.protocol_version != PROTOCOL_VERSION {
             return Err(crate::Error::Io(std::io::Error::new(
@@ -546,7 +571,15 @@ impl RemoteConnection {
             )));
         }
 
+        let features = crate::service::protocol::accept_features(
+            crate::service::protocol::SUPPORTED_FEATURES,
+            &ack.features,
+        )?;
         let inner = Arc::new(RemoteConnectionInner {
+            features,
+            history_disabled: AtomicBool::new(false),
+            delta_disabled: AtomicBool::new(false),
+            shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),
@@ -676,6 +709,29 @@ impl RemoteConnection {
             },
         )))
         .await
+    }
+
+    /// Optional page extensions must inspect Unsupported themselves; the core
+    /// request helper converts it to I/O before a feature can disable itself.
+    async fn optional_page_request(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        op: DatabaseOp,
+    ) -> crate::Result<ServiceResponse> {
+        match self
+            .request(ServiceRequest::AuthenticatedDb(Box::new(
+                AuthenticatedDbRequest {
+                    root_id,
+                    identity,
+                    op,
+                },
+            )))
+            .await?
+        {
+            ServiceResponse::Error(error) => Err(service_error_to_eidetica_error(error)),
+            response => Ok(response),
+        }
     }
 
     /// Authenticate this connection as `username` by completing the
@@ -1220,10 +1276,165 @@ impl RemoteConnection {
         }
     }
 
-    /// Fetch ordered, verified, opaque store entries reachable from `tips`.
-    ///
-    /// Universal primitive — works for encrypted stores (client decrypts
-    /// locally) as well as unencrypted ones.
+    /// Whether the history extension was negotiated and has not opted out.
+    pub fn has_feature(&self, feature: &str) -> bool {
+        let disabled = match feature {
+            crate::service::protocol::FEATURE_HISTORY_PAGES => &self.inner.history_disabled,
+            crate::service::protocol::FEATURE_HISTORY_DELTA => &self.inner.delta_disabled,
+            _ => return false,
+        };
+        !disabled.load(Ordering::Acquire) && self.inner.features.iter().any(|name| name == feature)
+    }
+
+    /// Fetch one bounded canonical history page. Missing support is explicit;
+    /// this helper never collects and slices a whole legacy history response.
+    pub async fn get_store_history_page(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        tips: Vec<ID>,
+        after: Option<crate::backend::HistoryCursor>,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> crate::Result<crate::backend::HistoryPage> {
+        self.history_page_scoped(
+            root_id,
+            identity,
+            store,
+            tips,
+            ReadScope::Verified,
+            after,
+            limits,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn history_page_scoped(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        tips: Vec<ID>,
+        scope: ReadScope,
+        after: Option<crate::backend::HistoryCursor>,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> crate::Result<crate::backend::HistoryPage> {
+        use crate::backend::{BackendError, MAX_HISTORY_PAGE_ENTRIES};
+        if !self.has_feature(crate::service::protocol::FEATURE_HISTORY_PAGES) {
+            return Err(BackendError::HistoryPageUnsupported.into());
+        }
+        let initial = after.is_none();
+        let max_entries = limits.max_entries.clamp(1, MAX_HISTORY_PAGE_ENTRIES);
+        let response = self
+            .optional_page_request(
+                root_id,
+                identity,
+                DatabaseOp::GetStoreHistoryPage {
+                    store,
+                    tips,
+                    scope,
+                    after,
+                    max_entries: max_entries as u32,
+                    max_encoded_bytes: u32::try_from(limits.max_encoded_bytes).unwrap_or(u32::MAX),
+                    allow_large_singleton: limits.allow_large_singleton,
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::HistoryPage(page)
+                if page.entries.len() <= max_entries
+                    && !(page.entries.is_empty() && page.next.is_some()) =>
+            {
+                Ok(page)
+            }
+            ServiceResponse::Unsupported => {
+                if initial {
+                    self.inner.history_disabled.store(true, Ordering::Release);
+                }
+                Err(BackendError::HistoryPageUnsupported.into())
+            }
+            other => Err(unexpected_response("bounded HistoryPage", &other)),
+        }
+    }
+
+    /// Fetch a single strict forward delta. No v1 or legacy substitution is
+    /// valid for arbitrary known ancestry. Authorizes every request afresh.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn get_store_history_delta(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        target: Snapshot,
+        known: Snapshot,
+        scope: ReadScope,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> crate::Result<crate::backend::HistoryDelta> {
+        use crate::backend::{
+            BackendError, MAX_HISTORY_PAGE_ENTRIES,
+            history_delta::{DeltaQuery, invalid},
+            history_page::MAX_HISTORY_TIPS,
+        };
+        if !self.has_feature(crate::service::protocol::FEATURE_HISTORY_DELTA) {
+            return Err(BackendError::HistoryDeltaUnsupported.into());
+        }
+        let binding = DeltaQuery::new(&root_id, &store, &target, &known)?.binding;
+        let initial = known.is_empty();
+        let max_entries = limits.max_entries.clamp(1, MAX_HISTORY_PAGE_ENTRIES);
+        let response = self
+            .optional_page_request(
+                root_id,
+                identity,
+                DatabaseOp::GetStoreHistoryDelta {
+                    store,
+                    target,
+                    known,
+                    scope,
+                    max_entries: max_entries as u32,
+                    max_encoded_bytes: u32::try_from(limits.max_encoded_bytes).unwrap_or(u32::MAX),
+                    allow_large_singleton: limits.allow_large_singleton,
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::HistoryDelta(page)
+                if page.binding == binding
+                    && page.entries.len() <= max_entries
+                    && page.covered.len() <= MAX_HISTORY_TIPS
+                    && (page.complete || !page.entries.is_empty()) =>
+            {
+                let cap = if limits.allow_large_singleton && page.entries.len() == 1 {
+                    crate::service::protocol::MAX_FRAME_SIZE as usize
+                } else {
+                    limits
+                        .max_encoded_bytes
+                        .min(crate::backend::MAX_HISTORY_PAGE_ENCODING)
+                };
+                if crate::encoding::json_encoded_len(
+                    &page,
+                    crate::backend::MAX_HISTORY_PAGE_ENCODING,
+                )?
+                .is_none()
+                    || crate::service::protocol::history_delta_frame_len(&page, cap)?.is_none()
+                {
+                    return Err(invalid("delta exceeded encoded response limit"));
+                }
+                Ok(page)
+            }
+            ServiceResponse::Unsupported => {
+                if initial {
+                    self.inner.delta_disabled.store(true, Ordering::Release);
+                }
+                Err(BackendError::HistoryDeltaUnsupported.into())
+            }
+            _ => Err(invalid("invalid delta response")),
+        }
+    }
+
+    /// Fetch complete opaque Store history at exactly the supplied frontier.
+    /// Negotiated peers transfer bounded pages internally. The returned Vec is
+    /// still O(total history); no partial result, reconnect or replay is used.
     pub async fn get_store_entries(
         &self,
         root_id: ID,
@@ -1232,14 +1443,107 @@ impl RemoteConnection {
         tips: Vec<ID>,
         scope: ReadScope,
     ) -> crate::Result<Vec<Entry>> {
-        let resp = self
+        if self.has_feature(crate::service::protocol::FEATURE_HISTORY_DELTA) {
+            use crate::backend::{
+                BackendError, HistoryPageLimits, MAX_HISTORY_PAGE_ENTRIES,
+                history_delta::{DeltaQuery, validate_delta},
+            };
+            let target = Snapshot::from(tips.clone());
+            let mut known = Snapshot::EMPTY;
+            let mut entries = Vec::new();
+            let mut seen = HashSet::new();
+            let mut previous = None;
+            let mut progressed = false;
+            loop {
+                let query = DeltaQuery::new(&root_id, &store, &target, &known)?;
+                let page = self
+                    .get_store_history_delta(
+                        root_id.clone(),
+                        identity.clone(),
+                        store.clone(),
+                        target.clone(),
+                        known.clone(),
+                        scope,
+                        HistoryPageLimits {
+                            max_entries: MAX_HISTORY_PAGE_ENTRIES,
+                            max_encoded_bytes: crate::service::protocol::MAX_RECORD_PAGE_BYTES
+                                as usize,
+                            allow_large_singleton: true,
+                        },
+                    )
+                    .await;
+                let page = match page {
+                    Err(crate::Error::Backend(error))
+                        if !progressed
+                            && matches!(*error, BackendError::HistoryDeltaUnsupported) =>
+                    {
+                        break;
+                    }
+                    page => page?,
+                };
+                validate_delta(&query, &page, &mut previous, &mut seen)?;
+                progressed = true;
+                entries.extend(page.entries);
+                if page.complete {
+                    return Ok(entries);
+                }
+                known = page.covered;
+            }
+        }
+        if self.has_feature(crate::service::protocol::FEATURE_HISTORY_PAGES) {
+            use crate::backend::{
+                BackendError, HistoryPageLimits, MAX_HISTORY_PAGE_ENTRIES,
+                history_page::{HistoryQuery, validate_page},
+            };
+            let snapshot = Snapshot::from(tips.clone());
+            let mut after = None;
+            let mut entries = Vec::new();
+            let mut previous = None;
+            let mut progressed = false;
+            loop {
+                let query = HistoryQuery::new(&root_id, &store, &snapshot, after.as_ref())?;
+                let page = self
+                    .history_page_scoped(
+                        root_id.clone(),
+                        identity.clone(),
+                        store.clone(),
+                        tips.clone(),
+                        scope,
+                        after.clone(),
+                        HistoryPageLimits {
+                            max_entries: MAX_HISTORY_PAGE_ENTRIES,
+                            max_encoded_bytes: crate::service::protocol::MAX_RECORD_PAGE_BYTES
+                                as usize,
+                            allow_large_singleton: true,
+                        },
+                    )
+                    .await;
+                let page = match page {
+                    Err(crate::Error::Backend(error))
+                        if !progressed
+                            && matches!(*error, BackendError::HistoryPageUnsupported) =>
+                    {
+                        break;
+                    }
+                    page => page?,
+                };
+                validate_page(&query, &page, &mut previous)?;
+                progressed = true;
+                entries.extend(page.entries);
+                match page.next {
+                    Some(next) => after = Some(next),
+                    None => return Ok(entries),
+                }
+            }
+        }
+        let response = self
             .db_request(
                 root_id,
                 identity,
                 DatabaseOp::GetStoreEntries { store, tips, scope },
             )
             .await?;
-        match resp {
+        match response {
             ServiceResponse::Entries(entries) => Ok(entries),
             other => Err(unexpected_response("Entries", &other)),
         }
@@ -1871,12 +2175,26 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
 mod compatibility_tests;
 
 #[cfg(test)]
+mod delta_tests;
+#[cfg(test)]
+mod frame_limit_tests;
+#[cfg(test)]
+mod handshake_tests;
+#[cfg(test)]
+mod history_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
 
     /// Exercise the real connect/handshake/background-reader path, not a mock FIFO.
     pub(super) async fn connect_peer() -> (RemoteConnection, UnixStream) {
+        connect_peer_features(Vec::new()).await
+    }
+    pub(super) async fn connect_peer_features(
+        features: Vec<String>,
+    ) -> (RemoteConnection, UnixStream) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peer.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
@@ -1888,6 +2206,7 @@ mod tests {
                 &mut stream,
                 &HandshakeAck {
                     protocol_version: 0,
+                    features,
                 },
             )
             .await
@@ -1920,8 +2239,14 @@ mod tests {
     /// caller keeps the socket open for the duration of the test.
     pub(super) fn test_conn() -> (RemoteConnection, tokio::net::UnixStream) {
         let (client_side, peer) = tokio::net::UnixStream::pair().unwrap();
+        let shutdown_socket = client_side.into_std().unwrap();
+        let client_side = UnixStream::from_std(shutdown_socket.try_clone().unwrap()).unwrap();
         let (_reader, writer) = client_side.into_split();
         let inner = Arc::new(RemoteConnectionInner {
+            features: Vec::new(),
+            history_disabled: AtomicBool::new(false),
+            delta_disabled: AtomicBool::new(false),
+            shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),

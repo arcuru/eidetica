@@ -32,6 +32,45 @@ eidetica daemon --backend postgres --postgres-url "postgresql://user:pass@host/d
 
 The daemon prints its socket path on startup and runs until interrupted (SIGINT/SIGTERM).
 
+### Frame limits and history reads
+
+Every encoded JSON frame has a fixed **64 MiB (67108864 bytes)** maximum,
+excluding the four-byte length prefix. There is no size setting or larger-cap
+negotiation. Oversized frames retire the affected connection and fail pending
+calls; reconcile an ambiguous write before explicitly reconnecting or retrying.
+Other connections remain usable. Started writes are never automatically replayed.
+
+With upgraded clients and daemons, ordinary `get_store_entries` / `store_at`
+reads collect canonical history pages internally, without application knobs.
+The optional `eidetica.history-pages.v2` extension uses forward snapshot deltas;
+v1-only peers keep bounded cursor pages. Both use preferred 4 MiB complete
+responses, at most 1024 Entries per page. An individually larger fitting Entry
+may use a singleton within the 63 MiB inner-page ceiling and fixed frame cap.
+An Entry too large for that ceiling is an error, not fragmented or skipped.
+A failed page fails the whole call: no successful partial history is returned.
+v2 rejects missing/wrong-scope ancestry and incompatible Store ordering rather
+than silently omitting it. Its covered Snapshot represents target-local progress,
+not all current server tips. Only explicit unsupported/absent capabilities before
+any successful page permit v2→v1→legacy selection. One-page delta calls with
+arbitrary known ancestry never substitute an older operation.
+
+Both peers must support the extension for large aggregate histories. Legacy
+peers still support small existing calls; an oversized legacy aggregate fails.
+Explicit Unsupported before any page progress disables the extension once and
+uses the legacy operation. Auth, corruption, resource and connection errors do
+not trigger fallback or restart.
+
+The public result is still a complete Vec, requiring O(total history) client
+memory. Native paging has a finite 16 MiB **accounted metadata workspace** per
+operation, 4096 tips and eight nonqueued concurrent page operations; exceeding
+those supported resources fails explicitly. This is not an allocator/RSS quota.
+SQL rescans reachable metadata per page with per-ID indexed lookups, which can
+be substantially slower than a whole-history query. SQL's 120-second operation
+deadline uses native PostgreSQL timeouts and bounded cooperative SQLite steps;
+cleanup may finish the current step or SQLite's existing five-second lock wait.
+It is not a hard deadline on arbitrary OS I/O. Record chunks retain their 63 MiB
+ceiling and record pages their default 4 MiB budget.
+
 ### Optional web dashboard
 
 `eidetica daemon --dashboard` also hosts the existing login/dashboard, health,

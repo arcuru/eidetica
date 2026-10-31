@@ -72,3 +72,20 @@ The sync system is currently simple and 1:1. Each peer connection requires manua
 - Multi-peer sync orchestration
 
 See [Bootstrap System](bootstrap.md) for the key exchange flow when joining a database.
+
+## Shared forward history vocabulary
+
+Native [history deltas](service.md#forward-store-snapshot-deltas-v2) define a
+Store-scoped fixed target, known ancestor closure, canonical forward prefix,
+target-local covered Snapshot and explicit completion. A future bounded P2P
+adapter can map `our_tips` to known and capture the server frontier as target,
+but needs a separate covered progress field. `their_tips` currently advertises
+the whole server frontier; it is not a delivered-prefix acknowledgement.
+
+Current P2P `collect_ancestors_to_send` stops at literal known tips, collects
+Entry bodies in a HashMap and returns unordered Entries. It does not implement
+exact target-minus-known subtraction or native v2 bounds. Pull, bootstrap and
+outbound SendEntries remain unbounded here. Their wire, authentication and
+orchestration are unchanged; protocol migration, sparse-replica reconciliation
+and reverse traversal are deferred. In particular, child-first traversal cannot
+advance a forward possession Snapshot until its ancestors are covered.

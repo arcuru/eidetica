@@ -51,30 +51,95 @@ use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 /// Updated peers reject unknown operations with [`ServiceResponse::Unsupported`],
 /// fail one call for unknown responses, and ignore unknown optional notification
 /// variants. Known payloads and required nested types remain strict. There is no
-/// capability negotiation or downgrade. Pre-change v0 peers still disconnect on
+/// general downgrade; the history extension is explicitly negotiated. Pre-change v0 peers still disconnect on
 /// unknown variants; keeping v0 does not retroactively make them extensible.
 /// `#[non_exhaustive]` protects Rust source compatibility, not the wire.
 pub const PROTOCOL_VERSION: u32 = 0;
 
-/// Maximum frame size: 64 MiB.
+/// Fixed maximum encoded frame payload: exactly 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
 
-/// Record payload budget leaving room for the JSON envelope and length prefix.
-pub const MAX_RECORD_CHUNK_BYTES: u32 = MAX_FRAME_SIZE - 1024 * 1024;
+/// Record payload budget, independent of the fixed transport frame limit.
+pub const MAX_RECORD_CHUNK_BYTES: u32 = 63 * 1024 * 1024;
 
 /// Default upper bound for an encoded record page.
 pub const MAX_RECORD_PAGE_BYTES: u32 = 4 * 1024 * 1024;
 
+/// Optional extension: canonical, count- and byte-bounded Store history pages
+/// ([`DatabaseOp::GetStoreHistoryPage`]).
+pub const FEATURE_HISTORY_PAGES: &str = "eidetica.history-pages.v1";
+
+/// Strict forward snapshot deltas ([`DatabaseOp::GetStoreHistoryDelta`]).
+pub const FEATURE_HISTORY_DELTA: &str = "eidetica.history-pages.v2";
+
+/// Implemented optional history extensions.
+pub const SUPPORTED_FEATURES: &[&str] = &[FEATURE_HISTORY_PAGES, FEATURE_HISTORY_DELTA];
+
+/// Bounds on an advertised feature list; a larger list is malformed.
+const MAX_FEATURES: usize = 32;
+const MAX_FEATURE_NAME_BYTES: usize = 64;
+
 /// Handshake message sent by the client on connection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `features` is additive and optional: a missing field means a legacy peer
+/// with no extensions, never "latest".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Handshake {
     pub protocol_version: u32,
+    /// Optional extensions the client understands.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 /// Handshake acknowledgment sent by the server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `features` acknowledges only the intersection of the client's offer and
+/// [`SUPPORTED_FEATURES`]. Missing means none.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HandshakeAck {
     pub protocol_version: u32,
+    /// Negotiated extensions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+}
+
+fn validate_features(features: &[String]) -> crate::Result<()> {
+    if features.len() > MAX_FEATURES
+        || features
+            .iter()
+            .any(|name| name.is_empty() || name.len() > MAX_FEATURE_NAME_BYTES)
+    {
+        return Err(crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Malformed handshake feature list",
+        )));
+    }
+    Ok(())
+}
+
+/// Server side: acknowledge the supported intersection of a client offer.
+/// Unknown names are ignored; a malformed list is refused.
+pub(crate) fn acknowledge_features(offered: &[String]) -> crate::Result<Vec<String>> {
+    validate_features(offered)?;
+    let mut acked: Vec<String> = SUPPORTED_FEATURES
+        .iter()
+        .filter(|name| offered.iter().any(|offer| offer == *name))
+        .map(|name| (*name).to_string())
+        .collect();
+    acked.dedup();
+    Ok(acked)
+}
+
+/// Client side: an acknowledgment may contain only features that were offered.
+pub(crate) fn accept_features(offered: &[&str], acked: &[String]) -> crate::Result<Vec<String>> {
+    validate_features(acked)?;
+    if let Some(name) = acked.iter().find(|name| !offered.contains(&name.as_str())) {
+        return Err(crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Server acknowledged unoffered feature {name}"),
+        )));
+    }
+    Ok(acked.to_vec())
 }
 
 // ===========================================================================
@@ -168,6 +233,28 @@ pub enum DatabaseOp {
         after: Option<Vec<u8>>,
         max_records: u32,
         max_encoded_bytes: u32,
+    },
+    /// Strict forward snapshot delta; requires [`FEATURE_HISTORY_DELTA`]. Gate Read.
+    GetStoreHistoryDelta {
+        store: String,
+        target: Snapshot,
+        known: Snapshot,
+        scope: ReadScope,
+        max_entries: u32,
+        max_encoded_bytes: u32,
+        allow_large_singleton: bool,
+    },
+    /// One canonical bounded page of `GetStoreEntries` order. Sent only after
+    /// [`FEATURE_HISTORY_PAGES`] is negotiated; otherwise the server answers
+    /// [`ServiceResponse::Unsupported`]. Gate Read.
+    GetStoreHistoryPage {
+        store: String,
+        tips: Vec<ID>,
+        scope: ReadScope,
+        after: Option<crate::backend::HistoryCursor>,
+        max_entries: u32,
+        max_encoded_bytes: u32,
+        allow_large_singleton: bool,
     },
     /// Acquire everything needed to build+sign a transaction locally for the
     /// given stores, with parents drawn from `scope`'s snapshot. Gate Read.
@@ -282,6 +369,8 @@ impl DatabaseOp {
             DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetVerifiedTips
             | DatabaseOp::GetStoreState { .. }
+            | DatabaseOp::GetStoreHistoryDelta { .. }
+            | DatabaseOp::GetStoreHistoryPage { .. }
             | DatabaseOp::GetStoreEntries { .. }
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
             | DatabaseOp::ComputeMergeState { .. }
@@ -514,6 +603,10 @@ pub enum ServerFrame {
 /// Response from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceResponse {
+    /// One canonical bounded history page.
+    HistoryPage(crate::backend::HistoryPage),
+    /// One strict forward snapshot delta.
+    HistoryDelta(crate::backend::HistoryDelta),
     /// Single entry
     Entry(Entry),
     /// Multiple entries
@@ -610,6 +703,8 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "SubmitSignedEntry",
     "GetVerifiedTips",
     "GetStoreState",
+    "GetStoreHistoryPage",
+    "GetStoreHistoryDelta",
     "GetStoreEntries",
     "GetStoreTipsUpToEntries",
     "ComputeMergeState",
@@ -622,6 +717,8 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
     "Entry",
+    "HistoryPage",
+    "HistoryDelta",
     "Entries",
     "Ids",
     "Ok",
@@ -761,29 +858,29 @@ impl<'de> Deserialize<'de> for IncomingServerFrame {
     }
 }
 
-/// Write a length-prefixed JSON frame to an async writer.
+/// Write a complete compact-JSON frame, validating before writing any prefix.
 pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     writer: &mut W,
     value: &T,
 ) -> crate::Result<()> {
-    let payload = serde_json::to_vec(value)?;
-    let len = payload.len() as u32;
-    if len > MAX_FRAME_SIZE {
-        return Err(crate::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
-        )));
-    }
+    let payload =
+        crate::encoding::encode_json(value, MAX_FRAME_SIZE as usize)?.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "frame too large (max 64 MiB)",
+            )
+        })?;
+    let len = u32::try_from(payload.len()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "frame length overflow")
+    })?;
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(&payload).await?;
     writer.flush().await?;
     Ok(())
 }
 
-/// Read a length-prefixed JSON frame from an async reader.
-///
-/// Returns `None` only on EOF before any length-prefix bytes are read.
-/// EOF within the length prefix or payload returns an `UnexpectedEof` I/O error.
+/// Read one fixed-cap frame. Only EOF before the first prefix byte is clean.
+/// Reject an over-limit prefix before allocating or reading its body.
 pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> crate::Result<Option<T>> {
@@ -794,15 +891,38 @@ pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader.read_exact(&mut len_buf[1..]).await?;
     let len = u32::from_be_bytes(len_buf);
     if len > MAX_FRAME_SIZE {
-        return Err(crate::Error::Io(std::io::Error::new(
+        return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
-        )));
+            "frame too large (max 64 MiB)",
+        )
+        .into());
     }
     let mut payload = vec![0u8; len as usize];
     reader.read_exact(&mut payload).await?;
-    let value = serde_json::from_slice(&payload)?;
-    Ok(Some(value))
+    Ok(Some(serde_json::from_slice(&payload)?))
+}
+
+/// Size the actual tagged response without cloning Entry bodies.
+pub(crate) fn history_delta_frame_len(
+    page: &crate::backend::HistoryDelta,
+    cap: usize,
+) -> crate::Result<Option<usize>> {
+    #[derive(Serialize)]
+    struct Frame<'a> {
+        #[serde(rename = "Response")]
+        response: Reply<'a>,
+    }
+    #[derive(Serialize)]
+    struct Reply<'a> {
+        #[serde(rename = "HistoryDelta")]
+        page: &'a crate::backend::HistoryDelta,
+    }
+    Ok(crate::encoding::json_encoded_len(
+        &Frame {
+            response: Reply { page },
+        },
+        cap,
+    )?)
 }
 
 #[cfg(test)]
@@ -874,14 +994,16 @@ mod tests {
     fn v0_known_wire_fixtures_are_unchanged() {
         assert_eq!(
             serde_json::to_string(&Handshake {
-                protocol_version: 0
+                protocol_version: 0,
+                features: Vec::new()
             })
             .unwrap(),
             r#"{"protocol_version":0}"#
         );
         assert_eq!(
             serde_json::to_string(&HandshakeAck {
-                protocol_version: 0
+                protocol_version: 0,
+                features: Vec::new()
             })
             .unwrap(),
             r#"{"protocol_version":0}"#
@@ -963,6 +1085,7 @@ mod tests {
     fn test_handshake_serde() {
         let h = Handshake {
             protocol_version: PROTOCOL_VERSION,
+            features: Vec::new(),
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: Handshake = serde_json::from_str(&json).unwrap();
@@ -970,13 +1093,21 @@ mod tests {
     }
 
     #[test]
-    fn test_handshake_ack_serde() {
-        let h = HandshakeAck {
-            protocol_version: PROTOCOL_VERSION,
-        };
-        let json = serde_json::to_string(&h).unwrap();
-        let h2: HandshakeAck = serde_json::from_str(&json).unwrap();
-        assert_eq!(h2.protocol_version, PROTOCOL_VERSION);
+    fn handshake_history_is_additive() {
+        let legacy: HandshakeAck = serde_json::from_str(r#"{"protocol_version":0}"#).unwrap();
+        assert!(legacy.features.is_empty());
+        let features =
+            acknowledge_features(&[FEATURE_HISTORY_PAGES.into(), "future".into()]).unwrap();
+        assert_eq!(features, [FEATURE_HISTORY_PAGES]);
+        assert!(accept_features(&[], &features).is_err());
+        assert_eq!(
+            serde_json::to_string(&Handshake {
+                protocol_version: 0,
+                features: vec![]
+            })
+            .unwrap(),
+            r#"{"protocol_version":0}"#
+        );
     }
 
     #[test]

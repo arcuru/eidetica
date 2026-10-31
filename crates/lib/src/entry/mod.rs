@@ -391,6 +391,13 @@ impl Entry {
             })
     }
 
+    pub(crate) fn subtree_parents_ref(&self, store: &str) -> &[ID] {
+        self.subtrees
+            .iter()
+            .find(|node| node.name == store)
+            .map_or(&[], |node| node.parents.as_slice())
+    }
+
     /// Get the height of this entry in the main tree DAG.
     pub fn height(&self) -> u64 {
         self.tree.height

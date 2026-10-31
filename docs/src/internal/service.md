@@ -35,23 +35,116 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 ```text
 ┌──────────────────┬──────────────────────┐
 │ Length (4 bytes) │ JSON payload         │
-│ big-endian u32   │ (up to 64 MiB)       │
+│ big-endian u32   │ (64 MiB maximum)     │
 └──────────────────┴──────────────────────┘
 ```
 
-Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF (before any length-prefix byte) and an `UnexpectedEof` I/O error when the stream ends mid-prefix or mid-payload.
+Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. The maximum is fixed at exactly 64 MiB (`MAX_FRAME_SIZE`), including JSON tags, escaping and punctuation but excluding the prefix. Inbound prefixes are checked before allocation. Outbound capped serialization stops before producing an oversized payload and writes no prefix on refusal. An invalid frame retires the affected connection and all pending calls. `read_frame` returns `None` only on EOF before any prefix byte; a partial prefix or body is an error.
 
-`PROTOCOL_VERSION` remains `0`, an unstable protocol. Version mismatches fail the handshake; the handshake and acknowledgment still advertise only the version, with no feature-capability negotiation.
+`PROTOCOL_VERSION` remains `0`. Version mismatches and malformed known handshake fields fail. The optional `features` list is bounded to 32 names of at most 64 bytes; missing means none. The server acknowledges only the supported intersection and clients reject unoffered acknowledgments. Both `eidetica.history-pages.v1` and `eidetica.history-pages.v2` are offered here. Legacy serde peers ignore the added field. No maximum frame size is advertised or learned; old larger-policy advertisements confer no authority. This remains the owner-protected local-socket trust model, not network-server authentication.
 
-Updated service peers tolerate additions at four named extension points:
+Updated service peers tolerate additions at these named operation extension points:
 
 - An unknown top-level request operation or nested `DatabaseOp` receives `{"Response":"Unsupported"}`. The server performs no operation and does not change login or session-key state. A database envelope must still have a valid `root_id` and `identity`.
-- An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. There is no retry or execution fallback.
+- An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. There is no generic retry or execution fallback. The negotiated history collector has the narrow pre-progress Unsupported fallback described below.
 - An unknown optional variant inside `Notification` is ignored without consuming a response slot or invoking callbacks. Known notifications retain their behavior.
 
-These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix and 64 MiB cap are unchanged.
+These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix, operation wire shapes and fixed 64 MiB cap are unchanged.
 
-This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no silent downgrade, capability advertisement, or legacy execution fallback. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
+This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no generic silent operation downgrade. The optional history extension is sent only after acknowledgment, including when talking to pre-tolerance v0 peers. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
+
+### Forward Store snapshot deltas (v2)
+
+`eidetica.history-pages.v2` adds the authenticated Read operation
+`GetStoreHistoryDelta { store, target, known, scope, max_entries,
+max_encoded_bytes, allow_large_singleton }`. The public complete-history SDK
+signature is unchanged. New peers prefer v2; v1 types, cursor semantics and
+operations remain available unchanged.
+
+For Store-parent ancestor closures T=A(target) and K=A(known), a reply contains
+an ordered prefix B of T−K, `covered`, a domain-separated binding to the exact
+canonical target input/database/Store, and `complete`. Its maximal covered
+frontier represents (T∩K)∪B, and completion means that set equals T. Redundant
+input ancestors are accepted; unrelated known branches are projected out, not
+returned as progress. Empty target is empty, not capture-latest. The ordinary
+collector fixes the caller's target once and continues with covered as known.
+Known asserts possession of its ancestor closure, not authority or Verified
+status. Both native methods preserve opaque Entry bytes and ReadScope's existing
+meaning; neither promises per-entry verification filtering.
+
+v2 requires available, canonically scoped Store ancestry. Unknown/wrong-scope
+nodes and Store edges incompatible with height-then-Rust-ID ordering fail
+explicitly, even if an Entry is Verified. v1's more permissive missing-node and
+ordering behavior remains separate. Metadata membership is checked on both
+walks; selected bodies are cross-checked against scoped metadata. This is not an
+exhaustive body/index corruption scanner or support for sparse replicas.
+
+Both walks, owned IDs, target edges/heights, candidate heap, frontier copies,
+arguments and SQL driver slack consume the existing 16 MiB operation workspace.
+The complete changing frontier/binding/completion and transport envelope are
+sized before admission. Input Snapshots and returned covered have at most 4096
+tips; a frontier that cannot fit fails, never truncates. A later merge might
+shrink it, but there is no maximal-packing search. Existing Entry count, preferred
+4 MiB response, fitting-singleton, 63 MiB inner page, 64 MiB frame, eight
+nonqueued operations and 120-second SQL deadline limits remain. Selected bodies
+are fetched individually, in the same captured read transaction/lock as metadata.
+Finite limits can reject a valid DAG. Extra metadata reduces supported capacity;
+there is no constant-workspace or database-engine/RSS bound.
+
+Only the empty-known complete-history collector may choose v2→v1→legacy, before
+any successful page, on capability absence or explicit Unsupported. Arbitrary
+known one-page calls cannot substitute v1. Errors, incomplete ancestry,
+malformed replies and post-progress Unsupported never restart or downgrade a
+transfer. The collector checks binding, strict order, duplicates, delivered
+Store-parent coverage, maximal progress and terminal target coverage; this is
+structural validation, not a cryptographic proof against a malicious daemon.
+It returns an all-or-error Vec with O(total history) client memory. Every page
+rechecks Read authorization; progress is not a long-lived snapshot lease.
+
+### Bounded raw Store history
+
+`GetStoreHistoryPage` is a normal authenticated Read RPC with one `HistoryPage`
+response; it introduces no response stream or new FIFO slot kind. Every page
+passes the existing acting-key and per-tree Read gates. The SDK freezes root,
+identity, Store, read posture and exact tips throughout collection, validates
+strict `(Store height, ID::Ord)` order, duplicates and exclusive cursor progress,
+and returns its Vec only after the terminal page. Cancellation/EOF/error discards
+the partial Vec. Only explicit Unsupported before a successful page permits a
+one-time legacy fallback; no other failure permits fallback, replay or reconnect.
+Custom backends opt out by default rather than slicing a whole `store_at` Vec.
+
+The cursor binds tree/Store/Snapshot/version and the last key, not identity or
+authority. Fresh authorization is essential. Verified ancestor-closed frontiers
+are stable while later tips arrive. An explicit incomplete unverified frontier
+may gain missing ancestors between RPCs; no long-lived snapshot lease or stronger
+cross-page repeatable-read claim is made. Encrypted Entry data stays opaque.
+
+Preferred complete responses are 4 MiB with at most 1024 Entries. The exact outer
+Response wrapper is reserved before applying the inner budget. A fitting large
+singleton may use the unchanged 63 MiB hard inner-page ceiling; an oversized
+immutable Entry fails explicitly without changing its identity or signature.
+
+Each native operation has a 16 MiB conservative metadata accounting ceiling,
+4096 tips and one of eight nonqueued permits. Visited IDs/queue/TopK are charged
+before container growth, including owned SQL IDs, container slack, argument copies
+and the bounded SQLx row channel. This is not exact allocator/RSS accounting.
+SQL uses the existing schema3 indexes, one captured read transaction per page,
+separate start/final membership predicates and traversal through retained missing
+intermediates as legacy SQL does. InMemory keeps its body-based membership rule.
+No recursive UNION, history-wide temporary operator or whole-body Vec is used
+by native history paging. Selected bodies are individually raw-size guarded,
+decoded and ID-checked. PostgreSQL sets transaction-local 64kB work_mem, disables
+bitmap scans and shrinks a nonzero statement_timeout before native work. SQLite
+uses indexed bounded streams and its existing 5000ms busy timeout. Cancellation
+uses ordinary driver drain/rollback and keeps pool ownership until safe reuse;
+it never closes an in-memory database to simulate cancellation. The 120-second
+operation deadline is not an exact-instant native interrupt or OS-I/O bound.
+
+Each page rescans metadata; SQL per-ID round trips can be costly. Reachable
+metadata that does not fit the supported workspace fails explicitly, even if
+its Entries would fit the wire. Client collection still uses O(total history)
+memory; queue/RSS/cache amplification and other large aggregate operations are
+not repaired by this transport change.
 
 ### Connection Lifecycle
 
@@ -96,6 +189,14 @@ sequenceDiagram
 5. **Termination**: client closes its write half (EOF); the server detects EOF and cleans up.
 
 ### Cancellation and frame integrity
+
+The server drives its writer and request loop concurrently in one handler future.
+A writer error (including an oversized response) ends the handler and closes both
+socket halves, rather than leaving a reader waiting on a connection that can no
+longer answer. Server shutdown cancels both halves together, even during a write.
+The client reader marks the connection dead on an over-limit prefix, EOF or parse
+error, releasing all pending callers. There is no fallback response appended after
+a partial frame and no automatic replay of started requests.
 
 The pending response slot is enqueued under the writer lock before sending the
 frame, preserving request/response order even if a response arrives immediately.
@@ -187,7 +288,7 @@ Operations deliberately **not** exposed over the wire — `update_verification_s
 
 `DatabaseOp::required_permission() -> Permission` returns `Write(0)` for `SubmitSignedEntry` (advisory only — the per-tree gate is skipped for submit) and for the Store-state staging operations, `Admin(0)` for `SetInstanceMetadata` (advisory — gated against `_databases` instead of `root_id`), and `Read` for every other variant. The match is exhaustive, so a new operation cannot inherit `Read` by falling through.
 
-Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The unchanged 64 MiB frame cap is enforced per request and response, so multi-record state is paged or chunked and a single record that cannot fit is refused with `RecordTooLarge`.
+Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The record chunk budget remains 63 MiB and the default page budget remains 4 MiB, independent of history transfer. Multi-record state is paged or chunked and a single record that cannot fit the record budget is refused with `RecordTooLarge`.
 
 ### ServiceResponse
 
