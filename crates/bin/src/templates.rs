@@ -3,8 +3,9 @@
 //! Simple inline HTML templates without a template engine.
 
 use eidetica::{
-    Database,
+    Database, Error,
     account::{AccountSession, SyncSettings, TrackedDatabase},
+    store::StoreError,
     sync::BootstrapRequest,
 };
 
@@ -171,17 +172,8 @@ pub fn login_page(error: Option<&str>) -> String {
     )
 }
 
-/// Render the registration notice page.
-///
-/// Self-service registration is disabled: accounts are created by the
-/// operator (initial account) or an administrator
-/// ([`eidetica::instance::admin::InstanceAdmin`]). The page states that
-/// boundary instead of presenting a form that can never succeed.
-pub fn register_page(error: Option<&str>) -> String {
-    let error_html = error.map_or(String::new(), |e| {
-        format!(r#"<div class="error">{}</div>"#, html_escape(e))
-    });
-
+/// Explain operator/admin account creation without offering self-registration.
+pub fn register_page() -> String {
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -194,7 +186,6 @@ pub fn register_page(error: Option<&str>) -> String {
     <div class="container">
         <h1>Eidetica Sync Server</h1>
         <h2>Registration</h2>
-        {error_html}
         <p>Self-service registration is not available on this server.</p>
         <p>Accounts are created by the operator or an administrator:</p>
         <ul>
@@ -223,34 +214,29 @@ pub fn dashboard_page(
 ) -> String {
     let keys_html = match (user.list_keys(), user.get_default_key()) {
         (Ok(keys), Ok(default_key)) => {
-            if keys.is_empty() {
-                r#"<p style="color: #666; font-style: italic;">No public keys held by this account.</p>"#
-                    .to_string()
-            } else {
-                let rows: String = keys
-                    .iter()
-                    .map(|key| {
-                        let display_name = user
-                            .key_display_name(key)
-                            .map(|n| format!(" ({})", html_escape(n)))
-                            .unwrap_or_default();
-                        let default_marker = if key == &default_key {
-                            " <strong>(default)</strong>"
-                        } else {
-                            ""
-                        };
-                        format!(
-                            r#"<div class="info-row"><span class="value code">{}</span>{}{}</div>"#,
-                            html_escape(&key.to_string()),
-                            display_name,
-                            default_marker
-                        )
-                    })
-                    .collect();
-                format!(
-                    r#"<p style="color: #666;">Public key IDs held by this account (IDs and display names only; key material is never shown).</p>{rows}"#
-                )
-            }
+            let rows: String = keys
+                .iter()
+                .map(|key| {
+                    let display_name = user
+                        .key_display_name(key)
+                        .map(|n| format!(" ({})", html_escape(n)))
+                        .unwrap_or_default();
+                    let default_marker = if key == &default_key {
+                        " <strong>(default)</strong>"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        r#"<div class="info-row"><span class="value code">{}</span>{}{}</div>"#,
+                        html_escape(&key.to_string()),
+                        display_name,
+                        default_marker
+                    )
+                })
+                .collect();
+            format!(
+                r#"<p style="color: #666;">Public key IDs held by this account (IDs and display names only; key material is never shown).</p>{rows}"#
+            )
         }
         (Err(e), _) | (_, Err(e)) => {
             format!(
@@ -568,10 +554,6 @@ pub fn database_detail_page(
             <span class="value code">{}</span>
         </div>
         <div class="info-row">
-            <span class="label">Name:</span>
-            <span class="value">{}</span>
-        </div>
-        <div class="info-row">
             <span class="label">Entry Count:</span>
             <span class="value">{}</span>
         </div>
@@ -596,9 +578,8 @@ pub fn database_detail_page(
 </body>
 </html>"#,
         COMMON_STYLES,
-        html_escape(&db_info.name_cell_plain()),
-        html_escape(&db_info.root_id),
         db_info.name_cell(),
+        html_escape(&db_info.root_id),
         db_info.entry_count_cell(),
         sync_status,
         html_escape(&db_info.key_id),
@@ -688,14 +669,22 @@ impl DatabaseInfo {
     ///
     /// `db` is `Ok` when the database opened; `Err` carries the open failure
     /// so the row reports it instead of degrading to placeholder values.
-    /// A database with no stored name is a genuinely unnamed database, not a
-    /// failed read, and yields an empty name.
     pub async fn from_tracked(tracked: &TrackedDatabase, db: Result<&Database, &str>) -> Self {
         let (name, entry_count) = match db {
             Ok(d) => {
                 let name = match d.get_name().await {
                     Ok(name) => Ok(name),
-                    Err(e) if is_missing_name(&e) => Ok(String::new()),
+                    Err(e)
+                        if matches!(
+                            &e,
+                            Error::Store(error) if matches!(
+                                error.as_ref(),
+                                StoreError::KeyNotFound { key, store } if key == "name" && store == "_settings"
+                            )
+                        ) =>
+                    {
+                        Ok(String::new())
+                    }
                     Err(e) => Err(e.to_string()),
                 };
                 let entry_count = d
@@ -717,7 +706,6 @@ impl DatabaseInfo {
         }
     }
 
-    /// HTML cell content for the name: the value, or a failure marker.
     fn name_cell(&self) -> String {
         match &self.name {
             Ok(name) => html_escape(name),
@@ -728,29 +716,12 @@ impl DatabaseInfo {
         }
     }
 
-    /// Plain name string (already-failed reads yield the failure marker).
-    fn name_cell_plain(&self) -> String {
-        match &self.name {
-            Ok(name) => name.clone(),
-            Err(e) => format!("unavailable: {e}"),
-        }
-    }
-
-    /// HTML cell content for the entry count: the number, or "unknown".
     fn entry_count_cell(&self) -> String {
         match &self.entry_count {
             Ok(count) => count.to_string(),
             Err(e) => format!(r#"unknown ({})"#, html_escape(e)),
         }
     }
-}
-
-/// Whether `e` is only "this database has no name stored".
-fn is_missing_name(e: &eidetica::Error) -> bool {
-    matches!(
-        e,
-        eidetica::Error::Store(se) if matches!(se.as_ref(), eidetica::store::StoreError::KeyNotFound { .. })
-    )
 }
 
 /// Escape HTML special characters
