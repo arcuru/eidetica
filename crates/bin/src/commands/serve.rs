@@ -54,15 +54,6 @@ struct LoginForm {
     password: Option<String>,
 }
 
-/// Registration form data. Only the username is inspected: self-service
-/// registration is disabled, so the submission is answered with the honest
-/// operator/admin-only notice regardless of the fields sent.
-#[derive(Deserialize)]
-struct RegisterForm {
-    #[allow(dead_code)]
-    username: String,
-}
-
 /// Track database form data (bootstrap request)
 #[derive(Deserialize)]
 struct TrackDatabaseForm {
@@ -158,7 +149,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!("  GET  /             - Redirect to login or dashboard");
     println!("  GET  /login        - Login page");
     println!("  POST /login        - Login submission");
-    println!("  GET  /register    - Registration notice (self-service disabled)");
+    println!("  GET  /register     - Registration notice (self-service disabled)");
     println!("  GET  /dashboard    - Account dashboard (requires login)");
     println!("  POST /dashboard/track - Request database access (requires login)");
     println!("  GET  /dashboard/requests - Pending access requests (requires database Admin)");
@@ -404,28 +395,15 @@ async fn handle_register_page(State(state): State<AppState>, cookies: Cookies) -
         return Redirect::to("/dashboard").into_response();
     }
 
-    Html(crate::templates::register_page(None)).into_response()
+    Html(crate::templates::register_page()).into_response()
 }
 
-/// The notice shown in place of the removed self-service registration form.
-const REGISTRATION_DISABLED_MESSAGE: &str = "Self-service registration is disabled. \
-     Accounts are created by the operator via `eidetica daemon init` \
-     (initial account) or by an administrator of this instance.";
-
-/// Handler for POST /register - Registration is disabled; state the boundary
-async fn handle_register_submit(
-    State(_state): State<AppState>,
-    _cookies: Cookies,
-    headers: HeaderMap,
-    _form: Form<RegisterForm>,
-) -> Response {
+/// Handler for POST /register - Registration is disabled
+async fn handle_register_submit(headers: HeaderMap) -> Response {
     if let Err(code) = form_origin(&headers) {
         return code.into_response();
     }
-    Html(crate::templates::register_page(Some(
-        REGISTRATION_DISABLED_MESSAGE,
-    )))
-    .into_response()
+    Html(crate::templates::register_page()).into_response()
 }
 
 // ============================================================================
@@ -1048,3 +1026,9 @@ mod tests {
 
 #[cfg(test)]
 mod sync_preferences_tests;
+
+#[cfg(test)]
+mod dashboard_tests;
+
+#[cfg(test)]
+mod test_helpers;

@@ -83,6 +83,27 @@ NixOS module opens the port when `openFirewall = true` and a web listener
 at `dataDir/service.sock` (not in systemd's private `/tmp`); client processes
 need owner-approved access to that directory.
 
+### Dashboard Account information
+
+The dashboard distinguishes the stable **Account Root ID** from the
+instance-local **Username** and **Login ID**.
+Public keys are shown by ID and optional display name; private keys and login
+credentials are not displayed.
+An Account is a private root database, while an Identity declares keys and
+delegation under its own Auth policy; they need not correspond one-to-one.
+
+Tracked-database list failures are reported separately from an empty list.
+A database that cannot be opened remains visible as an unavailable row.
+Failed name or Entry reads show an error rather than an empty name or zero count.
+The detail page shows locally stored state, not runtime sync health.
+It still loads the full Entry list before displaying the first 100 IDs.
+
+Self-service registration is disabled.
+The login and registration pages explain that the operator creates the initial
+account with `eidetica daemon init`; further accounts require an administrator
+through the existing Account administration API.
+The web interface does not provide an account-creation form.
+
 ### Dashboard sync preferences
 
 Open a tracked database's detail page to edit **your account's** sync-enabled,
