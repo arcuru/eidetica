@@ -1145,6 +1145,32 @@ impl BackendImpl for SqlxBackend {
         traversal::store_at(self, tree, store, snapshot.tips()).await
     }
 
+    async fn store_history_delta(
+        &self,
+        tree: &ID,
+        store: &str,
+        target: &Snapshot,
+        known: &Snapshot,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> Result<crate::backend::HistoryDelta> {
+        let query = crate::backend::history_delta::DeltaQuery::new(tree, store, target, known)?;
+        let _permit = crate::backend::history_page::admit()?;
+        traversal::store_history_delta(self, &query, limits).await
+    }
+
+    async fn store_history_page(
+        &self,
+        tree: &ID,
+        store: &str,
+        snapshot: &Snapshot,
+        after: Option<&crate::backend::HistoryCursor>,
+        limits: crate::backend::HistoryPageLimits,
+    ) -> Result<crate::backend::HistoryPage> {
+        let query = crate::backend::history_page::HistoryQuery::new(tree, store, snapshot, after)?;
+        let _permit = crate::backend::history_page::admit()?;
+        traversal::store_history_page(self, &query, &limits).await
+    }
+
     async fn get_sorted_store_parents(
         &self,
         tree_id: &ID,

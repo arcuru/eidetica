@@ -24,6 +24,7 @@ pub mod clock;
 pub mod constants;
 pub mod crdt;
 pub mod database;
+mod encoding;
 pub mod entry;
 pub mod height;
 pub mod instance;

@@ -63,6 +63,43 @@ pub enum BackendError {
         encoded_bytes: usize,
     },
 
+    /// The backend does not implement bounded canonical history pages.
+    /// Callers must not slice a whole-history read in its place.
+    #[error("Bounded Store history pages are not supported by this backend")]
+    HistoryPageUnsupported,
+
+    /// The backend does not implement strict forward history deltas.
+    #[error("Store history deltas are not supported by this backend")]
+    HistoryDeltaUnsupported,
+
+    /// Incomplete, wrongly scoped or non-forward history, or invalid progress.
+    #[error("Invalid Store history delta: {reason}")]
+    InvalidHistoryDelta { reason: String },
+
+    /// A history cursor was not minted for this exact query and Snapshot,
+    /// or uses an unsupported cursor version. Never an empty page.
+    #[error("History cursor does not match this query")]
+    InvalidHistoryCursor,
+
+    /// A bounded history operation exceeded an explicit resource limit
+    /// (metadata workspace, Snapshot width or concurrent operations).
+    #[error("History read exceeded its {resource} limit ({limit})")]
+    HistoryResourceLimit {
+        /// Which resource was exhausted.
+        resource: String,
+        /// The configured limit, in the resource's unit.
+        limit: usize,
+    },
+
+    /// One Entry exceeds the raw or encoded page limit and cannot be returned.
+    #[error("Entry {id} is too large for a history page ({encoded_bytes} bytes)")]
+    EntryTooLarge {
+        /// The oversized Entry.
+        id: ID,
+        /// Encoded or raw size, or a lower bound when capped encoding stops early.
+        encoded_bytes: usize,
+    },
+
     /// Entry not found by ID.
     #[error("Entry not found: {id}")]
     EntryNotFound {

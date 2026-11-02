@@ -29,9 +29,9 @@ use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, IncomingRequest, MergeState, Notification,
-    PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, TicketBootstrapOutcome,
-    TicketBootstrapRequest, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingRequest, MergeState,
+    Notification, PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse,
+    TicketBootstrapOutcome, TicketBootstrapRequest, read_frame, write_frame,
 };
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
 
@@ -75,6 +75,7 @@ struct SessionStaging {
 /// `fire_write_callbacks` dispatch path handles fan-out by walking the
 /// per-tree callback list, no separate fan-out mechanism required.
 struct ConnectionContext {
+    features: Vec<String>,
     conn_id: ConnectionId,
     tx: mpsc::UnboundedSender<ServerFrame>,
     instance: Instance,
@@ -579,22 +580,22 @@ impl Drop for ServiceServer {
 
 /// Handle a single client connection.
 ///
-/// I/O is split across two tasks:
+/// I/O is driven concurrently within this handler:
 ///
-/// - **Writer task** (spawned below) owns the `WriteHalf` and drains an
+/// - **Writer future** owns the `WriteHalf` and drains an
 ///   `mpsc::UnboundedReceiver<ServerFrame>` into `write_frame` in
 ///   submission order. Responses (dispatched from the request loop) and
 ///   server-pushed notifications (from subscribed per-db callbacks both
 ///   capture clones of the same `frame_tx`, so a single connection-local
 ///   order is preserved.
 ///
-/// - **This task** owns the `ReadHalf`, runs the auth/request loop, and
+/// - **Request loop** owns the `ReadHalf`, runs the auth/request loop, and
 ///   sends `ServerFrame::Response(...)` into the channel. It also holds
 ///   a [`ConnectionGuard`] whose Drop unregisters every subscription this
 ///   connection made on every exit path (clean EOF, error, or panic).
 ///
-/// Handshake still runs inline on the read side first; the writer task is
-/// not started until the handshake succeeds, so a version-mismatch close
+/// Handshake still runs inline on the read side first; the writer future is
+/// not polled until the handshake succeeds, so a version-mismatch close
 /// uses the simpler inline writer path.
 async fn handle_connection(
     stream: tokio::net::UnixStream,
@@ -605,34 +606,44 @@ async fn handle_connection(
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
-    // 1. Read and validate handshake (inline writer, no channel yet).
-    let handshake: crate::service::protocol::Handshake = match read_frame(&mut reader).await? {
+    let raw: Box<serde_json::value::RawValue> = match read_frame(&mut reader).await? {
         Some(h) => h,
-        None => return Ok(()), // Client disconnected before handshake
+        None => return Ok(()),
     };
-
-    if handshake.protocol_version != PROTOCOL_VERSION {
-        // Send error ack and close
-        let ack = HandshakeAck {
-            protocol_version: PROTOCOL_VERSION,
-        };
-        write_frame(&mut writer, &ack).await?;
-        return Err(crate::Error::Io(std::io::Error::new(
+    if !raw.get().starts_with('{') {
+        return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "Protocol version mismatch: client={}, server={}",
-                handshake.protocol_version, PROTOCOL_VERSION
-            ),
-        )));
+            "handshake must be an object",
+        )
+        .into());
     }
+    let handshake: Handshake = serde_json::from_str(raw.get())?;
+    if handshake.protocol_version != PROTOCOL_VERSION {
+        write_frame(
+            &mut writer,
+            &HandshakeAck {
+                protocol_version: PROTOCOL_VERSION,
+                features: Vec::new(),
+            },
+        )
+        .await?;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Protocol version mismatch",
+        )
+        .into());
+    }
+    let features = crate::service::protocol::acknowledge_features(&handshake.features)?;
+    write_frame(
+        &mut writer,
+        &HandshakeAck {
+            protocol_version: PROTOCOL_VERSION,
+            features: features.clone(),
+        },
+    )
+    .await?;
 
-    // Send handshake ack
-    let ack = HandshakeAck {
-        protocol_version: PROTOCOL_VERSION,
-    };
-    write_frame(&mut writer, &ack).await?;
-
-    // 2. Spin up the per-connection writer task.
+    // 2. Prepare the per-connection writer future.
     //
     // TODO(backpressure): this channel is `unbounded`, so a stalled client
     // reader buffers frames in daemon memory without limit. Socket access is
@@ -661,16 +672,18 @@ async fn handle_connection(
     // drop-oldest the right policy and considerably softens the cost of
     // dropping at all — but the work still needs doing for prod.
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
-    let writer_task = tokio::spawn(async move {
+    // Keep both halves in this handler's future: a writer failure must close
+    // the reader too, and aborting a handler must not orphan a writer task.
+    let writer_loop = async move {
         while let Some(frame) = frame_rx.recv().await {
-            if let Err(e) = write_frame(&mut writer, &frame).await {
-                tracing::debug!(conn_id, "Connection writer error: {e}");
-                break;
-            }
+            write_frame(&mut writer, &frame).await?;
         }
-    });
+        Ok(())
+    };
+    tokio::pin!(writer_loop);
 
     let ctx = Arc::new(ConnectionContext {
+        features,
         conn_id,
         tx: frame_tx.clone(),
         instance: instance.clone(),
@@ -684,7 +697,7 @@ async fn handle_connection(
     // 3. Request/response loop with per-connection auth state. Responses
     //    travel through the writer channel as `ServerFrame::Response`.
     let mut state = ConnectionState::PreAuth;
-    let loop_result: crate::Result<()> = async {
+    let request_loop = async {
         loop {
             let request: IncomingRequest = match read_frame(&mut reader).await? {
                 Some(req) => req,
@@ -701,16 +714,22 @@ async fn handle_connection(
                 .send(ServerFrame::Response(Box::new(response)))
                 .is_err()
             {
-                // Writer task has exited; nothing more we can send.
+                // Writer has exited; nothing more we can send.
                 break;
             }
         }
         Ok(())
-    }
-    .await;
+    };
+    let loop_result: crate::Result<()> = tokio::select! {
+        result = &mut writer_loop => return result,
+        result = request_loop => result,
+    };
+    // Invalid framing cannot be recovered on this FIFO connection. Do not
+    // drain queued responses onto a stream whose request framing has failed.
+    loop_result?;
 
     // Cleanup ordering matters — every clone of `frame_tx` must be
-    // dropped before `writer_task.await` can complete (the task is
+    // dropped before `writer_loop.await` can complete (the future is
     // waiting on `frame_rx.recv()`, which only returns `None` when no
     // senders remain):
     //
@@ -722,19 +741,17 @@ async fn handle_connection(
     //    subscribed — e.g. handshake-then-malformed-frame paths.)
     // 3. Drop `ctx` — releases `ctx.tx`, the last sender clone held
     //    on the request-loop side.
-    // 4. The writer task's `recv()` returns `None`; the task exits and
-    //    `writer_task.await` finishes.
+    // 4. The writer future's `recv()` returns `None`; it exits and
+    //    `writer_loop.await` finishes.
     //
     // Note: a callback dispatch in flight when step 2 runs holds its
     // own Arc to the closure (from `fire_write_callbacks`'s snapshot).
     // It can still send a final notification through its captured `tx`
-    // before that Arc is released; the writer task will drain that
+    // before that Arc is released; the writer future will drain that
     // frame before exiting in step 4.
     drop(frame_tx);
     drop(guard);
     drop(ctx);
-    let _ = writer_task.await;
-
     // Session teardown: subscription cleanup ran via the guard's Drop.
     // The unified CRDT-state cache lives in `BackendImpl` and is bounded
     // by its own eviction policy (byte-bounded LRU on the in-memory
@@ -742,10 +759,54 @@ async fn handle_connection(
     // disconnect intentionally so a reconnecting client recovers
     // materialized state from tier 2 without recomputing from entries.
 
-    loop_result
+    writer_loop.await
 }
 
 /// Dispatch a service request to the appropriate Instance/Backend method.
+/// Reserve the complete response frame around a negotiated history page.
+fn history_limits(
+    delta: bool,
+    max_entries: u32,
+    max_encoded_bytes: u32,
+    allow_large_singleton: bool,
+) -> crate::Result<crate::backend::HistoryPageLimits> {
+    use crate::backend::{HistoryPage, MAX_HISTORY_PAGE_ENCODING, MAX_HISTORY_PAGE_ENTRIES};
+    use crate::encoding::json_encoded_len;
+    let limit = (max_encoded_bytes as usize).min(MAX_HISTORY_PAGE_ENCODING);
+    let response = if delta {
+        ServiceResponse::HistoryDelta(crate::backend::HistoryDelta {
+            entries: Vec::new(),
+            covered: crate::Snapshot::EMPTY,
+            binding: [0; 32],
+            complete: false,
+        })
+    } else {
+        ServiceResponse::HistoryPage(HistoryPage::default())
+    };
+    let page_size = match &response {
+        ServiceResponse::HistoryDelta(page) => json_encoded_len(page, limit)?,
+        ServiceResponse::HistoryPage(page) => json_encoded_len(page, limit)?,
+        _ => unreachable!(),
+    };
+    let empty_frame = ServerFrame::Response(Box::new(response));
+    let too_large = || crate::backend::BackendError::RecordTooLarge {
+        encoded_bytes: limit + 1,
+    };
+    let frame_size = json_encoded_len(&empty_frame, limit)?.ok_or_else(too_large)?;
+    let page_size = page_size.ok_or_else(too_large)?;
+    // A singleton may use the backend's hard page cap; that plus the fixed
+    // response tags stays below the immutable frame cap.
+    debug_assert!(
+        MAX_HISTORY_PAGE_ENCODING + (frame_size - page_size)
+            <= crate::service::protocol::MAX_FRAME_SIZE as usize
+    );
+    Ok(crate::backend::HistoryPageLimits {
+        max_entries: (max_entries as usize).min(MAX_HISTORY_PAGE_ENTRIES),
+        max_encoded_bytes: limit - (frame_size - page_size),
+        allow_large_singleton,
+    })
+}
+
 async fn dispatch(
     instance: &Instance,
     state: &mut ConnectionState,
@@ -1297,6 +1358,84 @@ async fn dispatch_database_op(
             let db = Database::open(instance, &root_id).await?;
             let entries = db.get_store_entries(&store, &tips, scope).await?;
             Ok(ServiceResponse::Entries(entries))
+        }
+
+        DatabaseOp::GetStoreHistoryDelta {
+            store,
+            target,
+            known,
+            scope: _,
+            max_entries,
+            max_encoded_bytes,
+            allow_large_singleton,
+        } => {
+            if !ctx
+                .features
+                .iter()
+                .any(|f| f == crate::service::protocol::FEATURE_HISTORY_DELTA)
+            {
+                return Ok(ServiceResponse::Unsupported);
+            }
+            let limits =
+                history_limits(true, max_entries, max_encoded_bytes, allow_large_singleton)?;
+            let db = Database::open(instance, &root_id).await?;
+            match db
+                .ops()
+                .store_history_delta(&root_id, &store, &target, &known, limits)
+                .await
+            {
+                Err(crate::Error::Backend(error))
+                    if matches!(
+                        *error,
+                        crate::backend::BackendError::HistoryDeltaUnsupported
+                    ) =>
+                {
+                    Ok(ServiceResponse::Unsupported)
+                }
+                page => Ok(ServiceResponse::HistoryDelta(page?)),
+            }
+        }
+
+        DatabaseOp::GetStoreHistoryPage {
+            store,
+            tips,
+            scope: _,
+            after,
+            max_entries,
+            max_encoded_bytes,
+            allow_large_singleton,
+        } => {
+            // Old requests keep old semantics: this op exists only once negotiated.
+            if !ctx
+                .features
+                .iter()
+                .any(|f| f == crate::service::protocol::FEATURE_HISTORY_PAGES)
+            {
+                return Ok(ServiceResponse::Unsupported);
+            }
+            let limits =
+                history_limits(false, max_entries, max_encoded_bytes, allow_large_singleton)?;
+            // Same read semantics as GetStoreEntries: the caller-supplied
+            // Snapshot is captured once and bound into every cursor.
+            let db = Database::open(instance, &root_id).await?;
+            let page = db
+                .ops()
+                .store_history_page(
+                    &root_id,
+                    &store,
+                    &crate::Snapshot::from(tips),
+                    after.as_ref(),
+                    limits,
+                )
+                .await;
+            match page {
+                Err(crate::Error::Backend(error))
+                    if matches!(*error, crate::backend::BackendError::HistoryPageUnsupported) =>
+                {
+                    Ok(ServiceResponse::Unsupported)
+                }
+                page => Ok(ServiceResponse::HistoryPage(page?)),
+            }
         }
 
         DatabaseOp::GetStoreTipsUpToEntries { store, up_to } => {
@@ -1942,7 +2081,7 @@ async fn gate_entry_read(
 mod tests {
     use super::*;
     use crate::backend::database::InMemory;
-    use crate::service::protocol::{Handshake, write_frame};
+    use crate::service::protocol::{Handshake, read_frame, write_frame};
 
     fn private_tempdir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -2175,6 +2314,7 @@ mod tests {
         // Send a version that remains wrong when the protocol is bumped.
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION.saturating_add(1),
+            features: Vec::new(),
         };
         write_frame(&mut writer, &handshake).await.unwrap();
 
@@ -2290,6 +2430,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                features: Vec::new(),
             },
         )
         .await
@@ -2338,6 +2479,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                features: Vec::new(),
             },
         )
         .await
@@ -2535,5 +2677,122 @@ mod tests {
             matches!(&err, crate::Error::Auth(b) if matches!(**b, AuthError::PermissionDenied { .. })),
             "expected PermissionDenied, got: {err:?}",
         );
+    }
+}
+
+#[cfg(test)]
+mod history_envelope_tests {
+    use super::*;
+    use crate::backend::{BackendImpl, HistoryPageLimits};
+    #[tokio::test]
+    async fn history_delta_response_envelope_exact_boundary() {
+        let backend = crate::backend::database::InMemory::new();
+        let root = crate::Entry::root_builder()
+            .set_subtree_data("s", "\"\\\n")
+            .build()
+            .unwrap();
+        let tree = root.id();
+        backend.put(root).await.unwrap();
+        let child = crate::Entry::builder(tree.clone())
+            .add_parent(tree.clone())
+            .set_subtree_data("s", "next")
+            .add_subtree_parent("s", tree.clone())
+            .set_subtree_height("s", Some(1))
+            .build()
+            .unwrap();
+        let target = crate::Snapshot::from([child.id()]);
+        backend.put(child).await.unwrap();
+        let page = backend
+            .store_history_delta(
+                &tree,
+                "s",
+                &target,
+                &crate::Snapshot::EMPTY,
+                HistoryPageLimits {
+                    max_entries: 2,
+                    max_encoded_bytes: 1 << 20,
+                    allow_large_singleton: false,
+                },
+            )
+            .await
+            .unwrap();
+        let size = serde_json::to_vec(&ServerFrame::Response(Box::new(
+            ServiceResponse::HistoryDelta(page.clone()),
+        )))
+        .unwrap()
+        .len();
+        assert_eq!(
+            crate::service::protocol::history_delta_frame_len(&page, size).unwrap(),
+            Some(size)
+        );
+        assert!(
+            crate::service::protocol::history_delta_frame_len(&page, size - 1)
+                .unwrap()
+                .is_none()
+        );
+        for cap in [size - 1, size, size + 1] {
+            let limits = history_limits(true, 2, cap as u32, false).unwrap();
+            let page = backend
+                .store_history_delta(&tree, "s", &target, &crate::Snapshot::EMPTY, limits)
+                .await
+                .unwrap();
+            assert_eq!(page.entries.len(), if cap < size { 1 } else { 2 });
+            let actual = serde_json::to_vec(&ServerFrame::Response(Box::new(
+                ServiceResponse::HistoryDelta(page),
+            )))
+            .unwrap()
+            .len();
+            assert!(actual <= cap);
+        }
+    }
+
+    #[tokio::test]
+    async fn history_response_envelope_exact_boundary() {
+        let backend = crate::backend::database::InMemory::new();
+        let root = crate::Entry::root_builder()
+            .set_subtree_data("s", "\"\\\n")
+            .build()
+            .unwrap();
+        let tree = root.id();
+        backend.put(root).await.unwrap();
+        let child = crate::Entry::builder(tree.clone())
+            .add_parent(tree.clone())
+            .set_subtree_data("s", "next")
+            .add_subtree_parent("s", tree.clone())
+            .set_subtree_height("s", Some(1))
+            .build()
+            .unwrap();
+        let tips = crate::Snapshot::new(vec![child.id()]);
+        backend.put(child).await.unwrap();
+        let page = backend
+            .store_history_page(
+                &tree,
+                "s",
+                &tips,
+                None,
+                HistoryPageLimits {
+                    max_entries: 2,
+                    max_encoded_bytes: 1 << 20,
+                    allow_large_singleton: false,
+                },
+            )
+            .await
+            .unwrap();
+        let frame = ServerFrame::Response(Box::new(ServiceResponse::HistoryPage(page)));
+        let size = serde_json::to_vec(&frame).unwrap().len();
+        for cap in [size - 1, size, size + 1] {
+            let limits = history_limits(false, 2, cap as u32, false).unwrap();
+            let page = backend
+                .store_history_page(&tree, "s", &tips, None, limits)
+                .await
+                .unwrap();
+            assert_eq!(page.entries.len(), if cap < size { 1 } else { 2 });
+            let encoded = serde_json::to_vec(&ServerFrame::Response(Box::new(
+                ServiceResponse::HistoryPage(page),
+            )))
+            .unwrap()
+            .len();
+            assert!(encoded <= cap);
+        }
     }
 }

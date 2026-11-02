@@ -873,3 +873,76 @@ async fn corrupt_encrypted_cached_row_is_not_a_history_miss() {
     state.phase.store(0, Ordering::SeqCst);
     assert_eq!(table.get("a").await.unwrap().value, 1);
 }
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn history_custom_backend_defaults_unsupported_then_legacy_once() {
+    use eidetica::service::{
+        ServiceServer,
+        protocol::{FEATURE_HISTORY_PAGES, ReadScope},
+    };
+    let backend = Recordless(InMemory::new(), None);
+    let empty = Snapshot::EMPTY;
+    let error = backend
+        .store_history_page(
+            &ID::default(),
+            "data",
+            &empty,
+            None,
+            eidetica::backend::HistoryPageLimits {
+                max_entries: 1,
+                max_encoded_bytes: 4096,
+                allow_large_singleton: false,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error,eidetica::Error::Backend(ref e) if matches!(**e,BackendError::HistoryPageUnsupported))
+    );
+    let (instance, mut admin) =
+        Instance::create_backend(Box::new(backend), NewAccount::passwordless("admin"))
+            .await
+            .unwrap();
+    let key = admin.get_default_key().unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    db.with_transaction(|tx| async move {
+        tx.get_store::<DocStore>("data")
+            .await?
+            .set("k", "v")
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("optout.sock");
+    let server = ServiceServer::bind(instance, &socket).await.unwrap();
+    let (shutdown, rx) = tokio::sync::watch::channel(());
+    let task = tokio::spawn(server.run(rx));
+    let client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let conn = client.remote_connection().unwrap();
+    assert!(conn.has_feature(FEATURE_HISTORY_PAGES));
+    // Login itself reads account history through the default opt-out seam.
+    let _login = client.login_account("admin", None).await.unwrap();
+    assert!(!conn.has_feature(FEATURE_HISTORY_PAGES));
+    let tips = db.snapshot().await.unwrap();
+    for _ in 0..2 {
+        let entries = conn
+            .get_store_entries(
+                db.root_id().clone(),
+                eidetica::auth::types::SigKey::from_pubkey(&key),
+                "data".into(),
+                tips.tips().to_vec(),
+                ReadScope::Verified,
+            )
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+    assert!(!conn.has_feature(FEATURE_HISTORY_PAGES));
+    drop(shutdown);
+    task.await.unwrap().unwrap();
+}
