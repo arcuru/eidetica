@@ -192,6 +192,52 @@ async fn test_create_rejects_preconfigured_auth() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn live_authority_target_ignores_diagnostic_unverified_view() -> Result<()> {
+    let (instance, db) = setup_callback_test().await;
+    let (key, member) = generate_keypair();
+    let diagnostic = db.clone().with_key(key).allow_unverified();
+    assert!(diagnostic.current_permission().await.is_err());
+
+    let backend = instance.require_local_engine()?;
+    let accepted = db.snapshot().await?;
+    let parent = backend.get(&accepted.tips()[0]).await?;
+    let settings_tips = backend.store_snapshot(db.root_id(), SETTINGS).await?;
+    let mut pending_settings = Doc::new();
+    pending_settings.set(
+        format!("auth.keys.{member}"),
+        AuthKey::active(None, Permission::Read),
+    );
+    let pending = Entry::builder(db.root_id().clone())
+        .set_parents(accepted.into_tips())
+        .set_height(parent.height() + 1)
+        .set_subtree_parents(SETTINGS, settings_tips.into_tips())
+        .set_subtree_height(SETTINGS, Some(parent.subtree_height(SETTINGS).unwrap() + 1))
+        .set_subtree_data(SETTINGS, serde_json::to_vec(&pending_settings)?)
+        .build()?;
+    let pending_id = pending.id();
+    backend.put(pending).await?;
+
+    // The diagnostic view may expose pending bytes, but its permission query
+    // must still use accepted authority even inside a verification pass.
+    IN_VERIFY
+        .scope(true, async {
+            let settings = diagnostic.get_settings().await?.auth_snapshot().await?;
+            assert!(settings.get_key_by_pubkey(&member).is_ok());
+            assert!(diagnostic.current_permission().await.is_err());
+            assert!(
+                !Database::can_access(&instance, db.root_id(), &member, &Permission::Read).await?
+            );
+            Ok::<(), crate::Error>(())
+        })
+        .await?;
+    assert_eq!(
+        backend.get_verification_status(&pending_id).await?,
+        VerificationStatus::Unverified
+    );
+    Ok(())
+}
+
 // ===== Write Callback Tests =====
 
 /// Helper: create an Instance + Database for callback tests
