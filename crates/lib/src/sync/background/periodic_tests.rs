@@ -290,3 +290,114 @@ async fn background_send_emits_one_route_outcome() -> Result<()> {
     source.engine.stop_server(None).await?;
     Ok(())
 }
+
+struct RecordVerifiedPull {
+    inner: SyncHandlerImpl,
+    tips: Arc<std::sync::Mutex<Vec<crate::Snapshot>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::sync::handler::SyncHandler for RecordVerifiedPull {
+    async fn handle_request(
+        &self,
+        request: &SyncRequest,
+        context: &crate::sync::protocol::RequestContext,
+    ) -> SyncResponse {
+        if let SyncRequest::SyncTree(request) = request {
+            self.tips.lock().unwrap().push(request.our_tips.clone());
+        }
+        self.inner.handle_request(request, context).await
+    }
+}
+
+fn withheld(tree: &ID, tag: &[u8]) -> Entry {
+    Entry::builder(tree.clone())
+        .add_parent(ID::from_bytes("withheld"))
+        .set_height(50)
+        .set_subtree_data("test", tag)
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn verified_sync_periodic_round_advertises_and_transfers_only_verified_state() -> Result<()> {
+    use crate::backend::VerificationStatus;
+    let mut source = LocalPeer::new().await?;
+    let recipient = LocalPeer::new().await?;
+    let tree = source.shared_tree().await?;
+    let source_engine = source.instance.require_local_engine()?;
+    let unverified = withheld(tree.root_id(), b"source pending");
+    let failed = withheld(tree.root_id(), b"source rejected");
+    source_engine.put(unverified.clone()).await?;
+    source_engine.put(failed.clone()).await?;
+    source_engine
+        .update_verification_status(&failed.id(), VerificationStatus::Failed)
+        .await?;
+    let tips = Arc::new(std::sync::Mutex::new(Vec::new()));
+    source
+        .engine
+        .transport_manager
+        .start_server(
+            "http",
+            Arc::new(RecordVerifiedPull {
+                inner: SyncHandlerImpl::new(
+                    source.instance.clone(),
+                    source.sync.sync_tree_root_id().clone(),
+                ),
+                tips: Arc::clone(&tips),
+            }),
+        )
+        .await?;
+    recipient.follow(&source, &[&tree]).await?;
+    // Orphan raw tips must not turn a bootstrap request into an incremental one.
+    let recipient_engine = recipient.instance.require_local_engine()?;
+    let local_pending = withheld(tree.root_id(), b"recipient pending");
+    recipient_engine.put(local_pending.clone()).await?;
+    recipient.engine.periodic_sync_all_peers().await;
+    assert_eq!(*tips.lock().unwrap(), vec![crate::Snapshot::EMPTY]);
+    assert!(recipient.instance.has_entry(tree.root_id()).await);
+    assert!(!recipient.instance.has_entry(&unverified.id()).await);
+    assert!(!recipient.instance.has_entry(&failed.id()).await);
+    let before = recipient_engine.verified_snapshot(tree.root_id()).await?;
+    let next = write(&tree, "next Verified update").await?;
+    recipient.engine.periodic_sync_all_peers().await;
+    assert_eq!(*tips.lock().unwrap(), vec![crate::Snapshot::EMPTY, before]);
+    assert!(recipient.instance.has_entry(&next).await);
+    assert!(!source.instance.has_entry(&local_pending.id()).await);
+    source.engine.stop_server(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn verified_sync_queue_and_retry_reject_nonverified_payloads_at_actual_send() -> Result<()> {
+    use crate::backend::VerificationStatus;
+    let mut sender = LocalPeer::new().await?;
+    let mut recipient = LocalPeer::new().await?;
+    let tree = sender.shared_tree().await?;
+    recipient.engine.start_server(None).await?;
+    sender.follow(&recipient, &[&tree]).await?;
+    let peer = PeerId::new(recipient.instance.id());
+    let engine = sender.instance.require_local_engine()?;
+    let root = engine.get(tree.root_id()).await?;
+    sender.engine.send_to_peer(&peer, vec![root]).await?;
+    assert!(
+        recipient.instance.has_entry(tree.root_id()).await,
+        "positive control: the route sends Verified entries"
+    );
+    let pending = withheld(tree.root_id(), b"never serve");
+    engine.put(pending.clone()).await?;
+    sender
+        .sync
+        .queue
+        .enqueue(&peer, pending.id(), tree.root_id().clone());
+    assert_eq!(sender.engine.process_queue().await, 1);
+    assert_eq!(sender.engine.retry_queue.len(), 1);
+    assert!(!recipient.instance.has_entry(&pending.id()).await);
+    engine
+        .update_verification_status(&pending.id(), VerificationStatus::Failed)
+        .await?;
+    assert_eq!(sender.engine.flush_retry_queue().await, 1);
+    assert!(!recipient.instance.has_entry(&pending.id()).await);
+    recipient.engine.stop_server(None).await?;
+    Ok(())
+}

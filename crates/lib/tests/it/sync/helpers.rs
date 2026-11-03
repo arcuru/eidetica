@@ -25,6 +25,17 @@ use eidetica::{
 };
 use iroh::RelayMode;
 
+/// Transport-only fixtures must still have locally Verified custody before
+/// the sync API may send them. These synthetic bodies do not test validation.
+pub async fn hold_verified_entries(sync: &Sync, entries: &[Entry]) {
+    use crate::helpers::TestVerify;
+    let instance = sync.instance().unwrap();
+    let engine = instance.backend().local_engine().unwrap();
+    for entry in entries {
+        engine.put_verified(entry.clone()).await.unwrap();
+    }
+}
+
 // ===== SETUP HELPERS =====
 
 /// Create an Instance with authentication key.
