@@ -43,8 +43,10 @@ does not by itself change that historical signature predicate.
 
 Live service access, `Database::current_permission`, and sync's
 `Database::can_access` instead use current accepted authority at every path step.
-The target's current declarations and bounds apply. Claimed tips remain bounded
-hints; they cannot select older authority or trigger identity fetching. The
+The target's current accepted declarations and bounds apply, even on a diagnostic
+`allow_unverified` handle or while verification uses raw history internally.
+Claimed tips remain bounded hints; they cannot select older authority or trigger
+identity fetching. The
 resolver reads the retained Verified frontier and proves its complete ancestry
 before folding settings at that immutable boundary. It does not recursively
 verify delegated databases while the caller holds a verification lock.

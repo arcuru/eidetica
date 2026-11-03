@@ -1881,8 +1881,7 @@ async fn gate_tree_permission(
     }
 
     let database = Database::open(instance, tree_id).await?;
-    let settings_store = database.get_settings().await?;
-    let auth_settings = settings_store.auth_snapshot().await?;
+    let auth_settings = database.live_auth_settings().await.map_err(|_| denied())?;
 
     let resolved =
         match resolve_identity_permission(pubkey, identity, &auth_settings, Some(instance)).await {

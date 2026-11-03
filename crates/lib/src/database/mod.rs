@@ -576,8 +576,7 @@ impl Database {
     /// to fail fast on an invalid key should call
     /// [`current_permission`](Self::current_permission), which wraps this.
     async fn validate_key(&self, key: &DatabaseKey) -> Result<Permission> {
-        let settings_store = self.get_settings().await?;
-        let auth_settings = settings_store.auth_snapshot().await?;
+        let auth_settings = self.live_auth_settings().await?;
         let actual_pubkey = key.public_key();
         let instance = match key.identity() {
             // Delegation resolution needs an Instance for cross-tree lookups;
@@ -592,6 +591,22 @@ impl Database {
             instance.as_ref(),
         )
         .await
+    }
+
+    /// Live authority ignores diagnostic read scopes and verification's raw view.
+    /// Pin the accepted frontier before reading settings; never cache a permission
+    /// verdict or recursively verify another database under the caller's lock.
+    pub(crate) async fn live_auth_settings(&self) -> Result<AuthSettings> {
+        let instance = self.instance()?;
+        let snapshot = match instance.backend().local_engine() {
+            Some(backend) => backend.verified_snapshot(self.root_id()).await?,
+            None => self.snapshot().await?, // The service returns its Verified frontier.
+        };
+        self.new_transaction_at(&snapshot)
+            .await?
+            .get_settings()?
+            .auth_snapshot()
+            .await
     }
 
     /// Find all SigKeys that a public key can use to access a database.
@@ -658,9 +673,7 @@ impl Database {
         // Create temporary database to load settings (no key source needed for reading)
         let temp_db = Self::open(instance, root_id).await?;
 
-        // Load auth settings
-        let settings_store = temp_db.get_settings().await?;
-        let auth_settings = settings_store.auth_snapshot().await?;
+        let auth_settings = temp_db.live_auth_settings().await?;
 
         // Find direct SigKeys for this pubkey
         let mut results = auth_settings.find_all_sigkeys_for_pubkey(pubkey);
@@ -673,13 +686,13 @@ impl Database {
                 let Ok(delegated_db) = Self::open(instance, delegated_root_id).await else {
                     continue;
                 };
-                let Ok(snapshot) = delegated_db.snapshot().await else {
+                let Ok(tips) = delegated_db.verified_frontier().await else {
                     continue;
                 };
                 let delegation_sigkey = SigKey::Delegation {
                     path: vec![DelegationStep {
                         tree: delegated_root_id.clone(),
-                        tips: snapshot.into_tips(),
+                        tips,
                     }],
                     hint: KeyHint::from_pubkey(pubkey),
                 };
