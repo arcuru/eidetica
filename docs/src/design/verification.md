@@ -226,6 +226,27 @@ main join replaces them. This operation does not scan accepted history. Store
 frontiers are derived separately from explicit Store edges within that accepted
 main cut; a main join alone does not consume an ordinary Store branch.
 
+### Non-Failed storage frontier
+
+`BackendImpl::non_failed_snapshot(tree)` supplies a separate retained frontier:
+present `Unverified` or `Verified` vertices with no same-tree non-Failed direct
+child. Rejecting a leaf restores surviving parents when their last non-Failed
+child disappears. Children arriving before their parents are accounted for, and
+foreign-tree references cannot consume another tree's tips.
+
+This selection is not ancestor closure or a historical materialization filter:
+a selected Unverified vertex can still refer to Failed or missing ancestry.
+Raw structural tips and immutable Snapshot identity do not change. The storage
+capability is separate from the Database read and notification selection below.
+
+InMemory retains tips plus direct non-Failed child counts, including references
+to missing parents. SQL retains tips and uses indexed direct edges. Put and
+failure publication share the storage mutation lock/transaction; normal frontier
+maintenance adds no history walk. InMemory's existing raw-tip recomputation is
+unchanged, so this does not claim that its entire put path is scan-free.
+Migration, explicit repair and offline reset can reconstruct this local index;
+ordinary current-format reads and reopen never do.
+
 ### Default reads and `.allow_unverified()`
 
 A local `Database::snapshot()` normally returns the retained Verified frontier.
@@ -352,32 +373,36 @@ replace Doc's deterministic conflict resolution.
 ## Persistence, restart and forward migration
 
 SQL `schema_version` and InMemory JSON `_v` are **independent internal integer
-format revision counters**. SQL uses `4` and InMemory uses `3`; they are not release
+format revision counters**. SQL uses `5` and InMemory uses `4`; they are not release
 versions, SemVer or a stability scale. A format change requiring migration
 advances the relevant counter and supplies an explicit supported forward path.
 Do not renumber existing data or infer a migration merely from integer ordering.
 The current supported matrix is:
 
-| Stored format                                             | Open/load behavior                                                                                                                                                    |
-| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fresh SQL database (no version row)                       | Initialize current schema and marker `4`. This is initialization, not a promise to repair unmarked populated SQL databases.                                           |
-| Mainline SQL `0`                                          | Migrate directly to `4`: create retained tips/cache accounting/local account storage, conservatively repair each tree, publish schema/labels/tips/version atomically. |
-| SQL `2`                                                   | Add/backfill cache accounting and advance to `4`, preserving labels and Verified tips without verification repair.                                                    |
-| SQL `3`                                                   | Add empty native local-account storage and advance to `4`; no cache backfill or history repair.                                                                       |
-| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported experimental prefix-tracking layout before schema initialization.                                                                              |
-| SQL `4`                                                   | Use retained state and native local records without recurring backfill or history repair.                                                                             |
-| SQL above `4`, or below `0`                               | Refuse: newer schema or unknown migration path.                                                                                                                       |
-| InMemory absent `_v` or explicit `_v: 0`                  | Reconstruct Verified tips from Entries and labels on load, conservatively demoting inconsistent Verified regions. Next save writes `3`.                               |
-| InMemory `_v: 2`                                          | Load persisted labels/tips without history repair; next save writes `3` with empty local-account storage.                                                             |
-| InMemory `_v: 3`                                          | Load labels/tips and local-account records without history repair.                                                                                                    |
-| InMemory other `_v`                                       | Refuse; this includes experimental `1` and future versions. Invalid/out-of-range encodings also fail deserialization.                                                 |
+| Stored format | Open/load behavior |
+| --- | --- |
+| Fresh SQL database (no version row) | Initialize schema `5`. This does not repair populated unversioned databases. |
+| Mainline SQL `0` | Migrate directly to `5`, conservatively repairing Verified state and building the non-Failed frontier. |
+| SQL `2` | Add/backfill cache accounting, add empty native account storage, and build the non-Failed frontier. |
+| SQL `3` | Add empty native account storage and build the non-Failed frontier without cache backfill. |
+| Mainline SQL `4` | Build only the non-Failed frontier; preserve local accounts, cache accounting and trust state. |
+| SQL `5` | Use both persisted frontiers with no history repair or backfill. |
+| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported prefix-tracking candidate before schema initialization. |
+| SQL above `5`, or below `0` | Refuse: newer schema or unknown migration path. |
+| InMemory absent `_v` or explicit `_v: 0` | Reconstruct both frontiers, conservatively demoting inconsistent Verified regions. Next save writes `4`. |
+| InMemory `_v: 2` | Reconstruct only the non-Failed frontier and child counts; next save writes `4` with empty local-account storage. |
+| Mainline InMemory `_v: 3` | Reconstruct only the non-Failed frontier and child counts; preserve local accounts and trust state. Next save writes `4`. |
+| InMemory `_v: 4` | Use persisted labels, frontiers, child counts and local accounts without history repair. |
+| InMemory other `_v` | Refuse; includes experimental `1` and future versions. Invalid encodings also fail deserialization. |
 
 SQL migration preserves immutable Entry bytes, parent/subtree records, raw tips,
 instance metadata/secrets and existing Store-state namespaces/records. It changes
 only inconsistent Verified labels and the retained Verified frontier on the v0
-transition; the v2 cache-accounting migration and v3→v4 empty local-account table addition do not change trust state.
-Neither transition copies or deletes existing keys.
-Native local-account records are preserved by cache clearing and trust reset.
+transition. SQL upgrades from `2`, `3`, and `4` advance to `5` without changing
+trust decisions or Verified tips. These upgrades neither copy nor delete existing
+keys. Native local-account records survive cache clearing and trust reset.
+The divergent experimental SQL `4` and JSON `3` non-Failed formats are not
+supported mainline upgrade sources.
 Exclusive startup may reclaim disposable retired/abandoned cache rows. Failed decisions remain Failed. Failure rolls back
 the migration; version refusal is not a wholly read-only open, since ownership
 bookkeeping and SQLite WAL setup can precede the schema check.
@@ -413,8 +438,9 @@ Format migration is **not** authorization revalidation. When upgrading to new
 verification rules, stop all users, back up the backend and run the offline
 [`db reset-local-verification` command](../user_guide/cli.md#db-reset-local-verification-offline-trust-reset)
 before trusting old decisions under the new rules. It clears old Verified and
-Failed labels, retained tips, derived and incomplete Store state, while keeping
-immutable Entries and authoritative Store state. It does not verify or fetch.
+Failed labels, Verified tips, derived and incomplete Store state, while keeping
+immutable Entries and authoritative Store state. It rebuilds non-Failed tips with
+every Entry now Unverified. It does not verify or fetch.
 
 Then use the [dependency-first SDK procedure](../user_guide/cli.md#re-verification-after-reset-or-incomplete-proof),
 inspect unresolved/rejected branches and acquire new read boundaries. There is

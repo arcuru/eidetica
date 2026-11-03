@@ -321,11 +321,11 @@ file or treats corrupt JSON as an empty instance.
 #### Storage compatibility and older candidate data
 
 SQL schema and InMemory persistence versions are independent internal integer
-format counters, not release versions or stability levels. SQL currently uses `4`
-and InMemory uses `3`. Mainline SQL schema `0` migrates directly to `4`; SQL `3`
-adds an empty native local-account table without rewriting keys or verification state.
-Unversioned or explicit `_v: 0` InMemory files reconstruct retained state on load and write `3` on next save.
-Version `2` snapshots load without history repair and acquire empty local-account storage when saved.
+format counters, not release versions or stability levels. SQL currently uses `5`
+and InMemory uses `4`. Mainline SQL `0` migrates directly to `5`; unversioned or
+explicit `_v: 0` InMemory files reconstruct retained state on load and write `4`
+on next save. SQL `4` and JSON `3` mainline upgrades preserve account records and
+trust state, reconstructing only the non-Failed frontier (and InMemory child counts).
 Migration reuses conservative repair, not cryptographic re-verification; SQL schema,
 version, and label/tip changes commit together. Clean current-format opens load
 persisted tips without a history scan. See the canonical
@@ -350,13 +350,12 @@ in-place version-1 conversion or automatic deletion is provided.
 
 #### Upgrading a verification-only version-2 database
 
-Existing tips-only version-2 SQL databases migrate atomically to **version 4**,
-adding `size_bytes` and `last_access_tick` when absent. Record sizes are backfilled
-once; existing valid durable ticks are preserved. This migration preserves Entries,
-statuses, retained Verified tips and authoritative records without verification
-repair. Only the supported v0 transition repairs verification closure. Version 3 adds empty local-account storage on upgrade to 4 without verification
-repair; ordinary v4 open does not backfill or repair. InMemory version-2 files are unchanged;
-derived records and recency remain ephemeral.
+Existing tips-only version-2 SQL databases migrate atomically to **version 5**,
+adding `size_bytes` and `last_access_tick` when absent and backfilling record
+sizes once. Version `3` adds empty native local-account storage without copying or
+deleting legacy keys. Versions `2`, `3` and `4` all add non-Failed tips without
+changing trust labels or Verified tips. Only the v0 transition repairs verification
+closure. Derived InMemory records and recency remain ephemeral.
 
 Stop all users of the backend and retain a consistent offline backup before
 upgrading. Snapshot digest keys miss old-key cache rows and rebuild from immutable
@@ -365,7 +364,8 @@ separate disposable file and discards its legacy in-history cache rows. Exclusiv
 retired derived generations, seeds recency and enforces the configured budget
 before exposing storage. This does not require a trust reset.
 
-Pinned older constructors refuse newer schema markers. Binary rollback
+Older SQL constructors refuse the version-5 marker; older InMemory readers refuse
+version-4 files. Binary rollback
 requires restoring a compatible pre-upgrade backup in a separate location, not
 lowering the marker or opening an unsupported layout with old software. Malformed,
 newer and unsupported version-1/prefix layouts are refused. No rollout or deployed

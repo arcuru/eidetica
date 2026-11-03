@@ -29,7 +29,7 @@ async fn begin_write_tx(backend: &SqlxBackend) -> Result<sqlx::Transaction<'_, s
 /// already holds its write lock from `BEGIN IMMEDIATE`. Include the schema in
 /// the advisory key so independent backend namespaces do not share tree locks.
 /// The lock is released on commit or rollback, including error paths.
-async fn lock_tree(
+pub(super) async fn lock_tree(
     backend: &SqlxBackend,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     tree: &ID,
@@ -120,6 +120,9 @@ pub async fn update_verification_status(
         insert_tip(&mut tx, &tree, id).await?;
     } else {
         set_status(&mut tx, id, status).await?;
+        if status == VerificationStatus::Failed {
+            super::non_failed::failed(&mut tx, &tree, id).await?;
+        }
         // One repair of this tree cascades loss of Verified ancestry and
         // rebuilds tips once. Any decoding/storage failure rolls back everything.
         if current == VerificationStatus::Verified {
@@ -136,6 +139,7 @@ pub async fn repair_verification(backend: &SqlxBackend, tree: &ID) -> Result<Ver
     let mut tx = begin_write_tx(backend).await?;
     lock_tree(backend, &mut tx, tree).await?;
     let result = repair_in_tx(&mut tx, tree).await?;
+    super::non_failed::rebuild_in_tx(&mut tx, tree).await?;
     tx.commit()
         .await
         .sql_context("Failed to commit verification repair")?;
