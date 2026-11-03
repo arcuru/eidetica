@@ -353,8 +353,8 @@ async fn probe_detects_disclosure_when_it_occurs() {
 
 #[tokio::test]
 async fn live_delegation_sync_rechecks_member_and_target_grants() {
-    use crate::auth::live_authority::live_delegation_pair;
     use crate::auth::helpers::create_delegation_ref;
+    use crate::auth::live_authority::live_delegation_pair;
 
     let (instance, sync) = helpers::setup().await;
     let (key, member) = generate_keypair();
@@ -488,67 +488,81 @@ async fn live_delegation_sync_ignores_unaccepted_identity_tip() {
     let handler = helpers::create_test_sync_handler(&sync);
     // Unaccepted state can neither remove a grant nor restore a removed one.
     for (status, expected_access) in [(KeyStatus::Revoked, true), (KeyStatus::Active, false)] {
-    let accepted = identity.snapshot().await.unwrap();
-    let parent = instance.backend().get(&accepted.tips()[0]).await.unwrap();
-    let settings_tips = instance
-        .backend()
-        .store_snapshot(identity.root_id(), "_settings")
-        .await
-        .unwrap();
-    let mut pending_settings = eidetica::crdt::Doc::new();
-    pending_settings
-        .set_json(
+        let accepted = identity.snapshot().await.unwrap();
+        let parent = instance.backend().get(&accepted.tips()[0]).await.unwrap();
+        let settings_tips = instance
+            .backend()
+            .store_snapshot(identity.root_id(), "_settings")
+            .await
+            .unwrap();
+        let mut pending_settings = eidetica::crdt::Doc::new();
+        pending_settings.set(
             format!("auth.keys.{member}"),
             AuthKey::new(Some("member"), Permission::Write(5), status),
-        )
-        .unwrap();
-    let pending = Entry::builder(identity.root_id().clone())
-        .set_parents(vec![parent.id(), ID::from_bytes("missing-identity-parent")])
-        .set_height(parent.height() + 1)
-        .set_subtree_parents("_settings", settings_tips.into_tips())
-        .set_subtree_height(
-            "_settings",
-            Some(parent.subtree_height("_settings").unwrap() + 1),
-        )
-        .set_subtree_data("_settings", serde_json::to_vec(&pending_settings).unwrap())
-        .build()
-        .unwrap();
-    let pending_id = pending.id();
-    instance.backend().put(pending).await.unwrap();
-    assert_eq!(
-        identity.snapshot().await.unwrap(),
-        accepted,
-        "incomplete unsigned tip is not accepted"
-    );
-    assert_eq!(
-        instance
-            .backend()
-            .get_verification_status(&pending_id)
-            .await
-            .unwrap(),
-        VerificationStatus::Unverified
-    );
-    let response = handler
-        .handle_request(
-            &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
-            &RequestContext::default(),
-        )
-        .await;
-    assert_eq!(
-        discloses_secret(&response), expected_access,
-        "only accepted identity state may change the live grant"
-    );
-    if expected_access {
-        let txn = identity.new_transaction().await.unwrap();
-        txn.get_settings().unwrap().revoke_auth_key(&member).await.unwrap();
-        txn.commit().await.unwrap();
-    } else {
-        instance.backend().set_verification_status(&pending_id, VerificationStatus::Failed).await.unwrap();
-        let response = handler.handle_request(
-            &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
-            &RequestContext::default(),
-        ).await;
-        assert!(served_entries(&response).is_empty(), "Failed history cannot restore access");
-    }
+        );
+        let pending = Entry::builder(identity.root_id().clone())
+            .set_parents(vec![parent.id(), ID::from_bytes("missing-identity-parent")])
+            .set_height(parent.height() + 1)
+            .set_subtree_parents("_settings", settings_tips.into_tips())
+            .set_subtree_height(
+                "_settings",
+                Some(parent.subtree_height("_settings").unwrap() + 1),
+            )
+            .set_subtree_data("_settings", serde_json::to_vec(&pending_settings).unwrap())
+            .build()
+            .unwrap();
+        let pending_id = pending.id();
+        instance.backend().put(pending).await.unwrap();
+        assert_eq!(
+            identity.snapshot().await.unwrap(),
+            accepted,
+            "incomplete unsigned tip is not accepted"
+        );
+        assert_eq!(
+            instance
+                .backend()
+                .get_verification_status(&pending_id)
+                .await
+                .unwrap(),
+            VerificationStatus::Unverified
+        );
+        let response = handler
+            .handle_request(
+                &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
+                &RequestContext::default(),
+            )
+            .await;
+        assert_eq!(
+            discloses_secret(&response),
+            expected_access,
+            "only accepted identity state may change the live grant"
+        );
+        if expected_access {
+            let txn = identity.new_transaction().await.unwrap();
+            txn.get_settings()
+                .unwrap()
+                .revoke_auth_key(&member)
+                .await
+                .unwrap();
+            txn.commit().await.unwrap();
+        } else {
+            instance
+                .backend()
+                .local_engine()
+                .unwrap()
+                .update_verification_status(&pending_id, VerificationStatus::Failed)
+                .await
+                .unwrap();
+            let response = handler
+                .handle_request(
+                    &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
+                    &RequestContext::default(),
+                )
+                .await;
+            assert!(
+                served_entries(&response).is_empty(),
+                "Failed history cannot restore access"
+            );
+        }
     }
 }
