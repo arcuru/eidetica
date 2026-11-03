@@ -3,11 +3,11 @@
 //! This module contains the database schema used by SQL backends.
 //! The schema is designed to be portable between SQLite and Postgres.
 //!
-//! Mainline v0 migrates directly to v4 in one transaction. v2 adds cache
-//! accounting without verification repair. Version 1
-//! belonged to an unsupported prefix-tracking candidate and is refused before
-//! schema writes. Opening v3 adds empty local account storage; current opens neither
-//! backfill nor reconstruct verification history.
+//! Mainline v0 migrates directly to v5 in one transaction. v2 adds cache
+//! accounting, v3 adds empty local account storage, and v4 reconstructs only
+//! the non-Failed frontier. Version 1 was an unsupported prefix-tracking
+//! candidate and is refused before schema writes. Ordinary v5 opens do not
+//! reconstruct history.
 
 use crate::Result;
 use crate::backend::errors::BackendError;
@@ -20,7 +20,7 @@ mod tests;
 /// Internal SQL format revision counter, independent of release versions and
 /// the InMemory persistence counter. Increment for changes requiring migration,
 /// with an explicit forward path from each supported stored format.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub(super) const CREATE_STORE_STATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
@@ -116,6 +116,12 @@ pub const CREATE_TABLES: &[&str] = &[
     )",
     // Only frontier-width verification state; statuses prove interior membership.
     "CREATE TABLE IF NOT EXISTS verified_tips (
+        tree_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        PRIMARY KEY (tree_id, entry_id)
+    )",
+    // Selected Unverified/Verified vertices, independent of ancestor closure.
+    "CREATE TABLE IF NOT EXISTS non_failed_tips (
         tree_id TEXT NOT NULL,
         entry_id TEXT NOT NULL,
         PRIMARY KEY (tree_id, entry_id)
@@ -285,7 +291,8 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             super::verified::repair_in_tx(&mut tx, &crate::entry::ID::parse(&tree)?).await?;
         }
     }
-    if matches!(row, Some((0 | 2 | 3,))) {
+    if matches!(row, Some((0 | 2 | 3 | 4,))) {
+        super::non_failed::rebuild_all_in_tx(&mut tx).await?;
         sqlx::query("UPDATE schema_version SET version = $1")
             .bind(SCHEMA_VERSION)
             .execute(&mut *tx)
@@ -351,6 +358,7 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
         ("instance_secrets", &["singleton", "data"]),
         ("local_accounts", &["name", "data"]),
         ("verified_tips", &["tree_id", "entry_id"]),
+        ("non_failed_tips", &["tree_id", "entry_id"]),
         (
             "store_state_namespaces",
             &[
@@ -379,9 +387,11 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
             }
             continue;
         }
-        // Earlier supported formats have no local account records. Adding an
-        // empty native table does not migrate or delete their legacy keys.
-        if *table == "local_accounts" && version.is_some_and(|v| v < 4) {
+        // Earlier supported formats have no native account table. Adding it
+        // empty does not migrate or delete their legacy keys.
+        if (*table == "local_accounts" && version.is_some_and(|v| v < 4))
+            || (*table == "non_failed_tips" && version.is_some_and(|v| v < 5))
+        {
             continue;
         }
         if version == Some(0)
@@ -411,7 +421,7 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
 }
 
 /// Add/backfill cache accounting once, during a supported migration. Existing
-/// durable access ticks are preserved; ordinary v3 reopen never backfills.
+/// durable access ticks are preserved; ordinary current reopen never backfills.
 async fn ensure_store_state_cache_columns(
     backend: &SqlxBackend,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
