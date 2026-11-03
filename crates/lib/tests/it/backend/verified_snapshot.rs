@@ -647,6 +647,10 @@ impl BackendImpl for Counting {
         self.inner.snapshot(tree).await
     }
 
+    async fn non_failed_snapshot(&self, tree: &ID) -> eidetica::Result<Snapshot> {
+        self.inner.non_failed_snapshot(tree).await
+    }
+
     async fn verified_snapshot(&self, tree: &ID) -> eidetica::Result<Snapshot> {
         self.inner.verified_snapshot(tree).await
     }

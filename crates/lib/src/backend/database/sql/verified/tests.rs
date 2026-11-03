@@ -223,3 +223,85 @@ async fn postgres_admission_racing_same_entry_demotion() {
 async fn postgres_admission_serializes_explicit_repair() {
     admission_race(Competitor::Repair).await;
 }
+
+/// Put must take the same tree lock as failure before making mutable tip
+/// decisions. The barrier is after the new sibling's SQL eligibility read.
+#[tokio::test]
+async fn postgres_non_failed_insertion_serializes_sibling_failure() {
+    if std::env::var("TEST_BACKEND").as_deref() != Ok("postgres") {
+        return;
+    }
+    let url = std::env::var("TEST_POSTGRES_URL")
+        .unwrap_or_else(|_| "postgres://localhost/eidetica_test".to_string());
+    let backend = Arc::new(SqlxBackend::connect_postgres_isolated(&url).await.unwrap());
+    let root = Entry::root_builder().build().unwrap();
+    let tree = root.id();
+    let left = Entry::builder(tree.clone())
+        .add_parent(tree.clone())
+        .set_subtree_data("test", b"left")
+        .build()
+        .unwrap();
+    let right = Entry::builder(tree.clone())
+        .add_parent(tree.clone())
+        .set_subtree_data("test", b"right")
+        .build()
+        .unwrap();
+    let left_id = left.id();
+    let right_id = right.id();
+    backend.put(root).await.unwrap();
+    backend.put(left).await.unwrap();
+    let key = (uuid::Uuid::new_v4().as_u128() % i32::MAX as u128) as i64;
+    let mut observer = PgConnection::connect(&url).await.unwrap();
+    let mut barrier = observer.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(key)
+        .execute(&mut *barrier)
+        .await
+        .unwrap();
+    // SAFETY: interpolated values are a generated integer and canonical CID.
+    sqlx::query(AssertSqlSafe(format!(
+        "CREATE FUNCTION pause_non_failed() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN PERFORM pg_advisory_xact_lock({key}); RETURN NEW; END $$"
+    )))
+    .execute(backend.pool())
+    .await
+    .unwrap();
+    sqlx::query(AssertSqlSafe(format!(
+        "CREATE TRIGGER pause_non_failed BEFORE INSERT ON non_failed_tips \
+         FOR EACH ROW WHEN (NEW.entry_id = '{right_id}') \
+         EXECUTE FUNCTION pause_non_failed()"
+    )))
+    .execute(backend.pool())
+    .await
+    .unwrap();
+    let insertion = {
+        let backend = backend.clone();
+        tokio::spawn(async move { backend.put(right).await })
+    };
+    let pid = admission_waiter(&mut barrier, key).await;
+    let failure = {
+        let backend = backend.clone();
+        tokio::spawn(async move {
+            backend
+                .update_verification_status(&left_id, VerificationStatus::Failed)
+                .await
+        })
+    };
+    let blocked = competitor_blocked_or_finished(&mut barrier, pid, &failure).await;
+    barrier.rollback().await.unwrap();
+    for task in [insertion, failure] {
+        tokio::time::timeout(WAIT, task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+    assert!(
+        blocked,
+        "failure must serialize before reading mutable child eligibility"
+    );
+    assert_eq!(
+        backend.non_failed_snapshot(&tree).await.unwrap(),
+        Snapshot::from([right_id])
+    );
+}

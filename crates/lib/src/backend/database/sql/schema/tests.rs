@@ -1001,7 +1001,7 @@ async fn parent_v2_cache_backfill_failure_rolls_back_columns_and_data() {
 }
 
 #[tokio::test]
-async fn v2_existing_accounting_preserves_ticks_and_v3_never_backfills() {
+async fn v2_existing_accounting_preserves_ticks_and_current_never_backfills() {
     let Some(db) = TestDatabase::new().await else {
         return;
     };
@@ -1030,7 +1030,7 @@ async fn v2_existing_accounting_preserves_ticks_and_v3_never_backfills() {
         db.close_backend(backend).await;
     }
     // A valid empty cached namespace makes the old recurring size=0 backfill
-    // observable. Ordinary v3 open may not issue that UPDATE at all.
+    // observable. Ordinary current open may not issue that UPDATE at all.
     let backend = db.open().await.unwrap();
     let mut empty = request;
     empty.store = "empty".into();
@@ -1259,5 +1259,214 @@ async fn malformed_negative_cache_counters_refuse_open() {
         "{error}"
     );
     assert_eq!(db.content().await, before);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn non_failed_v3_migration_and_current_reopen_preserve_trust() {
+    use crate::{backend::VerificationStatus, snapshot::Snapshot};
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    // Reconstruct the historical v3 layout from its literal v2 predecessor
+    // plus the two cache columns. Never derive it from CREATE_TABLES under test.
+    let request = parent_v2_fixture(&db).await;
+    let tree = request.database;
+    db.pool
+        .execute(
+            "ALTER TABLE store_state_namespaces ADD COLUMN size_bytes BIGINT NOT NULL DEFAULT 0",
+        )
+        .await
+        .unwrap();
+    db.pool.execute("ALTER TABLE store_state_namespaces ADD COLUMN last_access_tick BIGINT NOT NULL DEFAULT 0").await.unwrap();
+    db.pool
+        .execute("UPDATE schema_version SET version = 3")
+        .await
+        .unwrap();
+    let pending: (String,) =
+        sqlx::query_as("SELECT id FROM entries WHERE verification_status = $1")
+            .bind(VerificationStatus::Unverified.as_db_int())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let pending = crate::entry::ID::parse(&pending.0).unwrap();
+    let labels: Vec<(String, i64)> =
+        sqlx::query_as("SELECT id, verification_status FROM entries ORDER BY id")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    let backend = db.open().await.unwrap();
+    assert_eq!(
+        backend.non_failed_snapshot(&tree).await.unwrap(),
+        Snapshot::from([pending.clone()])
+    );
+    let after: Vec<(String, i64)> =
+        sqlx::query_as("SELECT id, verification_status FROM entries ORDER BY id")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        labels, after,
+        "migration must not repair verification labels"
+    );
+    let (size,): (i64,) = sqlx::query_as(
+        "SELECT size_bytes FROM store_state_namespaces WHERE namespace_id = 'authority-parent'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(size, 0, "v3 migration must not repeat cache backfill");
+    db.close_backend(backend).await;
+    // Ordinary current open trusts the persisted frontier, never reconstructs.
+    db.pool
+        .execute("DELETE FROM non_failed_tips")
+        .await
+        .unwrap();
+    let backend = db.open().await.unwrap();
+    assert!(backend.non_failed_snapshot(&tree).await.unwrap().is_empty());
+    backend.repair_verification(&tree).await.unwrap();
+    assert_eq!(
+        backend.non_failed_snapshot(&tree).await.unwrap(),
+        Snapshot::from([pending])
+    );
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn non_failed_tip_failure_rolls_back_put_and_rejection() {
+    use crate::{backend::VerificationStatus, snapshot::Snapshot};
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    let root = Entry::root_builder().build().unwrap();
+    let tree = root.id();
+    backend.put(root).await.unwrap();
+    let child = Entry::builder(tree.clone())
+        .add_parent(tree.clone())
+        .build()
+        .unwrap();
+    if backend.is_sqlite() {
+        db.pool.execute("CREATE TRIGGER fail_non_failed_tip BEFORE INSERT ON non_failed_tips BEGIN SELECT RAISE(ABORT, 'injected tip failure'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE FUNCTION fail_non_failed_tip() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected tip failure'; END $$").await.unwrap();
+        db.pool.execute("CREATE TRIGGER fail_non_failed_tip BEFORE INSERT ON non_failed_tips FOR EACH ROW EXECUTE FUNCTION fail_non_failed_tip()").await.unwrap();
+    }
+    assert!(backend.put(child.clone()).await.is_err());
+    assert!(backend.get(&child.id()).await.is_err());
+    assert_eq!(
+        backend.non_failed_snapshot(&tree).await.unwrap(),
+        Snapshot::from([tree.clone()])
+    );
+    if backend.is_sqlite() {
+        db.pool
+            .execute("DROP TRIGGER fail_non_failed_tip")
+            .await
+            .unwrap();
+    } else {
+        db.pool
+            .execute("DROP TRIGGER fail_non_failed_tip ON non_failed_tips")
+            .await
+            .unwrap();
+    }
+    backend.put(child.clone()).await.unwrap();
+    if backend.is_sqlite() {
+        db.pool.execute("CREATE TRIGGER fail_non_failed_tip BEFORE INSERT ON non_failed_tips BEGIN SELECT RAISE(ABORT, 'injected tip failure'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE TRIGGER fail_non_failed_tip BEFORE INSERT ON non_failed_tips FOR EACH ROW EXECUTE FUNCTION fail_non_failed_tip()").await.unwrap();
+    }
+    assert!(
+        backend
+            .update_verification_status(&child.id(), VerificationStatus::Failed)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        backend.get_verification_status(&child.id()).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+    assert_eq!(
+        backend.non_failed_snapshot(&tree).await.unwrap(),
+        Snapshot::from([child.id()])
+    );
+    assert_eq!(
+        backend.snapshot(&tree).await.unwrap(),
+        Snapshot::from([child.id()])
+    );
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn non_failed_hot_path_uses_retained_and_direct_edge_indexes() {
+    use crate::backend::VerificationStatus;
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    let root = Entry::root_builder().build().unwrap();
+    let tree = root.id();
+    backend.put(root).await.unwrap();
+    // Query-planner-only same-tree rows: a point update must not scan the
+    // tree's history, even when its tree_id index is no longer selective.
+    sqlx::query(
+        "WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n < 4096)
+        INSERT INTO entries (id, tree_id, entry_cbor) SELECT 'other-' || n, $2, $1 FROM numbers",
+    )
+    .bind(Vec::<u8>::new())
+    .bind(tree.to_string())
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.pool.execute("INSERT INTO tree_parents (child_id, parent_id) SELECT id, id FROM entries WHERE id LIKE 'other-%'").await.unwrap();
+    db.pool.execute("ANALYZE").await.unwrap();
+    let query = if backend.is_sqlite() {
+        format!(
+            "EXPLAIN QUERY PLAN {}",
+            super::super::non_failed::INSERT_IF_TIP
+        )
+    } else {
+        format!(
+            "EXPLAIN (ANALYZE, COSTS OFF) {}",
+            super::super::non_failed::INSERT_IF_TIP
+        )
+    };
+    // SAFETY: only a fixed EXPLAIN prefix and the production constant are joined.
+    let plan = if backend.is_sqlite() {
+        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(tree.to_string())
+            .bind(tree.to_string())
+            .bind(VerificationStatus::Failed.as_db_int())
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        rows.into_iter()
+            .map(|(_, _, _, detail)| detail)
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(tree.to_string())
+            .bind(tree.to_string())
+            .bind(VerificationStatus::Failed.as_db_int())
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        rows.into_iter()
+            .map(|(detail,)| detail)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        !plan.contains("Seq Scan") && !plan.contains("SCAN "),
+        "unexpected full scan:\n{plan}"
+    );
+    assert!(
+        plan.contains("idx_tree_parents_parent"),
+        "direct children must use the reverse-edge index:\n{plan}"
+    );
+    eprintln!("non-Failed mutation query plan:\n{plan}");
+    db.close_backend(backend).await;
     db.cleanup().await;
 }

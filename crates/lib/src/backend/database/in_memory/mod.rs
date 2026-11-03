@@ -49,6 +49,15 @@ pub(crate) struct VerifiedState {
     pub(crate) frontier: HashSet<ID>,
 }
 
+/// Selected non-Failed vertices and same-tree direct-child counts. Counts also
+/// cover missing parents, so child-before-parent insertion needs no history walk.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NonFailedState {
+    pub(crate) frontier: HashSet<ID>,
+    pub(crate) children: HashMap<ID, usize>,
+}
+
 /// Core data protected by a single lock.
 ///
 /// All fields that participate in entry storage and tip tracking are grouped
@@ -74,6 +83,7 @@ pub(crate) struct InMemoryInner {
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
     /// Retained verified frontier per tree, maintained under this same lock.
     pub(crate) verified: HashMap<ID, VerifiedState>,
+    pub(crate) non_failed: HashMap<ID, NonFailedState>,
 }
 
 #[derive(Debug)]
@@ -197,6 +207,7 @@ impl InMemory {
                 instance_secrets: None,
                 tips: HashMap::new(),
                 verified: HashMap::new(),
+                non_failed: HashMap::new(),
             }),
             store_state_point_reads: AtomicUsize::new(0),
             store_state_scan_reads: AtomicUsize::new(0),
@@ -658,6 +669,9 @@ impl BackendImpl for InMemory {
 
     async fn reset_local_verification(&self) -> Result<()> {
         let mut inner = self.inner.write().unwrap();
+        // Build before mutating labels: a malformed entry must not leave a
+        // partially published reset. All entries rejoin the non-Failed set.
+        let non_failed = storage::rebuild_all_non_failed(&inner, true)?;
         for status in inner.verification_status.values_mut() {
             *status = VerificationStatus::Unverified;
         }
@@ -665,6 +679,7 @@ impl BackendImpl for InMemory {
         // in every tree. Clearing it under the same write lock publishes the
         // reset atomically, so no reader observes a stale retained frontier.
         inner.verified.clear();
+        inner.non_failed = non_failed;
         // The ordinary clear unlinks a generation for active readers. A reset
         // instead requires exclusive offline ownership and drops all disposable
         // namespaces, including incomplete builds from a prior run.
@@ -796,6 +811,15 @@ impl BackendImpl for InMemory {
         // Slow path: compute and cache with write lock
         let mut inner = self.inner.write().unwrap();
         traversal::snapshot(&mut inner, tree).map(Snapshot::new)
+    }
+
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        let inner = self.inner.read().unwrap();
+        Ok(inner
+            .non_failed
+            .get(tree)
+            .map(|state| Snapshot::new(state.frontier.iter().cloned().collect()))
+            .unwrap_or(Snapshot::EMPTY))
     }
 
     async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::{InMemoryInner, VerifiedState};
+use super::{InMemoryInner, NonFailedState, VerifiedState};
 use crate::{
     Result,
     backend::{VerificationStatus, errors::BackendError},
@@ -76,12 +76,23 @@ pub(crate) fn put(inner: &mut InMemoryInner, entry: Entry) -> Result<()> {
         None
     };
 
+    let parents = entry.parents()?;
+
     // New entry: store it Unverified. (An already-held entry returned early
     // above; its status is never touched by a re-`put`.)
     inner.entries.insert(entry_id.clone(), entry.clone());
     inner
         .verification_status
         .insert(entry_id.clone(), VerificationStatus::Unverified);
+
+    let selected = inner.non_failed.entry(tree_id.clone()).or_default();
+    for parent in parents {
+        *selected.children.entry(parent.clone()).or_default() += 1;
+        selected.frontier.remove(&parent);
+    }
+    if !selected.children.contains_key(&entry_id) {
+        selected.frontier.insert(entry_id.clone());
+    }
 
     // Tip tracking uses full recalculation to handle out-of-order entry arrival during sync.
     // This ensures correctness when entries arrive in any order, which is common during
@@ -159,9 +170,9 @@ pub(crate) fn update_verification_status(
         }
         .into());
     }
+    let parents = entry.parents()?;
     if status == VerificationStatus::Verified {
         entry.validate()?;
-        let parents = entry.parents()?;
         for parent in &parents {
             if !inner
                 .entries
@@ -177,9 +188,9 @@ pub(crate) fn update_verification_status(
             }
         }
         inner.verification_status.insert(id.clone(), status);
-        let state = inner.verified.entry(tree).or_default();
-        for parent in parents {
-            state.frontier.remove(&parent);
+        let state = inner.verified.entry(tree.clone()).or_default();
+        for parent in &parents {
+            state.frontier.remove(parent);
         }
         state.frontier.insert(id.clone());
     } else if current == VerificationStatus::Verified {
@@ -197,7 +208,73 @@ pub(crate) fn update_verification_status(
     } else {
         inner.verification_status.insert(id.clone(), status);
     }
+    if status == VerificationStatus::Failed {
+        let selected = inner.non_failed.entry(tree.clone()).or_default();
+        selected.frontier.remove(id);
+        for parent in parents {
+            // Each non-Failed child contributes exactly once, including when
+            // its parent has not arrived yet. Failure removes only that edge.
+            let count = selected
+                .children
+                .get_mut(&parent)
+                .expect("held non-Failed child");
+            *count -= 1;
+            if *count == 0 {
+                selected.children.remove(&parent);
+                if inner
+                    .entries
+                    .get(&parent)
+                    .is_some_and(|entry| entry.root().unwrap_or_else(|| parent.clone()) == tree)
+                    && inner.verification_status.get(&parent) != Some(&VerificationStatus::Failed)
+                {
+                    selected.frontier.insert(parent);
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+/// Boundary-only reconstruction for migration, offline reset and explicit repair.
+/// Normal put/failure maintenance touches only the entry and its direct parents.
+fn non_failed_state(entries: &[(Entry, VerificationStatus)]) -> Result<NonFailedState> {
+    let mut state = NonFailedState::default();
+    for (entry, status) in entries {
+        if *status != VerificationStatus::Failed {
+            state.frontier.insert(entry.id());
+            for parent in entry.parents()? {
+                *state.children.entry(parent).or_default() += 1;
+            }
+        }
+    }
+    state.frontier.retain(|id| !state.children.contains_key(id));
+    Ok(state)
+}
+
+pub(crate) fn rebuild_all_non_failed(
+    inner: &InMemoryInner,
+    reset: bool,
+) -> Result<HashMap<ID, NonFailedState>> {
+    let mut trees: HashMap<ID, Vec<(Entry, VerificationStatus)>> = HashMap::new();
+    for entry in inner.entries.values() {
+        let status = if reset {
+            VerificationStatus::Unverified
+        } else {
+            inner
+                .verification_status
+                .get(&entry.id())
+                .copied()
+                .unwrap_or(VerificationStatus::Unverified)
+        };
+        trees
+            .entry(entry.root().unwrap_or_else(|| entry.id()))
+            .or_default()
+            .push((entry.clone(), status));
+    }
+    trees
+        .into_iter()
+        .map(|(tree, entries)| Ok((tree, non_failed_state(&entries)?)))
+        .collect()
 }
 
 fn tree_entries(inner: &InMemoryInner, tree: &ID) -> Vec<(Entry, VerificationStatus)> {
@@ -255,8 +332,12 @@ pub(crate) fn repair_verification(
     inner: &mut InMemoryInner,
     tree: &ID,
 ) -> Result<crate::backend::VerificationRepair> {
-    let plan = super::super::verification::repair_plan(tree, &tree_entries(inner, tree))?;
-    Ok(apply_repair(inner, tree, plan))
+    let entries = tree_entries(inner, tree);
+    let plan = super::super::verification::repair_plan(tree, &entries)?;
+    let selected = non_failed_state(&entries)?;
+    let report = apply_repair(inner, tree, plan);
+    inner.non_failed.insert(tree.clone(), selected);
+    Ok(report)
 }
 
 /// Helper function to update tips for a given tree ID.

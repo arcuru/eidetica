@@ -604,6 +604,10 @@ impl BackendImpl for GatedBackend {
         self.pass().await?;
         self.inner.get_entries_by_verification_status(status).await
     }
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        self.pass().await?;
+        self.inner.non_failed_snapshot(tree).await
+    }
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
         self.pass().await?;
         self.inner.snapshot(tree).await

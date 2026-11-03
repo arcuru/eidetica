@@ -73,6 +73,10 @@ impl<B: BackendImpl> BackendImpl for Recordless<B> {
         self.0.snapshot(tree).await
     }
 
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        self.0.non_failed_snapshot(tree).await
+    }
+
     async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
         self.0.verified_snapshot(tree).await
     }

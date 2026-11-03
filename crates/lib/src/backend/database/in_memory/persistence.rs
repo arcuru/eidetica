@@ -11,7 +11,7 @@ use std::{
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{InMemory, InMemoryInner, TreeTipsCache, VerifiedState};
+use super::{InMemory, InMemoryInner, NonFailedState, TreeTipsCache, VerifiedState};
 use crate::{
     Error, Result,
     backend::{
@@ -22,9 +22,10 @@ use crate::{
 };
 
 /// Internal JSON format revision counter, independent of release versions and
-/// the SQL schema counter. v0 reconstructs retained state on load; v2 persists
-/// verified tips only. Unreleased v1 prefix files are refused.
-const PERSISTENCE_VERSION: u8 = 2;
+/// the SQL schema counter. v0 reconstructs verification on load; v2 persists
+/// verified tips; v3 also retains the non-Failed frontier and child counts.
+/// Unreleased v1 prefix files are refused. Older readers reject v3 files.
+const PERSISTENCE_VERSION: u8 = 3;
 
 /// Helper to check if version is default (0) for serde skip_serializing_if
 fn is_v0(v: &u8) -> bool {
@@ -38,7 +39,7 @@ where
 {
     use serde::Deserialize;
     let version = u8::deserialize(deserializer)?;
-    if version != 0 && version != PERSISTENCE_VERSION {
+    if !matches!(version, 0 | 2 | PERSISTENCE_VERSION) {
         return Err(serde::de::Error::custom(format!(
             "unsupported persistence version {version}; newest supported version \
              is {PERSISTENCE_VERSION} (v0 files rebuild retained state on load)"
@@ -83,6 +84,9 @@ struct SerializableDatabase {
     /// rebuilt on load; persisted since v2.
     #[serde(default)]
     verified: HashMap<ID, VerifiedState>,
+    /// Persisted since v3; older supported files reconstruct only this index.
+    #[serde(default)]
+    non_failed: HashMap<ID, NonFailedState>,
 }
 
 impl Serialize for InMemory {
@@ -104,6 +108,7 @@ impl Serialize for InMemory {
                 cache: None,
                 tips: inner.tips.clone(),
                 verified: inner.verified.clone(),
+                non_failed: inner.non_failed.clone(),
             }
         };
 
@@ -128,6 +133,7 @@ impl<'de> Deserialize<'de> for InMemory {
             instance_secrets: serializable.instance_secrets,
             tips: serializable.tips,
             verified: serializable.verified,
+            non_failed: serializable.non_failed,
         };
         // v0 files predate the retained verified state: rebuild every
         // touched tree from entries and statuses so the hot path never
@@ -144,6 +150,11 @@ impl<'de> Deserialize<'de> for InMemory {
                 super::storage::repair_verification(&mut inner, tree)
                     .map_err(serde::de::Error::custom)?;
             }
+        }
+
+        if serializable.version < 3 {
+            inner.non_failed = super::storage::rebuild_all_non_failed(&inner, false)
+                .map_err(serde::de::Error::custom)?;
         }
 
         Ok(InMemory {
@@ -190,6 +201,7 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
             cache: None,
             tips: inner.tips.clone(),
             verified: inner.verified.clone(),
+            non_failed: inner.non_failed.clone(),
         }
     };
 
@@ -296,14 +308,14 @@ mod persistence_tests {
     }
 
     #[test]
-    fn v2_round_trip_retains_verified_frontier() {
+    fn current_round_trip_retains_verified_frontier() {
         let (backend, root_id, a_id) = verified_chain();
         let before =
             super::super::storage::verified_snapshot(&backend.inner.read().unwrap(), &root_id);
         assert_eq!(before.tips(), std::slice::from_ref(&a_id));
 
         let value = serde_json::to_value(&backend).expect("serializes");
-        assert_eq!(value["_v"], 2);
+        assert_eq!(value["_v"], 3);
         assert!(value.get("verified").is_some());
 
         let loaded: InMemory = serde_json::from_value(value).expect("deserializes");
@@ -327,11 +339,11 @@ mod persistence_tests {
         assert_eq!(after.tips(), &[a_id]);
     }
 
-    /// A v2 file is trusted as persisted: an emptied retained map loads
+    /// A current file is trusted as persisted: an emptied retained map loads
     /// empty rather than silently rescanning history. (Repair is an
     /// explicit `repair_verification` call, not a load side effect.)
     #[test]
-    fn v2_file_trusts_persisted_state() {
+    fn current_file_trusts_persisted_state() {
         let (backend, root_id, _) = verified_chain();
         let mut value = serde_json::to_value(&backend).expect("serializes");
         value["verified"] = serde_json::Value::Object(Default::default());
@@ -450,5 +462,84 @@ mod repair_tests {
         mainline["verified"] =
             serde_json::json!({ tree.to_string(): {"prefix": [tree], "frontier": []} });
         assert!(serde_json::from_value::<InMemory>(mainline).is_err());
+    }
+}
+
+#[cfg(test)]
+mod non_failed_tests {
+    use super::*;
+    use crate::{backend::BackendImpl, snapshot::Snapshot};
+
+    #[tokio::test]
+    async fn non_failed_current_and_v2_load_preserve_labels_and_missing_parent_counts() {
+        let backend = InMemory::new();
+        let root = Entry::root_builder().build().unwrap();
+        let tree = root.id();
+        let parent = Entry::builder(tree.clone())
+            .add_parent(tree.clone())
+            .build()
+            .unwrap();
+        let leaf = Entry::builder(tree.clone())
+            .add_parent(parent.id())
+            .build()
+            .unwrap();
+        let failed = Entry::builder(tree.clone())
+            .add_parent(tree.clone())
+            .set_subtree_data("test", b"failed")
+            .build()
+            .unwrap();
+        backend.put(root).await.unwrap();
+        backend.put(leaf.clone()).await.unwrap();
+        backend.put(failed.clone()).await.unwrap();
+        backend
+            .update_verification_status(&failed.id(), VerificationStatus::Failed)
+            .await
+            .unwrap();
+        for version in [2, PERSISTENCE_VERSION] {
+            let mut value = serde_json::to_value(&backend).unwrap();
+            value["_v"] = version.into();
+            if version == 2 {
+                value.as_object_mut().unwrap().remove("non_failed");
+            }
+            let loaded: InMemory = serde_json::from_value(value).unwrap();
+            assert_eq!(
+                loaded.non_failed_snapshot(&tree).await.unwrap(),
+                Snapshot::from([tree.clone(), leaf.id()])
+            );
+            assert_eq!(
+                loaded.get_verification_status(&failed.id()).await.unwrap(),
+                VerificationStatus::Failed
+            );
+            loaded.put(parent.clone()).await.unwrap();
+            assert_eq!(
+                loaded.non_failed_snapshot(&tree).await.unwrap(),
+                Snapshot::from([leaf.id()])
+            );
+            loaded
+                .update_verification_status(&leaf.id(), VerificationStatus::Failed)
+                .await
+                .unwrap();
+            assert_eq!(
+                loaded.non_failed_snapshot(&tree).await.unwrap(),
+                Snapshot::from([parent.id()])
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn non_failed_current_load_does_not_repair_but_explicit_repair_does() {
+        let backend = InMemory::new();
+        let root = Entry::root_builder().build().unwrap();
+        let tree = root.id();
+        backend.put(root).await.unwrap();
+        let mut value = serde_json::to_value(&backend).unwrap();
+        value["non_failed"] = serde_json::json!({});
+        let loaded: InMemory = serde_json::from_value(value).unwrap();
+        assert!(loaded.non_failed_snapshot(&tree).await.unwrap().is_empty());
+        loaded.repair_verification(&tree).await.unwrap();
+        assert_eq!(
+            loaded.non_failed_snapshot(&tree).await.unwrap(),
+            Snapshot::from([tree])
+        );
     }
 }
