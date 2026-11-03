@@ -89,50 +89,29 @@ The sync system uses a thin frontend that sends commands to a background thread:
 - ✅ Graceful startup/shutdown handling
 - ❌ All sync operations serialized through single thread
 
-### 3. Hook-Based Change Detection
+### 3. Internal Write Hook and Verified Checkpoints
 
-**Decision:** Use write callbacks for change detection and sync triggering
+`Instance::enable_sync` installs an internal hook for local writes, including
+writes to databases created after sync was enabled. It reconciles tracked sync
+preferences and queues data only when the database's combined settings enable
+sync-on-commit.
 
-**Rationale:**
+Sync selects the retained Verified frontier, regardless of an application's
+read visibility or delivered notification state. It keeps a separate last-queued
+Snapshot for each peer/database pair. A new peer starts at the empty Snapshot,
+so its first batch includes the Verified ancestry. Later writes enumerate the
+frontier delta; concurrent hooks serialize checkpoint selection and advancement.
+A checkpoint advances only after the IDs have been queued, not when an
+application callback runs and not as an acknowledgment from the peer.
 
-- **Flexible**: Callbacks can be attached per-database with full context
-- **Consistent**: Every commit triggers registered callbacks
-- **Simple**: Direct function calls with Entry, Database, and Instance parameters
-- **Performance**: Minimal overhead, no trait dispatch
+The queue and these checkpoints are volatile. Periodic sync and explicit pulls
+compare Verified frontiers to recover missed queueing or process restarts.
+Bootstrap and incremental responses serve only locally Verified entries.
+Explicit sends and retries recheck the complete payload batch before transport
+submission; an unheld, Unverified or Failed entry refuses the batch.
 
-**Architecture:**
-
-```rust,ignore
-// Callback function type (stored internally as Arc by Instance)
-pub type WriteCallback = dyn Fn(&Entry, &Database, &Instance) -> Result<()> + Send + Sync;
-
-// Integration with Database
-impl Database {
-    pub fn on_local_write<F>(&self, callback: F) -> Result<()>
-    where
-        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + Sync + 'static
-    {
-        // Register callback with instance for this database
-        // Instance wraps the callback in Arc internally
-    }
-}
-
-// Usage example for sync
-let sync = instance.sync().expect("Sync enabled");
-let sync_clone = sync.clone();
-let peer_pubkey = "peer_key".to_string();
-database.on_local_write(move |entry, db, _instance| {
-    sync_clone.queue_entry_for_sync(&peer_pubkey, entry.id(), db.root_id())
-})?;
-```
-
-**Benefits:**
-
-- Direct access to Entry, Database, and Instance in callbacks
-- No need for context wrappers or trait implementations
-- Callbacks receive full context needed for sync decisions
-- Simple cloning pattern for use in closures
-- Easy testing and debugging
+Incoming entries remain Unverified until the receiver validates them locally.
+Peer authentication and a successful transfer never confer local trust.
 
 ### 4. Connection Architecture: Outbound vs Inbound Separation
 
