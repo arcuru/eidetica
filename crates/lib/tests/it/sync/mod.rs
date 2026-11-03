@@ -46,4 +46,5 @@ mod transport_auto_detection_tests;
 mod transport_conformance;
 mod transport_integration_tests;
 mod unified_message_handling_tests;
+mod verified_entries;
 mod version_alignment_test;

@@ -248,8 +248,14 @@ reset requires stopping all readers as well as writers.
 
 `WriteEvent`/notification cursors remain **raw DAG frontiers**. Verification can
 emit a batched settled-write notification without changing those raw tips.
-A cursor is not a Verified membership proof; consumers use the appropriate
+A cursor is not a Verified membership proof; application consumers use the appropriate
 Database read projection rather than treating notification IDs as accepted data.
+
+Sync does not use these application cursors. It owns per-peer/database queueing
+checkpoints over the retained Verified frontier. Bootstrap, incremental responses
+and periodic pulls select Verified tips; outgoing enumeration excludes other
+statuses, and explicit sends and retries recheck local acceptance before transport
+submission. The receiver still validates every received Entry independently.
 
 ## Worked examples
 

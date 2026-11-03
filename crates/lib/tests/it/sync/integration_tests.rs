@@ -25,6 +25,7 @@ async fn test_sync_with_http_transport() {
         .build()
         .expect("Entry should build successfully");
 
+    hold_verified_entries(&sync, std::slice::from_ref(&entry)).await;
     sync.send_entries(vec![entry], &http_address).await.unwrap();
 
     // Stop server
@@ -60,6 +61,7 @@ async fn test_multiple_sync_instances_communication() {
         .expect("Entry should build successfully");
 
     let http_address = Address::http(&server_addr);
+    hold_verified_entries(&sync_client, std::slice::from_ref(&entry)).await;
     sync_client
         .send_entries(vec![entry], &http_address)
         .await
@@ -102,6 +104,7 @@ async fn test_send_entries_http() {
         .expect("Entry should build successfully");
     let entries = vec![entry1, entry2];
 
+    hold_verified_entries(&sync_client, &entries).await;
     // Send entries from client to server
     let http_address = Address::http(&server_addr);
     sync_client
@@ -121,6 +124,7 @@ async fn test_sync_without_transport_enabled() {
     let entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
+    hold_verified_entries(&sync, std::slice::from_ref(&entry)).await;
     let result = sync
         .send_entries(vec![entry], &Address::http("127.0.0.1:8084"))
         .await;
@@ -161,6 +165,7 @@ async fn test_sync_connect_to_invalid_address() {
     let entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
+    hold_verified_entries(&sync, std::slice::from_ref(&entry)).await;
     let result = sync
         .send_entries(vec![entry], &Address::http("127.0.0.1:19998"))
         .await;
@@ -207,26 +212,25 @@ async fn a_hung_request_does_not_block_an_unrelated_one() {
         .unwrap();
     let client = Arc::new(client);
 
-    let entry = || {
-        vec![
-            Entry::root_builder()
-                .set_subtree_data("data", r#"{"k": "v"}"#)
-                .build()
-                .expect("Failed to build entry"),
-        ]
-    };
-
+    let entries = vec![
+        Entry::root_builder()
+            .set_subtree_data("data", r#"{"k": "v"}"#)
+            .build()
+            .expect("Failed to build entry"),
+    ];
+    hold_verified_entries(&client, &entries).await;
     // Put the doomed request in flight first and give it time to be picked up.
     let hung = {
         let client = Arc::clone(&client);
-        tokio::spawn(async move { client.send_entries(entry(), &black_hole).await })
+        let entries = entries.clone();
+        tokio::spawn(async move { client.send_entries(entries, &black_hole).await })
     };
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // The healthy peer answers in milliseconds; allow generously more than that
     // but far less than the transport deadline the hung request is burning.
     let served =
-        tokio::time::timeout(Duration::from_secs(5), client.send_entries(entry(), &live)).await;
+        tokio::time::timeout(Duration::from_secs(5), client.send_entries(entries, &live)).await;
 
     hung.abort();
     accepting.abort();

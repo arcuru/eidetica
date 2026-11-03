@@ -1506,17 +1506,17 @@ impl Instance {
         let sync_for_callback = Arc::clone(&sync_arc);
         self.register_global_write_callback(move |event, database| {
             let sync = Arc::clone(&sync_for_callback);
-            let event = event.clone();
+            let source = event.source();
             let database = database.clone();
             async move {
-                if event.source() == WriteSource::Local
+                if source == WriteSource::Local
                     && sync.is_reconciliation_source(database.root_id()).await?
                 {
                     sync.reconcile_account_settings().await?;
                 }
 
-                if event.source() == WriteSource::Local {
-                    sync.on_local_write(&event, &database).await
+                if source == WriteSource::Local {
+                    sync.on_local_write(&database).await
                 } else {
                     Ok(())
                 }
@@ -2128,9 +2128,7 @@ impl Instance {
             }
         }
 
-        // Globals fire with the shared pre-write tips (no per-callback cursor).
-        // Invoked synchronously here too, in registration order, for the same
-        // in-order-side-effect guarantee; only the async remainder is spawned.
+        // Internal hooks use the source only; sync owns its Verified checkpoints.
         for (id, callback) in global_callbacks {
             let event = WriteEvent {
                 previous_tips: previous_tips.clone(),

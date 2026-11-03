@@ -1018,16 +1018,9 @@ impl SyncHandlerImpl {
 
         // For bootstrap, we need to send the actual root entry (tree_id) as root_entry
         // The root_entry should always be the tree's root, not a tip
-        let instance = match self.instance() {
-            Ok(i) => i,
-            Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
-        };
-        let root_entry = match instance.backend().get(tree_id).await {
-            Ok(entry) => entry,
-            Err(e) => {
-                error!(tree_id = %tree_id, error = %e, "Failed to get root entry");
-                return SyncResponse::Error(format!("Failed to get root entry: {e}"));
-            }
+        let root_entry = match all_entries.iter().find(|entry| entry.id() == *tree_id) {
+            Some(entry) => entry.clone(),
+            None => return SyncResponse::Error(format!("No Verified root for tree: {tree_id}")),
         };
 
         // Filter out the root from all_entries since we send it separately as root_entry
@@ -1091,7 +1084,12 @@ impl SyncHandlerImpl {
             Ok(i) => i,
             Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
         };
-        let our_tips: Vec<ID> = match instance.backend().snapshot(tree_id).await {
+        let our_tips: Vec<ID> = match instance
+            .require_local_engine()
+            .expect("sync requires local backend")
+            .verified_snapshot(tree_id)
+            .await
+        {
             Ok(snap) => snap.into_tips(),
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to get our tips");

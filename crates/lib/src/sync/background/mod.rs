@@ -517,10 +517,23 @@ impl BackgroundSync {
                 // from the engine and the loop is free immediately.
                 match self.transport_manager.handle_for_address(&address) {
                     Some(transport) => {
+                        let instance = self.instance.clone();
                         tokio::spawn(
                             async move {
                                 debug!(address = ?address, "Sending sync request");
-                                let result = transport.send_request(&address, &request).await;
+                                let result = async {
+                                    if let SyncRequest::SendEntries(entries) = request.as_ref() {
+                                        let instance =
+                                            instance.upgrade().ok_or(SyncError::InstanceDropped)?;
+                                        super::utils::require_verified_entries(
+                                            instance.require_local_engine()?.as_ref(),
+                                            entries,
+                                        )
+                                        .await?;
+                                    }
+                                    transport.send_request(&address, &request).await
+                                }
+                                .await;
                                 let _ = response.send(result);
                             }
                             .instrument(span),
@@ -707,7 +720,7 @@ impl BackgroundSync {
         let span = operation.span();
         let result = async {
             // Get peer addresses from sync tree (extract and drop transaction before await)
-            let (addresses, request) = {
+            let addresses = {
                 let sync_tree = self.get_sync_tree().await?;
                 let txn = sync_tree.new_transaction().await?;
                 let peer_info = PeerManager::new(&txn)
@@ -715,14 +728,18 @@ impl BackgroundSync {
                     .await?
                     .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
 
-                let addresses = peer_info.addresses.clone();
-                let request = SyncRequest::SendEntries(entries);
-                (addresses, request)
+                peer_info.addresses.clone()
             }; // Transaction is dropped here
 
             let (transport, address) = self
                 .select_route(&addresses, peer.public_key(), &mut operation)
                 .await?;
+            super::utils::require_verified_entries(
+                self.instance()?.require_local_engine()?.as_ref(),
+                &entries,
+            )
+            .await?;
+            let request = SyncRequest::SendEntries(entries);
             let response = transport.send_request(&address, &request).await?;
 
             match response {
@@ -1058,8 +1075,8 @@ impl BackgroundSync {
             // Get our tips for this tree (empty if tree doesn't exist)
             let instance = self.instance()?;
             let our_tips = instance
-                .backend()
-                .snapshot(tree_id)
+                .require_local_engine()?
+                .verified_snapshot(tree_id)
                 .await
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 

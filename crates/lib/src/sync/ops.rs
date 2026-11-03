@@ -219,7 +219,11 @@ impl Sync {
 
         // Step 2: Check if server is missing entries from us
         let backend = self.backend()?;
-        let our_snapshot = backend.snapshot(&response.tree_id).await?;
+        let our_snapshot = backend
+            .local_engine()
+            .expect("sync requires local backend")
+            .verified_snapshot(&response.tree_id)
+            .await?;
         let their_tips = &response.their_tips;
 
         // Find tips they don't have
@@ -345,7 +349,8 @@ impl Sync {
     /// Send a batch of entries to a sync peer (async version).
     ///
     /// # Arguments
-    /// * `entries` - The entries to send
+    /// * `entries` - Locally held, Verified entries to send. The entire batch
+    ///   is rechecked immediately before transport submission.
     /// * `address` - The address of the peer to send to
     ///
     /// # Returns
@@ -390,7 +395,8 @@ impl Sync {
     ///
     /// # Arguments
     /// * `peer_id` - The peer ID to send to
-    /// * `entries` - The specific entries to send (no filtering applied)
+    /// * `entries` - The specific locally Verified entries to send. Queueing is
+    ///   not acknowledgment: the send/retry path rechecks local verification.
     ///
     /// # Returns
     /// A Result indicating whether the command was successfully queued for background processing.
@@ -448,16 +454,12 @@ impl Sync {
     /// This is the core method that implements automatic sync-on-commit behavior.
     ///
     /// # Arguments
-    /// * `event` - The write event containing the newly committed entries
-    /// * `database` - The database where the entries were committed
+    /// * `database` - The database where entries were committed. Its application
+    ///   visibility is not used to choose outgoing entries.
     ///
     /// # Returns
     /// Ok(()) on success, or an error if settings lookup fails
-    pub(crate) async fn on_local_write(
-        &self,
-        event: &crate::instance::WriteEvent,
-        database: &Database,
-    ) -> Result<()> {
+    pub(crate) async fn on_local_write(&self, database: &Database) -> Result<()> {
         // Early return if background sync not running
         if self.background_tx.get().is_none() {
             return Ok(());
@@ -496,27 +498,25 @@ impl Sync {
             return Ok(());
         }
 
-        // Queue each entry for sync with each peer. The event no longer
-        // carries entry payloads — expand the cursor advance back into a
-        // concrete set of IDs by walking the DAG diff. Cost is bounded
-        // by the cursor delta, not the full tree.
+        // Sync owns its checkpoints, not the application's delivered events.
+        // Read after taking the cursor lock so concurrent hook tasks cannot
+        // regress a checkpoint by processing an older event after a newer one.
         let tree_id = database.root_id();
-
-        let new_ids = database
-            .ids_added(event.previous_tips(), event.post_tips())
+        let mut cursors = self.write_cursors.lock().await;
+        let latest = self
+            .instance()?
+            .require_local_engine()?
+            .verified_snapshot(tree_id)
             .await?;
-
-        for entry_id in &new_ids {
-            debug!(
-                database_id = %tree_id,
-                entry_id = %entry_id,
-                peer_count = peers.len(),
-                "Queueing entry for automatic sync"
-            );
-
-            for peer_id in &peers {
-                self.queue_entry_for_sync(peer_id, entry_id, tree_id)?;
+        for peer in peers {
+            let cursor = cursors.entry((peer.clone(), tree_id.clone())).or_default();
+            let new_ids = database.ids_added(cursor, &latest).await?;
+            for entry_id in new_ids {
+                self.queue_entry_for_sync(&peer, &entry_id, tree_id)?;
             }
+            // Queued, not acknowledged. Send failures use the retry queue; a
+            // process restart recovers with periodic Verified DAG comparison.
+            *cursor = latest.clone();
         }
 
         Ok(())
@@ -803,7 +803,9 @@ impl Sync {
     pub(super) async fn tree_pull_tips(&self, tree_id: &ID) -> Result<crate::Snapshot> {
         let backend = self.backend()?;
         let tips = backend
-            .snapshot(tree_id)
+            .local_engine()
+            .expect("sync requires local backend")
+            .verified_snapshot(tree_id)
             .await
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
         match backend.get(tree_id).await {

@@ -972,3 +972,49 @@ async fn promotion_rejects_nonroot_parent_used_as_tree_root() {
     assert_retained(&*backend, &a, &[]).await;
     assert_verified(&*backend, &tree, &[b, c]).await;
 }
+
+/// A retained frontier read plus incremental outgoing enumeration must not
+/// load history. The peer's previous cut stops the walk after one new entry.
+#[tokio::test]
+async fn verified_sync_retained_frontier_and_delta_do_not_scan_history() {
+    let counters = Arc::new(HotPathCounters::default());
+    let backend: Box<dyn BackendImpl> = Box::new(Counting {
+        inner: test_backend().await,
+        counters: Arc::clone(&counters),
+    });
+    let root = root_entry();
+    let tree = root.id();
+    backend.put_verified(root).await.unwrap();
+    let mut tip = tree.clone();
+    for height in 1..=256 {
+        let entry = child_entry(
+            &tree,
+            std::slice::from_ref(&tip),
+            &height.to_string(),
+            height,
+        );
+        tip = entry.id();
+        backend.put_verified(entry).await.unwrap();
+    }
+    let previous = Snapshot::new(vec![tip.clone()]);
+    let next = child_entry(&tree, &[tip], "next", 257);
+    backend.put_verified(next.clone()).await.unwrap();
+    counters.reset();
+    let latest = backend.verified_snapshot(&tree).await.unwrap();
+    let sent = eidetica::sync::utils::collect_ancestors_to_send(
+        backend.as_ref(),
+        latest.tips(),
+        previous.tips(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sent.iter().map(Entry::id).collect::<Vec<_>>(),
+        vec![next.id()]
+    );
+    assert_eq!(
+        counters.counts(),
+        (0, 1),
+        "one delta status read, no history load"
+    );
+}
