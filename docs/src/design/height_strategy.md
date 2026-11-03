@@ -90,12 +90,29 @@ Subtree height is `Option<u64>`: `None` means inherit from the tree, `Some(h)` i
 
 During commit, heights are calculated as follows:
 
-1. **Tree height**: Use database-level strategy from `_settings`
-2. **Subtree heights**:
-   - System subtrees (`_settings`, `_index`, `_root`): Always inherit (height = None)
-   - User subtrees: Check `_index` for strategy override
-     - Override found: Calculate independent height as `Some(h)`
-     - No override: Leave height as `None` (inherit)
+1. Resolve each touched subtree's strategy from `_index`. System subtrees
+   (`_settings`, `_index`, `_root`) always inherit.
+2. For an override, calculate `Some(h)` from that subtree's effective parent
+   heights using its own strategy. Independent heights do not raise the main
+   height merely because they are larger.
+3. For inheriting subtrees, include their effective parent heights alongside
+   main-parent heights when calculating the tree height with the database-level
+   strategy. Their stored height remains `None`.
+
+Switching an override back to `Incremental` takes the maximum of the Store's
+parent heights plus one; it does not restart a smaller counter. Removing the
+override with `set_height_strategy(None)` keeps inheritance and strict growth:
+if a Store parent has explicit height `1000` while its main height is `1`, the
+next inheriting Incremental write has main and Store height `1001`. This gap
+carries into later main descendants. With multiple parents, the largest relevant
+height wins, including Store parents behind intervening untouched Entries.
+
+Both local commit validation and received-Entry verification require exact
+[Store frontiers and strict effective-height growth](verification.md#store-parent-frontiers).
+They accept positive gaps without requiring any particular configured strategy.
+Existing Verified history needs the explicit offline re-verification procedure
+in that verification contract; changing the authoring calculation does not
+recertify stored history.
 
 ### Entry.subtree_height() Accessor
 

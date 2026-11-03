@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use crate::helpers::LocalBackendTestExt;
+
 use eidetica::{
     Clock, Database, FixedClock, HeightStrategy, Instance, Store, backend::database::InMemory,
     crdt::Doc, store::DocStore,
@@ -348,6 +350,76 @@ async fn test_unregistered_subtree_inherits_tree_height() {
     );
 }
 
+/// Exercise the documented override setter through signed local commits, not
+/// hand-built Entries. The main strategy remains Incremental throughout.
+async fn store_height_transition(
+    next: Option<HeightStrategy>,
+) -> (eidetica::Entry, eidetica::Entry) {
+    let clock = Arc::new(FixedClock::new(1_700_000_000_000));
+    let (instance, database) = create_test_database_with_clock(clock.clone()).await;
+    let _hold = clock.hold();
+
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("transition").await.unwrap();
+    store.set("key", "timestamp").await.unwrap();
+    store
+        .set_height_strategy(Some(HeightStrategy::Timestamp))
+        .await
+        .unwrap();
+    let parent_id = tx.commit().await.unwrap();
+    let parent = database.backend().unwrap().get(&parent_id).await.unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("transition").await.unwrap();
+    store.set_height_strategy(next).await.unwrap();
+    store.set("key", "after transition").await.unwrap();
+    let child_id = tx.commit().await.unwrap();
+    let child = database.backend().unwrap().get(&child_id).await.unwrap();
+
+    for id in [&parent_id, &child_id] {
+        assert!(database.verify_entry_signature(id.clone()).await.unwrap());
+        assert_eq!(
+            instance
+                .backend()
+                .get_verification_status(id)
+                .await
+                .unwrap(),
+            eidetica::backend::VerificationStatus::Verified
+        );
+    }
+    assert_eq!(
+        child.subtree_parents("transition").unwrap(),
+        vec![parent_id]
+    );
+    assert!(child.height() > parent.height());
+    eprintln!(
+        "override {next:?}: main {} -> {}, Store {} -> {}; signed and Verified",
+        parent.height(),
+        child.height(),
+        parent.subtree_height("transition").unwrap(),
+        child.subtree_height("transition").unwrap()
+    );
+    (parent, child)
+}
+
+#[tokio::test]
+async fn test_store_height_transition_to_independent_incremental() {
+    let (parent, child) = store_height_transition(Some(HeightStrategy::Incremental)).await;
+    assert!(
+        child.subtree_height("transition").unwrap() > parent.subtree_height("transition").unwrap()
+    );
+}
+
+#[tokio::test]
+async fn test_store_height_transition_to_inheritance() {
+    let (parent, child) = store_height_transition(None).await;
+    assert_eq!(child.subtree_height("transition").unwrap(), child.height());
+    assert!(
+        child.subtree_height("transition").unwrap() > parent.subtree_height("transition").unwrap(),
+        "documented override removal must not violate strict effective Store-height growth"
+    );
+}
+
 #[tokio::test]
 async fn test_mixed_subtree_strategies() {
     // Uses FixedClock which defaults to 1704067200000 (2024-01-01 00:00:00 UTC)
@@ -431,4 +503,74 @@ async fn test_mixed_subtree_strategies() {
         "Independent subtree should have incremental height ({}), not timestamp",
         independent_height
     );
+}
+
+#[tokio::test]
+async fn test_store_height_transition_joins_all_effective_parent_heights() {
+    for strategy in [None, Some(HeightStrategy::Incremental)] {
+        let clock = Arc::new(FixedClock::new(1_000));
+        let (instance, database) = create_test_database_with_clock(clock.clone()).await;
+        let _hold = clock.hold();
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("transition").await.unwrap();
+        store.set("key", "initial").await.unwrap();
+        store
+            .set_height_strategy(Some(HeightStrategy::Timestamp))
+            .await
+            .unwrap();
+        let initial = tx.commit().await.unwrap();
+        let mut parents = Vec::new();
+        for time in [2_000, 5_000] {
+            clock.set(time);
+            let tx = database
+                .new_transaction_at(&eidetica::Snapshot::from([initial.clone()]))
+                .await
+                .unwrap();
+            tx.get_store::<DocStore>("transition")
+                .await
+                .unwrap()
+                .set("key", time)
+                .await
+                .unwrap();
+            parents.push(tx.commit().await.unwrap());
+        }
+        let tx = database
+            .new_transaction_at(&eidetica::Snapshot::from(parents.clone()))
+            .await
+            .unwrap();
+        let store = tx.get_store::<DocStore>("transition").await.unwrap();
+        store.set_height_strategy(strategy).await.unwrap();
+        store.set("key", "joined").await.unwrap();
+        let joined = tx.commit().await.unwrap();
+        let entry = database.get_entry(&joined).await.unwrap();
+        assert_eq!(
+            eidetica::Snapshot::from(entry.subtree_parents("transition").unwrap()),
+            eidetica::Snapshot::from(parents)
+        );
+        assert_eq!(entry.subtree_height("transition").unwrap(), 5_001);
+        assert_eq!(entry.height(), if strategy.is_none() { 5_001 } else { 3 });
+        assert!(
+            database
+                .verify_entry_signature(joined.clone())
+                .await
+                .unwrap()
+        );
+        // Re-run the receipt validator, not only local transaction authoring.
+        instance
+            .demote_to_unverified(database.root_id(), &initial)
+            .await
+            .unwrap();
+        let report = database.verify().await.unwrap();
+        assert_eq!(report.verified, 4);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.still_unverified, 0);
+        assert_eq!(
+            instance
+                .backend()
+                .get_verification_status(&joined)
+                .await
+                .unwrap(),
+            eidetica::backend::VerificationStatus::Verified
+        );
+    }
 }
