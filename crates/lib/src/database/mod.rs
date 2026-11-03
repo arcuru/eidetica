@@ -599,7 +599,15 @@ impl Database {
     pub(crate) async fn live_auth_settings(&self) -> Result<AuthSettings> {
         let instance = self.instance()?;
         let snapshot = match instance.backend().local_engine() {
-            Some(backend) => backend.verified_snapshot(self.root_id()).await?,
+            Some(backend) => {
+                // Preserve access-time verification of completed local writes
+                // (including retries after interrupted status publication), but
+                // never use a raw diagnostic/verification view as authority.
+                if !auto_verify_suppressed() {
+                    self.snapshot().await?;
+                }
+                backend.verified_snapshot(self.root_id()).await?
+            }
             None => self.snapshot().await?, // The service returns its Verified frontier.
         };
         self.new_transaction_at(&snapshot)
