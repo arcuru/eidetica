@@ -235,6 +235,10 @@ async fn test_store_verification_invalid_evidence_beats_incomplete_ancestry() {
     for main in [vec![first.id(), missing.clone()], vec![missing, first.id()]] {
         let invalid = f.entry(&main, "data", &[first.id()], 10, Some(1));
         f.ingest(&invalid, VerificationStatus::Failed).await;
+        // A held Verified contribution rules out an empty Store frontier even
+        // when another main branch has not arrived.
+        let omitted = f.entry(&main, "data", &[], 10, Some(100));
+        f.ingest(&omitted, VerificationStatus::Failed).await;
     }
 }
 

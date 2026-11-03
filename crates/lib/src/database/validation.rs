@@ -41,8 +41,13 @@ impl Database {
 
         // Check conclusive Store-edge evidence even when some main ancestry is
         // absent. Never fetch a Store edge as part of its own reachability proof.
+        let mut empty_stores = Vec::new();
         for store in entry.subtrees() {
-            for id in entry.subtree_parents(&store)? {
+            let store_parents = entry.subtree_parents(&store)?;
+            if store_parents.is_empty() {
+                empty_stores.push(store.clone());
+            }
+            for id in store_parents {
                 let parent = match backend.get(&id).await {
                     Ok(parent) => parent,
                     Err(e) if e.is_not_found() => continue,
@@ -92,8 +97,11 @@ impl Database {
             match backend.get_verification_status(&id).await? {
                 VerificationStatus::Failed => return Ok(CausalFrontiers::Invalid),
                 VerificationStatus::Unverified => pending.push(id.clone()),
+                // A known accepted contribution makes an empty declared Store
+                // frontier impossible, regardless of another missing branch.
                 VerificationStatus::Verified
-                    if parents.contains(&id) && entry.height() <= ancestor.height() =>
+                    if (parents.contains(&id) && entry.height() <= ancestor.height())
+                        || empty_stores.iter().any(|store| ancestor.in_subtree(store)) =>
                 {
                     return Ok(CausalFrontiers::Invalid);
                 }
