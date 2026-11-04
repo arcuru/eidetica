@@ -779,3 +779,25 @@ pub fn build_complex_merge_data() -> (Doc, Doc) {
 
     (map1, map2)
 }
+
+/// Commit `value` under `data.key` and return the new entry ID.
+pub async fn commit_data_value(db: &Database, value: &str) -> ID {
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("key", value)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap()
+}
+
+/// Receive the next watched Snapshot, failing instead of hanging.
+pub async fn next_snapshot(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<eidetica::Snapshot>,
+) -> eidetica::Snapshot {
+    tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("watch stalled")
+        .expect("watch closed")
+}

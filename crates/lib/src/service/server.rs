@@ -99,18 +99,17 @@ impl ConnectionContext {
     }
 }
 
-/// RAII cleanup: on connection drop (clean EOF, error, or panic), call
-/// `Instance::remove_write_callback` for every subscription this
-/// connection registered. Holds an `Arc<ConnectionContext>` rather than
-/// borrowing so the cleanup path is identical for every exit case
-/// without sprinkling `remove_*` calls through the connection handler.
+/// RAII cleanup: on connection drop (clean EOF, error, or panic), drop every
+/// subscription's `WriteCallback`, which unregisters and cancels its watch.
+/// Holds an `Arc<ConnectionContext>` rather than borrowing so the cleanup path
+/// is identical for every exit case.
 struct ConnectionGuard {
     ctx: Arc<ConnectionContext>,
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        let subs = self.ctx.subscribed_lock();
+        let subs = std::mem::take(&mut *self.ctx.subscribed_lock());
         if !subs.is_empty() {
             tracing::debug!(
                 conn_id = self.ctx.conn_id,
@@ -119,7 +118,6 @@ impl Drop for ConnectionGuard {
             );
         }
         drop(subs);
-        self.ctx.subscribed_lock().clear();
         let staging = std::mem::take(&mut *self.ctx.staging.lock().unwrap())
             .into_values()
             .filter(|value| !value.published)

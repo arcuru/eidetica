@@ -18,7 +18,7 @@ use eidetica::{
 };
 use tokio::sync::{Semaphore, mpsc};
 
-use crate::helpers::test_backend;
+use crate::helpers::{commit_data_value, next_snapshot, test_backend};
 
 async fn setup() -> (Instance, Database) {
     let instance = Instance::create_backend(
@@ -34,17 +34,6 @@ async fn setup() -> (Instance, Database) {
     (instance, db)
 }
 
-async fn put(db: &Database, value: &str) -> eidetica::ID {
-    let tx = db.new_transaction().await.unwrap();
-    tx.get_store::<DocStore>("data")
-        .await
-        .unwrap()
-        .set("key", value)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap()
-}
-
 async fn watch(db: &Database) -> (WriteCallback, mpsc::UnboundedReceiver<Snapshot>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let cb = db
@@ -56,13 +45,6 @@ async fn watch(db: &Database) -> (WriteCallback, mpsc::UnboundedReceiver<Snapsho
         .await
         .unwrap();
     (cb, rx)
-}
-
-async fn next(rx: &mut mpsc::UnboundedReceiver<Snapshot>) -> Snapshot {
-    tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .expect("watch stalled")
-        .expect("watch closed")
 }
 
 /// A real signed source chain. Withholding the first entry leaves the second
@@ -78,8 +60,8 @@ async fn chain() -> (Entry, Entry, Entry) {
     let db = Database::create(&source, PrivateKey::generate(), Doc::new())
         .await
         .unwrap();
-    let first = put(&db, "first").await;
-    let second = put(&db, "second").await;
+    let first = commit_data_value(&db, "first").await;
+    let second = commit_data_value(&db, "second").await;
     (
         source.backend().get(db.root_id()).await.unwrap(),
         source.backend().get(&first).await.unwrap(),
@@ -113,20 +95,20 @@ async fn receiver(root: Entry) -> (Instance, Database) {
 async fn snapshot_watch_initial_quiet_and_registration_races() {
     let (_instance, db) = setup().await;
     let (_cb, mut rx) = watch(&db).await;
-    assert_eq!(next(&mut rx).await, db.snapshot().await.unwrap());
+    assert_eq!(next_snapshot(&mut rx).await, db.snapshot().await.unwrap());
     for i in 0..16 {
         let before = db.snapshot().await.unwrap();
         let value = i.to_string();
-        let (registered, id) = tokio::join!(watch(&db), put(&db, &value));
+        let (registered, id) = tokio::join!(watch(&db), commit_data_value(&db, &value));
         let (_cb, mut rx) = registered;
         let after = Snapshot::new(vec![id]);
-        let initial = next(&mut rx).await;
+        let initial = next_snapshot(&mut rx).await;
         assert!(
             initial == before || initial == after,
             "initial must linearize with the write"
         );
         if initial == before {
-            assert_eq!(next(&mut rx).await, after);
+            assert_eq!(next_snapshot(&mut rx).await, after);
         }
         assert_eq!(db.snapshot().await.unwrap(), after);
     }
@@ -139,12 +121,12 @@ async fn snapshot_watch_views_and_promotion_with_unchanged_raw_tips() {
     let opted = db.clone().allow_unverified();
     let (_verified, mut verified) = watch(&db).await;
     let (_opted, mut unverified) = watch(&opted).await;
-    let checkpoint = next(&mut verified).await;
-    assert_eq!(next(&mut unverified).await, checkpoint);
+    let checkpoint = next_snapshot(&mut verified).await;
+    assert_eq!(next_snapshot(&mut unverified).await, checkpoint);
 
     assert_eq!(db.insert_raw(second.clone()).await.unwrap(), second.id());
     assert_eq!(
-        next(&mut unverified).await,
+        next_snapshot(&mut unverified).await,
         Snapshot::new(vec![db.root_id().clone(), second.id()])
     );
     assert_eq!(
@@ -173,13 +155,13 @@ async fn snapshot_watch_views_and_promotion_with_unchanged_raw_tips() {
         .await
         .unwrap();
     assert_eq!(
-        next(&mut unverified).await,
+        next_snapshot(&mut unverified).await,
         Snapshot::new(vec![second.id()])
     );
     let raw = instance.backend().snapshot(db.root_id()).await.unwrap();
     let report = db.verify().await.unwrap();
     assert_eq!(report.verified, 2);
-    let latest = next(&mut verified).await;
+    let latest = next_snapshot(&mut verified).await;
     assert_eq!(latest, Snapshot::new(vec![second.id()]));
     assert_eq!(
         instance.backend().snapshot(db.root_id()).await.unwrap(),
@@ -207,8 +189,8 @@ async fn snapshot_watch_excludes_unverified_and_failed_restores_parent() {
     let opted = db.clone().allow_unverified();
     let (_v, mut verified) = watch(&db).await;
     let (_u, mut unverified) = watch(&opted).await;
-    let checkpoint = next(&mut verified).await;
-    assert_eq!(next(&mut unverified).await, checkpoint);
+    let checkpoint = next_snapshot(&mut verified).await;
+    assert_eq!(next_snapshot(&mut unverified).await, checkpoint);
     instance
         .put_entry(
             db.root_id(),
@@ -218,7 +200,7 @@ async fn snapshot_watch_excludes_unverified_and_failed_restores_parent() {
         )
         .await
         .unwrap();
-    let historical = next(&mut unverified).await;
+    let historical = next_snapshot(&mut unverified).await;
     assert_eq!(historical, Snapshot::new(vec![bad.id()]));
     assert_eq!(
         instance
@@ -231,7 +213,7 @@ async fn snapshot_watch_excludes_unverified_and_failed_restores_parent() {
         VerificationStatus::Unverified
     );
     assert_eq!(db.verify().await.unwrap().failed, 1);
-    assert_eq!(next(&mut unverified).await, checkpoint);
+    assert_eq!(next_snapshot(&mut unverified).await, checkpoint);
     assert_eq!(
         opted.snapshot().await.unwrap(),
         checkpoint,
@@ -267,7 +249,7 @@ async fn snapshot_watch_excludes_unverified_and_failed_restores_parent() {
         )
         .await
         .unwrap();
-    let latest = next(&mut verified).await;
+    let latest = next_snapshot(&mut verified).await;
     assert_eq!(latest, Snapshot::new(vec![first.id()]));
     assert_eq!(
         db.ids_added(&checkpoint, &latest).await.unwrap(),
@@ -306,21 +288,21 @@ async fn snapshot_watch_slow_initial_latest_wins_and_caller_checkpoint() {
         })
         .await
         .unwrap();
-    assert_eq!(next(&mut rx).await, initial);
+    assert_eq!(next_snapshot(&mut rx).await, initial);
     let (_fast, mut fast) = watch(&db).await;
-    assert_eq!(next(&mut fast).await, initial);
+    assert_eq!(next_snapshot(&mut fast).await, initial);
     let mut ids = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), async {
         for i in 0..32 {
-            ids.push(put(&db, &i.to_string()).await);
+            ids.push(commit_data_value(&db, &i.to_string()).await);
         }
     })
     .await
     .expect("commits awaited a slow application callback");
     let final_snapshot = db.snapshot().await.unwrap();
-    while next(&mut fast).await != final_snapshot {}
+    while next_snapshot(&mut fast).await != final_snapshot {}
     release.add_permits(1);
-    let latest = next(&mut rx).await;
+    let latest = next_snapshot(&mut rx).await;
     assert_eq!(
         latest, final_snapshot,
         "one pending latest Snapshot, not a transition queue"
@@ -345,7 +327,8 @@ async fn snapshot_watch_reentrant_read_and_commit() {
                 readonly.verify().await?;
                 readonly.snapshot().await?;
                 if first {
-                    tx.send(put(&db, "from callback").await).unwrap();
+                    tx.send(commit_data_value(&db, "from callback").await)
+                        .unwrap();
                 }
                 Ok(())
             }
@@ -381,9 +364,9 @@ async fn snapshot_watch_error_and_panic_are_isolated_and_retry_next_change() {
             })
             .await
             .unwrap();
-        next(&mut rx).await;
-        let id = put(&db, "after failure").await;
-        assert_eq!(next(&mut rx).await, Snapshot::new(vec![id]));
+        next_snapshot(&mut rx).await;
+        let id = commit_data_value(&db, "after failure").await;
+        assert_eq!(next_snapshot(&mut rx).await, Snapshot::new(vec![id]));
     }
 }
 
@@ -417,14 +400,14 @@ async fn snapshot_watch_drop_cancels_inflight_and_only_its_registration() {
         .unwrap()
         .unwrap();
     let (keep, mut rx) = watch(&db).await;
-    next(&mut rx).await;
+    next_snapshot(&mut rx).await;
     drop(cb);
     tokio::time::timeout(Duration::from_secs(5), cancel.recv())
         .await
         .unwrap()
         .unwrap();
     keep.detach();
-    let id = put(&db, "after cancellation").await;
-    assert_eq!(next(&mut rx).await, Snapshot::new(vec![id]));
+    let id = commit_data_value(&db, "after cancellation").await;
+    assert_eq!(next_snapshot(&mut rx).await, Snapshot::new(vec![id]));
     assert!(start.try_recv().is_err());
 }
