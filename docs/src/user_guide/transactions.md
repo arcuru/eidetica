@@ -394,71 +394,56 @@ Choose `with_transaction` for the common case of writing to one or more stores a
 
 ## Write Callbacks
 
-`Database::on_write` registers a callback that fires every time entries are
-written to that database — both local commits and entries received via
-sync. Useful for "rebuild a derived view when this DB changes," "wake up a
-UI," or any other change-driven workflow.
+`Database::on_write` delivers the registering handle's latest selected Snapshot.
+The default view contains only the Verified prefix; `.allow_unverified()` watches the non-Failed frontier instead.
+Each registration receives an initial Snapshot, even on a quiet database, atomically ordered with subsequent mutations.
+Later notifications occur only when that selected frontier changes.
+
+Keep your own processing checkpoint and advance it only after processing succeeds:
 
 ```rust,no_run
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Database, Result};
+# use eidetica::{Database, Result, Snapshot};
+# use std::sync::Arc;
 # async fn example(database: &Database) -> Result<()> {
-let cb = database.on_write(|event, db| {
-    let source = event.source();
-    let prev = event.previous_tips().clone();
-    let post = event.post_tips().clone();
+let checkpoint = Arc::new(tokio::sync::Mutex::new(Snapshot::EMPTY));
+let cb = database.on_write(move |latest, db| {
+    let latest = latest.clone();
     let db = db.clone();
+    let checkpoint = checkpoint.clone();
     async move {
-        // Expand the cursor advance into the concrete set of new entry IDs.
-        // Skip this for "any write" wake-ups — the brackets alone suffice.
-        let new_ids = db.ids_added(&prev, &post).await?;
-        println!("{} entries written to {} ({source:?})", new_ids.len(), db.root_id());
+        let mut processed = checkpoint.lock().await;
+        let ids = db.ids_added(&processed, &latest).await?;
+        println!("{} candidate entries for {}", ids.len(), db.root_id());
+        // Advance only after your application's processing succeeds.
+        *processed = latest;
         Ok(())
     }
 }).await?;
-
-// Drop `cb` to unregister, or keep the callback registered for the life
-// of the Instance with `cb.detach()`.
+// Drop `cb` to cancel, or call `cb.detach()` to keep the registration
+// for the Instance's lifetime.
 # Ok(())
 # }
 ```
 
-`WriteEvent` carries cursor brackets only — `previous_tips` (the
-callback's own frontier before this fire) and `post_tips` (the
-frontier after). Callbacks that just need a "something changed"
-ping can act directly on the event; callbacks that need to
-enumerate the new entries call
-[`Database::ids_added`](https://docs.rs/eidetica/latest/eidetica/struct.Database.html#method.ids_added)
-with those brackets.
+The payload is a Snapshot only, not a previous/latest bracket or entry stream.
+`ids_added` retains its existing ancestry-diff behavior, including possible over-reporting for interior forks; watch delivery does not add an exact paginated diff API.
+For an opt-in frontier that moves backward after rejection, rebuild your selected view at the delivered Snapshot rather than treating an added-ID list as a removal stream.
+A historical Snapshot still names the same immutable ancestry after verification status changes.
 
-The returned `WriteCallback` handle controls the registration's lifetime:
-drop it to unregister, or call `.detach()` to keep the callback live until
-the `Instance` itself drops.
+### Timing and coalescing
 
-### Callback timing — local vs. connected
+Both local and service-backed watches run asynchronously to `commit().await`.
+The initial Snapshot is delivered first; slow callbacks may skip intermediate frontiers, retaining only the latest pending update per registration.
+Callbacks run sequentially within one registration, outside tree locks, including the closure's synchronous prefix.
+A slow callback does not hold up commits or another registration on the same tree.
+The callback receives a read-only Database with the registering handle's view and service acting identity; capture a keyed handle separately if you need to write.
+Errors and panics are logged. They do not acknowledge processing, retry automatically, or move your checkpoint for you.
 
-The timing contract depends on whether the `Instance` is **local** (one
-backend in this process) or **connected** (built via `Instance::connect`
-to a daemon over a Unix socket):
-
-| Aspect                        | Local `Instance`                                                                   | Connected `Instance`                                                                                                  |
-| ----------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| When does the callback fire?  | Inline with the write — completes before `commit().await` returns.                 | When the daemon's push notification arrives back over the socket. Asynchronous to `commit().await`.                   |
-| Is `previous_tips` populated? | Yes — captured pre-write under the per-tree lock.                                  | Yes — populated by the daemon's canonical pre-write tips.                                                             |
-| Who orders the callbacks?     | This process. Each tree has a serial ordering; cross-process ordering is via sync. | The daemon. Every subscriber — including the committing client — observes callbacks in the same canonical order.      |
-| Cross-client visibility?      | Only via sync.                                                                     | Built-in — another client's commit through the same daemon fires this client's callback as soon as the daemon pushes. |
-
-The asynchronous fire on a connected `Instance` is intentional. By
-deferring to the daemon's ordering, every subscriber sees writes in the
-same sequence — your own callback, another client's callback for your
-write, and a sync-peer entry that arrived between them are all interleaved
-by the daemon and pushed in that order to everyone. The trade-off is that
-`commit().await` returning no longer means _your own_ callback has run; if
-you need synchronous "callback fired before commit returned" semantics for
-your own writes, use a local `Instance`.
-
-On a connected `Instance`, the first `on_write` registration for a given
-database lazily subscribes that client to push notifications for it.
-Subsequent registrations on the same database reuse that subscription.
-Subscriptions are torn down implicitly when the client disconnects.
+Dropping the `WriteCallback` cancels local pending and in-flight work.
+`.detach()` leaves it registered until the Instance drops.
+Connected registrations each have a distinct wire ID, even for the same tree or visibility.
+The daemon orders their selected state, but independent coalescing means clients need not receive identical intermediate sequences.
+Disconnect releases every daemon registration; dropped handles send deferred cancellation for their own ID.
+Core pending watch state is bounded per registration. This does not bound the shared socket writer backlog or the number of subscriptions an application can create.

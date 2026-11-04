@@ -255,9 +255,9 @@ All clients share the same underlying storage through the daemon's backend.
 verification pass — `update_verification_status` and the verification-status
 queries are not exposed over the socket. The daemon's Instance stores synced
 entries as `Unverified`, runs `Database::verify()`, and serves reads from the
-resulting **Verified frontier**. Every connected client therefore sees the
-same verified view; there is no per-client `allow_unverified()` toggle over
-the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
+resulting **Verified frontier** by default. A Database handle can opt into
+the retained non-Failed frontier with `.allow_unverified()`; its watches inherit
+that same scope without changing the daemon's verification decisions. (See [Core Concepts](core_concepts.md) for the verification model.)
 
 ## Configuration Reference
 
@@ -278,10 +278,11 @@ the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
 - **Unix-only.** The service module requires Unix domain sockets and is not available on Windows.
 - **Feature flag required.** The `service` feature must be enabled (included in the default `full` feature set).
 
-For the `Database::on_write` semantics on a connected Instance — including
-the deliberate trade that callbacks fire asynchronously to `commit()` in
-exchange for a single daemon-canonical event ordering — see [Write
-Callbacks](transactions.md#write-callbacks).
+Watches deliver an ordered initial Snapshot and latest selected-frontier
+updates, asynchronously to commits on both local and connected Instances.
+See [Write Callbacks](transactions.md#write-callbacks).
+The service protocol is v0.1; clients and daemon must upgrade together.
+Legacy v0 connections are rejected rather than falling back to bracket events.
 
 ## Dashboard access requests
 

@@ -172,14 +172,15 @@ walk or per-entry status probes. If a raw tip is unsettled, access can attempt
 best-effort verification before selecting the read boundary. A read is therefore
 not a promise that no validation work occurs; only the settled path is scan-free.
 
-`.allow_unverified()` opts into raw tips with `Failed` **tips** removed, rather
-than the Verified frontier. It is a diagnostic/partial-data view, not proof of
-an accepted prefix. The filter does not recursively prune every failed or
-missing ancestor from arbitrary raw history. Low-level Entry retrieval also
+`.allow_unverified()` selects the retained non-Failed frontier instead.
+If a tip fails, its surviving non-Failed parents can become selected tips;
+rejection does not simply drop the raw tip and leave an empty view.
+This is a diagnostic/partial-data view, not proof of an accepted prefix.
+It does not recursively prune Failed or missing ancestry from immutable history. Low-level Entry retrieval also
 retains rejected data. No status deletes immutable bytes.
 
-A remote service handle's `snapshot()` returns the server-selected Verified
-frontier; the client does not run local status machinery. Service operations
+A remote service handle's `snapshot()` returns the server-selected frontier
+for that handle's scope; the client does not run local status machinery. Service operations
 that carry a `ReadScope`, such as transaction context and Store-entry queries,
 let the server select the requested scope. Calling `.allow_unverified()` is
 not a wire-level status override. See [service read scope](../internal/service.md#read-scope).
@@ -246,10 +247,15 @@ already-acquired readers or retroactively invalidate cached historical state.
 Acquire a new default boundary to observe the repaired frontier; offline trust
 reset requires stopping all readers as well as writers.
 
-`WriteEvent`/notification cursors remain **raw DAG frontiers**. Verification can
-emit a batched settled-write notification without changing those raw tips.
-A cursor is not a Verified membership proof; application consumers use the appropriate
-Database read projection rather than treating notification IDs as accepted data.
+`Database::on_write` delivers the initial selected Snapshot, then changes to
+that handle's selected frontier. Default and opt-in registrations remain
+distinct, even on one tree. Verification promotion can change the default
+frontier without a raw-tip change; failure can change the opt-in frontier.
+Unchanged selected frontiers produce no event. Pending updates coalesce
+latest-wins, with initial delivery always ordered first.
+Application work runs outside tree locks and is asynchronous to commits.
+Callers own processing checkpoints; these are not previous/latest brackets,
+removal streams or acknowledgments. Historical Snapshot identity is unchanged.
 
 Sync does not use these application cursors. It owns per-peer/database queueing
 checkpoints over the retained Verified frontier. Bootstrap, incremental responses

@@ -26,12 +26,12 @@ use crate::backend::{
 };
 use crate::database::Database;
 use crate::entry::ID;
-use crate::instance::{CallbackId, WriteSource};
+use crate::instance::{WriteCallback, WriteSource};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, HandshakeAck, IncomingRequest, MergeState, Notification,
-    PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, TicketBootstrapOutcome,
-    TicketBootstrapRequest, read_frame, write_frame,
+    PROTOCOL_REVISION, PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse,
+    TicketBootstrapOutcome, TicketBootstrapRequest, read_frame, write_frame,
 };
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
 
@@ -57,35 +57,22 @@ struct SessionStaging {
     last_used: Instant,
 }
 
-/// Per-connection context carried through the dispatch chain. Holds:
-///
-/// - `tx`: the writer-channel sender — both `ServerFrame::Response`s from
-///   the dispatcher and `ServerFrame::Notification`s from subscribed
-///   per-db callbacks ride through this same channel, so the order
-///   observed by the client is the order frames hit `frame_tx`.
-/// - `instance`: needed in `Drop` to call `remove_write_callback` for
-///   the connection's registered subscriptions.
-/// - `subscribed`: `root_id -> CallbackId` for every `SubscribeWrites`
-///   this connection has done. Cleaned up on disconnect (via the guard's
-///   `Drop`) and on explicit `UnsubscribeWrites`.
-///
-/// There is no per-connection registry on the server. Each subscription
-/// is just a per-db callback registered against the daemon's Instance
-/// (`Instance::register_write_callback`); the daemon's existing
-/// `fire_write_callbacks` dispatch path handles fan-out by walking the
-/// per-tree callback list, no separate fan-out mechanism required.
+/// Per-connection writer and session capabilities. Each subscription ID owns
+/// one handle-scoped callback; dropping the connection releases every handle.
 struct ConnectionContext {
     conn_id: ConnectionId,
     tx: mpsc::UnboundedSender<ServerFrame>,
     instance: Instance,
-    subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
+    subscribed: std::sync::Mutex<HashMap<u64, (ID, SigKey, ReadScope, WriteCallback)>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
 }
 
 impl ConnectionContext {
-    fn subscribed_lock(&self) -> std::sync::MutexGuard<'_, HashMap<ID, CallbackId>> {
+    fn subscribed_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<u64, (ID, SigKey, ReadScope, WriteCallback)>> {
         self.subscribed
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -131,10 +118,8 @@ impl Drop for ConnectionGuard {
                 subs.len()
             );
         }
-        for (tree_id, id) in subs.iter() {
-            self.ctx.instance.remove_write_callback(tree_id, *id);
-        }
         drop(subs);
+        self.ctx.subscribed_lock().clear();
         let staging = std::mem::take(&mut *self.ctx.staging.lock().unwrap())
             .into_values()
             .filter(|value| !value.published)
@@ -309,7 +294,7 @@ impl ServiceServer {
         // Diagnostic per-connection counter — purely for logging. No
         // registry-based routing needed; each connection's subscriptions
         // live as per-db callbacks on the Instance, dispatched by the
-        // existing `fire_write_callbacks` path.
+        // selected-frontier publication path.
         let next_conn_id = Arc::new(AtomicU64::new(1));
 
         // Track active per-connection tasks so shutdown actually
@@ -611,17 +596,23 @@ async fn handle_connection(
         None => return Ok(()), // Client disconnected before handshake
     };
 
-    if handshake.protocol_version != PROTOCOL_VERSION {
+    if handshake.protocol_version != PROTOCOL_VERSION
+        || handshake.protocol_revision != PROTOCOL_REVISION
+    {
         // Send error ack and close
         let ack = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
+            protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
         };
         write_frame(&mut writer, &ack).await?;
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "Protocol version mismatch: client={}, server={}",
-                handshake.protocol_version, PROTOCOL_VERSION
+                "Protocol version mismatch: client={}.{}, server={}.{}",
+                handshake.protocol_version,
+                handshake.protocol_revision,
+                PROTOCOL_VERSION,
+                PROTOCOL_REVISION
             ),
         )));
     }
@@ -629,6 +620,7 @@ async fn handle_connection(
     // Send handshake ack
     let ack = HandshakeAck {
         protocol_version: PROTOCOL_VERSION,
+        protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
     };
     write_frame(&mut writer, &ack).await?;
 
@@ -654,12 +646,10 @@ async fn handle_connection(
     //      block if Response. Less plumbing, policy duplicated per send
     //      site.
     //
-    // Under the cursor-only `Notification::DatabaseWrite` shape (no entry
-    // bodies, just `previous_tips`/`post_tips`), drops are *recoverable*:
-    // a subscriber that misses event N still sees event N+1's `post_tips`
-    // and calls `ids_added(cursor, post_tips)` to catch up. That makes
-    // drop-oldest the right policy and considerably softens the cost of
-    // dropping at all — but the work still needs doing for prod.
+    // Snapshot watches permit latest-wins coalescing per subscription ID,
+    // preserving the ordered initial Snapshot. Bounding this shared transport
+    // must also preserve the non-droppable response lane; it is separate from
+    // the bounded core watch mailboxes.
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
     let writer_task = tokio::spawn(async move {
         while let Some(frame) = frame_rx.recv().await {
@@ -725,11 +715,8 @@ async fn handle_connection(
     // 4. The writer task's `recv()` returns `None`; the task exits and
     //    `writer_task.await` finishes.
     //
-    // Note: a callback dispatch in flight when step 2 runs holds its
-    // own Arc to the closure (from `fire_write_callbacks`'s snapshot).
-    // It can still send a final notification through its captured `tx`
-    // before that Arc is released; the writer task will drain that
-    // frame before exiting in step 4.
+    // Cancellation aborts callback workers. An already-running synchronous
+    // send can still finish; the writer drains it before releasing the socket.
     drop(frame_tx);
     drop(guard);
     drop(ctx);
@@ -1230,17 +1217,18 @@ async fn dispatch_database_op(
             ))
         }
 
-        DatabaseOp::GetVerifiedTips => {
-            // The server runs the Database layer, so `snapshot()` returns the
-            // Verified frontier by construction — no client-side verify, no
-            // remote-detection heuristic.
-            let db = Database::open(instance, &root_id).await?;
+        DatabaseOp::GetSnapshot { scope } => {
+            // Verification and selected-view reads stay on the daemon.
+            // ReadScope never lets a client assert a verification status.
+            let mut db = Database::open(instance, &root_id).await?;
+            if scope == ReadScope::AllowUnverified {
+                db = db.allow_unverified();
+            }
             let snapshot = db.snapshot().await?;
             Ok(ServiceResponse::Ids(snapshot))
         }
 
         DatabaseOp::SubmitSignedEntry { entry } => {
-            let previous_tips = instance.snapshot(&root_id).await?;
             // The client signed this entry; the server does NOT trust its
             // claimed validity. Store it `Unverified`, then run our OWN
             // verification pass against the entry's pinned settings. A
@@ -1248,14 +1236,8 @@ async fn dispatch_database_op(
             // every default read by the frontier cut — D1 is closed by
             // construction here, not by gate-hardening a raw `Put`.
             //
-            // Only settled-state writes trigger an event: the
-            // `put_entry(.., Unverified, ..)` is a no-fire path by
-            // design (see `Instance::put_entry`), and the verification pass
-            // fires its own batched `Verified` event for any entries
-            // the pass settles. The handler just chains the two — no
-            // extra fire bookkeeping here. Note this gates the trigger
-            // only; the event's raw-frontier cursors can still bracket
-            // an unsettled tip (see `Notification` rustdoc).
+            // Opt-in watches can observe ingestion; default watches observe
+            // only promotion. Failure can move the non-Failed frontier back.
             instance
                 .put_entry(
                     &root_id,
@@ -1266,7 +1248,7 @@ async fn dispatch_database_op(
                 .await?;
             Database::open(instance, &root_id)
                 .await?
-                .verify_with_source(WriteSource::Local, Some(previous_tips))
+                .verify_with_source(WriteSource::Local)
                 .await?;
             Ok(ServiceResponse::Ok)
         }
@@ -1328,142 +1310,57 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Ok)
         }
 
-        DatabaseOp::SubscribeWrites { tips } => {
-            // Per-tree Read gate already ran in the dispatcher.
-            //
-            // Subscription is just a per-db callback registered against the
-            // daemon's Instance. The callback's body pushes a notification
-            // frame into this connection's writer channel; the daemon's
-            // existing `fire_write_callbacks` dispatch handles fan-out by
-            // walking the per-tree callback list. No separate registry or
-            // global-publisher hook needed.
-            //
-            // Idempotent: a tree this connection has already subscribed to
-            // is a no-op (we'd otherwise register a second callback that
-            // pushes a duplicate frame on every write). Take the lock
-            // briefly to early-out, then release before any await — the
-            // std::Mutex isn't `Send` and can't cross an await point.
-            //
-            // Under the current dispatch shape the per-connection request
-            // loop is single-threaded (one frame → one dispatch → one
-            // response), so a second `SubscribeWrites` for the same tree
-            // on the same connection can only arrive *after* the first
-            // call has fully completed and recorded its subscription. The
-            // post-await Entry-API guard below is therefore **defensive
-            // against a future shape change** (per-connection parallel
-            // dispatch, or another path that takes `ctx` and registers
-            // callbacks concurrently) rather than fixing a present race.
-            // Cheap to keep — one Entry-API call plus a single
-            // `remove_write_callback` in the unreachable Occupied arm.
-            {
-                let subs = ctx.subscribed_lock();
-                if subs.contains_key(&root_id) {
+        DatabaseOp::SubscribeWrites {
+            subscription_id,
+            scope,
+        } => {
+            // Read permission and session-key possession were checked by the
+            // dispatcher. Bind a reused ID to exactly the original scope.
+            if let Some((tree, acting, view, _)) = ctx.subscribed_lock().get(&subscription_id) {
+                if tree == &root_id && acting == identity && *view == scope {
                     return Ok(ServiceResponse::Ok);
                 }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "subscription ID is already in use",
+                )
+                .into());
+            }
+            let mut db = Database::open(instance, &root_id).await?;
+            if scope == ReadScope::AllowUnverified {
+                db = db.allow_unverified();
             }
             let tx = ctx.tx.clone();
-            // Capture the initial cursor and register the callback atomically
-            // under the tree lock. The fire path (`put_entry` /
-            // `Database::verify`) holds this same lock while advancing cursors,
-            // so no write can land between the tips snapshot and the
-            // registration: the empty-`tips` cursor is exactly the daemon's
-            // frontier at the instant this subscription begins, with no
-            // lost-update gap. Safe to hold across the `snapshot` await —
-            // `Instance::snapshot` reads the raw backend (no tree lock) and,
-            // unlike the fire path, we spawn/await no user callback under the
-            // guard, so there is no reentrancy.
-            let tree_lock = instance.tree_lock(&root_id);
-            let tree_guard = tree_lock.lock().await;
-            // Initial cursor: the client's supplied `tips` if non-empty;
-            // otherwise the daemon's current tips at subscribe-time (the "I have
-            // no initial state; give me events from now" posture documented on
-            // the wire variant). The cursor advances per fire as usual.
-            let initial_tips = if tips.is_empty() {
-                // Propagate rather than defaulting: an error here would seed
-                // the daemon-side cursor at `EMPTY`, which is the "replay
-                // from the beginning" value rather than "start from now".
-                instance.snapshot(&root_id).await?
-            } else {
-                tips
-            };
-            let id = instance.register_write_callback(
-                root_id.clone(),
-                initial_tips,
-                move |event, db| {
-                    // ORDERING INVARIANT — DO NOT add an `.await` before the
-                    // `tx.send` below. Per-tree notifications are delivered in
-                    // daemon-canonical order, and that guarantee rests entirely
-                    // on this send running *synchronously*, in the closure's
-                    // pre-future prefix. `Instance::spawn_write_callbacks`
-                    // invokes this closure while the caller holds the tree's
-                    // `tree_lock` (see `put_entry` / `Database::verify`), and it
-                    // advances each subscription's cursor in the same critical
-                    // section. Because the send happens here — before any await,
-                    // still under that lock, in cursor-advance order — two
-                    // connections writing the same tree concurrently cannot
-                    // interleave their frames: writer A's send completes and A
-                    // drops the lock before writer B can acquire it and send.
-                    // The returned future is deliberately a no-op; only that
-                    // (empty) tail is spawned and drained lock-free. Moving the
-                    // send *into* the future — or awaiting anything before it —
-                    // would push it out of the locked section onto the runtime's
-                    // scheduler and let same-tree frames reorder (the bug fixed
-                    // in "preserve write-notification order under concurrent
-                    // writers"). `mpsc::UnboundedSender::send` is non-blocking
-                    // and takes `&self`, which is exactly what makes a
-                    // synchronous send here possible.
-                    //
-                    // Send failure (writer task gone) is silently dropped; the
-                    // connection is about to be torn down and the guard's Drop
-                    // will unregister us next.
-                    //
-                    // The closure only fires for settled-state writes today
-                    // (Verified). Unverified writes go through `put_entry`
-                    // without firing `fire_write_callbacks`, so no notification
-                    // is ever *triggered* by them — though the cursors shipped
-                    // here are raw frontiers and can bracket an unsettled tip.
+            let callback = db
+                .on_write(move |snapshot, db| {
                     let frame = ServerFrame::Notification(Notification::DatabaseWrite {
                         root_id: db.root_id().clone(),
-                        previous_tips: event.previous_tips().clone(),
-                        post_tips: event.post_tips().clone(),
-                        source: event.source(),
+                        subscription_id,
+                        snapshot: snapshot.clone(),
                     });
                     let _ = tx.send(frame);
-                    async move { Ok(()) }
-                },
+                    async { Ok(()) }
+                })
+                .await?;
+            // The per-connection request loop is serial. The watch's worker
+            // orders initial delivery and later frames outside the tree lock.
+            ctx.subscribed_lock().insert(
+                subscription_id,
+                (root_id, identity.clone(), scope, callback),
             );
-            // Cursor captured and callback live; release the tree lock before
-            // touching the std subscribed-lock below (never nest the two).
-            drop(tree_guard);
-            // Re-acquire the lock to record this connection's subscription.
-            // Defensive Entry-API guard: in the current shape (single-
-            // threaded per-connection dispatch) the Occupied arm is
-            // unreachable — see the comment above the early-out check.
-            // Kept so that a future shape change (parallel dispatch per
-            // connection, or another concurrent path that takes `ctx`)
-            // can't leave us with two callbacks pushing duplicate frames
-            // on every write; the loser drops its just-registered
-            // callback and the first registration stays.
-            use std::collections::hash_map::Entry as MapEntry;
-            let mut subs = ctx.subscribed_lock();
-            match subs.entry(root_id.clone()) {
-                MapEntry::Vacant(slot) => {
-                    slot.insert(id);
-                }
-                MapEntry::Occupied(_) => {
-                    drop(subs);
-                    instance.remove_write_callback(&root_id, id);
-                }
-            }
             Ok(ServiceResponse::Ok)
         }
-
-        DatabaseOp::UnsubscribeWrites => {
-            // Per-tree Read gate already ran. Idempotent: unsubscribing a
-            // tree this connection was not subscribed to is a no-op.
-            let removed = ctx.subscribed_lock().remove(&root_id);
-            if let Some(id) = removed {
-                instance.remove_write_callback(&root_id, id);
+        DatabaseOp::UnsubscribeWrites { subscription_id } => {
+            let mut subs = ctx.subscribed_lock();
+            if let Some((tree, acting, _, _)) = subs.get(&subscription_id) {
+                if tree != &root_id || acting != identity {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "subscription scope mismatch",
+                    )
+                    .into());
+                }
+                subs.remove(&subscription_id);
             }
             Ok(ServiceResponse::Ok)
         }
@@ -2166,6 +2063,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_watch_v0_1_server_rejects_legacy_and_wrong_revision() {
+        let (socket, _shutdown, _task, _instance) = start_test_server().await;
+        for revision in [None, Some(0)] {
+            let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let mut handshake = serde_json::json!({"protocol_version":0});
+            if let Some(revision) = revision {
+                handshake["protocol_revision"] = revision.into();
+            }
+            write_frame(&mut stream, &handshake).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                if revision.is_some() {
+                    let ack: HandshakeAck = read_frame(&mut stream).await.unwrap().unwrap();
+                    assert_eq!(ack.protocol_revision, PROTOCOL_REVISION);
+                }
+                assert!(
+                    read_frame::<_, serde_json::Value>(&mut stream)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            })
+            .await
+            .expect("legacy connection remained open");
+        }
+    }
+
+    #[tokio::test]
     async fn test_wrong_protocol_version() {
         let (socket_path, _tx, _task, _instance) = start_test_server().await;
 
@@ -2175,6 +2099,7 @@ mod tests {
         // Send a version that remains wrong when the protocol is bumped.
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION.saturating_add(1),
+            protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
         };
         write_frame(&mut writer, &handshake).await.unwrap();
 
@@ -2290,6 +2215,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
             },
         )
         .await
@@ -2338,6 +2264,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
             },
         )
         .await

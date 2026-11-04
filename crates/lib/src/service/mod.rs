@@ -49,21 +49,16 @@
 //! the entry `Unverified`, then runs its own verification pass before the
 //! entry is exposed on any default read.
 //!
-//! On a connected setup the daemon is also the **sole publisher** of write
-//! events for [`Database::on_write`](crate::Database::on_write) callbacks:
-//! a connected client's `Instance::put_entry` deliberately *does not* fire
-//! its local callback registry, because the daemon will round-trip a
-//! `Notification::DatabaseWrite` (carried in a `ServerFrame::Notification`
-//! envelope) back to every subscribed connection. A client subscribes to
-//! a tree lazily on the first `Database::on_write` registration via
-//! `DatabaseOp::SubscribeWrites`. Subscriptions live for the connection's
-//! lifetime; disconnecting implicitly unsubscribes everything. Because the
-//! daemon is the sole publisher and fires each tree's subscriptions with a
-//! synchronous channel send held under that tree's write lock, every
-//! subscriber — including the originating client — observes callbacks in
-//! the daemon's canonical order *per tree*, with full `previous_tips` (no
-//! client-side placeholder). See [`Database::on_write`](crate::Database::on_write)
-//! for the full ordering contract.
+//! The daemon is the sole publisher for connected watches. Each
+//! [`Database::on_write`](crate::Database::on_write) registration sends a
+//! distinct `SubscribeWrites { subscription_id, scope }`, receives an ordered
+//! initial Snapshot, then selected-frontier changes. The reader offers each
+//! notification to that registration's bounded latest-wins mailbox without
+//! invoking or awaiting user work. Local watches use the same dispatcher.
+//! Neither local nor service commits wait for application callbacks.
+//! Dropping a callback cancels its local work and defers wire cancellation to
+//! a sweep; disconnect releases every daemon registration. v0.1 peers must
+//! match the required handshake version/revision; there is no legacy fallback.
 //!
 //! ## V1 Limitations
 //!
