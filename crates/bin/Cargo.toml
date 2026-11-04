@@ -31,4 +31,5 @@ reqwest = { workspace = true }
 rpassword = "7"
 
 [dev-dependencies]
+async-trait = { workspace = true }
 tempfile = { workspace = true }

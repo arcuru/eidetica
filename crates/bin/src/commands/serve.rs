@@ -4,7 +4,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
     Form, Router,
-    extract::{ConnectInfo, Json as ExtractJson, Query, State},
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -23,8 +23,6 @@ use eidetica::{
     sync::{
         DatabaseTicket, SyncError,
         handler::{SyncHandler, SyncHandlerImpl},
-        peer_types::Address,
-        protocol::{RequestContext, SyncRequest, SyncResponse},
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
 };
@@ -155,7 +153,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!("  GET  /dashboard/requests - Pending access requests (requires database Admin)");
     println!("  POST /dashboard/requests/decide - Approve or reject an exact request");
     println!("  GET  /stats        - Server statistics");
-    println!("  POST /api/v0       - Eidetica sync protocol endpoint");
+    println!("  POST /api/v1       - Eidetica framed sync protocol endpoint");
     println!();
     println!("📝 To connect from chat app, use your Iroh Node ID above");
     println!();
@@ -233,7 +231,7 @@ pub(super) fn web_router(instance: Instance, include_http_sync: bool) -> Router 
 }
 
 fn dashboard_router(state: AppState, include_http_sync: bool) -> Router {
-    let mut app = Router::new()
+    let app = Router::new()
         .route("/", get(handle_root_request))
         .route("/health", get(handle_health_endpoint))
         .route("/login", get(handle_login_page).post(handle_login_submit))
@@ -248,10 +246,13 @@ fn dashboard_router(state: AppState, include_http_sync: bool) -> Router {
         .route("/dashboard/requests", get(handle_access_requests))
         .route("/dashboard/requests/decide", post(handle_access_decision))
         .route("/stats", get(handle_stats_request));
+    let peer_handler = state.sync_handler.clone();
+    let app = app.layer(CookieManagerLayer::new()).with_state(state);
     if include_http_sync {
-        app = app.route("/api/v0", post(handle_sync_request));
+        app.merge(HttpTransport::router(peer_handler))
+    } else {
+        app
     }
-    app.layer(CookieManagerLayer::new()).with_state(state)
 }
 
 // All browser form writes (including login) require an Origin matching the
@@ -939,24 +940,6 @@ async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {
 
     html.push_str("</body>\n</html>");
     Html(html)
-}
-
-/// Handler for POST /api/v0 - Eidetica sync endpoint
-async fn handle_sync_request(
-    State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    ExtractJson(request): ExtractJson<SyncRequest>,
-) -> axum::Json<SyncResponse> {
-    let context = RequestContext {
-        remote_address: Some(Address {
-            transport_type: "http".to_string(),
-            address: addr.to_string(),
-        }),
-        peer_pubkey: None,
-    };
-
-    let response = state.sync_handler.handle_request(&request, &context).await;
-    axum::Json(response)
 }
 
 #[cfg(test)]

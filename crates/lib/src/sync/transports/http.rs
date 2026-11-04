@@ -1,21 +1,22 @@
 //! HTTP transport implementation for sync communication.
 //!
 //! This module provides HTTP-based sync communication using a single
-//! JSON endpoint (/api/v0) with axum for the server and reqwest for the client.
+//! framed endpoint (/api/v1) with axum for the server and reqwest for the client.
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
     Router,
-    extract::{ConnectInfo, Json as ExtractJson, State},
+    body::Body,
+    extract::{ConnectInfo, State},
     response::Json,
     routing::post,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
+use super::{SyncTransport, TransportBuilder, TransportConfig, framing, shared::*};
 use crate::{
     Result,
     crdt::Doc,
@@ -24,7 +25,7 @@ use crate::{
         error::{SyncError, TimeoutPhase},
         handler::SyncHandler,
         peer_types::Address,
-        protocol::{RequestContext, SyncRequest, SyncResponse},
+        protocol::{SyncRequest, SyncResponse},
     },
 };
 
@@ -42,11 +43,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// are awaited inline by the background sync engine, so an unbounded one stalls
 /// every other thing that engine does.
 ///
-/// This bounds silence rather than the whole exchange, because the two are not
-/// the same request. A bootstrap response carries an entire database, so a
-/// deadline on the exchange would fail a transfer that is making progress on a
-/// slow link or against a large tree, while adding nothing against the peer
-/// that has stopped sending.
+/// Framed transfers additionally have this absolute whole-exchange deadline;
+/// successful reads and new pages never reset it.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Build the outbound HTTP client with both deadlines applied.
@@ -202,10 +200,12 @@ impl HttpTransport {
         HttpTransportBuilder::new()
     }
 
-    /// Create the axum router with single JSON endpoint and handler state.
-    fn create_router(handler: Arc<dyn SyncHandler>) -> Router {
+    /// Build the peer-only v1 router, with a bounded rejection-only v0 route.
+    /// Embedders use this same codec/handler seam rather than a legacy JSON RPC.
+    pub fn router(handler: Arc<dyn SyncHandler>) -> Router {
         Router::new()
-            .route("/api/v0", post(handle_sync_request))
+            .route("/api/v1", post(handle_sync_request))
+            .route("/api/v0", post(reject_legacy_request))
             .with_state(handler)
     }
 }
@@ -234,7 +234,7 @@ impl SyncTransport for HttpTransport {
                 reason: format!("Invalid address: {e}"),
             })?;
 
-        let router = Self::create_router(handler);
+        let router = Self::router(handler);
 
         // Create server coordination channels
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -327,39 +327,94 @@ impl SyncTransport for HttpTransport {
             .into());
         }
 
-        let url = format!("http://{}/api/v0", address.address);
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&request) // Send SyncRequest as JSON body
-            .send()
-            .await
-            .map_err(|e| {
-                timeout_error(&e, &address.address).unwrap_or_else(|| SyncError::ConnectionFailed {
-                    address: address.address.clone(),
-                    reason: e.to_string(),
-                })
-            })?;
-
-        if !response.status().is_success() {
-            return Err(SyncError::Network(format!(
-                "Server returned error: {}",
-                response.status()
-            ))
-            .into());
-        }
-
-        // The response body is read here rather than above, so a peer that
-        // stops sending partway through one runs out of time here too. Without
-        // this the stall would be reported as a malformed response, which is a
-        // different fault with a different remedy.
-        let sync_response: SyncResponse = response.json().await.map_err(|e| {
-            timeout_error(&e, &address.address)
-                .unwrap_or_else(|| SyncError::Network(format!("Failed to parse response: {e}")))
-        })?;
-
-        Ok(sync_response)
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+        tokio::time::timeout_at(deadline, async {
+            let mut upload_permit = None;
+            let url = format!("http://{}/api/v1", address.address);
+            let mut response = if matches!(request, SyncRequest::SendEntries(_)) {
+                upload_permit = Some(framing::admit_outbound()?);
+                // One bounded bridge lets an owned reqwest body be driven by
+                // a borrowed input list, without a whole-transfer clone or a
+                // detached producer task. Caller drop cancels both futures.
+                let (reader, mut writer) = tokio::io::duplex(framing::MAX_FRAME_BYTES);
+                let body = futures_util::stream::try_unfold(reader, |mut reader| async move {
+                    let mut bytes = vec![0u8; 8192];
+                    let n = reader.read(&mut bytes).await?;
+                    bytes.truncate(n);
+                    Ok::<_, std::io::Error>((n != 0).then_some((bytes, reader)))
+                });
+                let send = self
+                    .client
+                    .post(&url)
+                    .header("content-type", "application/eidetica-peer-v1")
+                    .body(reqwest::Body::wrap_stream(body))
+                    .send();
+                let write = async {
+                    framing::write_request(&mut writer, request).await?;
+                    writer.shutdown().await?;
+                    Ok::<_, crate::Error>(())
+                };
+                let (_, response) = tokio::try_join!(write, async {
+                    send.await.map_err(|e| {
+                        timeout_error(&e, &address.address)
+                            .unwrap_or_else(|| SyncError::ConnectionFailed {
+                                address: address.address.clone(),
+                                reason: e.to_string(),
+                            })
+                            .into()
+                    })
+                })?;
+                response
+            } else {
+                // Control requests are one capped frame. In particular, a
+                // silent address must not reserve a history collector slot
+                // and starve the live winner in an existing address race.
+                self.client
+                    .post(&url)
+                    .header("content-type", "application/eidetica-peer-v1")
+                    .body(framing::encode(&framing::Frame::Request(request.clone()))?)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        timeout_error(&e, &address.address).unwrap_or_else(|| {
+                            SyncError::ConnectionFailed {
+                                address: address.address.clone(),
+                                reason: e.to_string(),
+                            }
+                        })
+                    })?
+            };
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(SyncError::PeerProtocolUnsupported.into());
+            }
+            if !response.status().is_success() {
+                return Err(SyncError::Network(format!(
+                    "Server returned error: {}",
+                    response.status()
+                ))
+                .into());
+            }
+            let _permit = match upload_permit {
+                Some(permit) => permit,
+                None => framing::admit_outbound()?,
+            };
+            let mut collector = framing::Collector::for_request(request, deadline)?;
+            let mut decoder = framing::Decoder::default();
+            while let Some(bytes) = response.chunk().await.map_err(|e| {
+                timeout_error(&e, &address.address)
+                    .unwrap_or_else(|| SyncError::Network(format!("Failed to read response: {e}")))
+            })? {
+                framing::receive_chunk(&mut decoder, &mut collector, &bytes)?;
+            }
+            collector.finish(decoder)
+        })
+        .await
+        .map_err(|_| SyncError::Timeout {
+            address: address.address.clone(),
+            phase: TimeoutPhase::Request,
+            elapsed: REQUEST_TIMEOUT,
+        })?
     }
 
     fn is_server_running(&self) -> bool {
@@ -371,31 +426,47 @@ impl SyncTransport for HttpTransport {
     }
 }
 
-/// Handler for the /api/v0 endpoint - accepts JSON SyncRequest and returns JSON SyncResponse.
+/// Reject legacy peers without producing or ingesting an unpaged history.
+async fn reject_legacy_request(body: Body) -> Json<SyncResponse> {
+    let _ = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        axum::body::to_bytes(body, framing::MAX_FRAME_BYTES),
+    )
+    .await;
+    Json(SyncResponse::Error(
+        "Unsupported peer protocol v0; required v1".into(),
+    ))
+}
+
 async fn handle_sync_request(
     State(handler): State<Arc<dyn SyncHandler>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    ExtractJson(request): ExtractJson<SyncRequest>,
-) -> Json<SyncResponse> {
-    // Extract peer_pubkey from SyncTreeRequest if present
-    let peer_pubkey = match &request {
-        SyncRequest::SyncTree(sync_tree_request) => sync_tree_request.peer_pubkey.clone(),
-        _ => None,
-    };
-
-    // Create request context with remote address and peer pubkey
-    let context = RequestContext {
-        remote_address: Some(Address {
-            transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
-            address: addr.to_string(),
-        }),
-        peer_pubkey,
-    };
-
-    // Call handler directly (Transaction is now Send since it uses Arc<Mutex>)
-    let response = handler.handle_request(&request, &context).await;
-
-    Json(response)
+    body: Body,
+) -> Body {
+    use futures_util::StreamExt;
+    let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+    let request = tokio::time::timeout_at(deadline, async {
+        let _permit = framing::admit_operation()?;
+        let mut body = body.into_data_stream();
+        let mut decoder = framing::Decoder::default();
+        let mut collector = framing::RequestCollector::new(deadline);
+        while let Some(bytes) = body.next().await {
+            let bytes = bytes.map_err(|e| SyncError::Network(e.to_string()))?;
+            framing::receive_request_chunk(&mut decoder, &mut collector, &bytes)?;
+        }
+        collector.finish(decoder)
+    })
+    .await
+    .unwrap_or_else(|_| Err(SyncError::Network("peer request deadline".into()).into()));
+    match request {
+        Ok(request) => Body::from_stream(
+            framing::response_bytes(handler, request, Address::http(addr.to_string()), deadline)
+                .await,
+        ),
+        Err(error) => {
+            Body::from(framing::encode(&framing::error_frame(error)).expect("bounded error frame"))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -457,5 +528,39 @@ mod tests {
             .expect_err("nothing is listening on that port");
 
         assert!(timeout_error(&error, &address).is_none());
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn peer_paging_http_v0_only_peer_is_explicitly_unsupported() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = Address::http(listener.local_addr().unwrap().to_string());
+        let (shutdown, stop) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let router = Router::new().route("/api/v0", post(|| async { Json(SyncResponse::Ack) }));
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    let _ = stop.await;
+                })
+                .await
+                .unwrap();
+        });
+        let error = HttpTransport::new()
+            .unwrap()
+            .send_request(&address, &SyncRequest::SendEntries(vec![]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::Error::Sync(error) if matches!(*error, SyncError::PeerProtocolUnsupported))
+        );
+        shutdown.send(()).unwrap();
+        tokio::time::timeout(REQUEST_TIMEOUT, server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

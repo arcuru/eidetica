@@ -53,6 +53,22 @@ pub trait SyncHandler: Send + std::marker::Sync {
     /// The appropriate response for the given request.
     async fn handle_request(&self, request: &SyncRequest, context: &RequestContext)
     -> SyncResponse;
+
+    /// Produce version-one frames without first materializing a whole history.
+    /// Implementations must explicitly opt in; the default never falls back to
+    /// an unbounded legacy response or grants serving authority.
+    async fn response_frames(
+        self: std::sync::Arc<Self>,
+        _request: SyncRequest,
+        _context: RequestContext,
+        _deadline: tokio::time::Instant,
+    ) -> Result<super::transports::framing::FrameStream> {
+        Ok(Box::pin(futures_util::stream::iter([Ok(
+            super::transports::framing::Frame::Error(
+                super::transports::framing::PeerError::Unsupported,
+            ),
+        )])))
+    }
 }
 
 /// How far a request's timestamp may sit from our clock, in either direction.
@@ -74,6 +90,61 @@ pub struct SyncHandlerImpl {
 }
 
 impl SyncHandlerImpl {
+    async fn handle_entries(&self, entries: Vec<Entry>) -> SyncResponse {
+        // Process and store the received entries
+        let count = entries.len();
+        info!(count = count, "Received entries for synchronization");
+
+        let instance = match self.instance() {
+            Ok(i) => i,
+            Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
+        };
+
+        // Group entries by tree_id so we can fire callbacks per-database.
+        // BTreeMap so iteration order is deterministic (sorted by id);
+        // sender order within a tree is preserved by per-tree push order.
+        //
+        // Root entries declare an empty `tree.root` and act as their
+        // own tree_id. Non-root entries always carry a tree_id;
+        // well-formed peers should never send a non-root entry with
+        // `root() == None`. If they do, the entry ends up filed under
+        // its own id and parent-existence checks downstream reject it.
+        let mut by_tree: BTreeMap<ID, Vec<Entry>> = BTreeMap::new();
+        for entry in entries {
+            let tree_id = entry.root().unwrap_or_else(|| entry.id());
+            by_tree.entry(tree_id).or_default().push(entry);
+        }
+
+        let mut stored_count = 0usize;
+        for (tree_id, tree_entries) in by_tree {
+            let batch_size = tree_entries.len();
+            // Entries arrive over the wire without per-entry signature
+            // verification; `put_remote_entries` stores them
+            // Unverified so a future re-verification pass can promote
+            // them.
+            match instance.put_remote_entries(&tree_id, tree_entries).await {
+                Ok(n) => {
+                    stored_count += n;
+                    debug!(tree_id = %tree_id, requested = batch_size, stored = n, "Stored entries");
+                }
+                Err(e) => {
+                    error!(tree_id = %tree_id, error = %e, "Failed to store entries batch");
+                }
+            }
+        }
+
+        debug!(
+            received = count,
+            stored = stored_count,
+            "Completed entry synchronization"
+        );
+        if count <= 1 {
+            SyncResponse::Ack
+        } else {
+            SyncResponse::Count(stored_count)
+        }
+    }
+
     /// Create a new SyncHandlerImpl with the given instance.
     ///
     /// # Arguments
@@ -167,6 +238,23 @@ impl SyncHandlerImpl {
         }
 
         Ok(())
+    }
+
+    /// Recheck current policy within one admitted peer exchange. The principal
+    /// was verified once at admission; this never reuses a spent request nonce.
+    async fn recheck_peer_read(&self, tree: &ID, principal: Option<&PublicKey>) -> Result<()> {
+        if !self.is_database_sync_enabled(tree).await {
+            return Err(SyncError::PermissionDenied(format!("Tree not found: {tree}")).into());
+        }
+        if !self.check_if_database_has_auth(tree).await? {
+            return Ok(());
+        }
+        if let Some(key) = principal
+            && Database::can_access(&self.instance()?, tree, key, &Permission::Read).await?
+        {
+            return Ok(());
+        }
+        Err(SyncError::PermissionDenied("peer read authorization no longer valid".into()).into())
     }
 
     /// Upgrade the weak instance reference to a strong reference.
@@ -286,6 +374,85 @@ impl SyncHandlerImpl {
     }
 }
 
+struct HistoryProducer {
+    handler: std::sync::Arc<SyncHandlerImpl>,
+    start: super::transports::framing::HistoryStart,
+    principal: Option<PublicKey>,
+    limits: crate::backend::HistoryPageLimits,
+    deadline: tokio::time::Instant,
+    cursor: Option<crate::backend::HistoryCursor>,
+    phase: u8,
+    pages: u64,
+    entries: u64,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl HistoryProducer {
+    async fn next(&mut self) -> Result<Option<super::transports::framing::Frame>> {
+        use super::transports::framing::Frame;
+        if tokio::time::Instant::now() >= self.deadline {
+            return Err(SyncError::Network("peer exchange deadline".into()).into());
+        }
+        let binding = self.start.binding()?;
+        if self.phase == 0 {
+            self.phase = 1;
+            return Ok(Some(Frame::Start(self.start.clone())));
+        }
+        if self.phase == 1 {
+            self.handler
+                .recheck_peer_read(&self.start.tree, self.principal.as_ref())
+                .await?;
+            let instance = self.handler.instance()?;
+            let backend = instance
+                .backend()
+                .local_engine()
+                .ok_or(crate::backend::BackendError::DatabaseHistoryPageUnsupported)?;
+            let page = backend
+                .database_history_page(
+                    &self.start.tree,
+                    &self.start.target,
+                    &self.start.known,
+                    self.cursor.as_ref(),
+                    self.limits,
+                    self.deadline,
+                )
+                .await?;
+            self.cursor = page.next.clone();
+            if self.cursor.is_none() {
+                self.phase = 2;
+            }
+            if !page.entries.is_empty() {
+                let ordinal = self.pages;
+                self.pages += 1;
+                self.entries += page.entries.len() as u64;
+                return Ok(Some(Frame::Page {
+                    binding,
+                    ordinal,
+                    page,
+                }));
+            }
+            if self.cursor.is_some() {
+                return Err(
+                    SyncError::Network("native peer producer did not progress".into()).into(),
+                );
+            }
+        }
+        if self.phase == 2 {
+            self.handler
+                .recheck_peer_read(&self.start.tree, self.principal.as_ref())
+                .await?;
+            self.phase = 3;
+            return Ok(Some(Frame::End {
+                binding,
+                pages: self.pages,
+                entries: self.entries,
+                covered: self.start.target.clone(),
+            }));
+        }
+        Ok(None)
+    }
+}
+
 enum BootstrapRequestOutcome {
     Pending(String),
     Rejected(String),
@@ -294,6 +461,109 @@ enum BootstrapRequestOutcome {
 
 #[async_trait]
 impl SyncHandler for SyncHandlerImpl {
+    async fn response_frames(
+        self: std::sync::Arc<Self>,
+        request: SyncRequest,
+        context: RequestContext,
+        deadline: tokio::time::Instant,
+    ) -> Result<super::transports::framing::FrameStream> {
+        use super::transports::framing::{
+            Frame, HistoryKind, HistoryStart, WIRE_VERSION, request_binding,
+        };
+        let _permit = super::transports::framing::admit_operation()?;
+        let SyncRequest::SyncTree(sync_request) = &request else {
+            let response = match request {
+                SyncRequest::Handshake(_) => {
+                    Frame::Control(self.handle_request(&request, &context).await)
+                }
+                SyncRequest::SendEntries(entries) => {
+                    Frame::Control(self.handle_entries(entries).await)
+                }
+                SyncRequest::SyncTree(_) => unreachable!("handled below"),
+            };
+            return Ok(Box::pin(futures_util::stream::iter([Ok(response)])));
+        };
+        // Check and bind capped request metadata before authentication or any
+        // lifecycle effect. A cursor never supplies serving authority.
+        let binding = request_binding(&request)?;
+        let bootstrap =
+            sync_request.our_tips.is_empty() || sync_request.requested_permission.is_some();
+        let kind = if bootstrap {
+            match self.prepare_bootstrap_request(sync_request).await {
+                Ok((key_approved, granted_permission)) => HistoryKind::Bootstrap {
+                    key_approved,
+                    granted_permission,
+                },
+                Err(response) => {
+                    return Ok(Box::pin(futures_util::stream::iter([Ok(Frame::Control(
+                        response,
+                    ))])));
+                }
+            }
+        } else {
+            if !self.is_database_sync_enabled(&sync_request.tree_id).await {
+                return Ok(Box::pin(futures_util::stream::iter([Ok(Frame::Control(
+                    SyncResponse::Error(format!("Tree not found: {}", sync_request.tree_id)),
+                ))])));
+            }
+            let principal = sync_request
+                .auth
+                .as_ref()
+                .map(|_| self.authenticate_request(sync_request))
+                .transpose()?;
+            self.recheck_peer_read(&sync_request.tree_id, principal.as_ref())
+                .await?;
+            HistoryKind::Incremental
+        };
+        let instance = self.instance()?;
+        let start = HistoryStart {
+            version: WIRE_VERSION,
+            server: instance.id(),
+            request: binding,
+            tree: sync_request.tree_id.clone(),
+            target: instance.backend().snapshot(&sync_request.tree_id).await?,
+            known: if bootstrap {
+                Snapshot::EMPTY
+            } else {
+                sync_request.our_tips.clone()
+            },
+            kind,
+        };
+        let limits = start.page_limits(1024, super::transports::framing::MAX_FRAME_BYTES - 4)?;
+        start.binding()?;
+        if let Some(peer) = &context.peer_pubkey {
+            self.track_tree_sync_relationship(&start.tree, peer).await?;
+        }
+        // Keep only the already-proven principal inside this live exchange;
+        // authorization is rechecked per page without spending its nonce twice.
+        let principal = if bootstrap {
+            sync_request.requesting_key.clone()
+        } else {
+            sync_request.auth.as_ref().map(|a| a.key.clone())
+        };
+        let producer = HistoryProducer {
+            handler: self,
+            start,
+            principal,
+            limits,
+            deadline,
+            cursor: None,
+            phase: 0,
+            pages: 0,
+            entries: 0,
+            _permit,
+        };
+        Ok(Box::pin(futures_util::stream::try_unfold(
+            producer,
+            |mut producer| async move {
+                match producer.next().await? {
+                    Some(frame) => Ok(Some((frame, producer))),
+                    None => Ok(None),
+                }
+            },
+        )))
+    }
+
     async fn handle_request(
         &self,
         request: &SyncRequest,
@@ -308,60 +578,7 @@ impl SyncHandler for SyncHandlerImpl {
                 debug!(tree_id = %sync_req.tree_id, tips_count = sync_req.our_tips.len(), "Received sync tree request");
                 self.handle_sync_tree(sync_req, context).await
             }
-            SyncRequest::SendEntries(entries) => {
-                // Process and store the received entries
-                let count = entries.len();
-                info!(count = count, "Received entries for synchronization");
-
-                let instance = match self.instance() {
-                    Ok(i) => i,
-                    Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
-                };
-
-                // Group entries by tree_id so we can fire callbacks per-database.
-                // BTreeMap so iteration order is deterministic (sorted by id);
-                // sender order within a tree is preserved by per-tree push order.
-                //
-                // Root entries declare an empty `tree.root` and act as their
-                // own tree_id. Non-root entries always carry a tree_id;
-                // well-formed peers should never send a non-root entry with
-                // `root() == None`. If they do, the entry ends up filed under
-                // its own id and parent-existence checks downstream reject it.
-                let mut by_tree: BTreeMap<ID, Vec<Entry>> = BTreeMap::new();
-                for entry in entries {
-                    let tree_id = entry.root().unwrap_or_else(|| entry.id());
-                    by_tree.entry(tree_id).or_default().push(entry.clone());
-                }
-
-                let mut stored_count = 0usize;
-                for (tree_id, tree_entries) in by_tree {
-                    let batch_size = tree_entries.len();
-                    // Entries arrive over the wire without per-entry signature
-                    // verification; `put_remote_entries` stores them
-                    // Unverified so a future re-verification pass can promote
-                    // them.
-                    match instance.put_remote_entries(&tree_id, tree_entries).await {
-                        Ok(n) => {
-                            stored_count += n;
-                            debug!(tree_id = %tree_id, requested = batch_size, stored = n, "Stored entries");
-                        }
-                        Err(e) => {
-                            error!(tree_id = %tree_id, error = %e, "Failed to store entries batch");
-                        }
-                    }
-                }
-
-                debug!(
-                    received = count,
-                    stored = stored_count,
-                    "Completed entry synchronization"
-                );
-                if count <= 1 {
-                    SyncResponse::Ack
-                } else {
-                    SyncResponse::Count(stored_count)
-                }
-            }
+            SyncRequest::SendEntries(entries) => self.handle_entries(entries.clone()).await,
         }
     }
 }
@@ -794,7 +1011,10 @@ impl SyncHandlerImpl {
     /// - `BootstrapResponse`: Contains entries and approval status (key_approved, granted_permission)
     /// - `BootstrapPending`: Manual approval required (request queued)
     /// - `Error`: Tree not found, auth required, key not authorized, or processing failure
-    async fn handle_bootstrap_request(&self, request: &SyncTreeRequest) -> SyncResponse {
+    async fn prepare_bootstrap_request(
+        &self,
+        request: &SyncTreeRequest,
+    ) -> std::result::Result<(bool, Option<Permission>), SyncResponse> {
         let tree_id = &request.tree_id;
         let requesting_key = request.requesting_key.as_ref();
         let requesting_key_name = request.requesting_key_name.as_deref();
@@ -812,13 +1032,13 @@ impl SyncHandlerImpl {
                 requesting_key_name = ?requesting_key_name,
                 "Bootstrap request rejected: database is absent or has no user with sync enabled (responding as not-found)"
             );
-            return SyncResponse::Error(format!("Tree not found: {tree_id}"));
+            return Err(SyncResponse::Error(format!("Tree not found: {tree_id}")));
         }
 
         // Get the root entry (to verify tree exists)
         let instance = match self.instance() {
             Ok(i) => i,
-            Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
+            Err(e) => return Err(SyncResponse::Error(format!("Instance dropped: {e}"))),
         };
         let _root_entry = match instance.backend().get(tree_id).await {
             Ok(entry) => entry,
@@ -829,11 +1049,11 @@ impl SyncHandlerImpl {
                     requesting_key_name = ?requesting_key_name,
                     "Bootstrap request rejected: a user has this tree marked sync-enabled but the backend has no root entry for it"
                 );
-                return SyncResponse::Error(format!("Tree not found: {tree_id}"));
+                return Err(SyncResponse::Error(format!("Tree not found: {tree_id}")));
             }
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to get root entry");
-                return SyncResponse::Error(format!("Failed to get tree root: {e}"));
+                return Err(SyncResponse::Error(format!("Failed to get tree root: {e}")));
             }
         };
 
@@ -842,7 +1062,9 @@ impl SyncHandlerImpl {
             Ok(has_auth) => has_auth,
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to check if database has auth");
-                return SyncResponse::Error(format!("Failed to check database auth: {e}"));
+                return Err(SyncResponse::Error(format!(
+                    "Failed to check database auth: {e}"
+                )));
             }
         };
 
@@ -852,11 +1074,11 @@ impl SyncHandlerImpl {
                 tree_id = %tree_id,
                 "Unauthenticated bootstrap request rejected - database requires authentication"
             );
-            return SyncResponse::Error(
+            return Err(SyncResponse::Error(
                 "Authentication required: This database requires authenticated access. \
                  Please provide credentials (requesting_key, requesting_key_name, requested_permission) \
                  to bootstrap sync.".to_string()
-            );
+            ));
         }
 
         // A named key must prove ownership before any approval lookup or
@@ -870,7 +1092,7 @@ impl SyncHandlerImpl {
                 error = %e,
                 "Bootstrap request rejected: caller did not prove it holds the claimed key"
             );
-            return SyncResponse::Error(e.to_string());
+            return Err(SyncResponse::Error(e.to_string()));
         }
 
         // Handle key approval for bootstrap requests FIRST
@@ -896,17 +1118,17 @@ impl SyncHandlerImpl {
                             request_id = %request_id,
                             "Bootstrap request stored for manual approval"
                         );
-                        return SyncResponse::BootstrapPending {
+                        return Err(SyncResponse::BootstrapPending {
                             request_id,
                             message: "Bootstrap request pending manual approval".to_string(),
-                        };
+                        });
                     }
                     Ok(BootstrapRequestOutcome::Rejected(request_id)) => {
-                        return SyncResponse::BootstrapRejected {
+                        return Err(SyncResponse::BootstrapRejected {
                             request_id,
                             message: "Bootstrap request was rejected by an administrator"
                                 .to_string(),
-                        };
+                        });
                     }
                     Ok(BootstrapRequestOutcome::Approved) => (true, Some(permission)),
                     Err(e) => {
@@ -915,9 +1137,9 @@ impl SyncHandlerImpl {
                             error = %e,
                             "Failed to resolve bootstrap request"
                         );
-                        return SyncResponse::Error(format!(
+                        return Err(SyncResponse::Error(format!(
                             "Failed to resolve bootstrap request: {e}"
-                        ));
+                        )));
                     }
                 }
             }
@@ -946,9 +1168,9 @@ impl SyncHandlerImpl {
                             requesting_key = %key,
                             "Key not found in auth settings - rejecting bootstrap request"
                         );
-                        return SyncResponse::Error(
+                        return Err(SyncResponse::Error(
                             "Authentication required: provided key is not authorized for this database".to_string()
-                        );
+                        ));
                     }
                     Err(e) => {
                         error!(
@@ -957,7 +1179,9 @@ impl SyncHandlerImpl {
                             error = %e,
                             "Failed to lookup key permissions"
                         );
-                        return SyncResponse::Error(format!("Failed to access auth settings: {e}"));
+                        return Err(SyncResponse::Error(format!(
+                            "Failed to access auth settings: {e}"
+                        )));
                     }
                 }
             }
@@ -982,9 +1206,9 @@ impl SyncHandlerImpl {
                 requesting_key = ?requesting_key,
                 "Bootstrap request rejected: no proven authority for a database that requires authentication"
             );
-            return SyncResponse::Error(
+            return Err(SyncResponse::Error(
                 SyncError::AuthenticationRequired(tree_id.to_string()).to_string(),
-            );
+            ));
         }
 
         // Named-key requests validate non-consumingly before lifecycle access so
@@ -1002,8 +1226,19 @@ impl SyncHandlerImpl {
                 }
             })
         {
-            return SyncResponse::Error(e.to_string());
+            return Err(SyncResponse::Error(e.to_string()));
         }
+
+        Ok((key_approved, granted_permission))
+    }
+
+    async fn handle_bootstrap_request(&self, request: &SyncTreeRequest) -> SyncResponse {
+        let (key_approved, granted_permission) = match self.prepare_bootstrap_request(request).await
+        {
+            Ok(approval) => approval,
+            Err(response) => return response,
+        };
+        let tree_id = &request.tree_id;
 
         // NOW collect all entries after key approval (so we get the updated database state)
         let all_entries = match self.collect_all_entries_for_bootstrap(tree_id).await {

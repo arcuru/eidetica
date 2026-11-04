@@ -547,6 +547,7 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
 
     // Add new content to server
     let entry2 = Entry::builder(tree_id.clone())
+        .set_height(1)
         .set_parents(vec![tree_id.clone()])
         .set_subtree_data("messages", r#"{"msg2": {"text": "New message"}}"#)
         .build()

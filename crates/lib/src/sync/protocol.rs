@@ -271,14 +271,14 @@ pub enum SyncResponse {
     Error(String),
 }
 
-/// Current protocol version - 0 indicates unstable.
+/// Current peer protocol version. Version 1 uses bounded transport frames.
 ///
 /// `#[non_exhaustive]` does not protect wire compatibility: a peer on an older
 /// version fails to deserialize an unknown variant. Adding a variant to any
 /// serialized type in this protocol (handshake, sync requests/responses) is a
 /// version bump, not a backward-compatible addition. See
 /// [`crate::instance::WriteSource`] for the same rule on the service wire.
-pub const PROTOCOL_VERSION: u32 = 0;
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Context information about the incoming request.
 ///

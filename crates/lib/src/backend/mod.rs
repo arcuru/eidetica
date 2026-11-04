@@ -11,7 +11,7 @@
 pub(crate) mod history_delta;
 pub use history_delta::HistoryDelta;
 pub(crate) mod history_page;
-mod record_page;
+pub(crate) mod record_page;
 pub use history_page::{
     HistoryCursor, HistoryPage, HistoryPageLimits, MAX_DATABASE_PAGE_ENCODING,
     MAX_HISTORY_PAGE_ENCODING, MAX_HISTORY_PAGE_ENTRIES,

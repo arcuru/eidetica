@@ -21,6 +21,7 @@ use crate::{
     },
 };
 
+pub mod framing;
 pub mod http;
 pub mod iroh;
 pub mod shared;

@@ -185,3 +185,180 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     peer_sync.stop_server().await?;
     Ok(())
 }
+
+/// Both peers are native persistent daemons. Unix-service application clients
+/// create the fixture and disconnect before the native peer exchange starts.
+async fn peer_daemon_paging(iroh: bool) -> Result<()> {
+    async fn configure(instance: &Instance, iroh: bool) -> Result<Address> {
+        instance.enable_sync().await?;
+        let sync = instance.sync().unwrap();
+        if iroh {
+            sync.register_transport(
+                "peer",
+                eidetica::sync::transports::iroh::IrohTransport::builder()
+                    .relay_mode(iroh::RelayMode::Disabled)
+                    .mdns(false)
+                    .n0_dns(false)
+                    .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled),
+            )
+            .await?;
+        } else {
+            sync.register_transport("peer", HttpTransport::builder().bind("127.0.0.1:0"))
+                .await?;
+        }
+        sync.accept_connections().await?;
+        let address = sync.get_server_address_for("peer").await?;
+        Ok(if iroh {
+            Address::iroh(address)
+        } else {
+            Address::http(address)
+        })
+    }
+    let dir = tempfile::tempdir()?;
+    let a_url = format!("memory://{}", dir.path().join("a.json").display());
+    let b_url = format!("memory://{}", dir.path().join("b.json").display());
+    let a_socket = dir.path().join("a.sock");
+    let b_socket = dir.path().join("b.sock");
+    let (a, _) = Instance::connect_or_create(&a_url, NewAccount::passwordless("source")).await?;
+    let (b, _) =
+        Instance::connect_or_create(&b_url, NewAccount::passwordless("destination")).await?;
+    assert_ne!(a.id(), b.id());
+    let a_identity = a.id();
+    let a_addr = configure(&a, iroh).await?;
+    let b_addr = configure(&b, iroh).await?;
+    let (a_shutdown, a_service) = start_service(a.clone(), &a_socket).await;
+    let (b_shutdown, b_service) = start_service(b.clone(), &b_socket).await;
+    let payload = "synthetic\"\\\n\t".repeat(6000);
+    let tree;
+    let source_key;
+    let mut entries = Vec::new();
+    {
+        let client = Instance::connect(format!("unix://{}", a_socket.display())).await?;
+        let mut account = client.login_account("source", None).await?;
+        source_key = account.get_default_key()?;
+        let database = account.create_database(Doc::new(), &source_key).await?;
+        tree = database.root_id().clone();
+        let tx = database.new_transaction().await?;
+        tx.get_settings()?
+            .set_global_auth_key(AuthKey::active(None, Permission::Write(10)))
+            .await?;
+        tx.commit().await?;
+        for n in 0..18 {
+            let tx = database.new_transaction().await?;
+            tx.get_store::<DocStore>("data")
+                .await?
+                .set_string(&format!("k{n}"), &payload)
+                .await?;
+            entries.push(tx.commit().await?);
+        }
+        account
+            .track_database(tree.clone(), &source_key, SyncSettings::enabled())
+            .await?;
+    }
+    // Public synthetic bodies only; this fixture cannot pass with a tiny DB.
+    let mut encoded = 0;
+    for id in &entries {
+        encoded += serde_json::to_vec(&a.backend().get(id).await?)?.len();
+    }
+    assert!(encoded > 1024 * 1024);
+    b.sync()
+        .unwrap()
+        .sync_with_peer(&a_addr, Some(&tree))
+        .await?;
+    {
+        let client = Instance::connect(format!("unix://{}", b_socket.display())).await?;
+        let mut account = client.login_account("destination", None).await?;
+        let key = account.get_default_key()?;
+        assert_ne!(source_key, key);
+        account
+            .track_database(tree.clone(), &key, SyncSettings::enabled())
+            .await?;
+        let database = account.open_database(&tree).await?;
+        let view = database.get_store_viewer::<DocStore>("data").await?;
+        for n in 0..18 {
+            assert_eq!(view.get_string(&format!("k{n}")).await?, payload);
+        }
+        let tx = database.new_transaction().await?;
+        tx.get_store::<DocStore>("data")
+            .await?
+            .set_string("from_b", "after setup clients exited")
+            .await?;
+        tx.commit().await?;
+    }
+    a.sync()
+        .unwrap()
+        .sync_with_peer(&b_addr, Some(&tree))
+        .await?;
+    for id in &entries {
+        assert_eq!(
+            b.backend()
+                .local_engine()
+                .unwrap()
+                .get_verification_status(id)
+                .await?,
+            eidetica::backend::VerificationStatus::Verified
+        );
+    }
+    assert_eq!(
+        a.backend().snapshot(&tree).await?,
+        b.backend().snapshot(&tree).await?
+    );
+    a.flush()?;
+    a.sync().unwrap().stop_server().await?;
+    stop_service(a_shutdown, a_service, &a_socket).await?;
+    drop(a);
+
+    let a = Instance::connect(&a_url).await?;
+    assert_eq!(a.id(), a_identity, "daemon identity changed across restart");
+    let a_addr = configure(&a, iroh).await?;
+    let (a_shutdown, a_service) = start_service(a.clone(), &a_socket).await;
+    {
+        let client = Instance::connect(format!("unix://{}", a_socket.display())).await?;
+        let account = client.login_account("source", None).await?;
+        let database = account.open_database(&tree).await?;
+        let view = database.get_store_viewer::<DocStore>("data").await?;
+        assert_eq!(
+            view.get_string("from_b").await?,
+            "after setup clients exited"
+        );
+        let tx = database.new_transaction().await?;
+        tx.get_store::<DocStore>("data")
+            .await?
+            .set_string("after_restart", "from restarted source")
+            .await?;
+        tx.commit().await?;
+    }
+    b.sync()
+        .unwrap()
+        .sync_with_peer(&a_addr, Some(&tree))
+        .await?;
+    {
+        let client = Instance::connect(format!("unix://{}", b_socket.display())).await?;
+        let account = client.login_account("destination", None).await?;
+        let database = account.open_database(&tree).await?;
+        let view = database.get_store_viewer::<DocStore>("data").await?;
+        assert_eq!(
+            view.get_string("after_restart").await?,
+            "from restarted source"
+        );
+    }
+    assert_eq!(
+        a.backend().snapshot(&tree).await?,
+        b.backend().snapshot(&tree).await?
+    );
+    a.sync().unwrap().stop_server().await?;
+    b.sync().unwrap().stop_server().await?;
+    stop_service(a_shutdown, a_service, &a_socket).await?;
+    stop_service(b_shutdown, b_service, &b_socket).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn peer_daemons_http_populated_paging_restart() -> Result<()> {
+    peer_daemon_paging(false).await
+}
+
+#[tokio::test]
+async fn peer_daemons_iroh_populated_paging_restart() -> Result<()> {
+    peer_daemon_paging(true).await
+}

@@ -520,8 +520,14 @@ impl BackgroundSync {
                         tokio::spawn(
                             async move {
                                 debug!(address = ?address, "Sending sync request");
-                                let result = transport.send_request(&address, &request).await;
-                                let _ = response.send(result);
+                                let mut response = response;
+                                tokio::select! {
+                                    biased;
+                                    _ = response.closed() => {},
+                                    result = transport.send_request(&address, &request) => {
+                                        let _ = response.send(result);
+                                    }
+                                }
                             }
                             .instrument(span),
                         );

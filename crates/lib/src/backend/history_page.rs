@@ -206,7 +206,6 @@ impl<'a> HistoryQuery<'a> {
 
 /// Validate wire order, query binding and the exclusive continuation. A cursor
 /// is not authority; callers must still authorize each page independently.
-#[cfg(all(unix, feature = "service"))]
 pub(crate) fn validate_page(
     query: &HistoryQuery<'_>,
     page: &HistoryPage,

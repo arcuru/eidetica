@@ -77,15 +77,46 @@ See [Bootstrap System](bootstrap.md) for the key exchange flow when joining a da
 
 Native [history deltas](service.md#forward-store-snapshot-deltas-v2) define a
 Store-scoped fixed target, known ancestor closure, canonical forward prefix,
-target-local covered Snapshot and explicit completion. A future bounded P2P
-adapter can map `our_tips` to known and capture the server frontier as target,
-but needs a separate covered progress field. `their_tips` currently advertises
-the whole server frontier; it is not a delivered-prefix acknowledgement.
+target-local covered Snapshot and explicit completion. P2P Database pages use
+main parents/heights, not one Store's parents. They freeze the source target and
+stop at exact advertised known IDs, preserving the peer selection contract
+rather than treating arbitrary peer tips as a strict forward Store delta.
+`their_tips` advertises the whole server frontier, not a prefix acknowledgement.
 
-Current P2P `collect_ancestors_to_send` stops at literal known tips, collects
-Entry bodies in a HashMap and returns unordered Entries. It does not implement
-exact target-minus-known subtraction or native v2 bounds. Pull, bootstrap and
-outbound SendEntries remain unbounded here. Their wire, authentication and
-orchestration are unchanged; protocol migration, sparse-replica reconciliation
-and reverse traversal are deferred. In particular, child-first traversal cannot
-advance a forward possession Snapshot until its ancestors are covered.
+## Bounded peer frames (v1)
+
+HTTP `/api/v1` and Iroh `eidetica/v1` share a length-prefixed compact-JSON codec.
+Each complete envelope, including its four-byte network-order length, fits the
+unchanged 1 MiB peer cap. Bootstrap and incremental pull producers request native
+Database pages with complete wrapper overhead reserved before fetching bodies.
+A single Entry that cannot fit is refused explicitly; it is never omitted,
+truncated, split or admitted as an oversized singleton.
+
+One original authenticated request covers Start, ordered Pages and End within
+one exchange. The request nonce is consumed once; current Read/sync-enabled
+policy is rechecked before subsequent pages. Metadata/cursors bind the frozen
+scope and target but grant no authority. Receivers check scope, order, exact
+continuations, parent closure, delivered counts and terminal coverage, and wait
+for End **and clean EOF** before returning any entries to normal ingestion.
+Errors, trailing operations, truncation and cancellation discard the collector.
+Entries still require the existing local signature/causal-auth verification;
+framing and `Ack`/`Count` are not Verified proofs.
+
+Input-list uploads use one descriptor and exclusive offsets per Database in
+sorted Database order, retaining input order and idempotent duplicates within
+that Database. An incomplete submission is not ingested. Both transports keep a
+30-second absolute exchange deadline; successful reads/pages do not extend it.
+HTTP retains its connect/read-stall bounds. Dropping a body or the caller's
+response receiver cancels production. Inbound operations and outbound collectors
+have separate eight-operation admission ceilings, with native per-page permits
+released before network backpressure. Legacy `/api/v0` and `eidetica/v0` only
+return bounded unsupported-protocol errors; no legacy history fallback occurs.
+This is a wire version change, not a mixed-fleet deployment procedure.
+
+Remaining limits: logical response consumers and incoming upload collectors
+still retain O(total entries) vectors. Input-list framing retains references and
+one page; HTTP additionally uses one bounded 1 MiB upload bridge. Reverse
+`collect_ancestors_to_send` and queued/retry body producers still materialize
+vectors before framing, and the existing ID queue has no byte cap. Those source
+allocations are not made bounded merely by the wire codec. Sparse-replica
+reconciliation and public consumer streaming are not implemented here.
