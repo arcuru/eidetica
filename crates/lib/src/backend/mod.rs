@@ -13,8 +13,8 @@ pub use history_delta::HistoryDelta;
 pub(crate) mod history_page;
 mod record_page;
 pub use history_page::{
-    HistoryCursor, HistoryPage, HistoryPageLimits, MAX_HISTORY_PAGE_ENCODING,
-    MAX_HISTORY_PAGE_ENTRIES,
+    HistoryCursor, HistoryPage, HistoryPageLimits, MAX_DATABASE_PAGE_ENCODING,
+    MAX_HISTORY_PAGE_ENCODING, MAX_HISTORY_PAGE_ENTRIES,
 };
 
 use std::{any::Any, collections::BTreeMap};
@@ -968,6 +968,28 @@ pub trait BackendImpl: Send + Sync + Any {
         _limits: HistoryPageLimits,
     ) -> Result<HistoryPage> {
         Err(BackendError::HistoryPageUnsupported.into())
+    }
+
+    /// Read main-Database ancestry in canonical (main height, ID) order,
+    /// including the root and all Stores. Stop at exact `known` IDs; unrelated
+    /// known tips need not exist locally and are never traversed. The target
+    /// and stop set are frozen by the caller and bound into every cursor.
+    ///
+    /// No whole-history body collection or large-singleton allowance is used.
+    /// `limits` accounts for the returned page; callers must reserve their own
+    /// transport envelope overhead within the peer ceiling. The earlier
+    /// whole-exchange deadline applies to native work, not a fresh per-page
+    /// deadline. Custom and remote backends must explicitly opt in.
+    async fn database_history_page(
+        &self,
+        _tree: &ID,
+        _target: &Snapshot,
+        _known: &Snapshot,
+        _after: Option<&HistoryCursor>,
+        _limits: HistoryPageLimits,
+        _deadline: tokio::time::Instant,
+    ) -> Result<HistoryPage> {
+        Err(BackendError::DatabaseHistoryPageUnsupported.into())
     }
 
     /// Get the store parent IDs for a specific entry and store, sorted by height then ID.

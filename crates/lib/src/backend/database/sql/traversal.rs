@@ -730,7 +730,9 @@ pub async fn store_history_page(
     limits: &crate::backend::HistoryPageLimits,
 ) -> Result<crate::backend::HistoryPage> {
     use crate::backend::history_page::{MAX_HISTORY_QUERY_DURATION, resource};
-    let deadline = tokio::time::Instant::now() + MAX_HISTORY_QUERY_DURATION;
+    let deadline = query
+        .deadline
+        .unwrap_or_else(|| tokio::time::Instant::now() + MAX_HISTORY_QUERY_DURATION);
     tokio::time::timeout_at(
         deadline,
         history_page_until(
@@ -743,10 +745,14 @@ pub async fn store_history_page(
     )
     .await
     .map_err(|_| {
-        resource(
-            "history query seconds",
-            MAX_HISTORY_QUERY_DURATION.as_secs() as usize,
-        )
+        if query.is_database() {
+            resource("Database history deadline", 0)
+        } else {
+            resource(
+                "history query seconds",
+                MAX_HISTORY_QUERY_DURATION.as_secs() as usize,
+            )
+        }
     })?
 }
 
@@ -770,6 +776,22 @@ const HISTORY_PARENTS_POSTGRES: &str = "SELECT
     CASE WHEN octet_length(parent_id) <= $3 THEN parent_id ELSE NULL END,
     CAST(octet_length(parent_id) AS BIGINT)
     FROM store_parents WHERE store_name = $1 AND child_id = $2 LIMIT $4";
+const DATABASE_HISTORY_MEMBER: &str = "SELECT height FROM entries e
+    WHERE id = $1 AND tree_id = $3 AND $2 = ''
+    AND (is_root <> 0 OR EXISTS (SELECT 1 FROM tree_parents WHERE child_id = e.id))";
+const DATABASE_PARENTS_SQLITE: &str = "SELECT
+    CASE WHEN octet_length(tp.parent_id) <= $3 THEN tp.parent_id ELSE NULL END,
+    CAST(octet_length(tp.parent_id) AS BIGINT), p.height,
+    CASE WHEN p.tree_id = $1 THEN 1 ELSE 0 END
+    FROM tree_parents tp INDEXED BY idx_tree_parents_child
+    LEFT JOIN entries p ON p.id = tp.parent_id
+    WHERE tp.child_id = $2 LIMIT $4";
+const DATABASE_PARENTS_POSTGRES: &str = "SELECT
+    CASE WHEN octet_length(tp.parent_id) <= $3 THEN tp.parent_id ELSE NULL END,
+    CAST(octet_length(tp.parent_id) AS BIGINT), p.height,
+    CASE WHEN p.tree_id = $1 THEN 1 ELSE 0 END
+    FROM tree_parents tp LEFT JOIN entries p ON p.id = tp.parent_id
+    WHERE tp.child_id = $2 LIMIT $4";
 
 fn history_sql_error(error: sqlx::Error) -> crate::Error {
     // Never turn arbitrary storage/corruption/auth errors into resource failure.
@@ -858,36 +880,107 @@ async fn history_page_until(
     let max_ids = (workspace.limit() - workspace.used) / Visits::<ID>::COST;
     let mut visits = Visits::<ID>::new();
     if query.tips.is_empty() {
+        if query.is_database() {
+            top.finish()?;
+        }
         return Ok(page.finish());
     }
     let mut tx = history_begin(backend, deadline).await?;
     for tip in query.tips {
+        if query.stops_at(tip) {
+            continue;
+        }
         history_statement_deadline(&mut tx, backend.kind, deadline).await?;
-        let member: Option<(i64,)> = sqlx::query_as(HISTORY_START)
-            .bind(tip.to_string())
-            .bind(query.store)
-            .bind(query.tree.to_string())
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(history_sql_error)?;
+        let member: Option<(i64,)> = sqlx::query_as(if query.is_database() {
+            DATABASE_HISTORY_MEMBER
+        } else {
+            HISTORY_START
+        })
+        .bind(tip.to_string())
+        .bind(query.store)
+        .bind(query.tree.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(history_sql_error)?;
         if member.is_some() {
             visits.insert(tip.clone(), &mut workspace)?;
+        } else if query.is_database() {
+            return Err(BackendError::StateInconsistency {
+                reason: "Unavailable, foreign or incomplete Database ancestry".into(),
+            }
+            .into());
         }
     }
     #[cfg(test)]
     pause_history_metadata(query.tree).await;
     while let Some(id) = visits.queue.pop_front() {
         history_statement_deadline(&mut tx, backend.kind, deadline).await?;
-        let member: Option<(i64,)> = sqlx::query_as(HISTORY_MEMBER)
-            .bind(id.to_string())
-            .bind(query.store)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(history_sql_error)?;
+        let member: Option<(i64,)> = if query.is_database() {
+            sqlx::query_as(DATABASE_HISTORY_MEMBER)
+                .bind(id.to_string())
+                .bind(query.store)
+                .bind(query.tree.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(history_sql_error)?
+        } else {
+            sqlx::query_as(HISTORY_MEMBER)
+                .bind(id.to_string())
+                .bind(query.store)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(history_sql_error)?
+        };
         if let Some((height,)) = member {
             top.offer(history_height(height)?, &id);
+        } else if query.is_database() {
+            return Err(BackendError::StateInconsistency {
+                reason: "Unavailable, foreign or incomplete Database ancestry".into(),
+            }
+            .into());
         }
         history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+        if query.is_database() {
+            let mut rows = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, i64)>(
+                if backend.kind == super::DbKind::Sqlite {
+                    DATABASE_PARENTS_SQLITE
+                } else {
+                    DATABASE_PARENTS_POSTGRES
+                },
+            )
+            .bind(query.tree.to_string())
+            .bind(id.to_string())
+            .bind(HISTORY_ID_TEXT_BYTES as i64)
+            .bind((max_ids + 1) as i64)
+            .fetch(&mut *tx);
+            let mut count = 0;
+            while let Some((text, bytes, height, scoped)) =
+                rows.try_next().await.map_err(history_sql_error)?
+            {
+                count += 1;
+                if count > max_ids {
+                    return Err(resource("history parent IDs", max_ids));
+                }
+                let parent = history_parent_id(text, bytes)?;
+                if query.stops_at(&parent) {
+                    continue;
+                }
+                if scoped != 1 || height.is_none() {
+                    return Err(BackendError::StateInconsistency {
+                        reason: "Unavailable or foreign Database parent".into(),
+                    }
+                    .into());
+                }
+                if height.unwrap() >= member.unwrap().0 {
+                    return Err(BackendError::StateInconsistency {
+                        reason: "Database edge violates forward height order".into(),
+                    }
+                    .into());
+                }
+                visits.insert(parent, &mut workspace)?;
+            }
+            continue;
+        }
         let parents = if backend.kind == super::DbKind::Sqlite {
             HISTORY_PARENTS_SQLITE
         } else {
@@ -907,12 +1000,7 @@ async fn history_page_until(
             if count > max_ids {
                 return Err(resource("history parent IDs", max_ids));
             }
-            let text = text
-                .filter(|_| bytes.is_some_and(|n| n > 0 && n <= HISTORY_ID_TEXT_BYTES as i64))
-                .ok_or_else(|| BackendError::StateInconsistency {
-                    reason: "NULL, empty or oversized history parent ID".into(),
-                })?;
-            let parent = ID::parse(&text)?;
+            let parent = history_parent_id(text, bytes)?;
             visits.insert(parent, &mut workspace)?;
         }
     }
@@ -947,12 +1035,46 @@ async fn history_page_until(
                 source: None,
             })?;
         drop(body);
-        if entry.id_ref() != id || entry.subtree_height(query.store).unwrap_or(0) != *height {
+        if entry.id_ref() != id
+            || query.height(&entry) != *height
+            || (query.is_database() && !entry.in_tree(query.tree))
+        {
             return Err(BackendError::EntryValidationFailed {
                 entry_id: id.clone(),
                 reason: "Stored history Entry does not match its ID/Store height".into(),
             }
             .into());
+        }
+        if query.is_database() {
+            // An omitted or substituted index edge must not silently omit
+            // required ancestry. Compare only this selected immutable body;
+            // no whole-history body prefetch is needed.
+            history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+            let (count,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM tree_parents WHERE child_id = $1")
+                    .bind(id.to_string())
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(history_sql_error)?;
+            if count != entry.parents_ref().len() as i64 {
+                return Err(BackendError::StateInconsistency {
+                    reason: "Database body disagrees with parent index".into(),
+                }
+                .into());
+            }
+            for parent in entry.parents_ref() {
+                history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+                let indexed: Option<(i64,)> = sqlx::query_as(
+                    "SELECT CAST(1 AS BIGINT) FROM tree_parents WHERE child_id = $1 AND parent_id = $2",
+                ).bind(id.to_string()).bind(parent.to_string())
+                    .fetch_optional(&mut *tx).await.map_err(history_sql_error)?;
+                if indexed.is_none() {
+                    return Err(BackendError::StateInconsistency {
+                        reason: "Database body disagrees with parent index".into(),
+                    }
+                    .into());
+                }
+            }
         }
         if !page.push(*height, &entry, more || index + 1 < selected.len())? {
             break;
@@ -960,6 +1082,15 @@ async fn history_page_until(
     }
     tx.commit().await.map_err(history_sql_error)?;
     Ok(page.finish())
+}
+
+fn history_parent_id(text: Option<String>, bytes: Option<i64>) -> Result<ID> {
+    let text = text
+        .filter(|_| bytes.is_some_and(|n| n > 0 && n <= HISTORY_ID_TEXT_BYTES as i64))
+        .ok_or_else(|| BackendError::StateInconsistency {
+            reason: "NULL, empty or oversized history parent ID".into(),
+        })?;
+    ID::parse(&text)
 }
 
 fn history_height(height: i64) -> Result<u64> {

@@ -1,7 +1,7 @@
-//! Canonical, byte-bounded Store history pages.
+//! Canonical, byte-bounded Store and main-Database history pages.
 //!
-//! Entries are emitted in the same order as [`super::BackendImpl::store_at`]:
-//! Store height ascending, tied on [`ID`]'s `Ord` (the CID tuple, not SQL text).
+//! Store entries use the order of [`super::BackendImpl::store_at`]; Database
+//! entries use main height. Both tie on [`ID`]'s `Ord` (not SQL text).
 //! A backend streams reachable `(ID, height)` metadata once per page, keeps only
 //! the next K candidates after the exclusive cursor in a bounded heap, and then
 //! fetches those Entry bodies one at a time. This rescans O(history) metadata per
@@ -26,6 +26,10 @@ use super::{BackendError, record_page::PageBudget};
 pub const MAX_HISTORY_PAGE_ENTRIES: usize = 1024;
 /// Hard encoded page ceiling. Transport envelopes must fit independently.
 pub const MAX_HISTORY_PAGE_ENCODING: usize = 63 * 1024 * 1024;
+/// Database history pages leave room for a four-byte peer frame prefix under
+/// the unchanged 1 MiB peer ceiling. Transport envelope overhead must also be
+/// deducted by the caller; a backend page alone is not a complete wire frame.
+pub const MAX_DATABASE_PAGE_ENCODING: usize = 1024 * 1024 - 4;
 /// Accounted per-operation metadata workspace (candidate heap, InMemory
 /// visited set and work queue, SQL owned IDs and finite driver-channel slack).
 /// Independent of any cache budget, so disabling
@@ -62,8 +66,9 @@ pub struct HistoryPageLimits {
 
 /// Opaque exclusive continuation for [`HistoryPage`].
 ///
-/// Versioned and bound to the exact tree, Store and Snapshot it was minted
-/// for. It carries no authority: a cursor presented with any other query is
+/// Versioned and bound to the exact tree, Store or main-Database scope, target
+/// and (for Database pages) stop boundary it was minted for.
+/// It carries no authority: a cursor presented with any other query is
 /// rejected with [`BackendError::InvalidHistoryCursor`], never reinterpreted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryCursor {
@@ -73,7 +78,7 @@ pub struct HistoryCursor {
     id: ID,
 }
 
-/// One ordered page of Store history. `next` is `None` only when history after
+/// One ordered page of history. `next` is `None` only when history after
 /// the request cursor is exhausted; a non-final page is never empty.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct HistoryPage {
@@ -86,6 +91,10 @@ pub(crate) struct HistoryQuery<'a> {
     pub tree: &'a ID,
     pub store: &'a str,
     pub tips: &'a [ID],
+    // None retains the legacy Store predicates. Some selects main ancestry,
+    // stopping at these exact advertised IDs, not their transitive ancestry.
+    pub boundary: Option<&'a [ID]>,
+    pub deadline: Option<tokio::time::Instant>,
     binding: [u8; 32],
     after: Option<(u64, ID)>,
 }
@@ -113,14 +122,81 @@ impl<'a> HistoryQuery<'a> {
             tree,
             store,
             tips,
+            boundary: None,
+            deadline: None,
             binding,
             after,
         })
     }
 
+    pub(crate) fn database(
+        tree: &'a ID,
+        target: &'a Snapshot,
+        known: &'a Snapshot,
+        after: Option<&HistoryCursor>,
+        deadline: tokio::time::Instant,
+    ) -> Result<Self> {
+        if target.len() > MAX_HISTORY_TIPS || known.len() > MAX_HISTORY_TIPS {
+            return Err(resource("history Snapshot tips", MAX_HISTORY_TIPS));
+        }
+        let mut hash = blake3::Hasher::new_derive_key("eidetica Database history cursor v1");
+        hash.update(&binding(tree, "", target));
+        hash.update(&known.cache_key_bytes());
+        let binding = *hash.finalize().as_bytes();
+        let after = match after {
+            None => None,
+            Some(cursor) if cursor.v == 2 && cursor.binding == binding => {
+                Some((cursor.height, cursor.id.clone()))
+            }
+            Some(_) => return Err(BackendError::InvalidHistoryCursor.into()),
+        };
+        let query = Self {
+            tree,
+            store: "",
+            tips: target.tips(),
+            boundary: Some(known.tips()),
+            deadline: Some(deadline),
+            binding,
+            after,
+        };
+        query.check_deadline()?;
+        Ok(query)
+    }
+
+    pub(crate) fn is_database(&self) -> bool {
+        self.boundary.is_some()
+    }
+
+    pub(crate) fn stops_at(&self, id: &ID) -> bool {
+        self.boundary
+            .is_some_and(|ids| ids.binary_search(id).is_ok())
+    }
+
+    pub(crate) fn check_deadline(&self) -> Result<()> {
+        if self
+            .deadline
+            .is_some_and(|end| tokio::time::Instant::now() >= end)
+        {
+            return Err(resource("Database history deadline", 0));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn height(&self, entry: &Entry) -> u64 {
+        if self.is_database() {
+            entry.height()
+        } else {
+            entry.subtree_height(self.store).unwrap_or(0)
+        }
+    }
+
     pub(crate) fn cursor(&self, height: u64, id: &ID) -> HistoryCursor {
         HistoryCursor {
-            v: CURSOR_VERSION,
+            v: if self.is_database() {
+                2
+            } else {
+                CURSOR_VERSION
+            },
             binding: self.binding,
             height,
             id: id.clone(),
@@ -140,8 +216,10 @@ pub(crate) fn validate_page(
         return Err(BackendError::InvalidHistoryCursor.into());
     }
     for entry in &page.entries {
-        let key = (entry.subtree_height(query.store).unwrap_or(0), entry.id());
-        if previous.as_ref().is_some_and(|last| key <= *last) {
+        let key = (query.height(entry), entry.id());
+        if (query.is_database() && !entry.in_tree(query.tree))
+            || previous.as_ref().is_some_and(|last| key <= *last)
+        {
             return Err(BackendError::InvalidHistoryCursor.into());
         }
         *previous = Some(key);
@@ -341,14 +419,19 @@ pub(crate) struct HistoryPageBuilder<'q, 'a> {
 
 impl<'q, 'a> HistoryPageBuilder<'q, 'a> {
     pub(crate) fn new(query: &'q HistoryQuery<'a>, limits: &HistoryPageLimits) -> Result<Self> {
+        let hard_cap = if query.is_database() {
+            MAX_DATABASE_PAGE_ENCODING
+        } else {
+            MAX_HISTORY_PAGE_ENCODING
+        };
         Ok(Self {
             query,
             budget: PageBudget::new(
                 &HistoryPage::default(),
                 limits.max_entries.clamp(1, MAX_HISTORY_PAGE_ENTRIES),
                 limits.max_encoded_bytes,
-                MAX_HISTORY_PAGE_ENCODING,
-                limits.allow_large_singleton,
+                hard_cap,
+                limits.allow_large_singleton && !query.is_database(),
             )?,
             page: HistoryPage::default(),
         })

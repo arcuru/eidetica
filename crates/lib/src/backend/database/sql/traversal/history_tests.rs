@@ -1056,3 +1056,187 @@ async fn native_history_delta_eight_nonqueued_operations_release_on_cancel() {
         .is_ok()
     );
 }
+
+#[tokio::test]
+async fn native_database_history_pages_bound_bodies_metadata_and_index_consistency() {
+    let b = backend().await;
+    let root = Entry::root_builder()
+        .set_subtree_data("data", "root")
+        .build()
+        .unwrap();
+    let tree = root.id();
+    b.put(root.clone()).await.unwrap();
+    let mut all = vec![root];
+    for height in 1..=12 {
+        let entry = Entry::builder(tree.clone())
+            .set_height(height)
+            .add_parent(all.last().unwrap().id())
+            .set_subtree_data("other", "child")
+            .build()
+            .unwrap();
+        b.put(entry.clone()).await.unwrap();
+        all.push(entry);
+    }
+    let target = Snapshot::from([all.last().unwrap().id()]);
+    let bounds = HistoryPageLimits {
+        max_entries: 1,
+        max_encoded_bytes: 1024 * 1024 - 4,
+        allow_large_singleton: false,
+    };
+    let known = Snapshot::EMPTY;
+    let query = HistoryQuery::database(
+        &tree,
+        &target,
+        &known,
+        None,
+        tokio::time::Instant::now() + Duration::from_secs(30),
+    )
+    .unwrap();
+    assert!(
+        history_page_until(
+            &b,
+            &query,
+            &bounds,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+            Workspace::with_limit(HISTORY_DRIVER_SLACK)
+        )
+        .await
+        .is_err()
+    );
+
+    // Invalid last body is NOT fetched to produce page one; a read-all-and-
+    // slice implementation would fail this positive first-page assertion.
+    sqlx::query("UPDATE entries SET entry_cbor = $1 WHERE id = $2")
+        .bind(vec![255u8])
+        .bind(all.last().unwrap().id().to_string())
+        .execute(b.pool())
+        .await
+        .unwrap();
+    let first = b
+        .database_history_page(
+            &tree,
+            &target,
+            &known,
+            None,
+            bounds,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.entries, all[..1]);
+    assert!(first.next.is_some());
+    assert!(
+        b.database_history_page(
+            &tree,
+            &target,
+            &known,
+            None,
+            HistoryPageLimits {
+                max_entries: 1024,
+                ..bounds
+            },
+            tokio::time::Instant::now() + Duration::from_secs(30)
+        )
+        .await
+        .is_err()
+    );
+
+    // Restore only this test's synthetic body, then remove one merge edge.
+    let last = all.last().unwrap();
+    sqlx::query("UPDATE entries SET entry_cbor = $1 WHERE id = $2")
+        .bind(serde_ipld_dagcbor::to_vec(last).unwrap())
+        .bind(last.id().to_string())
+        .execute(b.pool())
+        .await
+        .unwrap();
+    let merge = Entry::builder(tree.clone())
+        .set_height(13)
+        .add_parent(all[12].id())
+        .add_parent(all[3].id())
+        .set_subtree_data("data", "merge")
+        .build()
+        .unwrap();
+    b.put(merge.clone()).await.unwrap();
+    sqlx::query("DELETE FROM tree_parents WHERE child_id = $1 AND parent_id = $2")
+        .bind(merge.id().to_string())
+        .bind(all[12].id().to_string())
+        .execute(b.pool())
+        .await
+        .unwrap();
+    let error = b
+        .database_history_page(
+            &tree,
+            &Snapshot::from([merge.id()]),
+            &known,
+            None,
+            HistoryPageLimits {
+                max_entries: 1024,
+                ..bounds
+            },
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, crate::Error::Backend(e) if matches!(*e, BackendError::StateInconsistency { .. }))
+    );
+    // The transaction/connection remains usable after each refusal.
+    assert_eq!(b.get(&tree).await.unwrap().id(), tree);
+}
+
+#[tokio::test]
+async fn native_database_history_pages_expiry_cancels_work_and_releases_connection() {
+    let b = backend().await;
+    let root = Entry::root_builder()
+        .set_subtree_data("data", "deadline")
+        .build()
+        .unwrap();
+    let tree = root.id();
+    b.put(root).await.unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+    *HISTORY_PAUSE.get_or_init(Default::default).lock().unwrap() =
+        Some((tree.clone(), (entered_tx, resume_rx)));
+    let reader = Arc::clone(&b);
+    let root_id = tree.clone();
+    let task = tokio::spawn(async move {
+        reader
+            .database_history_page(
+                &root_id,
+                &Snapshot::from([root_id.clone()]),
+                &Snapshot::EMPTY,
+                None,
+                limits(),
+                tokio::time::Instant::now() + Duration::from_millis(500),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), entered_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        matches!(error, crate::Error::Backend(e) if matches!(*e, BackendError::HistoryResourceLimit { ref resource, .. } if resource == "Database history deadline"))
+    );
+    assert!(
+        resume_tx.send(()).is_err(),
+        "expired producer was not dropped"
+    );
+    let page = b
+        .database_history_page(
+            &tree,
+            &Snapshot::from([tree.clone()]),
+            &Snapshot::EMPTY,
+            None,
+            limits(),
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.entries[0].id(), tree);
+}

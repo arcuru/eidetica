@@ -375,6 +375,10 @@ impl Entry {
         Ok(self.tree.parents.clone())
     }
 
+    pub(crate) fn parents_ref(&self) -> &[ID] {
+        &self.tree.parents
+    }
+
     /// Get the IDs of the parent entries specific to a named subtree's history.
     /// The parent IDs are returned in CID order (`ID`'s `Ord`, not lexicographic string order).
     pub fn subtree_parents(&self, subtree_name: impl AsRef<str>) -> Result<Vec<ID>> {

@@ -918,6 +918,23 @@ impl BackendImpl for InMemory {
         storage::store_history_page(&inner, &query, &limits)
     }
 
+    async fn database_history_page(
+        &self,
+        tree: &ID,
+        target: &Snapshot,
+        known: &Snapshot,
+        after: Option<&crate::backend::HistoryCursor>,
+        limits: crate::backend::HistoryPageLimits,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::backend::HistoryPage> {
+        let query = crate::backend::history_page::HistoryQuery::database(
+            tree, target, known, after, deadline,
+        )?;
+        let _permit = crate::backend::history_page::admit()?;
+        let inner = self.inner.read().unwrap();
+        storage::store_history_page(&inner, &query, &limits)
+    }
+
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {
         let inner = self.inner.read().unwrap();
         Ok(inner.instance_metadata.clone())

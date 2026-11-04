@@ -1171,6 +1171,22 @@ impl BackendImpl for SqlxBackend {
         traversal::store_history_page(self, &query, &limits).await
     }
 
+    async fn database_history_page(
+        &self,
+        tree: &ID,
+        target: &Snapshot,
+        known: &Snapshot,
+        after: Option<&crate::backend::HistoryCursor>,
+        limits: crate::backend::HistoryPageLimits,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::backend::HistoryPage> {
+        let query = crate::backend::history_page::HistoryQuery::database(
+            tree, target, known, after, deadline,
+        )?;
+        let _permit = crate::backend::history_page::admit()?;
+        traversal::store_history_page(self, &query, &limits).await
+    }
+
     async fn get_sorted_store_parents(
         &self,
         tree_id: &ID,
