@@ -1080,7 +1080,9 @@ async fn history_page_until(
             break;
         }
     }
+    query.check_deadline()?;
     tx.commit().await.map_err(history_sql_error)?;
+    query.check_deadline()?;
     Ok(page.finish())
 }
 

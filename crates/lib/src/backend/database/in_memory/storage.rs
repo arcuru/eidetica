@@ -609,6 +609,7 @@ pub(crate) fn store_history_page(
             break;
         }
     }
+    query.check_deadline()?;
     Ok(page.finish())
 }
 

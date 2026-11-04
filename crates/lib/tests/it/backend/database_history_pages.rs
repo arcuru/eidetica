@@ -32,6 +32,7 @@ fn is_cursor(error: Error) -> bool {
 
 async fn graph(b: &dyn BackendImpl, payload: usize) -> (ID, Snapshot, Vec<Entry>) {
     let root = Entry::root_builder()
+        .set_metadata(b"Database paging fixture v1".to_vec())
         .set_subtree_data("_settings", "synthetic root")
         .build()
         .unwrap();
@@ -319,6 +320,7 @@ async fn database_history_pages_deadline_and_singleton_are_not_extended() {
 async fn database_history_pages_forks_ties_and_exact_encoded_boundaries() {
     let b = test_backend().await;
     let root = Entry::root_builder()
+        .set_metadata(b"Database paging fork fixture v1".to_vec())
         .set_subtree_data("escaped\"\\\n\tstore", vec![255u8; 27])
         .build()
         .unwrap();
