@@ -147,15 +147,20 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     let (fired_tx, mut fired_rx) = tokio::sync::mpsc::unbounded_channel();
     let _callback = client_db
         .on_write(move |event, _db| {
-            let source = event.source();
+            let snapshot = event.clone();
             let tx = fired_tx.clone();
             async move {
-                let _ = tx.send(source);
+                let _ = tx.send(snapshot);
                 Ok(())
             }
         })
         .await?;
 
+    let initial = tokio::time::timeout(Duration::from_secs(2), fired_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(initial, client_db.snapshot().await?);
     peer_db
         .with_transaction(|tx| async move {
             tx.get_store::<DocStore>("data")
@@ -166,11 +171,12 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
         .await?;
     peer.flush_sync().await?;
 
-    let source = tokio::time::timeout(Duration::from_secs(2), fired_rx.recv())
+    let latest = tokio::time::timeout(Duration::from_secs(2), fired_rx.recv())
         .await
         .expect("reconnected client did not receive the synced write callback")
         .expect("callback channel closed");
-    assert_eq!(source, eidetica::instance::WriteSource::Remote);
+    assert_ne!(latest, initial);
+    assert_eq!(latest, client_db.snapshot().await?);
     assert_eq!(
         client_db
             .get_store_viewer::<DocStore>("data")

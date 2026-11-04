@@ -282,9 +282,9 @@ verification pass — `update_verification_status` and the verification-status
 queries are not exposed over the socket. The daemon's Instance stores synced
 entries as `Unverified`, runs `Database::verify()`, and serves reads from the
 resulting **Verified frontier**. Every connected client therefore sees the
-same default verified view. Operations carrying `ReadScope` can request a
-diagnostic raw boundary; `GetVerifiedTips` always returns the server's Verified
-main frontier. Store reads derive their own unconsumed tips within that cut,
+same default Verified view. A handle can opt into the retained non-Failed
+frontier with `.allow_unverified()`; its watches inherit the same scope without
+changing the daemon's trust decisions. Store reads derive their own unconsumed tips within that cut,
 not just Store data at main tips. Client-signed ordinary writes may branch
 without consuming observed tips, but `_settings` pins and write parents retain
 exact causal validation. No per-Store status or sparse verification is added.
@@ -302,8 +302,8 @@ surface native I/O errors, and queued requests cannot reuse the stream.
 Retirement does not roll back server work or prove that a write did not commit.
 Keep ownership of started writes, await their results, and reconcile uncertain
 outcomes before retrying; the library does not replay them. A response already
-delivered may still succeed. Already-running callbacks and server operations
-are not cancelled or joined by retirement.
+delivered may still succeed. Retirement cancels attached watches without waiting
+for callback work to finish; it does not cancel or join server operations.
 
 To reconnect, call `Instance::connect` with the socket URL again, log in, and
 reopen the required handles. The old Instance and its handles remain retired;
@@ -330,10 +330,11 @@ instead of unwrapping.
 - **Unix-only.** The service module requires Unix domain sockets and is not available on Windows.
 - **Feature flag required.** The `service` feature must be enabled (included in the default `full` feature set).
 
-For the `Database::on_write` semantics on a connected Instance — including
-the deliberate trade that callbacks fire asynchronously to `commit()` in
-exchange for a single daemon-canonical event ordering — see [Write
-Callbacks](transactions.md#write-callbacks).
+Watches deliver an ordered initial Snapshot and latest selected-frontier
+updates, asynchronously to commits on both local and connected Instances.
+See [Write Callbacks](transactions.md#write-callbacks).
+The service protocol is v0.1; clients and daemon must upgrade together.
+Legacy v0 connections are rejected rather than falling back to bracket events.
 
 ## Dashboard access requests
 

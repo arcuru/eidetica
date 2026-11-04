@@ -52,7 +52,9 @@ async fn v0_unknown_requests_have_no_effects_across_auth_states() {
     let known_read = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
         root_id: root.clone(),
         identity: identity.clone(),
-        op: DatabaseOp::GetVerifiedTips,
+        op: DatabaseOp::GetSnapshot {
+            scope: eidetica::service::protocol::ReadScope::Verified,
+        },
     }));
     let unknown_db = json!({"AuthenticatedDb": {
         "root_id": root, "identity": identity,
@@ -132,7 +134,9 @@ async fn v0_unknown_requests_have_no_effects_across_auth_states() {
     let foreign_read = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
         root_id: root.clone(),
         identity: SigKey::from_pubkey(&other_pubkey),
-        op: DatabaseOp::GetVerifiedTips,
+        op: DatabaseOp::GetSnapshot {
+            scope: eidetica::service::protocol::ReadScope::Verified,
+        },
     }));
     let future_register =
         json!({"FutureSessionKeyRegister": {"pubkey": other_pubkey, "signature": [0]}}).to_string();
@@ -254,16 +258,19 @@ async fn v0_server_rejects_malformed_and_required_unknown_messages() {
 }
 
 #[tokio::test]
-async fn v0_handshake_advertises_zero_and_rejects_nonzero() {
+async fn v0_1_handshake_advertises_revision_and_rejects_other_versions() {
     let (path, _shutdown, _server, _dir) = start_test_server().await;
     assert_eq!(PROTOCOL_VERSION, 0);
     for version in [0, 1, u32::MAX] {
         let mut stream = UnixStream::connect(&path).await.unwrap();
-        write_frame(&mut stream, &json!({"protocol_version": version}))
-            .await
-            .unwrap();
+        write_frame(
+            &mut stream,
+            &json!({"protocol_version": version, "protocol_revision": 1}),
+        )
+        .await
+        .unwrap();
         let ack: serde_json::Value = read_frame(&mut stream).await.unwrap().unwrap();
-        assert_eq!(ack, json!({"protocol_version": 0}));
+        assert_eq!(ack, json!({"protocol_version": 0, "protocol_revision": 1}));
         if version == 0 {
             write_frame(&mut stream, &ServiceRequest::GetInstanceMetadata)
                 .await
