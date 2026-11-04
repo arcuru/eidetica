@@ -16,26 +16,10 @@ use tracing::info;
 async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
     info!("Running test: test_multiple_clients_bootstrap_same_database");
 
-    // Setup the server instance
-    let server_instance = setup_instance_with_initialized().await;
-
-    // Create some test data directly in the server's backend
-    let root_entry = create_test_tree_entry();
-    let test_tree_id = root_entry.id().clone();
-
-    // Store entry in server backend
-    let server_sync = server_instance.sync().unwrap();
-    server_sync
-        .backend()
-        .unwrap()
-        .put_verified(root_entry)
-        .await
-        .unwrap();
-
-    // Enable sync for this tree
-    enable_sync_for_instance_database(&server_sync, &test_tree_id)
-        .await
-        .unwrap();
+    // Use a genuinely signed public Database, not a test-injected Verified
+    // label on an unsigned root: receivers verify their own supplied closure.
+    let (_server_instance, _owner, _key, _database, server_sync, test_tree_id) =
+        setup_global_wildcard_server().await;
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
@@ -181,6 +165,3 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
     info!("Test finished: test_concurrent_key_approval_requests");
     Ok(())
 }
-
-// Test-only: store-and-promote helper (production `put` is Unverified-only).
-use crate::helpers::TestVerify;

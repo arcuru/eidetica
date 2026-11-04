@@ -718,6 +718,30 @@ impl BackendImpl for InMemory {
         storage::get(&inner, id)
     }
 
+    async fn peer_entry(&self, id: &ID, deadline: tokio::time::Instant) -> Result<Entry> {
+        let inner = self.inner.read().unwrap();
+        if tokio::time::Instant::now() >= deadline {
+            return Err(crate::backend::history_page::resource(
+                "peer Entry deadline",
+                0,
+            ));
+        }
+        let entry = inner
+            .entries
+            .get(id)
+            .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?;
+        if crate::encoding::json_encoded_len(entry, crate::backend::MAX_DATABASE_PAGE_ENCODING)?
+            .is_none()
+        {
+            return Err(BackendError::EntryTooLarge {
+                id: id.clone(),
+                encoded_bytes: crate::backend::MAX_DATABASE_PAGE_ENCODING + 1,
+            }
+            .into());
+        }
+        Ok(entry.clone())
+    }
+
     /// Gets the verification status of an entry.
     ///
     /// # Arguments

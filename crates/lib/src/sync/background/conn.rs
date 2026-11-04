@@ -210,73 +210,13 @@ impl BackgroundSync {
         Ok(())
     }
 
-    /// Validate and store received entries from peer, firing remote write callbacks.
-    ///
-    /// Validates entry integrity and parent existence, then stores the batch
-    /// through `Instance::put_remote_entries` which fires callbacks once for the
-    /// entire batch.
+    /// Use the same verified finite-response barrier as foreground/ticket sync.
     pub(super) async fn store_received_entries(
         &self,
         tree_id: &crate::entry::ID,
         entries: Vec<Entry>,
     ) -> Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-
-        // Note: Height-based sorting would require tree context
-        // For now, we rely on the sender to provide entries in correct order
-
-        // Per-entry hash integrity isn't meaningful here: these entries arrive
-        // without declared IDs, and we store them under whatever `entry.id()`
-        // derives locally. Substitution of individual entries would fail the
-        // parent-existence check below (a forged entry's children wouldn't
-        // connect to genuine parents). Root-level integrity is verified against
-        // the declared tree_id in the bootstrap handler.
-        //
-        // Parents may be either already-stored or earlier in this same batch
-        // (bootstrap ships chains of new entries together), so we accept both.
-        let in_batch: std::collections::HashSet<crate::entry::ID> =
-            entries.iter().map(|e| e.id()).collect();
-        let instance = self.instance()?;
-        for entry in &entries {
-            if let Ok(parents) = entry.parents() {
-                for parent_id in &parents {
-                    if in_batch.contains(parent_id) {
-                        continue;
-                    }
-                    if let Err(e) = instance.backend().get(parent_id).await {
-                        if e.is_not_found() {
-                            return Err(SyncError::InvalidEntry(format!(
-                                "Parent entry {} not found when storing entry {}",
-                                parent_id,
-                                entry.id()
-                            ))
-                            .into());
-                        } else {
-                            return Err(SyncError::BackendError(format!(
-                                "Failed to check parent {} for entry {}: {}",
-                                parent_id,
-                                entry.id(),
-                                e
-                            ))
-                            .into());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Bootstrap/incremental sync paths historically marked these entries
-        // Verified after the parent-existence check above. They are now stored
-        // Unverified like all off-node arrivals: a parent-existence check is
-        // not signature verification, and only this node's local validation
-        // pass may assign Verified.
-        instance
-            .put_remote_entries(tree_id, entries)
+        crate::sync::utils::store_verified_response_entries(&self.instance()?, tree_id, entries)
             .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")))?;
-
-        Ok(())
     }
 }

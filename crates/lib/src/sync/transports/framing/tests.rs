@@ -475,3 +475,180 @@ async fn peer_frames_singleton_upload_refusal_and_request_truncation_are_explici
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn peer_frames_native_history_and_stored_id_sources_are_bounded_and_complete() {
+    let (backend, entries) = fixture(12_000).await;
+    let tree = entries[0].id();
+    let target = Snapshot::from([entries.last().unwrap().id()]);
+    let known = Snapshot::from([entries[2].id()]);
+    let ids: Vec<_> = entries
+        .iter()
+        .skip(3)
+        .map(|e| (e.id(), tree.clone()))
+        .collect();
+    for source in [
+        UploadSource::Stored {
+            backend: &backend,
+            entries: &ids,
+        },
+        UploadSource::History {
+            backend: &backend,
+            tree: &tree,
+            target: &target,
+            known: &known,
+        },
+    ] {
+        let mut bytes = Vec::new();
+        write_upload(&mut bytes, &source, deadline()).await.unwrap();
+        assert!(bytes.len() > MAX_FRAME_BYTES);
+        let mut decoder = Decoder::default();
+        let mut collector = RequestCollector::new(deadline());
+        let mut input = bytes.as_slice();
+        let mut pages = 0;
+        while !input.is_empty() {
+            if let Some(frame) = decoder.next(&mut input).unwrap() {
+                assert!(encode(&frame).unwrap().len() <= MAX_FRAME_BYTES);
+                if matches!(frame, Frame::UploadPage { .. }) {
+                    pages += 1;
+                }
+                collector.push(frame).unwrap();
+            }
+        }
+        assert!(pages > 1);
+        let SyncRequest::SendEntries(actual) = collector.finish(decoder).unwrap() else {
+            panic!("not upload");
+        };
+        assert_eq!(actual, entries[3..]);
+    }
+    let mut bytes = Vec::new();
+    write_upload(
+        &mut bytes,
+        &UploadSource::History {
+            backend: &backend,
+            tree: &tree,
+            target: &target,
+            known: &target,
+        },
+        deadline(),
+    )
+    .await
+    .unwrap();
+    let mut decoder = Decoder::default();
+    let mut collector = RequestCollector::new(deadline());
+    receive_request_chunk(&mut decoder, &mut collector, &bytes).unwrap();
+    assert_eq!(
+        collector.finish(decoder).unwrap(),
+        SyncRequest::SendEntries(vec![])
+    );
+    // An unknown-length history still cannot end early after a nonterminal page.
+    let start = upload_start(tree, None);
+    let binding = digest(&start).unwrap();
+    let mut collector = RequestCollector::new(deadline());
+    collector.push(Frame::UploadStart(start)).unwrap();
+    collector
+        .push(Frame::UploadPage {
+            binding,
+            offset: 0,
+            entries: vec![entries[0].clone()],
+            next: Some(1),
+        })
+        .unwrap();
+    assert!(
+        collector
+            .push(Frame::UploadEnd {
+                binding,
+                entries: 1
+            })
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn peer_frames_stored_ids_fail_explicitly_and_dont_prefetch_whole_sources() {
+    use tokio::io::AsyncReadExt;
+    let (backend, entries) = fixture(12_000).await;
+    let tree = entries[0].id();
+    let missing = ID::from_bytes("missing queued entry");
+    let mut ids: Vec<_> = entries.iter().map(|e| (e.id(), tree.clone())).collect();
+    ids.push((missing, tree.clone()));
+    let source = UploadSource::Stored {
+        backend: &backend,
+        entries: &ids,
+    };
+    let mut bytes = Vec::new();
+    assert!(
+        write_upload(&mut bytes, &source, deadline())
+            .await
+            .unwrap_err()
+            .is_not_found()
+    );
+    // A full page was emitted before the later missing body was ever requested.
+    assert!(bytes.len() > MAX_FRAME_BYTES / 2);
+    let mut decoder = Decoder::default();
+    let mut collector = RequestCollector::new(deadline());
+    receive_request_chunk(&mut decoder, &mut collector, &bytes).unwrap();
+    assert!(collector.finish(decoder).is_err());
+    // Backpressure keeps the writer alive at its first envelope; dropping the
+    // downstream reader stops it rather than fetching a later missing entry.
+    let (mut reader, mut writer) = tokio::io::duplex(32);
+    let write = write_upload(&mut writer, &source, deadline());
+    let cancel = async move {
+        let mut prefix = [0; 4];
+        reader.read_exact(&mut prefix).await.unwrap();
+        drop(reader);
+    };
+    let (result, ()) = tokio::join!(write, cancel);
+    assert!(matches!(result.unwrap_err(), crate::Error::Io(_)));
+    let wrong = [(entries[0].id(), ID::from_bytes("wrong database"))];
+    assert!(
+        write_upload(
+            &mut Vec::new(),
+            &UploadSource::Stored {
+                backend: &backend,
+                entries: &wrong
+            },
+            deadline()
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        write_upload(&mut Vec::new(), &source, Instant::now())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn peer_frames_admission_and_progress_do_not_renew_absolute_deadlines() {
+    let permits: Vec<_> = (0..crate::backend::history_page::MAX_CONCURRENT_HISTORY_PAGES)
+        .map(|_| admit_outbound().unwrap())
+        .collect();
+    assert!(admit_outbound().is_err());
+    drop(permits);
+    drop(admit_outbound().unwrap());
+    let permits: Vec<_> = (0..crate::backend::history_page::MAX_CONCURRENT_HISTORY_PAGES)
+        .map(|_| admit_operation().unwrap())
+        .collect();
+    assert!(admit_operation().is_err());
+    drop(permits);
+    drop(admit_operation().unwrap());
+    let (backend, entries) = fixture(1).await;
+    let (request, frames) = sequence(&backend, &entries, Snapshot::EMPTY, 1, 10_000).await;
+    let end = deadline();
+    let mut collector = Collector::new(request, end).unwrap();
+    collector.push(frames[0].clone()).unwrap();
+    collector.push(frames[1].clone()).unwrap();
+    assert_eq!(
+        collector.deadline, end,
+        "progress must retain the original absolute deadline"
+    );
+    // Expire the private collector clock without a scheduling-sensitive sleep.
+    collector.deadline = Instant::now();
+    assert!(
+        collector.push(frames[2].clone()).is_err(),
+        "page progress must not reset the deadline"
+    );
+    assert!(collector.finish(Decoder::default()).is_err());
+}

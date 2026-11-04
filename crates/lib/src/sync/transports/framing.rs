@@ -157,7 +157,7 @@ pub enum Frame {
 pub struct UploadStart {
     pub version: u32,
     pub tree: ID,
-    pub entries: u64,
+    pub entries: Option<u64>,
     pub nonce: [u8; 32],
 }
 
@@ -570,54 +570,160 @@ pub fn receive_chunk(
 #[cfg(test)]
 mod tests;
 
-/// Serialize a borrowed request under downstream backpressure. Input-list
-/// uploads retain only references and one bounded page, not a whole encoded
-/// body or an additional whole-transfer Entry clone.
+/// Concrete sources for a framed submission. Stored queues retain only IDs;
+/// direct callers need not have written their entries to the local backend.
+pub enum UploadSource<'a> {
+    Entries(&'a [Entry]),
+    Stored {
+        backend: &'a dyn crate::backend::BackendImpl,
+        entries: &'a [(ID, ID)],
+    },
+    History {
+        backend: &'a dyn crate::backend::BackendImpl,
+        tree: &'a ID,
+        target: &'a Snapshot,
+        known: &'a Snapshot,
+    },
+}
+
+/// Serialize one capped control or a borrowed input-list submission.
 pub async fn write_request<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     request: &SyncRequest,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
-    let SyncRequest::SendEntries(entries) = request else {
+    if let SyncRequest::SendEntries(entries) = request {
+        write_upload(
+            writer,
+            &UploadSource::Entries(entries),
+            Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+    } else {
         writer
             .write_all(&encode(&Frame::Request(request.clone()))?)
             .await?;
-        return Ok(());
+        Ok(())
+    }
+}
+
+fn upload_start(tree: ID, entries: Option<u64>) -> UploadStart {
+    UploadStart {
+        version: WIRE_VERSION,
+        tree,
+        entries,
+        nonce: crate::auth::crypto::generate_challenge()
+            .try_into()
+            .expect("32-byte challenge"),
+    }
+}
+
+/// Reserve the worst-case input-list wrapper even when the native producer
+/// accounts for its own (larger) cursor. Never spend a backend page's budget
+/// again on the wire wrapper.
+fn upload_limits(binding: [u8; 32]) -> Result<HistoryPageLimits> {
+    let empty = Frame::UploadPage {
+        binding,
+        offset: u64::MAX,
+        entries: vec![],
+        next: Some(u64::MAX),
     };
-    if entries.is_empty() {
+    let overhead = json_encoded_len(&empty, JSON_CAP)?.ok_or_else(|| invalid("upload metadata"))?;
+    Ok(HistoryPageLimits {
+        max_entries: MAX_HISTORY_PAGE_ENTRIES,
+        max_encoded_bytes: JSON_CAP - overhead,
+        allow_large_singleton: false,
+    })
+}
+
+pub async fn write_upload<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    source: &UploadSource<'_>,
+    deadline: Instant,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    if let UploadSource::History {
+        backend,
+        tree,
+        target,
+        known,
+    } = source
+    {
+        let start = upload_start((*tree).clone(), None);
+        let binding = digest(&start)?;
+        let limits = upload_limits(binding)?;
         writer
-            .write_all(&encode(&Frame::Request(SyncRequest::SendEntries(
-                Vec::new(),
-            )))?)
+            .write_all(&encode(&Frame::UploadStart(start))?)
+            .await?;
+        let mut cursor = None;
+        let mut offset = 0;
+        loop {
+            let page = backend
+                .database_history_page(tree, target, known, cursor.as_ref(), limits, deadline)
+                .await?;
+            cursor = page.next;
+            if !page.entries.is_empty() {
+                let count = page.entries.len() as u64;
+                let next = cursor.as_ref().map(|_| offset + count);
+                writer
+                    .write_all(&encode(&Frame::UploadPage {
+                        binding,
+                        offset,
+                        entries: page.entries,
+                        next,
+                    })?)
+                    .await?;
+                offset += count;
+            } else if cursor.is_some() {
+                return Err(invalid("native upload did not progress"));
+            }
+            if cursor.is_none() {
+                break;
+            }
+        }
+        writer
+            .write_all(&encode(&Frame::UploadEnd {
+                binding,
+                entries: offset,
+            })?)
             .await?;
         return Ok(());
     }
-    let mut groups = std::collections::BTreeMap::<ID, Vec<&Entry>>::new();
-    for entry in entries {
-        groups
-            .entry(entry.root().unwrap_or_else(|| entry.id()))
-            .or_default()
-            .push(entry);
+    // Group only references/IDs, not Entry bodies or encoded history.
+    let mut groups = std::collections::BTreeMap::<ID, Vec<usize>>::new();
+    match source {
+        UploadSource::Entries(entries) => {
+            for (i, entry) in entries.iter().enumerate() {
+                groups
+                    .entry(entry.root().unwrap_or_else(|| entry.id()))
+                    .or_default()
+                    .push(i);
+            }
+        }
+        UploadSource::Stored { entries, .. } => {
+            for (i, (_, tree)) in entries.iter().enumerate() {
+                groups.entry(tree.clone()).or_default().push(i);
+            }
+        }
+        UploadSource::History { .. } => unreachable!(),
     }
-    for (tree, entries) in groups {
-        let start = UploadStart {
-            version: WIRE_VERSION,
-            tree,
-            entries: entries.len() as u64,
-            nonce: crate::auth::crypto::generate_challenge()
-                .try_into()
-                .expect("32-byte challenge"),
-        };
+    if groups.is_empty() {
+        writer
+            .write_all(&encode(&Frame::Request(SyncRequest::SendEntries(vec![])))?)
+            .await?;
+    }
+    for (tree, positions) in groups {
+        let start = upload_start(tree.clone(), Some(positions.len() as u64));
         let binding = digest(&start)?;
         writer
             .write_all(&encode(&Frame::UploadStart(start))?)
             .await?;
         let mut offset = 0;
-        while offset < entries.len() {
+        while offset < positions.len() {
             let empty = Frame::UploadPage {
                 binding,
                 offset: offset as u64,
-                entries: Vec::new(),
+                entries: vec![],
                 next: None,
             };
             let mut budget = crate::backend::record_page::PageBudget::new(
@@ -628,12 +734,27 @@ pub async fn write_request<W: tokio::io::AsyncWrite + Unpin>(
                 false,
             )?;
             let mut selected = Vec::new();
-            while offset + selected.len() < entries.len() && !budget.is_full() {
+            while offset + selected.len() < positions.len() && !budget.is_full() {
+                if Instant::now() >= deadline {
+                    return Err(invalid("upload deadline"));
+                }
                 let position = offset + selected.len();
-                let entry = entries[position];
+                let index = positions[position];
+                let fetched;
+                let entry = match source {
+                    UploadSource::Entries(entries) => &entries[index],
+                    UploadSource::Stored { backend, entries } => {
+                        fetched = backend.peer_entry(&entries[index].0, deadline).await?;
+                        &fetched
+                    }
+                    UploadSource::History { .. } => unreachable!(),
+                };
+                if !entry.in_tree(&tree) {
+                    return Err(invalid("stored upload Database"));
+                }
                 let item = json_encoded_len(entry, budget.ceiling())?;
                 let next = json_encoded_len(&(position as u64 + 1), budget.ceiling())?;
-                match budget.admit(item, next, position + 1 < entries.len()) {
+                match budget.admit(item, next, position + 1 < positions.len()) {
                     Ok(true) => selected.push(entry.clone()),
                     Ok(false) => break,
                     Err(_) => {
@@ -648,18 +769,19 @@ pub async fn write_request<W: tokio::io::AsyncWrite + Unpin>(
             }
             let begin = offset;
             offset += selected.len();
-            let frame = Frame::UploadPage {
-                binding,
-                offset: begin as u64,
-                entries: selected,
-                next: (offset < entries.len()).then_some(offset as u64),
-            };
-            writer.write_all(&encode(&frame)?).await?;
+            writer
+                .write_all(&encode(&Frame::UploadPage {
+                    binding,
+                    offset: begin as u64,
+                    entries: selected,
+                    next: (offset < positions.len()).then_some(offset as u64),
+                })?)
+                .await?;
         }
         writer
             .write_all(&encode(&Frame::UploadEnd {
                 binding,
-                entries: entries.len() as u64,
+                entries: positions.len() as u64,
             })?)
             .await?;
     }
@@ -726,7 +848,7 @@ impl RequestCollector {
             }
             Frame::UploadStart(start) if self.active.is_none() => {
                 if start.version != WIRE_VERSION
-                    || start.entries == 0
+                    || start.entries == Some(0)
                     || self
                         .last_tree
                         .as_ref()
@@ -758,8 +880,11 @@ impl RequestCollector {
                     || self.terminal
                     || entries.is_empty()
                     || entries.len() > MAX_HISTORY_PAGE_ENTRIES
-                    || end > start.entries
-                    || next != (end < start.entries).then_some(end)
+                    || start.entries.is_some_and(|count| end > count)
+                    || next.is_some_and(|next| next != end)
+                    || start
+                        .entries
+                        .is_some_and(|count| next != (end < count).then_some(end))
                     || entries.iter().any(|entry| !entry.in_tree(&start.tree))
                 {
                     return Err(invalid("upload scope, offset, count or progress"));
@@ -774,9 +899,9 @@ impl RequestCollector {
                     .as_ref()
                     .ok_or_else(|| invalid("upload end before start"))?;
                 if Some(binding) != self.binding
-                    || !self.terminal
+                    || (!self.terminal && self.offset != 0)
                     || entries != self.offset
-                    || entries != start.entries
+                    || start.entries.is_some_and(|count| entries != count)
                 {
                     return Err(invalid("incomplete submission"));
                 }
@@ -912,4 +1037,18 @@ pub async fn response_bytes(
             Some((encoded, (frames, terminal)))
         },
     ))
+}
+
+/// A transport receipt retains the existing local-ingestion semantics; it is
+/// not evidence of remote Verified status.
+pub fn acknowledged(response: SyncResponse) -> Result<()> {
+    match response {
+        SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
+        SyncResponse::Error(msg) => Err(SyncError::Network(msg).into()),
+        response => Err(SyncError::UnexpectedResponse {
+            expected: "Ack or Count",
+            actual: format!("{response:?}"),
+        }
+        .into()),
+    }
 }

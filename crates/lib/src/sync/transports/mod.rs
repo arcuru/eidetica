@@ -158,6 +158,16 @@ pub trait SyncTransport: Send + Sync {
     /// The response from the peer, or an error if the request failed.
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse>;
 
+    /// Send a native history or queued-ID source without materializing its
+    /// bodies. Custom transports must opt in; there is no whole-Vec fallback.
+    async fn send_upload(
+        &self,
+        _address: &Address,
+        _source: &framing::UploadSource<'_>,
+    ) -> Result<SyncResponse> {
+        Err(SyncError::PeerProtocolUnsupported.into())
+    }
+
     /// Send entries to a sync peer and ensure they are acknowledged.
     ///
     /// This is a convenience method that wraps send_request and validates the response.

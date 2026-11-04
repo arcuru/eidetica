@@ -680,7 +680,15 @@ impl IrohTransport {
     ) {
         use futures_util::StreamExt;
         let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
-        let result: Result<()> = tokio::time::timeout_at(deadline, async {
+        // STOP_SENDING also cancels a producer stalled before its next write.
+        // Dropping the future releases native work/permits immediately rather
+        // than keeping the operation until the absolute exchange deadline.
+        let stopped = send_stream.stopped();
+        tokio::pin!(stopped);
+        let result: Result<()> = tokio::select! {
+            biased;
+            _ = &mut stopped => return,
+            result = tokio::time::timeout_at(deadline, async {
             if legacy {
                 // Never serve a v0 history or fall back after v1 progress.
                 let _request = recv_stream
@@ -710,68 +718,21 @@ impl IrohTransport {
                 .map_err(|e| SyncError::Network(e.to_string()))?;
             Ok(())
         })
-        .await
-        .unwrap_or_else(|_| Err(SyncError::Network("peer exchange deadline".into()).into()));
+            => result.unwrap_or_else(|_| Err(SyncError::Network("peer exchange deadline".into()).into())),
+        };
         if let Err(error) = result {
             tracing::debug!(%error, "Iroh framed exchange failed");
         }
     }
 }
 
-#[async_trait]
-impl SyncTransport for IrohTransport {
-    fn transport_type(&self) -> &'static str {
-        Self::TRANSPORT_TYPE
-    }
-
-    fn can_handle_address(&self, address: &Address) -> bool {
-        address.transport_type == Self::TRANSPORT_TYPE
-    }
-
-    async fn start_server(&self, handler: Arc<dyn SyncHandler>) -> Result<()> {
-        let start = self.server_state.begin_start("iroh-endpoint")?;
-
-        // Ensure we have an endpoint and get EndpointAddr with direct addresses
-        let endpoint = self.ensure_endpoint().await?;
-        let endpoint_clone = endpoint.clone();
-
-        // Get the EndpointAddr with direct addresses
-        // Note: We don't wait for online() - direct addresses are available immediately
-        // after bind(), and relay connections happen asynchronously in the background.
-        let endpoint_addr = endpoint.addr();
-        let endpoint_addr_str = EndpointTicket::new(endpoint_addr).encode_string();
-
-        // Create server coordination channels
-        let (ready_tx, ready_rx) = oneshot::channel();
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-        // Start server loop
-        self.start_server_loop(endpoint_clone, ready_tx, shutdown_rx, handler)
-            .await?;
-
-        // Wait for server to be ready using shared utility
-        wait_for_ready(ready_rx, "iroh-endpoint").await?;
-
-        // Start server state with EndpointAddr string and shutdown sender
-        start.complete(endpoint_addr_str, shutdown_tx);
-
-        Ok(())
-    }
-
-    async fn stop_server(&self) -> Result<()> {
-        if !self.server_state.is_running() {
-            return Err(SyncError::ServerNotRunning.into());
-        }
-
-        self.server_state.stop_server();
-        if let Some(endpoint) = self.endpoint.lock().await.take() {
-            endpoint.close().await;
-        }
-
-        Ok(())
-    }
-
-    async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
+impl IrohTransport {
+    async fn send_framed(
+        &self,
+        address: &Address,
+        request: &SyncRequest,
+        source: Option<&framing::UploadSource<'_>>,
+    ) -> Result<SyncResponse> {
         if !self.can_handle_address(address) {
             return Err(SyncError::UnsupportedTransport {
                 transport_type: address.transport_type.clone(),
@@ -842,7 +803,10 @@ impl SyncTransport for IrohTransport {
                 .open_bi()
                 .await
                 .map_err(|e| SyncError::Network(format!("Failed to open stream: {e}")))?;
-            framing::write_request(&mut send_stream, request).await?;
+            match source {
+                Some(source) => framing::write_upload(&mut send_stream, source, deadline).await?,
+                None => framing::write_request(&mut send_stream, request).await?,
+            }
             send_stream
                 .finish()
                 .map_err(|e| SyncError::Network(e.to_string()))?;
@@ -854,6 +818,80 @@ impl SyncTransport for IrohTransport {
             phase: TimeoutPhase::Request,
             elapsed: REQUEST_TIMEOUT,
         })?
+    }
+}
+
+#[async_trait]
+impl SyncTransport for IrohTransport {
+    fn transport_type(&self) -> &'static str {
+        Self::TRANSPORT_TYPE
+    }
+
+    fn can_handle_address(&self, address: &Address) -> bool {
+        address.transport_type == Self::TRANSPORT_TYPE
+    }
+
+    async fn start_server(&self, handler: Arc<dyn SyncHandler>) -> Result<()> {
+        let start = self.server_state.begin_start("iroh-endpoint")?;
+
+        // Ensure we have an endpoint and get EndpointAddr with direct addresses
+        let endpoint = self.ensure_endpoint().await?;
+        let endpoint_clone = endpoint.clone();
+
+        // Get the EndpointAddr with direct addresses
+        // Note: We don't wait for online() - direct addresses are available immediately
+        // after bind(), and relay connections happen asynchronously in the background.
+        let endpoint_addr = endpoint.addr();
+        let endpoint_addr_str = EndpointTicket::new(endpoint_addr).encode_string();
+
+        // Create server coordination channels
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        // Start server loop
+        self.start_server_loop(endpoint_clone, ready_tx, shutdown_rx, handler)
+            .await?;
+
+        // Wait for server to be ready using shared utility
+        wait_for_ready(ready_rx, "iroh-endpoint").await?;
+
+        // Start server state with EndpointAddr string and shutdown sender
+        start.complete(endpoint_addr_str, shutdown_tx);
+
+        Ok(())
+    }
+
+    async fn stop_server(&self) -> Result<()> {
+        if !self.server_state.is_running() {
+            return Err(SyncError::ServerNotRunning.into());
+        }
+
+        self.server_state.stop_server();
+        if let Some(endpoint) = self.endpoint.lock().await.take() {
+            endpoint.close().await;
+        }
+
+        Ok(())
+    }
+
+    async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
+        self.send_framed(address, request, None).await
+    }
+
+    async fn send_upload(
+        &self,
+        address: &Address,
+        source: &framing::UploadSource<'_>,
+    ) -> Result<SyncResponse> {
+        self.send_framed(address, &SyncRequest::SendEntries(vec![]), Some(source))
+            .await
+    }
+
+    async fn send_entries(&self, address: &Address, entries: &[crate::Entry]) -> Result<()> {
+        framing::acknowledged(
+            self.send_upload(address, &framing::UploadSource::Entries(entries))
+                .await?,
+        )
     }
 
     fn is_server_running(&self) -> bool {
@@ -1111,6 +1149,85 @@ mod compatibility_tests {
             matches!(&error, crate::Error::Sync(error) if matches!(**error, SyncError::PeerProtocolUnsupported)),
             "{error:?}"
         );
+        server.stop_server().await.unwrap();
+        endpoint.close().await;
+    }
+    #[tokio::test]
+    async fn peer_paging_iroh_partial_upload_and_oversized_root_are_not_ingested() {
+        let (instance, _) = crate::Instance::create_backend(
+            Box::new(crate::backend::database::InMemory::new()),
+            crate::NewAccount::passwordless("partial-upload"),
+        )
+        .await
+        .unwrap();
+        instance.enable_sync().await.unwrap();
+        let handler = Arc::new(crate::sync::handler::SyncHandlerImpl::new(
+            instance.clone(),
+            instance.sync().unwrap().sync_tree_root_id().clone(),
+        ));
+        let builder = IrohTransport::builder()
+            .relay_mode(RelayMode::Disabled)
+            .portmapper_config(PortmapperConfig::Disabled)
+            .mdns(false)
+            .n0_dns(false);
+        let server = builder.clone().build().unwrap();
+        let client = builder.build().unwrap();
+        server.start_server(handler).await.unwrap();
+        let address = Address::iroh(server.get_server_address().unwrap());
+        let entry = crate::Entry::root_builder()
+            .set_metadata(b"incomplete upload must stay absent".to_vec())
+            .build()
+            .unwrap();
+        let id = entry.id();
+        let mut bytes = Vec::new();
+        framing::write_request(&mut bytes, &SyncRequest::SendEntries(vec![entry]))
+            .await
+            .unwrap();
+        let mut input = bytes.as_slice();
+        let mut decoder = framing::Decoder::default();
+        let mut end_bytes = 0;
+        while !input.is_empty() {
+            if let Some(frame) = decoder.next(&mut input).unwrap()
+                && matches!(frame, framing::Frame::UploadEnd { .. })
+            {
+                end_bytes = framing::encode(&frame).unwrap().len();
+            }
+        }
+        assert!(end_bytes > 0);
+        bytes.truncate(bytes.len() - end_bytes);
+        let ticket = <EndpointTicket as Ticket>::decode_string(&address.address).unwrap();
+        let endpoint = client.ensure_endpoint().await.unwrap();
+        let connection = endpoint
+            .connect(ticket.endpoint_addr().clone(), SYNC_ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
+        send.write_all(&bytes).await.unwrap();
+        send.finish().unwrap();
+        let response = timeout(
+            std::time::Duration::from_secs(5),
+            recv.read_to_end(framing::MAX_FRAME_BYTES),
+        )
+        .await
+        .expect("incomplete request must terminate promptly");
+        assert!(
+            response.is_err() || response.unwrap().is_empty(),
+            "incomplete upload cannot receive a success receipt"
+        );
+        assert!(
+            !instance.has_entry(&id).await,
+            "transport ingested an upload without End"
+        );
+        let huge = crate::Entry::root_builder()
+            .set_subtree_data("large", vec![255u8; framing::MAX_FRAME_BYTES])
+            .build()
+            .unwrap();
+        let huge_id = huge.id();
+        let error = client.send_entries(&address, &[huge]).await.unwrap_err();
+        assert!(
+            matches!(error, crate::Error::Sync(e) if matches!(*e, SyncError::EntryTooLarge { .. }))
+        );
+        assert!(!instance.has_entry(&huge_id).await);
         server.stop_server().await.unwrap();
         endpoint.close().await;
     }

@@ -1293,3 +1293,45 @@ async fn join_concurrent_approval_and_routing_are_idempotent() -> Result<()> {
     assert_eq!(after, sync.sync_tree.snapshot().await?);
     Ok(())
 }
+
+#[tokio::test]
+async fn ordinary_response_completion_uses_the_verified_transfer_barrier() -> Result<()> {
+    let (_source, tree, entries) = source().await?;
+    let mut incomplete = entries.clone();
+    incomplete.remove(1);
+    let (local, sync, _) = destination(Arc::new(InMemory::new())).await?;
+    let SyncResponse::Bootstrap(response) = bootstrap(&tree, &incomplete) else {
+        unreachable!()
+    };
+    assert!(
+        sync.handle_bootstrap_response(response).await.is_err(),
+        "ordinary bootstrap accepted an unverified supplied closure"
+    );
+    assert!(
+        !sync
+            .tree_pull_tips(&tree)
+            .await?
+            .tips()
+            .contains(&entries.last().unwrap().id()),
+        "raw unverified tips cannot acknowledge received coverage on retry"
+    );
+    assert_eq!(
+        local
+            .require_local_engine()?
+            .get_verification_status(&entries.last().unwrap().id())
+            .await?,
+        VerificationStatus::Unverified
+    );
+    let SyncResponse::Bootstrap(response) = bootstrap(&tree, &entries) else {
+        unreachable!()
+    };
+    sync.handle_bootstrap_response(response).await?;
+    assert_eq!(
+        local
+            .require_local_engine()?
+            .get_verification_status(&entries.last().unwrap().id())
+            .await?,
+        VerificationStatus::Verified
+    );
+    Ok(())
+}

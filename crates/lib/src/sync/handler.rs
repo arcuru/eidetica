@@ -889,7 +889,10 @@ impl SyncHandlerImpl {
             let new_challenge = generate_challenge();
 
             // Get available trees for discovery
-            let available_trees = self.get_available_trees().await;
+            let available_trees = match self.get_available_trees().await {
+                Ok(trees) => trees,
+                Err(error) => return SyncResponse::Error(error.to_string()),
+            };
 
             // Register the peer and add their addresses to our peer list
             match self.register_incoming_peer(&request.public_key, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address).await {
@@ -1035,13 +1038,19 @@ impl SyncHandlerImpl {
             return Err(SyncResponse::Error(format!("Tree not found: {tree_id}")));
         }
 
-        // Get the root entry (to verify tree exists)
+        // Check root existence without allocating its body before authorization.
         let instance = match self.instance() {
             Ok(i) => i,
             Err(e) => return Err(SyncResponse::Error(format!("Instance dropped: {e}"))),
         };
-        let _root_entry = match instance.backend().get(tree_id).await {
-            Ok(entry) => entry,
+        let _root_status = match instance
+            .backend()
+            .local_engine()
+            .expect("sync requires local backend")
+            .get_verification_status(tree_id)
+            .await
+        {
+            Ok(status) => status,
             Err(e) if e.is_not_found() => {
                 warn!(
                     tree_id = %tree_id,

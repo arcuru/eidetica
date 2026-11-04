@@ -210,6 +210,117 @@ impl HttpTransport {
     }
 }
 
+impl HttpTransport {
+    async fn send_framed(
+        &self,
+        address: &Address,
+        request: &SyncRequest,
+        source: Option<&framing::UploadSource<'_>>,
+    ) -> Result<SyncResponse> {
+        if !self.can_handle_address(address) {
+            return Err(SyncError::UnsupportedTransport {
+                transport_type: address.transport_type.clone(),
+            }
+            .into());
+        }
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+        tokio::time::timeout_at(deadline, async {
+            let mut upload_permit = None;
+            let url = format!("http://{}/api/v1", address.address);
+            let mut response = if source.is_some() || matches!(request, SyncRequest::SendEntries(_))
+            {
+                upload_permit = Some(framing::admit_outbound()?);
+                // One bounded bridge lets an owned reqwest body be driven by
+                // a borrowed input list, without a whole-transfer clone or a
+                // detached producer task. Caller drop cancels both futures.
+                let (reader, mut writer) = tokio::io::duplex(framing::MAX_FRAME_BYTES);
+                let body = futures_util::stream::try_unfold(reader, |mut reader| async move {
+                    let mut bytes = vec![0u8; 8192];
+                    let n = reader.read(&mut bytes).await?;
+                    bytes.truncate(n);
+                    Ok::<_, std::io::Error>((n != 0).then_some((bytes, reader)))
+                });
+                let send = self
+                    .client
+                    .post(&url)
+                    .header("content-type", "application/eidetica-peer-v1")
+                    .body(reqwest::Body::wrap_stream(body))
+                    .send();
+                let write = async {
+                    match source {
+                        Some(source) => {
+                            framing::write_upload(&mut writer, source, deadline).await?
+                        }
+                        None => framing::write_request(&mut writer, request).await?,
+                    }
+                    writer.shutdown().await?;
+                    Ok::<_, crate::Error>(())
+                };
+                let (_, response) = tokio::try_join!(write, async {
+                    send.await.map_err(|e| {
+                        timeout_error(&e, &address.address)
+                            .unwrap_or_else(|| SyncError::ConnectionFailed {
+                                address: address.address.clone(),
+                                reason: e.to_string(),
+                            })
+                            .into()
+                    })
+                })?;
+                response
+            } else {
+                // Control requests are one capped frame. In particular, a
+                // silent address must not reserve a history collector slot
+                // and starve the live winner in an existing address race.
+                self.client
+                    .post(&url)
+                    .header("content-type", "application/eidetica-peer-v1")
+                    .body(framing::encode(&framing::Frame::Request(request.clone()))?)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        timeout_error(&e, &address.address).unwrap_or_else(|| {
+                            SyncError::ConnectionFailed {
+                                address: address.address.clone(),
+                                reason: e.to_string(),
+                            }
+                        })
+                    })?
+            };
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(SyncError::PeerProtocolUnsupported.into());
+            }
+            if !response.status().is_success() {
+                return Err(SyncError::Network(format!(
+                    "Server returned error: {}",
+                    response.status()
+                ))
+                .into());
+            }
+            let _permit = match upload_permit {
+                Some(permit) => permit,
+                None => framing::admit_outbound()?,
+            };
+            let mut collector = framing::Collector::for_request(request, deadline)?;
+            let mut decoder = framing::Decoder::default();
+            while let Some(bytes) = response.chunk().await.map_err(|e| {
+                timeout_error(&e, &address.address)
+                    .unwrap_or_else(|| SyncError::Network(format!("Failed to read response: {e}")))
+            })? {
+                framing::receive_chunk(&mut decoder, &mut collector, &bytes)?;
+            }
+            collector.finish(decoder)
+        })
+        .await
+        .map_err(|_| SyncError::Timeout {
+            address: address.address.clone(),
+            phase: TimeoutPhase::Request,
+            elapsed: REQUEST_TIMEOUT,
+        })?
+    }
+}
+
 #[async_trait]
 impl SyncTransport for HttpTransport {
     fn transport_type(&self) -> &'static str {
@@ -320,101 +431,23 @@ impl SyncTransport for HttpTransport {
     }
 
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
-        if !self.can_handle_address(address) {
-            return Err(SyncError::UnsupportedTransport {
-                transport_type: address.transport_type.clone(),
-            }
-            .into());
-        }
+        self.send_framed(address, request, None).await
+    }
 
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
-        tokio::time::timeout_at(deadline, async {
-            let mut upload_permit = None;
-            let url = format!("http://{}/api/v1", address.address);
-            let mut response = if matches!(request, SyncRequest::SendEntries(_)) {
-                upload_permit = Some(framing::admit_outbound()?);
-                // One bounded bridge lets an owned reqwest body be driven by
-                // a borrowed input list, without a whole-transfer clone or a
-                // detached producer task. Caller drop cancels both futures.
-                let (reader, mut writer) = tokio::io::duplex(framing::MAX_FRAME_BYTES);
-                let body = futures_util::stream::try_unfold(reader, |mut reader| async move {
-                    let mut bytes = vec![0u8; 8192];
-                    let n = reader.read(&mut bytes).await?;
-                    bytes.truncate(n);
-                    Ok::<_, std::io::Error>((n != 0).then_some((bytes, reader)))
-                });
-                let send = self
-                    .client
-                    .post(&url)
-                    .header("content-type", "application/eidetica-peer-v1")
-                    .body(reqwest::Body::wrap_stream(body))
-                    .send();
-                let write = async {
-                    framing::write_request(&mut writer, request).await?;
-                    writer.shutdown().await?;
-                    Ok::<_, crate::Error>(())
-                };
-                let (_, response) = tokio::try_join!(write, async {
-                    send.await.map_err(|e| {
-                        timeout_error(&e, &address.address)
-                            .unwrap_or_else(|| SyncError::ConnectionFailed {
-                                address: address.address.clone(),
-                                reason: e.to_string(),
-                            })
-                            .into()
-                    })
-                })?;
-                response
-            } else {
-                // Control requests are one capped frame. In particular, a
-                // silent address must not reserve a history collector slot
-                // and starve the live winner in an existing address race.
-                self.client
-                    .post(&url)
-                    .header("content-type", "application/eidetica-peer-v1")
-                    .body(framing::encode(&framing::Frame::Request(request.clone()))?)
-                    .send()
-                    .await
-                    .map_err(|e| {
-                        timeout_error(&e, &address.address).unwrap_or_else(|| {
-                            SyncError::ConnectionFailed {
-                                address: address.address.clone(),
-                                reason: e.to_string(),
-                            }
-                        })
-                    })?
-            };
-            if response.status() == reqwest::StatusCode::NOT_FOUND {
-                return Err(SyncError::PeerProtocolUnsupported.into());
-            }
-            if !response.status().is_success() {
-                return Err(SyncError::Network(format!(
-                    "Server returned error: {}",
-                    response.status()
-                ))
-                .into());
-            }
-            let _permit = match upload_permit {
-                Some(permit) => permit,
-                None => framing::admit_outbound()?,
-            };
-            let mut collector = framing::Collector::for_request(request, deadline)?;
-            let mut decoder = framing::Decoder::default();
-            while let Some(bytes) = response.chunk().await.map_err(|e| {
-                timeout_error(&e, &address.address)
-                    .unwrap_or_else(|| SyncError::Network(format!("Failed to read response: {e}")))
-            })? {
-                framing::receive_chunk(&mut decoder, &mut collector, &bytes)?;
-            }
-            collector.finish(decoder)
-        })
-        .await
-        .map_err(|_| SyncError::Timeout {
-            address: address.address.clone(),
-            phase: TimeoutPhase::Request,
-            elapsed: REQUEST_TIMEOUT,
-        })?
+    async fn send_upload(
+        &self,
+        address: &Address,
+        source: &framing::UploadSource<'_>,
+    ) -> Result<SyncResponse> {
+        self.send_framed(address, &SyncRequest::SendEntries(vec![]), Some(source))
+            .await
+    }
+
+    async fn send_entries(&self, address: &Address, entries: &[crate::Entry]) -> Result<()> {
+        framing::acknowledged(
+            self.send_upload(address, &framing::UploadSource::Entries(entries))
+                .await?,
+        )
     }
 
     fn is_server_running(&self) -> bool {
@@ -562,5 +595,82 @@ mod compatibility_tests {
             .await
             .unwrap()
             .unwrap();
+    }
+    #[tokio::test]
+    async fn peer_paging_http_partial_upload_and_oversized_root_are_not_ingested() {
+        let (instance, _) = crate::Instance::create_backend(
+            Box::new(crate::backend::database::InMemory::new()),
+            crate::NewAccount::passwordless("partial-upload"),
+        )
+        .await
+        .unwrap();
+        instance.enable_sync().await.unwrap();
+        let handler = Arc::new(crate::sync::handler::SyncHandlerImpl::new(
+            instance.clone(),
+            instance.sync().unwrap().sync_tree_root_id().clone(),
+        ));
+        let server = HttpTransport::builder()
+            .bind("127.0.0.1:0")
+            .build_sync()
+            .unwrap();
+        let client = HttpTransport::new().unwrap();
+        server.start_server(handler).await.unwrap();
+        let address = Address::http(server.get_server_address().unwrap());
+        let entry = crate::Entry::root_builder()
+            .set_metadata(b"incomplete upload must stay absent".to_vec())
+            .build()
+            .unwrap();
+        let id = entry.id();
+        let mut bytes = Vec::new();
+        framing::write_request(&mut bytes, &SyncRequest::SendEntries(vec![entry]))
+            .await
+            .unwrap();
+        let mut input = bytes.as_slice();
+        let mut decoder = framing::Decoder::default();
+        let mut end_bytes = 0;
+        while !input.is_empty() {
+            if let Some(frame) = decoder.next(&mut input).unwrap()
+                && matches!(frame, framing::Frame::UploadEnd { .. })
+            {
+                end_bytes = framing::encode(&frame).unwrap().len();
+            }
+        }
+        assert!(end_bytes > 0);
+        bytes.truncate(bytes.len() - end_bytes);
+        let response = build_client()
+            .unwrap()
+            .post(format!("http://{}/api/v1", address.address))
+            .body(bytes)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert!(response.len() <= framing::MAX_FRAME_BYTES);
+        let mut collector = framing::Collector::for_request(
+            &SyncRequest::SendEntries(vec![]),
+            tokio::time::Instant::now() + REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        assert!(
+            framing::receive_chunk(&mut framing::Decoder::default(), &mut collector, &response)
+                .is_err()
+        );
+        assert!(
+            !instance.has_entry(&id).await,
+            "transport ingested an upload without End"
+        );
+        let huge = crate::Entry::root_builder()
+            .set_subtree_data("large", vec![255u8; framing::MAX_FRAME_BYTES])
+            .build()
+            .unwrap();
+        let huge_id = huge.id();
+        let error = client.send_entries(&address, &[huge]).await.unwrap_err();
+        assert!(
+            matches!(error, crate::Error::Sync(e) if matches!(*e, SyncError::EntryTooLarge { .. }))
+        );
+        assert!(!instance.has_entry(&huge_id).await);
+        server.stop_server().await.unwrap();
     }
 }

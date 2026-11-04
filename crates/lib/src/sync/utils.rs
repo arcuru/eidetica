@@ -12,6 +12,29 @@ use crate::{
     sync::error::SyncError,
 };
 
+/// Shared finite-response completion barrier, after transport End/clean EOF.
+/// Local verification may retain data after a failure; that is not successful
+/// synchronization, routing publication, or permission to send reverse data.
+pub(super) async fn store_verified_response_entries(
+    instance: &crate::Instance,
+    tree_id: &ID,
+    entries: Vec<Entry>,
+) -> Result<()> {
+    let ids: Vec<_> = entries.iter().map(Entry::id).collect();
+    instance.put_remote_entries(tree_id, entries).await?;
+    let backend = instance.require_local_engine()?;
+    for id in ids {
+        let status = backend.get_verification_status(&id).await?;
+        if status != crate::backend::VerificationStatus::Verified {
+            return Err(SyncError::InvalidEntry(format!(
+                "requested transfer entry {id} is {status:?}, not Verified"
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Collect all missing ancestors for given entry IDs using DAG traversal.
 ///
 /// This function performs a breadth-first traversal of the DAG to find

@@ -488,6 +488,12 @@ pub trait BackendImpl: Send + Sync + Any {
     /// Returns an owned copy to support concurrent access with internal synchronization.
     async fn get(&self, id: &ID) -> Result<Entry>;
 
+    /// Fetch one queued peer Entry with a finite raw/encoded allocation ceiling
+    /// and the caller's existing whole-exchange deadline. No unbounded fallback.
+    async fn peer_entry(&self, _id: &ID, _deadline: tokio::time::Instant) -> Result<Entry> {
+        Err(BackendError::DatabaseHistoryPageUnsupported.into())
+    }
+
     /// Gets the verification status of an entry.
     ///
     /// # Arguments

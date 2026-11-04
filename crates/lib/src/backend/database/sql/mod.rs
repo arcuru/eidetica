@@ -1060,6 +1060,10 @@ impl BackendImpl for SqlxBackend {
         storage::get(self, id).await
     }
 
+    async fn peer_entry(&self, id: &ID, deadline: tokio::time::Instant) -> Result<Entry> {
+        traversal::peer_entry(self, id, deadline).await
+    }
+
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
         storage::get_verification_status(self, id).await
     }

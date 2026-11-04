@@ -394,3 +394,26 @@ async fn database_history_pages_refuse_oversized_input_frontiers() {
         );
     }
 }
+
+#[tokio::test]
+async fn database_peer_entry_reads_refuse_missing_expired_and_oversized_bodies() {
+    let b = test_backend().await;
+    let (tree, _, entries) = graph(&*b, 10).await;
+    assert_eq!(b.peer_entry(&tree, deadline()).await.unwrap(), entries[0]);
+    assert!(b.peer_entry(&tree, Instant::now()).await.is_err());
+    assert!(
+        b.peer_entry(&ID::from_bytes("missing peer body"), deadline())
+            .await
+            .unwrap_err()
+            .is_not_found()
+    );
+    let huge = Entry::root_builder()
+        .set_subtree_data("data", vec![255u8; 65 * 1024 * 1024])
+        .build()
+        .unwrap();
+    let id = huge.id();
+    b.put(huge).await.unwrap();
+    assert!(
+        matches!(b.peer_entry(&id, deadline()).await.unwrap_err(), Error::Backend(e) if matches!(*e, BackendError::EntryTooLarge { .. }))
+    );
+}

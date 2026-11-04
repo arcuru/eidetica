@@ -104,7 +104,13 @@ framing and `Ack`/`Count` are not Verified proofs.
 
 Input-list uploads use one descriptor and exclusive offsets per Database in
 sorted Database order, retaining input order and idempotent duplicates within
-that Database. An incomplete submission is not ingested. Both transports keep a
+that Database. History-backed reverse sends use native Database pages and a
+frozen target/known boundary, without collecting an ancestor-body vector first.
+Their descriptor omits the advance entry count; a contiguous terminal page and
+an exact End count are still required. Queued pushes retain IDs and fetch one
+bounded body at a time; retries retain those IDs rather than cloning bodies.
+Direct caller-owned entries remain owned across retries, even if never stored
+locally. An incomplete submission is not ingested. Both transports keep a
 30-second absolute exchange deadline; successful reads/pages do not extend it.
 HTTP retains its connect/read-stall bounds. Dropping a body or the caller's
 response receiver cancels production. Inbound operations and outbound collectors
@@ -113,10 +119,19 @@ released before network backpressure. Legacy `/api/v0` and `eidetica/v0` only
 return bounded unsupported-protocol errors; no legacy history fallback occurs.
 This is a wire version change, not a mixed-fleet deployment procedure.
 
+Foreground, background and ticket response paths require every supplied Entry
+to become locally Verified before reporting completion or sending reverse data.
+Pulls advertise only the retained Verified prefix as known, not raw tips left by
+a failed local verification attempt. Missing delegated history remains
+Unverified and is not implicitly exported; it needs its own authorized transfer.
+Discovery counts also reuse bounded Database pages rather than an independent
+unbounded body walk.
+
 Remaining limits: logical response consumers and incoming upload collectors
-still retain O(total entries) vectors. Input-list framing retains references and
-one page; HTTP additionally uses one bounded 1 MiB upload bridge. Reverse
-`collect_ancestors_to_send` and queued/retry body producers still materialize
-vectors before framing, and the existing ID queue has no byte cap. Those source
-allocations are not made bounded merely by the wire codec. Sparse-replica
+still retain O(total entries) vectors. Input-list framing retains indices and
+one page; HTTP additionally uses one bounded 1 MiB upload bridge. Caller-owned
+input vectors, the existing ID queue/retry inventory, root-ID inventory and
+local authorization/settings materialization are not total-memory bounded by
+this codec. Native SQL reads retain a separate 64 MiB raw-body guard before
+decoding, but that never permits an oversized wire singleton. Sparse-replica
 reconciliation and public consumer streaming are not implemented here.

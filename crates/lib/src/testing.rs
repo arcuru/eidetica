@@ -1105,6 +1105,24 @@ impl SyncTransport for SimTransport {
         Ok(handler.handle_request(request, &context).await)
     }
 
+    async fn send_upload(
+        &self,
+        address: &Address,
+        source: &crate::sync::transports::framing::UploadSource<'_>,
+    ) -> Result<SyncResponse> {
+        use crate::sync::transports::framing;
+        use tokio::io::AsyncWriteExt;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let (mut reader, mut writer) = tokio::io::duplex(framing::MAX_FRAME_BYTES);
+        let write = async {
+            framing::write_upload(&mut writer, source, deadline).await?;
+            writer.shutdown().await?;
+            Ok::<_, crate::Error>(())
+        };
+        let (_, request) = tokio::try_join!(write, framing::read_request(&mut reader, deadline))?;
+        self.send_request(address, &request).await
+    }
+
     fn is_server_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }

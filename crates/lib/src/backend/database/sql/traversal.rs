@@ -1479,3 +1479,60 @@ async fn history_delta_until(
     tx.commit().await.map_err(history_sql_error)?;
     page.finish()
 }
+
+/// Fetch a single queued body under the same SQL deadline/raw guards as history.
+pub async fn peer_entry(
+    backend: &SqlxBackend,
+    id: &ID,
+    deadline: tokio::time::Instant,
+) -> Result<Entry> {
+    use crate::backend::history_page::{MAX_ENTRY_RAW_BYTES, resource};
+    tokio::time::timeout_at(deadline, async {
+        let mut tx = backend.pool().begin().await.map_err(history_sql_error)?;
+        history_statement_deadline(&mut tx, backend.kind, deadline).await?;
+        let (body, raw_size): (Option<Vec<u8>>, i64) = sqlx::query_as(
+            "SELECT CASE WHEN length(entry_cbor) <= $2 THEN entry_cbor ELSE NULL END,
+             CAST(length(entry_cbor) AS BIGINT) FROM entries WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .bind(MAX_ENTRY_RAW_BYTES as i64)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(history_sql_error)?
+        .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?;
+        if raw_size > MAX_ENTRY_RAW_BYTES as i64 {
+            return Err(BackendError::EntryTooLarge {
+                id: id.clone(),
+                encoded_bytes: MAX_ENTRY_RAW_BYTES + 1,
+            }
+            .into());
+        }
+        let entry: Entry = serde_ipld_dagcbor::from_slice(
+            &body.ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?,
+        )
+        .map_err(|e| BackendError::SqlxError {
+            reason: format!("CBOR deserialization failed: {e}"),
+            source: None,
+        })?;
+        if entry.id_ref() != id {
+            return Err(BackendError::EntryValidationFailed {
+                entry_id: id.clone(),
+                reason: "Stored peer Entry does not match ID".into(),
+            }
+            .into());
+        }
+        if crate::encoding::json_encoded_len(&entry, crate::backend::MAX_DATABASE_PAGE_ENCODING)?
+            .is_none()
+        {
+            return Err(BackendError::EntryTooLarge {
+                id: id.clone(),
+                encoded_bytes: crate::backend::MAX_DATABASE_PAGE_ENCODING + 1,
+            }
+            .into());
+        }
+        tx.commit().await.map_err(history_sql_error)?;
+        Ok(entry)
+    })
+    .await
+    .map_err(|_| resource("peer Entry deadline", 0))?
+}
