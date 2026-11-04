@@ -44,7 +44,7 @@ pub use clock::{ClockHold, FixedClock};
 pub use database::{Database, DatabaseKey};
 pub use entry::{Entry, ID};
 pub use height::HeightStrategy;
-pub use instance::{Instance, NewAccount, WeakInstance, WriteCallback, WriteEvent, WriteSource};
+pub use instance::{Instance, NewAccount, WeakInstance, WriteCallback, WriteSource};
 pub use snapshot::Snapshot;
 pub use store::{Registered, Store};
 #[cfg(any(test, feature = "testing"))]
