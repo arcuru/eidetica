@@ -40,13 +40,13 @@ use crate::auth::crypto::PublicKey;
 use crate::auth::types::{Permission, SigKey};
 use crate::backend::{InstanceMetadata, RecordPage, RecordRange, StoreStateRequest};
 use crate::entry::{Entry, ID};
-use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
-/// without notice between releases.
+/// without notice between releases. The required revision below makes this
+/// breaking watch shape v0.1; clients and daemons upgrade together.
 ///
 /// Updated peers reject unknown operations with [`ServiceResponse::Unsupported`],
 /// fail one call for unknown responses, and ignore unknown optional notification
@@ -55,6 +55,10 @@ use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 /// unknown variants; keeping v0 does not retroactively make them extensible.
 /// `#[non_exhaustive]` protects Rust source compatibility, not the wire.
 pub const PROTOCOL_VERSION: u32 = 0;
+
+/// Breaking revision within unstable v0. Both peers must speak v0.1;
+/// no legacy watch payload or visibility fallback is supported.
+pub const PROTOCOL_REVISION: u32 = 1;
 
 /// Maximum frame size: 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
@@ -69,12 +73,14 @@ pub const MAX_RECORD_PAGE_BYTES: u32 = 4 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handshake {
     pub protocol_version: u32,
+    pub protocol_revision: u32,
 }
 
 /// Handshake acknowledgment sent by the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakeAck {
     pub protocol_version: u32,
+    pub protocol_revision: u32,
 }
 
 // ===========================================================================
@@ -183,9 +189,9 @@ pub enum DatabaseOp {
     /// verification pass against the tree's pinned auth is the boundary). The
     /// `required_permission()` value below is advisory only for this variant.
     SubmitSignedEntry { entry: Box<Entry> },
-    /// The database's Verified-frontier tips (server runs `Database::snapshot`
-    /// on its local instance). Gate Read.
-    GetVerifiedTips,
+    /// The selected frontier (server runs `Database::snapshot` in `scope`).
+    /// Gate Read; no client-supplied verification labels.
+    GetSnapshot { scope: ReadScope },
     /// Server-materialized merged state of an **unencrypted** store, against
     /// the server's own Verified frontier. Gate Read.
     GetStoreState { store: String },
@@ -222,37 +228,17 @@ pub enum DatabaseOp {
     /// enum's stack footprint small — `InstanceMetadata` dominates its size.
     SetInstanceMetadata { metadata: Box<InstanceMetadata> },
 
-    /// Subscribe this connection to write notifications for the request's
-    /// `root_id`, with an explicit initial cursor (`tips`).
-    ///
-    /// After the server returns `Ok`, every write the daemon observes on
-    /// that tree (local commits via `SubmitSignedEntry`, sync ingest via
-    /// `put_remote_entries`, etc.) is pushed back to this connection as a
-    /// [`Notification::DatabaseWrite`] frame. The frame's `previous_tips`
-    /// is computed from the daemon-side subscription cursor — initially
-    /// the `tips` supplied here, and advanced to each event's `post_tips`
-    /// as the daemon fires.
-    ///
-    /// **Cursor semantics**: pass the tips you just read your initial
-    /// state at. The first notification's `previous_tips` will exactly
-    /// equal `tips`, so the client can diff `tips → notification.post_tips`
-    /// to discover anything that happened between the initial read and
-    /// the daemon recognising the subscription. An empty `tips` means
-    /// "I have no initial state; start from the daemon's current view"
-    /// (the first notification's `previous_tips` will be the daemon's
-    /// tips at subscribe-time, captured under the per-tree lock).
-    ///
-    /// Idempotent: re-subscribing a tree this connection already
-    /// subscribed to is a no-op (`tips` on the re-call is ignored;
-    /// the cursor stays at whatever it was). Gate Read on `root_id`.
-    /// Subscriptions are cleared automatically when the connection
-    /// drops.
-    SubscribeWrites { tips: Snapshot },
+    /// Register a distinct handle-scoped watch. The initial selected Snapshot
+    /// is ordered before updates, including on a quiet tree. IDs are unique
+    /// within a connection, not shared by tree or visibility. Gate Read.
+    SubscribeWrites {
+        subscription_id: u64,
+        scope: ReadScope,
+    },
 
-    /// Stop pushing write notifications for the request's `root_id` to this
-    /// connection. Idempotent: unsubscribing a tree that wasn't subscribed
-    /// is a no-op. Gate Read on `root_id`.
-    UnsubscribeWrites,
+    /// Release exactly this connection's registration. The request must use
+    /// the original tree and identity; an absent ID is a no-op. Gate Read.
+    UnsubscribeWrites { subscription_id: u64 },
 
     /// Return a point-in-time locator for the request's `root_id`.
     /// Gate Read.
@@ -280,7 +266,7 @@ impl DatabaseOp {
             // dispatcher special-cases this so the value here is advisory.
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
             DatabaseOp::BeginTransaction { .. }
-            | DatabaseOp::GetVerifiedTips
+            | DatabaseOp::GetSnapshot { .. }
             | DatabaseOp::GetStoreState { .. }
             | DatabaseOp::GetStoreEntries { .. }
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
@@ -291,7 +277,7 @@ impl DatabaseOp {
             | DatabaseOp::StoreStateRecordGet { .. }
             | DatabaseOp::StoreStateRecordScan { .. }
             | DatabaseOp::SubscribeWrites { .. }
-            | DatabaseOp::UnsubscribeWrites
+            | DatabaseOp::UnsubscribeWrites { .. }
             | DatabaseOp::CreateTicket => Permission::Read,
         }
     }
@@ -430,64 +416,21 @@ pub enum ServiceRequest {
 /// for them with a [`DatabaseOp::SubscribeWrites`] and unsubscribes by
 /// dropping the connection or sending [`DatabaseOp::UnsubscribeWrites`].
 ///
-/// Notifications are **triggered only by settled-state writes** — i.e.
-/// entries that have passed local verification on the daemon. An entry
-/// that arrives `Unverified` (via sync, or as a `SubmitSignedEntry` body)
-/// is ingested silently and only produces a notification once the daemon's
-/// verification pass promotes it to `Verified`.
+/// Each registration inherits its handle's selected visibility. Only the
+/// latest Snapshot is sent: no delivery brackets, entries or source labels.
+/// Intermediate updates may coalesce; callers own processing checkpoints.
+/// The initial Snapshot is always ordered first. Selected-frontier equality
+/// suppresses empty changes (including promotions invisible to an opt-in view).
 ///
-/// **This does not mean the bracket contains only Verified entries.** The
-/// cursors are raw DAG frontiers (`Backend::snapshot`), not the Verified
-/// frontier, so an `Unverified` or `Failed` entry sitting as a raw tip
-/// falls inside every subsequent bracket and
-/// [`Database::ids_added`](crate::Database::ids_added) will enumerate it.
-/// A subscriber that expands a bracket and fetches the IDs can therefore
-/// observe entries that failed the daemon's auth settings. Consumers that
-/// care must filter on verification status themselves; locally that is
-/// `Backend::get_verification_status`, and over the wire there is
-/// currently no way to do it at all — treat bracket-derived IDs as
-/// untrusted until read back through a gated path.
-///
-/// A second consequence of the raw-frontier cursor: because it advances
-/// past a still-`Unverified` tip, a later `verify()` that promotes that
-/// entry fires with `previous_tips == post_tips` for the subscriber, so
-/// `ids_added` returns empty and the promotion is never signalled. An
-/// entry can be reported once while untrusted and never mentioned again.
-///
-/// The frame carries cursor brackets only — no entry payloads, no entry
-/// IDs. Subscribers that need to enumerate the new entries expand the
-/// brackets locally via
-/// [`Database::ids_added`](crate::Database::ids_added). This decision
-/// has two consequences:
-///
-/// 1. **Security**: per-tree Read is gated once at `SubscribeWrites`; the
-///    publisher fan-out does not re-check on each event. Shipping
-///    cursors only means a subscriber whose permission is revoked
-///    mid-session can at most learn that *some* write happened on the
-///    tree — never the contents of those writes, which would only reach
-///    the client through an explicit, currently-gated read.
-/// 2. **Efficiency**: sync ingest can batch many entries; a cursor pair
-///    is constant-size regardless of batch width.
+/// Per-tree Read is checked at subscribe time. As before, revocation can leave
+/// a cursor-only notice visible, never entry contents: each explicit read is
+/// gated against current authorization. This does not grant sync any opt-in view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Notification {
-    /// A settled-state write landed on the daemon for `root_id`.
-    ///
-    /// - `previous_tips` is the daemon-side subscription cursor at the
-    ///   moment of this fire — i.e. the `previous_tips` of the event
-    ///   the daemon dispatched to this subscription's callback. Useful
-    ///   for thin-forwarder topologies and trace/debug.
-    /// - `post_tips` is the daemon's tips *after* this write. The
-    ///   client uses it to advance every local per-callback cursor for
-    ///   this tree — each local callback's next event will have
-    ///   `previous_tips = post_tips` (the cursor moves forward by
-    ///   exactly one event).
-    /// - `source` distinguishes local-vs-sync for consumers that want
-    ///   to branch.
     DatabaseWrite {
         root_id: ID,
-        previous_tips: Snapshot,
-        post_tips: Snapshot,
-        source: WriteSource,
+        subscription_id: u64,
+        snapshot: Snapshot,
     },
 }
 
@@ -608,7 +551,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "StoreStateRecordScan",
     "BeginTransaction",
     "SubmitSignedEntry",
-    "GetVerifiedTips",
+    "GetSnapshot",
     "GetStoreState",
     "GetStoreEntries",
     "GetStoreTipsUpToEntries",
@@ -871,27 +814,29 @@ mod tests {
     }
 
     #[test]
-    fn v0_known_wire_fixtures_are_unchanged() {
+    fn v0_1_known_wire_fixtures_are_pinned() {
         assert_eq!(
             serde_json::to_string(&Handshake {
-                protocol_version: 0
+                protocol_version: 0,
+                protocol_revision: PROTOCOL_REVISION,
             })
             .unwrap(),
-            r#"{"protocol_version":0}"#
+            r#"{"protocol_version":0,"protocol_revision":1}"#
         );
         assert_eq!(
             serde_json::to_string(&HandshakeAck {
-                protocol_version: 0
+                protocol_version: 0,
+                protocol_revision: PROTOCOL_REVISION,
             })
             .unwrap(),
-            r#"{"protocol_version":0}"#
+            r#"{"protocol_version":0,"protocol_revision":1}"#
         );
         for fixture in [
             r#""GetInstanceMetadata""#,
             r#"{"TrustedLoginUser":{"username":"alice"}}"#,
             r#"{"TrustedLoginProve":{"signature":[1,2,3]}}"#,
             r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"BeginTransaction":{"stores":["data"],"scope":"Verified"}}}}"#,
-            r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":"GetVerifiedTips"}}"#,
+            r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"GetSnapshot":{"scope":"Verified"}}}}"#,
             r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"VerifyEntrySignature":{"id":""}}}}"#,
         ] {
             let IncomingRequest::Known(request) = serde_json::from_str(fixture).unwrap() else {
@@ -907,7 +852,7 @@ mod tests {
             r#"{"Response":{"InstanceMetadata":null}}"#,
             r#"{"Response":{"SessionKeyChallenge":{"challenge":[1,2,3]}}}"#,
             r#"{"Response":{"Error":{"module":"instance","kind":"AuthenticationRequired","message":"authentication required"}}}"#,
-            r#"{"Notification":{"DatabaseWrite":{"root_id":"","previous_tips":[],"post_tips":[],"source":"Remote"}}}"#,
+            r#"{"Notification":{"DatabaseWrite":{"root_id":"","subscription_id":42,"snapshot":[]}}}"#,
         ] {
             let frame = match serde_json::from_str::<IncomingServerFrame>(fixture).unwrap() {
                 IncomingServerFrame::Response(response) => ServerFrame::Response(response),
@@ -963,6 +908,7 @@ mod tests {
     fn test_handshake_serde() {
         let h = Handshake {
             protocol_version: PROTOCOL_VERSION,
+            protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: Handshake = serde_json::from_str(&json).unwrap();
@@ -973,6 +919,7 @@ mod tests {
     fn test_handshake_ack_serde() {
         let h = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
+            protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: HandshakeAck = serde_json::from_str(&json).unwrap();
@@ -1156,52 +1103,70 @@ mod tests {
     }
 
     #[test]
-    fn test_database_op_subscribe_writes_serde() {
-        let req = wrap(DatabaseOp::SubscribeWrites {
-            tips: Snapshot::new(vec![ID::from_bytes("t1"), ID::from_bytes("t2")]),
-        });
-        let json = serde_json::to_string(&req).unwrap();
-        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        match unwrap_op(req2) {
-            DatabaseOp::SubscribeWrites { tips } => assert_eq!(tips.len(), 2),
-            other => panic!("expected SubscribeWrites, got {other:?}"),
+    fn snapshot_watch_v0_1_rejects_legacy_required_payloads() {
+        assert!(serde_json::from_str::<Handshake>(r#"{"protocol_version":0}"#).is_err());
+        assert!(serde_json::from_str::<HandshakeAck>(r#"{"protocol_version":0}"#).is_err());
+        assert!(serde_json::from_str::<DatabaseOp>(r#"{"SubscribeWrites":{"tips":[]}}"#).is_err());
+        assert!(serde_json::from_str::<Notification>(r#"{"DatabaseWrite":{"root_id":"","previous_tips":[],"post_tips":[],"source":"Remote"}}"#).is_err());
+        assert!(
+            serde_json::from_str::<DatabaseOp>(
+                r#"{"SubscribeWrites":{"subscription_id":1,"scope":"FutureScope"}}"#
+            )
+            .is_err()
+        );
+        // The new frame is also not a legacy bracket; old required fields
+        // cannot be synthesized with a default and mistaken for continuity.
+        #[derive(serde::Deserialize)]
+        struct LegacyNotice {
+            #[serde(rename = "previous_tips")]
+            _previous: Snapshot,
+            #[serde(rename = "post_tips")]
+            _post: Snapshot,
         }
+        let notice = serde_json::json!({"root_id":"", "subscription_id":1, "snapshot":[]});
+        assert!(serde_json::from_value::<LegacyNotice>(notice).is_err());
     }
 
     #[test]
-    fn test_database_op_subscribe_writes_empty_tips_serde() {
-        let req = wrap(DatabaseOp::SubscribeWrites {
-            tips: Snapshot::EMPTY,
-        });
-        let json = serde_json::to_string(&req).unwrap();
-        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        match unwrap_op(req2) {
-            DatabaseOp::SubscribeWrites { tips } => assert!(tips.is_empty()),
-            other => panic!("expected SubscribeWrites, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_database_op_unsubscribe_writes_serde() {
-        let req = wrap(DatabaseOp::UnsubscribeWrites);
-        let json = serde_json::to_string(&req).unwrap();
-        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        assert!(matches!(unwrap_op(req2), DatabaseOp::UnsubscribeWrites));
-    }
-
-    #[test]
-    fn test_subscribe_ops_gate_read() {
-        assert_eq!(
-            DatabaseOp::SubscribeWrites {
-                tips: Snapshot::EMPTY
+    fn test_database_op_watch_scope_serde_and_permission() {
+        for scope in [ReadScope::Verified, ReadScope::AllowUnverified] {
+            let req = wrap(DatabaseOp::SubscribeWrites {
+                subscription_id: 42,
+                scope,
+            });
+            let json = serde_json::to_string(&req).unwrap();
+            let decoded: ServiceRequest = serde_json::from_str(&json).unwrap();
+            match unwrap_op(decoded) {
+                DatabaseOp::SubscribeWrites {
+                    subscription_id,
+                    scope: actual,
+                } => {
+                    assert_eq!(subscription_id, 42);
+                    assert_eq!(actual, scope);
+                }
+                other => panic!("unexpected {other:?}"),
             }
-            .required_permission(),
-            Permission::Read
-        );
-        assert_eq!(
-            DatabaseOp::UnsubscribeWrites.required_permission(),
-            Permission::Read
-        );
+            assert_eq!(
+                DatabaseOp::SubscribeWrites {
+                    subscription_id: 42,
+                    scope
+                }
+                .required_permission(),
+                Permission::Read
+            );
+        }
+        let op = DatabaseOp::UnsubscribeWrites {
+            subscription_id: 42,
+        };
+        assert_eq!(op.required_permission(), Permission::Read);
+        let decoded: ServiceRequest =
+            serde_json::from_str(&serde_json::to_string(&wrap(op)).unwrap()).unwrap();
+        assert!(matches!(
+            unwrap_op(decoded),
+            DatabaseOp::UnsubscribeWrites {
+                subscription_id: 42
+            }
+        ));
     }
 
     #[test]
@@ -1220,29 +1185,23 @@ mod tests {
 
     #[test]
     fn test_server_frame_notification_serde() {
-        let notif = Notification::DatabaseWrite {
+        let snapshot = Snapshot::new(vec![ID::from_bytes("post-1")]);
+        let frame = ServerFrame::Notification(Notification::DatabaseWrite {
             root_id: test_id(),
-            previous_tips: Snapshot::new(vec![ID::from_bytes("tip-1"), ID::from_bytes("tip-2")]),
-            post_tips: Snapshot::new(vec![ID::from_bytes("post-1")]),
-            source: WriteSource::Remote,
-        };
-        let frame = ServerFrame::Notification(notif);
-        let json = serde_json::to_string(&frame).unwrap();
-        let frame2: ServerFrame = serde_json::from_str(&json).unwrap();
-        match frame2 {
-            ServerFrame::Notification(Notification::DatabaseWrite {
-                root_id,
-                previous_tips,
-                post_tips,
-                source,
-            }) => {
-                assert_eq!(root_id, test_id());
-                assert_eq!(previous_tips.len(), 2);
-                assert_eq!(post_tips, Snapshot::new(vec![ID::from_bytes("post-1")]));
-                assert_eq!(source, WriteSource::Remote);
-            }
-            other => panic!("expected ServerFrame::Notification(DatabaseWrite), got {other:?}"),
-        }
+            subscription_id: 42,
+            snapshot: snapshot.clone(),
+        });
+        let json = serde_json::to_value(frame).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"Notification":{"DatabaseWrite":{
+                "root_id":test_id(), "subscription_id":42, "snapshot":snapshot,
+            }}})
+        );
+        let decoded: ServerFrame = serde_json::from_value(json).unwrap();
+        assert!(
+            matches!(decoded, ServerFrame::Notification(Notification::DatabaseWrite { subscription_id:42, snapshot:actual, .. }) if actual == snapshot)
+        );
     }
 
     #[test]
@@ -1305,7 +1264,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_frame_complete_then_clean_eof() {
-        let payload = br#"{"protocol_version":0}"#;
+        let payload = br#"{"protocol_version":0,"protocol_revision":1}"#;
         let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
         frame.extend_from_slice(payload);
         let mut reader = frame.as_slice();
@@ -1321,7 +1280,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_frame_truncated_body() {
-        let payload = br#"{"protocol_version":0}"#;
+        let payload = br#"{"protocol_version":0,"protocol_revision":1}"#;
         for received in 0..payload.len() {
             let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
             frame.extend_from_slice(&payload[..received]);

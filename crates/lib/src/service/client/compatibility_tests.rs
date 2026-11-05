@@ -137,11 +137,11 @@ async fn v0_unknown_notification_does_not_consume_response_or_invoke_callback() 
     let root = db.root_id().clone();
     conn.attach_instance(instance.downgrade());
     let (tx, mut rx) = mpsc::unbounded_channel();
-    instance.register_global_write_callback(move |event, _db| {
+    let id = instance.register_write_callback(db.clone(), move |snapshot, _db| {
         let tx = tx.clone();
-        let source = event.source();
+        let snapshot = snapshot.clone();
         async move {
-            tx.send(source).unwrap();
+            tx.send(snapshot).unwrap();
             Ok(())
         }
     });
@@ -166,7 +166,6 @@ async fn v0_unknown_notification_does_not_consume_response_or_invoke_callback() 
             .unwrap(),
         ServiceResponse::Ok
     ));
-    assert!(conn.inner.tree_workers.lock().unwrap().is_empty());
     assert!(
         rx.try_recv().is_err(),
         "unknown notification invoked a callback"
@@ -177,9 +176,8 @@ async fn v0_unknown_notification_does_not_consume_response_or_invoke_callback() 
         &mut peer,
         &ServerFrame::Notification(Notification::DatabaseWrite {
             root_id: root,
-            previous_tips: Snapshot::EMPTY,
-            post_tips: db.snapshot().await.unwrap(),
-            source: crate::WriteSource::Remote,
+            subscription_id: id.0,
+            snapshot: db.snapshot().await.unwrap(),
         }),
     )
     .await
@@ -195,7 +193,7 @@ async fn v0_unknown_notification_does_not_consume_response_or_invoke_callback() 
     ));
     assert_eq!(
         tokio::time::timeout(TIMEOUT, rx.recv()).await.unwrap(),
-        Some(crate::WriteSource::Remote)
+        Some(db.snapshot().await.unwrap())
     );
     assert!(rx.try_recv().is_err());
 }
@@ -533,6 +531,37 @@ async fn v0_unknown_required_login_enums_retire_connection() {
 }
 
 #[tokio::test]
+async fn snapshot_watch_v0_1_client_rejects_legacy_and_wrong_revision_ack() {
+    for ack in [
+        r#"{"protocol_version":0}"#,
+        r#"{"protocol_version":0,"protocol_revision":0}"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let peer = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let handshake: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
+            assert_eq!(handshake.protocol_revision, PROTOCOL_REVISION);
+            send_raw(&mut stream, ack).await;
+            // Rejection must happen before any login/operation is sent.
+            assert!(
+                read_frame::<_, serde_json::Value>(&mut stream)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        };
+        let (result, ()) = tokio::time::timeout(TIMEOUT, async {
+            tokio::join!(RemoteConnection::connect(&path), peer)
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err(), "legacy watch peer was silently accepted");
+    }
+}
+
+#[tokio::test]
 async fn v0_client_rejects_nonzero_handshake_ack() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("version.sock");
@@ -545,6 +574,7 @@ async fn v0_client_rejects_nonzero_handshake_ack() {
             &mut stream,
             &HandshakeAck {
                 protocol_version: 1,
+                protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
             },
         )
         .await

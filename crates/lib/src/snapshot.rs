@@ -7,7 +7,7 @@
 //! content) are uniquely determined.
 //!
 //! Use a `Snapshot` to pin a read view, anchor a transaction, or describe
-//! a state transition (e.g. `WriteEvent { from, to }`).
+//! the latest selected state delivered by `Database::on_write`.
 //!
 //! `Snapshot` is intentionally scope-free: it carries *only* a set of tips.
 //! The scope — a database root, or a `(database root, store name)` pair — is

@@ -3,10 +3,10 @@
 //! This module contains the database schema used by SQL backends.
 //! The schema is designed to be portable between SQLite and Postgres.
 //!
-//! Mainline v0 migrates directly to v3 in one transaction. v2 adds cache
-//! accounting without verification repair. Version 1
-//! belonged to an unsupported prefix-tracking candidate and is refused before
-//! schema writes. Ordinary v3 opens neither backfill nor reconstruct verification history.
+//! Mainline v0 migrates directly to v4 in one transaction. Migrating v2 adds
+//! cache accounting; migrating v3 adds only non-Failed tips, without trust repair.
+//! Version 1 belonged to an unsupported prefix-tracking candidate and is refused
+//! before schema writes. Ordinary v4 opens never reconstruct history.
 
 use crate::Result;
 use crate::backend::errors::BackendError;
@@ -19,7 +19,7 @@ mod tests;
 /// Internal SQL format revision counter, independent of release versions and
 /// the InMemory persistence counter. Increment for changes requiring migration,
 /// with an explicit forward path from each supported stored format.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 const CREATE_STORE_STATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
@@ -115,6 +115,12 @@ pub const CREATE_TABLES: &[&str] = &[
     )",
     // Only frontier-width verification state; statuses prove interior membership.
     "CREATE TABLE IF NOT EXISTS verified_tips (
+        tree_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        PRIMARY KEY (tree_id, entry_id)
+    )",
+    // Selected Unverified/Verified vertices, independent of ancestor closure.
+    "CREATE TABLE IF NOT EXISTS non_failed_tips (
         tree_id TEXT NOT NULL,
         entry_id TEXT NOT NULL,
         PRIMARY KEY (tree_id, entry_id)
@@ -247,7 +253,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             .await
             .sql_context("Schema creation failed")?;
     }
-    if row != Some((SCHEMA_VERSION,)) {
+    if matches!(row, Some((0 | 2,))) {
         ensure_store_state_cache_columns(backend, &mut tx).await?;
     }
     for statement in CREATE_INDEXES {
@@ -265,7 +271,8 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             super::verified::repair_in_tx(&mut tx, &crate::entry::ID::parse(&tree)?).await?;
         }
     }
-    if matches!(row, Some((0 | 2,))) {
+    if matches!(row, Some((0 | 2 | 3,))) {
+        super::non_failed::rebuild_all_in_tx(&mut tx).await?;
         sqlx::query("UPDATE schema_version SET version = $1")
             .bind(SCHEMA_VERSION)
             .execute(&mut *tx)
@@ -330,6 +337,7 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
         ("instance_metadata", &["singleton", "data"]),
         ("instance_secrets", &["singleton", "data"]),
         ("verified_tips", &["tree_id", "entry_id"]),
+        ("non_failed_tips", &["tree_id", "entry_id"]),
         (
             "store_state_namespaces",
             &[
@@ -358,6 +366,9 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
             }
             continue;
         }
+        if *table == "non_failed_tips" && version.is_some_and(|version| version < 4) {
+            continue;
+        }
         if version == Some(0)
             && matches!(
                 *table,
@@ -373,7 +384,7 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
             return Err(malformed(&format!("missing columns in {table}")));
         }
         if *table == "store_state_namespaces"
-            && version == Some(SCHEMA_VERSION)
+            && version.is_some_and(|version| version >= 3)
             && ["size_bytes", "last_access_tick"]
                 .iter()
                 .any(|column| !existing.iter().any(|(name,)| name == column))
@@ -385,7 +396,7 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
 }
 
 /// Add/backfill cache accounting once, during a supported migration. Existing
-/// durable access ticks are preserved; ordinary v3 reopen never backfills.
+/// durable access ticks are preserved; ordinary current reopen never backfills.
 async fn ensure_store_state_cache_columns(
     backend: &SqlxBackend,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,

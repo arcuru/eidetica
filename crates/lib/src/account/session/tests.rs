@@ -85,23 +85,25 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
     .await?;
     let reached = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Notify::new());
-    let callback = user
-        .account
-        .database()
-        .on_write({
+    let tree = user.account.database().root_id().clone();
+    let gated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    instance.register_global_write_callback({
+        let reached = reached.clone();
+        let resume = resume.clone();
+        move |_, db| {
+            let should_gate =
+                db.root_id() == &tree && !gated.swap(true, std::sync::atomic::Ordering::SeqCst);
             let reached = reached.clone();
             let resume = resume.clone();
-            move |_, _| {
-                let reached = reached.clone();
-                let resume = resume.clone();
-                async move {
+            async move {
+                if should_gate {
                     reached.notify_one();
                     resume.notified().await;
-                    Ok(())
                 }
+                Ok(())
             }
-        })
-        .await?;
+        }
+    });
     let mut tracking = Box::pin(user.track_database(db.root_id(), &key, SyncSettings::disabled()));
     tokio::select! {
         _ = reached.notified() => {},
@@ -115,7 +117,6 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
         "dropped future speculatively published staged mapping"
     );
     resume.notify_one();
-    drop(callback);
     let persisted = user.account.database().snapshot().await?;
     // Retry reads the actual committed state without registry repair or duplicate history.
     user.track_database(db.root_id(), &key, SyncSettings::disabled())

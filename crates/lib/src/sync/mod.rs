@@ -86,12 +86,15 @@
 //! - **Periodic sync**: Configurable interval (default 5 minutes)
 //! - **Retry queue**: Failed sends retried with exponential backoff
 
-use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 use tokio::sync::mpsc;
 
 use crate::{
-    Database, Instance, Result, WeakInstance,
+    Database, Instance, Result, Snapshot, WeakInstance,
     auth::{Permission, crypto::PublicKey},
     crdt::{Doc, doc::Value},
     entry::ID,
@@ -129,6 +132,8 @@ mod peer_state;
 mod queue;
 mod transport;
 mod transport_manager;
+#[cfg(test)]
+mod verified_tests;
 
 // Re-exports
 use background::SyncCommand;
@@ -281,6 +286,9 @@ pub struct Sync {
     reconciliation: Arc<tokio::sync::Mutex<()>>,
     /// Per-peer liveness state, written by the background engine.
     peer_state: Arc<PeerStates>,
+    /// Last Verified frontier queued for each peer/tree, independent of application
+    /// watches. Volatile like the queue; periodic DAG comparison recovers restart gaps.
+    write_cursors: Arc<tokio::sync::Mutex<HashMap<(PeerId, ID), Snapshot>>>,
 }
 
 impl Clone for Sync {
@@ -296,6 +304,7 @@ impl Clone for Sync {
             queue: Arc::clone(&self.queue),
             reconciliation: Arc::clone(&self.reconciliation),
             peer_state: Arc::clone(&self.peer_state),
+            write_cursors: Arc::clone(&self.write_cursors),
         }
     }
 }
@@ -325,6 +334,7 @@ impl Sync {
             queue: Arc::new(SyncQueue::new()),
             reconciliation: Arc::new(tokio::sync::Mutex::new(())),
             peer_state: Arc::new(PeerStates::default()),
+            write_cursors: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         };
 
         // Initialize combined settings for all tracked users
@@ -355,6 +365,7 @@ impl Sync {
             queue: Arc::new(SyncQueue::new()),
             reconciliation: Arc::new(tokio::sync::Mutex::new(())),
             peer_state: Arc::new(PeerStates::default()),
+            write_cursors: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         };
 
         // Initialize combined settings for all tracked users

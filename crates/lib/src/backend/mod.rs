@@ -564,6 +564,16 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `tree` - The root ID of the tree to snapshot.
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot>;
 
+    /// Returns the retained non-Failed frontier of `tree`: present Unverified
+    /// or Verified entries with no same-tree non-Failed direct child.
+    ///
+    /// Unlike the ancestor-closed Verified view, this is a selected-vertex
+    /// frontier, not a proof about ancestry or a filter on historical Snapshot
+    /// materialization. Missing parents and Failed ancestors may still be
+    /// referenced by selected entries. Storage/status mutations publish this
+    /// frontier atomically; reads must not scan history.
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot>;
+
     /// Returns the retained verified [`Snapshot`] of `tree` — the tips of the
     /// maximal ancestor-closed, all-`Verified` prefix of the DAG — without
     /// scanning history.

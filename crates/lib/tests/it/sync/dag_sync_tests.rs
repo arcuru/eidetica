@@ -498,6 +498,7 @@ async fn test_real_sync_transport_setup() {
             .expect("Entry should build successfully");
         entries.push(entry.clone());
     }
+    helpers::hold_verified_entries(&sync1, &entries).await;
     let entry_ids: Vec<_> = entries.iter().map(|e| e.id().clone()).collect();
 
     // Test sending entries using the transport layer
@@ -791,6 +792,7 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     }
     let entry_ids: Vec<_> = entries.iter().map(|e| e.id().clone()).collect();
 
+    helpers::hold_verified_entries(&sync1, &entries).await;
     // Test sending entries from sync1 to sync2 using Iroh P2P transport
     println!(
         "Attempting to send {} entries via Iroh transport...",

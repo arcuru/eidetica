@@ -564,7 +564,7 @@ async fn test_verified_frontier_prefix_cut_and_allow_unverified() {
     assert!(!tips.contains(&b) && !tips.contains(&c));
 
     // The default read verified the demoted suffix and propagated Failed.
-    // allow_unverified still filters Failed raw tips; it is not a trust bypass.
+    // The opt-in selected frontier restores the surviving non-Failed parent.
     let loose_tips = tree
         .clone()
         .allow_unverified()
@@ -572,9 +572,10 @@ async fn test_verified_frontier_prefix_cut_and_allow_unverified() {
         .await
         .unwrap()
         .into_tips();
-    assert!(
-        loose_tips.is_empty(),
-        "loose view must filter the now-Failed raw tip"
+    assert_eq!(
+        loose_tips,
+        vec![a.clone()],
+        "rejection must restore the surviving parent"
     );
 
     // The setting is per-handle and composes with the original handle being
@@ -804,23 +805,23 @@ async fn test_diamond_dag_taint_propagation() {
     );
     assert!(report.failed >= 1, "{report:?}");
 
-    // Frontier cuts to the surviving verified branch `b`; the loose view
-    // still drops Failed `c`, leaving nothing (c is the only raw tip).
-    assert_eq!(tree.snapshot().await.unwrap().into_tips(), vec![b]);
-    assert!(
+    // Both selected views restore the surviving branch, even though the
+    // structural raw tip is the now-Failed merge child.
+    assert_eq!(tree.snapshot().await.unwrap().into_tips(), vec![b.clone()]);
+    assert_eq!(
         tree.clone()
             .allow_unverified()
             .snapshot()
             .await
             .unwrap()
-            .is_empty(),
-        "Failed is dropped even in the allow_unverified view"
+            .into_tips(),
+        vec![b]
     );
 }
 
 /// `allow_unverified()` composes with the handle's configured signing key:
-/// it can read *and write* past an unverifiable region, while the default
-/// handle's Verified-frontier view stays unaffected by that write.
+/// after rejection, new writes use the restored surviving parent, not the
+/// Failed branch. An explicit Failed parent still cannot be committed.
 #[tokio::test]
 async fn test_allow_unverified_composes_with_key_for_writes() {
     let (instance, tree, _key) = setup_tree_with_user_key_local().await;
@@ -838,10 +839,31 @@ async fn test_allow_unverified_composes_with_key_for_writes() {
         backend.get_verification_status(&b).await.unwrap(),
         VerificationStatus::Unverified
     );
-    assert!(loose.snapshot().await.unwrap().is_empty());
+    let restored = loose.snapshot().await.unwrap();
+    assert_eq!(restored, Snapshot::new(vec![tree.root_id().clone()]));
+    let invalid = loose
+        .new_transaction_at(&Snapshot::new(vec![a.clone()]))
+        .await
+        .unwrap();
+    invalid
+        .get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("s", "invalid")
+        .await
+        .unwrap();
     assert!(
-        loose.new_transaction().await.is_err(),
-        "Failed raw tips cannot anchor a transaction"
+        invalid.commit().await.is_err(),
+        "an explicit Failed parent must still be rejected"
+    );
+    let recovered = add_data_to_subtree(&loose, "data", &[("s", "recovered")]).await;
+    assert_eq!(
+        tree.get_entry(&recovered).await.unwrap().parents().unwrap(),
+        restored.into_tips()
+    );
+    assert_eq!(
+        tree.snapshot().await.unwrap(),
+        Snapshot::new(vec![recovered])
     );
     assert!(!tree.snapshot().await.unwrap().tips().contains(&b));
 }
@@ -1109,13 +1131,10 @@ async fn test_deep_chain_frontier_cut() {
         backend.get_verification_status(&chain[29]).await.unwrap(),
         VerificationStatus::Failed
     );
-    assert!(
-        tree.clone()
-            .allow_unverified()
-            .snapshot()
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        tree.clone().allow_unverified().snapshot().await.unwrap(),
+        Snapshot::new(vec![chain[failed_idx - 1].clone()]),
+        "the non-Failed view restores the last surviving chain entry"
     );
 }
 

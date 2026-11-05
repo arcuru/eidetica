@@ -22,6 +22,7 @@
 //! See [`schema`] module documentation for details on adding migrations.
 
 mod cache;
+mod non_failed;
 mod storage;
 mod traversal;
 mod verified;
@@ -1085,6 +1086,10 @@ impl BackendImpl for SqlxBackend {
 
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
         traversal::snapshot(self, tree).await.map(Snapshot::new)
+    }
+
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        non_failed::snapshot(self, tree).await
     }
 
     async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {

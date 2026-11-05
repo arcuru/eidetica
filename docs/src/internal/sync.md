@@ -20,12 +20,23 @@ sequenceDiagram
 
 This is **stateless** and **self-correcting** - no tracking of previously synced entries.
 
-These tips describe raw DAG possession, not Verified membership. New received
-Entries are stored Unverified; neither peer authentication nor transfer completion
-asserts local acceptance. Default Database reads use the retained Verified frontier,
-which can lag raw tips until local validation succeeds. Write-event cursors also
-remain raw boundaries. See the canonical [verification contract](../design/verification.md)
-for promotion, partial-history reads and retry limits.
+Sync advertises the local retained Verified frontier and serves only its Verified
+ancestry. Unverified and Failed entries are not outgoing payloads, even when an
+application opts into an unverified read view. Received Entries are still stored
+Unverified: a sender's acceptance is not evidence of the receiver's acceptance.
+The receiver runs its own validation. See the [verification contract](../design/verification.md).
+
+The internal write hook owns a checkpoint per peer and database, independently
+of application notifications. The first queueing includes the Verified ancestry;
+later queueing walks from the current Verified frontier to the last queued one.
+An unchanged frontier queues nothing. These checkpoints mean queued, not
+acknowledged, and are volatile like the queue. Periodic DAG comparison recovers
+restart gaps without relying on an application's last processed Snapshot.
+
+Explicit sends and queued/retried batches recheck local verification before
+submitting entry payloads to the transport. A non-Verified or unheld entry refuses
+the whole batch rather than reporting a successful partial send. Existing
+permission and revocation checks still apply.
 
 ## Bootstrap vs Incremental
 

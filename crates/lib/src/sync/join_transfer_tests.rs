@@ -90,6 +90,9 @@ impl BackendImpl for FaultBackend {
     ) -> Result<Vec<ID>> {
         self.inner.get_entries_by_verification_status(status).await
     }
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        self.inner.non_failed_snapshot(tree).await
+    }
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
         self.inner.snapshot(tree).await
     }

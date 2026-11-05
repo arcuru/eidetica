@@ -554,6 +554,7 @@ pub async fn reset_local_verification(backend: &SqlxBackend) -> Result<()> {
         .execute(&mut *tx)
         .await
         .sql_context("Failed to clear retained verified frontier")?;
+    super::non_failed::rebuild_all_in_tx(&mut tx).await?;
     tx.commit()
         .await
         .sql_context("Failed to commit trust reset")
@@ -656,6 +657,10 @@ pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
             .sql_context("Failed to upgrade to IMMEDIATE transaction")?;
     }
 
+    // Put and failure must agree on same-tree child eligibility. In particular,
+    // a failure cannot restore a parent tip while insertion consumes it.
+    super::verified::lock_tree(backend, &mut tx, &tree_id).await?;
+
     // Check if entry already exists - entries are content-addressable and immutable
     let existing_status: Option<(i64,)> =
         sqlx::query_as("SELECT verification_status FROM entries WHERE id = $1")
@@ -738,6 +743,7 @@ pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
 
     // Update tips incrementally
     update_tips_for_entry(backend, &mut tx, &tree_id, &entry).await?;
+    super::non_failed::inserted(&mut tx, &tree_id, &entry).await?;
 
     tx.commit()
         .await
