@@ -51,6 +51,7 @@ fn truncated_enum_map_must_not_acknowledge() {
 
 #[test]
 fn enums_require_complete_single_entry_maps_and_unit_only_strings() {
+    let fixture = |json: &str| encode(&serde_json::from_str::<serde_json::Value>(json).unwrap());
     #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     enum Example {
         Unit,
@@ -90,7 +91,6 @@ fn enums_require_complete_single_entry_maps_and_unit_only_strings() {
         r#"{}"#,
         r#"{"Unit":1}"#,
         r#"{"Newtype":1,"Other":2}"#,
-        r#"{"Newtype":1,"Newtype":2}"#,
     ] {
         assert!(
             decode::<Example, _>(fixture(malformed).as_slice(), &policy()).is_err(),
@@ -99,6 +99,8 @@ fn enums_require_complete_single_entry_maps_and_unit_only_strings() {
     }
     let mut declared_extra = encode(&Example::Newtype(1));
     declared_extra[0] = 0xa2;
+    assert!(decode::<Example, _>(declared_extra.as_slice(), &policy()).is_err());
+    declared_extra.extend_from_slice(&encode(&Example::Newtype(2))[1..]);
     assert!(decode::<Example, _>(declared_extra.as_slice(), &policy()).is_err());
     let limited = budget_with(|p| p.max_identifier_bytes = 2);
     assert!(matches!(

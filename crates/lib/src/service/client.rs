@@ -1672,7 +1672,11 @@ async fn run_reader_task<R: tokio::io::AsyncRead + Unpin>(
             Ok(None) => break, // Clean EOF
             Err(e) => {
                 tracing::debug!("RemoteConnection reader error: {e}");
-                if let Some(pending) = inner.pending_lock().pop_front() {
+                // Preserve connection-aborted semantics for malformed/partial
+                // frames, but surface explicit policy refusals and response waits.
+                if (e.is_resource() || matches!(e, TransferError::ResponseTimeout { .. }))
+                    && let Some(pending) = inner.pending_lock().pop_front()
+                {
                     let _ = pending.response.send(Err(e));
                 }
                 break;
