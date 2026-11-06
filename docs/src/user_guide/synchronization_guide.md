@@ -53,6 +53,15 @@ sync.sync_with_ticket(&ticket).await?;
 The system automatically detects whether you need full bootstrap or incremental sync.
 Tickets embed the database ID, so `sync_with_ticket` requires no separate tree ID.
 
+Transfer and acceptance are separate: received whole Entries start `Unverified`.
+Missing main/settings/delegated proof stays pending until it arrives and a later
+verification pass succeeds. Store-only sparse verification is not implemented.
+Main links observe history, while ordinary Store links consume contributions;
+omitting an observed ordinary tip leaves it available to reads. `_settings`
+still requires its exact causal pre-write frontier and signed pin. See
+[Store-parent frontiers](../design/verification.md#store-parent-frontiers) and the
+[verification examples](examples_snippets.md#10-verifying-synced-data).
+
 ### 4. Share a Database
 
 Sharing has two caller-visible operations: save this user's durable signed

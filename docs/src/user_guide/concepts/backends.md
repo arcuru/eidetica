@@ -153,7 +153,8 @@ The `service` feature must be enabled (included in the default `full` feature se
 The `Database` trait (`eidetica::backend::Database`) defines the core interface required for storage. Beyond simple `get` and `put` for entries, it includes methods crucial for navigating the database's history and structure:
 
 - `snapshot(tree_id)`: Finds the latest entries in a specific `Database`.
-- `store_snapshot(tree_id, subtree_name)`: Finds the latest entries _for a specific `Store`_ within a `Database`.
+- `store_snapshot(tree_id, subtree_name)`: Finds unconsumed tips by explicit Store-parent edges, not by filtering main tips. These low-level tips include raw ingested history.
+- `store_snapshot_at(tree_id, subtree_name, main_snapshot)`: Derives Store tips in the given main-ancestry cut. Transactions use a Verified cut by default; an unconsumed Store tip remains visible even when another tip's Entry is its main descendant. See [Store frontiers](../../design/verification.md#store-parent-frontiers).
 - `all_roots()`: Finds all top-level `Database` roots stored in the database.
 - `get_tree(tree_id)` / `get_subtree(...)`: Retrieve all entries for a database/store, typically sorted topologically (required for some history operations, potentially expensive).
 

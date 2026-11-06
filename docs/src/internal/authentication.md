@@ -64,8 +64,11 @@ disclosure, reductions, bounds, path tampering and unaccepted identity state.
 
 ## Validation Seams
 
-- `database/mod.rs`: derive and match the signed causal pre-write settings pin;
-  check main parents before remote promotion; retain undecidable entries.
+- `database/validation.rs` and `database/mod.rs`: prove named Store parents are
+  in the same Store/database and main-only ancestry, check strict effective
+  heights, derive and match the exact causal pre-write `_settings` pin and
+  settings-write parents. Ordinary Store parents select consumption, not an
+  exact frontier; omitted tips remain visible. Retain undecidable Entries.
 - `transaction/mod.rs`: fixed main-parent settings/subtree reads and metadata;
   genuine-genesis-only staged-auth bootstrap; shared signature validator.
 - `auth/validation/floors.rs`: join Verified parent projections, derive effective

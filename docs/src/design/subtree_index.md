@@ -43,26 +43,21 @@ These capabilities enable:
 
 ## Metadata Travels With Data
 
-> **Subtree metadata is cryptographically verified as part of the same DAG as the subtree data itself—without requiring the full database DAG.**
+Transactions include a named subtree in any Entry that updates its `_index`
+registration. The metadata and Store participation are committed together in
+one immutable, signed Entry, even when that Store has no data delta.
 
-When you sync a subtree (like `users`) from another peer, you automatically receive all `_index` metadata about that subtree. This is guaranteed by a simple architectural constraint: any Entry that modifies `_index` for a subtree must also include that subtree.
+This is an authoring coupling, not an implemented Store-only sync or sparse
+verification protocol. Main links define causal observation; ordinary Store
+links independently select which contributions are consumed. A Store branch
+may omit an observed contribution, so its parent chain alone is not a complete
+inventory of causal registry metadata.
 
-**Why this matters:**
-
-- **No orphaned metadata**: You can't have `_index` entries for subtrees you haven't synced
-- **No missing metadata**: When you have a subtree's data, you have its metadata too
-- **Cryptographic verification**: The metadata is verified by the same Merkle-DAG that verifies the data
-- **Enable Efficient sync**: Sync just the subtrees you need and their metadata comes along automatically
-
-This constraint leverages Eidetica's Merkle-DAG structure: the Entry containing the `_index` update becomes part of the subtree's parent DAG, is verified by the same cryptographic properties, and is automatically included when syncing that subtree.
-
-> **"Cryptographically verified" here means content-addressed integrity** —
-> the `_index` metadata cannot be tampered with or separated from its data
-> because it is hash-chained into the same Merkle-DAG. This is independent of
-> an entry's **`VerificationStatus`** (whether this node has validated the
-> entry's _signature and permissions_ against the `_settings` it pins). A
-> synced `_index`-bearing entry still arrives `Unverified` and is promoted by
-> `Database::verify()` like any other entry.
+Sync transfers whole Entries. Each received `_index`-bearing Entry arrives
+`Unverified`; promotion requires its complete main ancestry, causal settings pin
+and historical signature/permission/delegation evidence. Content-addressed
+integrity alone does not establish `VerificationStatus`. See
+[Store-parent frontiers](verification.md#store-parent-frontiers).
 
 ## How It Works
 
@@ -112,11 +107,11 @@ Manual registration via `Registry::set_entry()` allows pre-configuring subtrees 
 
 **Core Rule**: When `_index` is modified for a subtree, that subtree MUST appear in the same Entry.
 
-This is what enables [metadata to travel with data](#metadata-travels-with-data). The constraint ensures:
+This is the transaction-layer [metadata coupling](#metadata-travels-with-data):
 
-1. **DAG Inclusion**: The Entry containing the `_index` update becomes part of the subtree's parent DAG
-2. **Verification**: The Entry is verified by the Merkle-DAG properties of the subtree's parent tree
-3. **Sync Completeness**: When syncing a subtree's DAG, all Entries pertaining to that subtree are included, including any `_index` metadata about it
+1. **Entry inclusion**: The registry write includes the named Store in the same Entry.
+2. **Whole-Entry verification**: That Entry's status applies to both the registry and Store contributions.
+3. **Whole-Entry transfer**: Receiving the Entry retains its registry payload too; no sparse-sync or Store-chain metadata-completeness guarantee is implied.
 
 To support this constraint, `SubTreeNode.data` is `Option<RawData>`, where `RawData` is opaque bytes (`Vec<u8>`):
 

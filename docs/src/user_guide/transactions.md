@@ -16,6 +16,23 @@ Transactions provide several key benefits:
 - **Authentication**: All transactions are automatically authenticated using the database's default signing key, ensuring data integrity and access control.
 - **History Creation**: A successful `commit()` results in the creation of a _new `Entry`_ in the `Database`, containing the staged changes and linked to the previous state (the tips the `Transaction` was based on). This is how history is built.
 
+## Snapshot and Store-Parent Selection
+
+A transaction fixes its main-parent boundary when it starts. Each Store read
+and parent discovery uses that boundary, not a later live head. Ordinary Store
+tips are the unconsumed contributions within main ancestry, even when one tip's
+Entry is a main ancestor of another: main `A(X) -> B(X) -> C(X)` with B.X and C.X
+both parenting A.X has X tips `{B.X, C.X}`. Normal authoring selects both, so its
+next X write explicitly joins them and reads retain both histories.
+
+This is a selection default, not an exact-frontier validation rule for ordinary
+Stores. Named parents must target the same Store/database, belong to main-only
+ancestry and have lower effective Store heights; empty or nonmaximal ordinary
+parents can start or extend independent branches. `_settings` writes and every
+Entry's signed `settings_tips` pin instead require the complete causal pre-write
+settings frontier. Missing proof prevents acceptance, not a guess at an empty
+frontier. See [verification](../design/verification.md#store-parent-frontiers).
+
 ## The Transaction Lifecycle
 
 Using a `Transaction` follows a distinct lifecycle:
@@ -345,6 +362,11 @@ Subtrees with no explicit height strategy inherit from the database-level strate
 - **Explicit height** (`Some(h)`): The subtree has an independent height value
 
 When querying `Entry.subtree_height()`, the returned value reflects this inheritance transparently.
+Verification requires strict growth over actual Store-parent edges, not an exact
+`max + 1` value. Returning to inheritance includes those effective parent heights
+in the main calculation: a prior Timestamp override can cause an Incremental
+main-height jump rather than a regression. An independent Incremental override
+uses only its own Store parents. See [Height Strategy](../design/height_strategy.md).
 
 ## Read-Only Access
 

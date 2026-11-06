@@ -548,7 +548,12 @@ The delegated databases also enforce their own causal rules when their entries a
 
 #### Causal Snapshot Validation
 
-For an entry `E`, validation follows these boundaries:
+For an entry `E`, validation follows these boundaries. The exact-frontier rules
+below apply to `_settings`, not to ordinary Store consumption. An ordinary Store
+may omit an observed tip or start an independent branch; its named parents still
+require same-Store/database membership, main-only containment and strict effective
+height growth. None of that permits omitting pre-write authority from a signed
+settings pin. See [Store-parent frontiers](verification.md#store-parent-frontiers).
 
 1. **Pre-write authority.** Derive the complete canonical `_settings` frontier from `E`'s main parents and require its signed `settings_tips` metadata to equal that frontier. A signer cannot choose an older settings pin to evade a revocation already in its parents. Only a genuine genesis entry may authorize itself with its own initial settings.
 2. **Resulting settings.** A settings write must consume exactly its main parents' `_settings` frontier as its signed subtree parents. Fold the actual settings DAG, including `E`'s delta, to determine effective declarations after the entry. This post-entry state is not its pre-write signature pin and is never read from an unrelated live head.

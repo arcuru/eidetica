@@ -1,6 +1,11 @@
 # Store state
 
 Stores define how their CRDT state is represented for reading.
+A default read first selects the accepted main-ancestry cut, then derives each
+Store's frontier by its explicit Store-parent edges. A main descendant does not
+hide an unconsumed Store contribution. Materialization folds the Store histories
+reachable from all of those tips, including independent roots; an explicit
+Store join can replace multiple tips. See [Store-parent frontiers](../design/verification.md#store-parent-frontiers).
 The default `StoreStateModel` caches state in one opaque record: it folds ordered Store deltas with the Store's `CRDT` implementation and stores the serialized result under a reserved key.
 This default applies to any Store data type and does not assume `Doc`.
 

@@ -400,6 +400,16 @@ The encrypted-store-over-service tests cover both paths: `test_database_encrypte
 - **`Verified`** (default) — only the maximal all-`Verified` ancestor-closed prefix of the DAG (the "Verified frontier"). Tips that are still `Unverified` are replaced by their nearest `Verified` ancestors; `Failed` entries are always dropped.
 - **`AllowUnverified`** — select raw tips with `Failed` tips dropped, not a recursively sanitized accepted prefix. The caller must explicitly opt in via `Database::allow_unverified()`.
 
+Store tips are derived separately from the selected main cut using explicit
+Store-parent edges. `GetStoreTipsUpToEntries`, `BeginTransaction`, and materialized
+Store reads must retain unconsumed tips even when their Entries are main
+ancestors of another Store tip. For example, main A(X)->B(X)->C(X) with B.X and
+C.X both parenting A.X yields Store tips `{B.X, C.X}`; an explicit Store join may
+replace both. Submitted ordinary Store writes need not consume all observed
+tips, while `_settings` parents and signed pins must match the exact causal
+pre-write settings frontier. The daemon validates whole Entries, including named
+Store-parent membership and effective heights, not independent contributions.
+
 `BeginTransaction` carries the caller's `ReadScope`: selected parents come from the same snapshot as its reads. Selection is not permission to commit against unsettled ancestry: signed local commit validation requires Verified parents, and server-side verification defers a submitted Entry with Unverified parents. `GetVerifiedTips` itself always returns the server's Verified frontier, even for a client handle with `.allow_unverified()`. The [verification contract](../design/verification.md#writes-inherit-the-selected-boundary-not-weaker-validation) defines the distinction.
 
 ### Gate scope for `AuthenticatedDb`

@@ -98,26 +98,54 @@ in that pass, not all stored failures; an empty report is not a health inventory
 
 ### Store-parent frontiers
 
-For every Store an Entry contains, its parent Snapshot must equal that Store's
-complete Verified frontier within the Entry's **main-parent ancestry**. Only
-main links define this causal cut; a Store link cannot prove its own reachability.
-Same-tree siblings, wrong-Store targets, omitted concurrent tips and redundant
-older ancestors are invalid, regardless of their height labels. Snapshot equality
-is set equality, not list ordering.
+**Main links define causality; Store links define consumption.** An ordinary
+Store contribution may consume any subset of that Store's contributions in its
+main-parent ancestry. Observing a contribution through main links does not
+require consuming it. Empty Store parents start an independent Store branch,
+even if earlier contributions exist. Nonmaximal or redundant ancestor parents
+are also valid; there is no ordinary-Store exact-frontier equality requirement.
 
-Entries that do not touch a Store carry its frontier forward. In
-`A(X) -> B(Y) -> C(X)`, `C.X` parents `A.X`. Concurrent branches touching `X`
-require all maximal `X` contributions at their join. Empty Store parents are
-valid only if the cut has no Verified contribution to that Store, including
-first creation and genesis.
+Named Store parents must still belong to the same database, contain the same
+Store and be reachable through **main links alone**. A Store link cannot prove
+its own causal membership. A same-database sibling outside that cut, a wrong-Store
+target or a foreign-database reference is invalid. Each actual Store-parent edge
+must also satisfy the [effective-height rule](#height-monotonicity).
+
+For a selected accepted main-ancestry cut, the **Store frontier** is the Store
+contributions not named as a Store parent by another contribution in that cut.
+It is not the subset occurring at the main frontier. For example:
+
+```text
+Main:       A(X) -> B(X) -> C(X) -> D(X)
+X parents:  A.X: []
+            B.X: [A.X]
+            C.X: [A.X]
+            D.X: [B.X, C.X]
+```
+
+A, B and C all verify. At main snapshot `{C}`, the X frontier is `{B.X, C.X}`:
+C observes B but does not consume B.X. Reads merge both branches, retaining both
+contributions under the Store's CRDT rules. Only D's explicit Store join replaces
+both tips with `{D.X}`. An intermediate Entry that does not touch X does not
+consume either tip. Concurrent main branches follow the same Store-edge rule.
+Normal transactions discover all Store tips at their selected main boundary;
+that authoring default is not an acceptance restriction on received Entries.
+
+**`_settings` is deliberately stricter.** A settings write must consume exactly
+its main parents' complete causal `_settings` frontier, and every Entry's signed
+`settings_tips` pin must identify that pre-write frontier. Omitting ordinary
+Store tips is valid; omitting authority context is not. Snapshot comparisons for
+settings are set comparisons, not list-order comparisons. The genesis exception
+and historical signature, permission and delegation rules remain unchanged.
 
 Local commits and received Entries use the same validation before acceptance.
-Missing or Unverified main ancestry remains retryable, never an empty frontier.
-Conclusive invalid evidence takes precedence over incomplete proof. Once the
-main cut is complete, an outside Store reference is invalid even if its bytes
-have not arrived. Raw storage still retains rejected and undecidable Entries.
-Today verification is whole-Entry: every Store contribution in a Verified Entry
-is accepted; there is no contribution-local status or recovery/splicing policy.
+Missing or Unverified main ancestry remains retryable, never proof of membership
+or non-membership. Conclusive invalid evidence takes precedence over incomplete
+proof. Once the main cut is complete, an outside Store reference is invalid even
+if its bytes have not arrived. Raw storage still retains rejected and undecidable
+Entries. Verification is whole-Entry: every Store contribution in a Verified
+Entry is accepted; there is no contribution-local status, sparse verification,
+automatic dependency fetching or recovery/splicing policy.
 
 ### Height monotonicity
 
@@ -141,8 +169,8 @@ effective parent heights in the main height calculation. Incremental then takes
 main-height gap rather than a height regression.
 
 Height-based consumers such as `Database::ids_added` retain their best-effort
-behavior for raw, unsettled history. Neither these height checks nor exact
-Store-frontier checks automatically recheck existing `Verified` history. Use the
+behavior for raw, unsettled history. Neither these height checks nor Store-parent
+membership and settings-frontier checks automatically recheck existing `Verified` history. Use the
 [offline trust reset](#explicit-trust-reset-on-verification-rule-upgrades) and
 dependency-first re-verification before relying on the new rules for previously
 accepted history; a format migration or closure repair is not that revalidation.
@@ -177,7 +205,9 @@ Concrete InMemory and SQL backends retain **only the Verified tips**, not a
 second membership set for the entire accepted history. Authoritative per-entry
 labels establish interior membership. Promotion removes direct parents from the
 retained tips and inserts the child; forks retain multiple tips and a verified
-join replaces them. This operation does not scan accepted history.
+main join replaces them. This operation does not scan accepted history. Store
+frontiers are derived separately from explicit Store edges within that accepted
+main cut; a main join alone does not consume an ordinary Store branch.
 
 ### Default reads and `.allow_unverified()`
 

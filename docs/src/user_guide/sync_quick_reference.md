@@ -331,7 +331,12 @@ assert that data is trusted. By default a `Database` read exposes only the
 **Verified frontier** (the maximal all-`Verified` prefix of the history), so
 freshly synced, not-yet-verified data is invisible until this node validates
 it. A read triggers an opportunistic verification pass automatically, or you
-can drive it explicitly.
+can drive it explicitly. This is whole-Entry acceptance, not sparse verification.
+Store reads derive separate frontiers from explicit Store edges in the accepted
+main ancestry. An ordinary write may observe a Store tip without consuming it;
+that tip remains visible until explicitly joined. `_settings` retains exact
+causal pre-write pin and write-parent validation. See the
+[A/B/C example](../design/verification.md#store-parent-frontiers).
 
 <!-- Code block ignored: Requires synced data from a peer -->
 
@@ -349,15 +354,17 @@ println!(
 let tips = database.snapshot().await?;
 
 // Opt into the looser view to also see Unverified tips (e.g. to inspect
-// data whose pinned _settings this node has not received yet). Failed
-// entries are always dropped, in both views.
+// data whose pinned _settings this node has not received yet). Failed tips
+// are dropped; the diagnostic raw view does not sanitize every ancestor.
 let pending = database.clone().allow_unverified().snapshot().await?;
 ```
 
 `still_unverified` counts entries left pending because their pinned
 `_settings` (or an ancestor) has not arrived yet — re-run `verify()` after
-more sync completes and they promote. `failed` counts entries that were
-checked and definitively rejected; those are dropped from reads permanently.
+more sync completes and retry. `failed` counts Entries considered in that pass
+and definitively rejected; they are excluded from default reads. Raw storage
+keeps them, and ordinary retry cannot clear them. Retained history checked under
+changed rules needs the explicit [offline trust reset](cli.md#db-reset-local-verification-offline-trust-reset).
 
 ### Advanced: Manual Sync Relationships
 

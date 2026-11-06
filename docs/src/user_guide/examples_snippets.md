@@ -510,6 +510,11 @@ async fn main() -> eidetica::Result<()> {
 Entries authored locally are validated at commit time and are immediately
 `Verified`. Entries received from a peer arrive `Unverified` and are hidden
 from the default (Verified-frontier) view until this node validates them.
+That is the main frontier. Store reads derive their own tips by explicit Store
+edges: if main A(X)->B(X)->C(X) has B.X and C.X both parenting A.X, X reads retain
+both B and C. Ordinary omitted tips stay visible; `_settings` still requires its
+exact causal pre-write frontier and signed pin. These are whole-Entry checks,
+not sparse verification. See [the full example](../design/verification.md#store-parent-frontiers).
 
 <!-- Code block ignored: Requires entries synced from a peer -->
 
@@ -539,7 +544,7 @@ println!(
 // Default read shows only the Verified frontier.
 let visible = database.snapshot().await?;
 
-// Inspect not-yet-verified data explicitly (Failed is still dropped).
+// Inspect raw pending tips explicitly (Failed tips are dropped).
 let with_pending = database.clone().allow_unverified().snapshot().await?;
 let _ = (visible, with_pending);
 # Ok(())

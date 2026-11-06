@@ -107,9 +107,13 @@ next inheriting Incremental write has main and Store height `1001`. This gap
 carries into later main descendants. With multiple parents, the largest relevant
 height wins, including Store parents behind intervening untouched Entries.
 
-Both local commit validation and received-Entry verification require exact
-[Store frontiers and strict effective-height growth](verification.md#store-parent-frontiers).
-They accept positive gaps without requiring any particular configured strategy.
+Both local commit validation and received-Entry verification require
+[Store-parent membership and strict effective-height growth](verification.md#store-parent-frontiers).
+Only actual Store-parent edges constrain that Store's height: observing another
+Store contribution through main ancestry does not consume it or impose its
+independent Store height. Empty, nonmaximal and redundant ordinary Store-parent
+sets remain valid under those checks. `_settings` alone retains exact causal
+frontier validation. Positive height gaps are valid without any required strategy.
 Existing Verified history needs the explicit offline re-verification procedure
 in that verification contract; changing the authoring calculation does not
 recertify stored history.
