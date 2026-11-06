@@ -29,7 +29,9 @@ This is a deliberate wire break. A v0 peer is refused before any operation runs:
 
 The value being sent and the value being received are owned, and stay proportional to their contents. What this module bounds is the **additional** memory used to move them. Above 64 KiB a blocking worker encodes or decodes, joined to the async stream by a queue of two 16 KiB chunks per direction. A sender runs the encoder twice over the same owned value, first to count bytes for the envelope and then to stream them, so no encoded copy exists. Messages of 64 KiB or less go through one buffer without a worker.
 
-`message_memory` in the integration tests measures this through all three transports in both directions. At 16, 48 and 96 MiB on the wire, additional live heap stayed under 3 MiB and did not grow with the message. These are requested bytes, not RSS, and exclude the following costs, which are not transport buffers:
+`message_memory` measures the production send paths through all three transports in both directions at 16, 48 and 96 MiB. The opposite peer drains bytes without decoding a result. The meter records the peak above the initial owned source, with no subtraction for future result capacity. It detects an exact-capacity whole encoded copy even if that copy is dropped before streaming begins. These are requested-heap observations, not RSS or an end-to-end decoder-overhead measurement.
+
+On receive, inspection establishes the fixed extra buffers: a queue of two 16 KiB chunks, the decoder's current chunk and the configured bounded unknown-value capture. The native CBOR decoder grows byte strings into the owned result, and the wire adapters move those buffers into Entry/credential fields rather than copying a whole envelope. End-to-end round-trip and backpressure tests cover those paths. Neither this inspection nor the sender meter bounds the following costs:
 
 - A decoded byte string's `Vec` can hold up to about twice its length, because a declared length is untrusted and cannot size an allocation.
 - Borrowed APIs such as `SyncTransport::send_request` and `Sync::send_entries` clone their input. Use `send_request_owned`, `send_owned_entries` or `Sync::send_owned_entries` to move it.
@@ -69,6 +71,8 @@ A healthy transfer may take as long as it needs, so a body has no total deadline
 | `first_response_timeout`              | 30 s          | Wait for a response to begin                                         |
 | `preparation_timeout`                 | 30 s          | Sizing a message before its first byte                               |
 | `overall_timeout`                     | None          | Caller-selected bound on a whole exchange, never renewed by progress |
+
+For service connections, the first-response wait starts only for the fully uploaded request at the front of the response FIFO. Later requests do not time out behind an active bulk response. A frame that has started uses the body progress policy; intervening notifications do not renew the front request's deadline. Idle connections are untimed. A first-response timeout fails the front request and retires the connection; canceled response slots remain in order until consumed. An explicit overall deadline still covers the whole call, including queueing.
 
 Connecting has its own transport bound. Windows carry no credit, so an early burst does not prepay later ones and a trickle cannot keep a transfer alive. A body that finishes within one window does not have to fill it, and timing stops once the body is complete. The defaults are engineering limits rather than a throughput promise: a link that cannot sustain 64 KiB/s needs a lower `min_window_bytes`.
 

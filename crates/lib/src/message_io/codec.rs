@@ -395,12 +395,25 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Bounded<'_, D> {
 
     fn deserialize_enum<V: Visitor<'de>>(
         self,
-        name: &'static str,
-        variants: &'static [&'static str],
+        _name: &'static str,
+        _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, D::Error> {
-        self.inner
-            .deserialize_enum(name, variants, BoundedVisitor::new(visitor, self.state))
+        // The native enum accessor does not consume a unit variant's map value.
+        // Use ordinary string/map access instead, so every structural byte is
+        // required and every nested seed retains the same resource accounting.
+        self.state.begin_identifier();
+        let mut wrapped = BoundedVisitor::new(
+            StrictEnum {
+                inner: visitor,
+                state: self.state,
+            },
+            self.state,
+        );
+        wrapped.ends_identifier = true;
+        let result = self.inner.deserialize_any(wrapped);
+        self.state.end_identifier();
+        result
     }
 
     fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, D::Error> {
@@ -429,6 +442,37 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Bounded<'_, D> {
 
     fn is_human_readable(&self) -> bool {
         self.inner.is_human_readable()
+    }
+}
+
+/// Serde's native value adapters enforce unit-only strings and consume map
+/// values, including unit values. Check the map end before returning success.
+struct StrictEnum<'s, V> {
+    inner: V,
+    state: &'s DecodeState,
+}
+
+impl<'de, V: Visitor<'de>> Visitor<'de> for StrictEnum<'_, V> {
+    type Value = V::Value;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a unit variant name or a single-entry enum map")
+    }
+
+    fn visit_str<E: de::Error>(self, name: &str) -> Result<V::Value, E> {
+        self.state.charge()?;
+        self.inner
+            .visit_enum(de::value::StrDeserializer::<E>::new(name))
+    }
+
+    fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<V::Value, A::Error> {
+        let value = self
+            .inner
+            .visit_enum(de::value::MapAccessDeserializer::new(&mut map))?;
+        if map.next_key::<de::IgnoredAny>()?.is_some() {
+            return Err(de::Error::custom("enum map must contain exactly one entry"));
+        }
+        Ok(value)
     }
 }
 
@@ -531,14 +575,6 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for BoundedVisitor<'_, V> {
             state: self.state,
         })
     }
-
-    fn visit_enum<A: de::EnumAccess<'de>>(self, inner: A) -> Result<V::Value, A::Error> {
-        self.enter_container();
-        self.inner.visit_enum(BoundedAccess {
-            inner,
-            state: self.state,
-        })
-    }
 }
 
 /// Charges one value, then decodes it under [`Bounded`].
@@ -559,7 +595,7 @@ impl<'de, T: DeserializeSeed<'de>> DeserializeSeed<'de> for BoundedSeed<'_, T> {
     }
 }
 
-/// Wraps native sequence, map, enum and variant accessors alike.
+/// Wraps native sequence and map accessors, including strict enum maps.
 struct BoundedAccess<'s, A> {
     inner: A,
     state: &'s DecodeState,
@@ -609,47 +645,5 @@ impl<'de, A: de::MapAccess<'de>> de::MapAccess<'de> for BoundedAccess<'_, A> {
 
     fn size_hint(&self) -> Option<usize> {
         None
-    }
-}
-
-impl<'de, 's, A: de::EnumAccess<'de>> de::EnumAccess<'de> for BoundedAccess<'s, A> {
-    type Error = A::Error;
-    type Variant = BoundedAccess<'s, A::Variant>;
-
-    fn variant_seed<T: DeserializeSeed<'de>>(
-        self,
-        seed: T,
-    ) -> Result<(T::Value, Self::Variant), A::Error> {
-        let state = self.state;
-        let seed = self.seed(seed);
-        let (value, inner) = self.inner.variant_seed(seed)?;
-        Ok((value, BoundedAccess { inner, state }))
-    }
-}
-
-impl<'de, A: de::VariantAccess<'de>> de::VariantAccess<'de> for BoundedAccess<'_, A> {
-    type Error = A::Error;
-
-    fn unit_variant(self) -> Result<(), A::Error> {
-        self.inner.unit_variant()
-    }
-
-    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, A::Error> {
-        let seed = self.seed(seed);
-        self.inner.newtype_variant_seed(seed)
-    }
-
-    fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, A::Error> {
-        self.inner
-            .tuple_variant(len, BoundedVisitor::new(visitor, self.state))
-    }
-
-    fn struct_variant<V: Visitor<'de>>(
-        self,
-        fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, A::Error> {
-        self.inner
-            .struct_variant(fields, BoundedVisitor::new(visitor, self.state))
     }
 }

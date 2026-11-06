@@ -740,6 +740,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn truncated_ack_must_not_succeed() {
+        use tokio::io::AsyncWriteExt;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let peer = async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                headers.push(socket.read_u8().await.unwrap());
+                assert!(headers.len() < 8192);
+            }
+            let request = read_message::<_, SyncRequest>(
+                &mut socket,
+                &TransferBudget::default(),
+                ReadOptions::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(matches!(request.value, SyncRequest::SendEntries(_)));
+            let malformed = [0xa1, 0x63, b'A', b'c', b'k'];
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {SYNC_MEDIA_TYPE}\r\nContent-Length: 13\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(header.as_bytes()).await.unwrap();
+            socket.write_all(&5u64.to_be_bytes()).await.unwrap();
+            socket.write_all(&malformed).await.unwrap();
+        };
+        let transport = HttpTransport::new().unwrap();
+        let address = Address::http(address);
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(transport.send_owned_entries(&address, vec![]), peer)
+        })
+        .await
+        .unwrap();
+        assert!(
+            result.is_err(),
+            "malformed acknowledgement returned success: {result:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn early_success_cannot_excuse_an_incomplete_upload() {
         use tokio::io::AsyncWriteExt;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

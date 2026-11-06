@@ -34,6 +34,90 @@ use crate::{
 
 const MIB: usize = 1024 * 1024;
 
+#[test]
+fn truncated_enum_map_must_not_acknowledge() {
+    let valid = encode(&SyncResponse::Ack);
+    assert!(matches!(
+        decode::<SyncResponse, _>(valid.as_slice(), &policy()),
+        Ok(SyncResponse::Ack)
+    ));
+    let malformed = [0xa1, 0x63, b'A', b'c', b'k'];
+    let result = decode::<SyncResponse, _>(malformed.as_slice(), &policy());
+    assert!(
+        result.is_err(),
+        "map missing its value accepted: {result:?}"
+    );
+}
+
+#[test]
+fn enums_require_complete_single_entry_maps_and_unit_only_strings() {
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    enum Example {
+        Unit,
+        Newtype(u8),
+        Tuple(u8, u8),
+        Struct { value: u8 },
+    }
+    for value in [
+        Example::Unit,
+        Example::Newtype(1),
+        Example::Tuple(2, 3),
+        Example::Struct { value: 4 },
+    ] {
+        let encoded = encode(&vec![value]);
+        let decoded: Vec<Example> = decode(encoded.as_slice(), &policy()).unwrap();
+        assert_eq!(encode(&decoded), encoded);
+        // Includes truncated unit/newtype/tuple/struct payloads nested in a sequence.
+        assert!(decode::<Vec<Example>, _>(&encoded[..encoded.len() - 1], &policy()).is_err());
+    }
+    assert_eq!(
+        decode::<Example, _>(fixture(r#""Unit""#).as_slice(), &policy()).unwrap(),
+        Example::Unit
+    );
+    // Map-form units must consume the native unit encoding too.
+    assert_eq!(
+        decode::<Example, _>(
+            [0xa1, 0x64, b'U', b'n', b'i', b't', 0x80].as_slice(),
+            &policy()
+        )
+        .unwrap(),
+        Example::Unit
+    );
+    for malformed in [
+        r#""Newtype""#,
+        r#""Tuple""#,
+        r#""Struct""#,
+        r#"{}"#,
+        r#"{"Unit":1}"#,
+        r#"{"Newtype":1,"Other":2}"#,
+        r#"{"Newtype":1,"Newtype":2}"#,
+    ] {
+        assert!(
+            decode::<Example, _>(fixture(malformed).as_slice(), &policy()).is_err(),
+            "accepted {malformed}"
+        );
+    }
+    let mut declared_extra = encode(&Example::Newtype(1));
+    declared_extra[0] = 0xa2;
+    assert!(decode::<Example, _>(declared_extra.as_slice(), &policy()).is_err());
+    let limited = budget_with(|p| p.max_identifier_bytes = 2);
+    assert!(matches!(
+        decode::<Example, _>(encode(&Example::Newtype(1)).as_slice(), limited.policy()),
+        Err(TransferError::Resource {
+            limit: ResourceLimit::IdentifierBytes,
+            ..
+        })
+    ));
+    let limited = budget_with(|p| p.max_nodes = 1);
+    assert!(matches!(
+        decode::<Example, _>(encode(&Example::Newtype(1)).as_slice(), limited.policy()),
+        Err(TransferError::Resource {
+            limit: ResourceLimit::Nodes,
+            ..
+        })
+    ));
+}
+
 fn encode<T: Serialize>(value: &T) -> Vec<u8> {
     cbor4ii::serde::to_vec(Vec::new(), value).unwrap()
 }

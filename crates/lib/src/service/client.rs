@@ -18,10 +18,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
-use tokio::net::{
-    UnixStream,
-    unix::{OwnedReadHalf, OwnedWriteHalf},
-};
+use tokio::net::{UnixStream, unix::OwnedWriteHalf};
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
 use crate::account::AccountError;
@@ -207,6 +204,14 @@ enum SubRole {
 }
 
 /// Internal state for a remote connection, wrapped in Arc for Clone.
+struct PendingResponse {
+    response: oneshot::Sender<Result<ServiceResponse, TransferError>>,
+    uploaded: Arc<AtomicBool>,
+    /// Starts only when this fully uploaded slot reaches the reader's front.
+    /// Notifications must not renew it.
+    deadline: Option<tokio::time::Instant>,
+}
+
 struct RemoteConnectionInner {
     /// Owns the write half of the socket. `tokio::sync::Mutex` because
     /// writing a message is async (held across awaits). Only ever held for the
@@ -221,7 +226,8 @@ struct RemoteConnectionInner {
     /// `ServerFrame::Response` so request and response order line up. The
     /// VecDeque is guarded by a plain `std::sync::Mutex` — never held
     /// across an await — so it can't deadlock with the writer lock.
-    pending: std::sync::Mutex<VecDeque<oneshot::Sender<ServiceResponse>>>,
+    pending: std::sync::Mutex<VecDeque<PendingResponse>>,
+    pending_changed: Notify,
     /// Set once by [`RemoteConnection::attach_instance`] right after
     /// `Instance::connect` has finished building the Instance. The reader
     /// task reads (cheap clone of the inner `Weak`) on each
@@ -395,9 +401,7 @@ impl RemoteConnectionInner {
     }
 
     /// Acquire the pending-queue lock, tolerating poisoning.
-    fn pending_lock(
-        &self,
-    ) -> std::sync::MutexGuard<'_, VecDeque<oneshot::Sender<ServiceResponse>>> {
+    fn pending_lock(&self) -> std::sync::MutexGuard<'_, VecDeque<PendingResponse>> {
         self.pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -569,6 +573,7 @@ impl RemoteConnection {
             writer: Mutex::new(Some(writer)),
             budget,
             pending: std::sync::Mutex::new(VecDeque::new()),
+            pending_changed: Notify::new(),
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
@@ -650,7 +655,8 @@ impl RemoteConnection {
             return Err(connection_aborted());
         }
         let message = prepare_message(req, &self.inner.budget).await?;
-        let (tx, mut rx) = oneshot::channel::<ServiceResponse>();
+        let (tx, mut rx) = oneshot::channel();
+        let uploaded = Arc::new(AtomicBool::new(false));
         {
             let mut writer = self.inner.writer.lock().await;
             // Re-check under the writer lock to close the race where the
@@ -667,7 +673,11 @@ impl RemoteConnection {
                 writer: &mut writer,
                 complete: false,
             };
-            self.inner.pending_lock().push_back(tx);
+            self.inner.pending_lock().push_back(PendingResponse {
+                response: tx,
+                uploaded: uploaded.clone(),
+                deadline: None,
+            });
             // Reader teardown publishes closed before draining pending. The
             // slot must exist before this last check or it can miss the drain.
             if self.inner.closed.load(Ordering::Acquire) {
@@ -683,15 +693,22 @@ impl RemoteConnection {
                 self.inner.closed.store(true, Ordering::Release);
                 let refusal = tokio::time::timeout(REFUSAL_GRACE, &mut rx).await;
                 return match refusal {
-                    Ok(Ok(ServiceResponse::Error(refusal))) if is_resource_refusal(&refusal) => {
+                    Ok(Ok(Ok(ServiceResponse::Error(refusal))))
+                        if is_resource_refusal(&refusal) =>
+                    {
                         Ok(ServiceResponse::Error(refusal))
                     }
+                    Ok(Ok(Err(refusal))) if refusal.is_resource() => Err(refusal.into()),
                     _ => Err(error.into()),
                 };
             }
             frame.complete = true;
+            uploaded.store(true, Ordering::Release);
+            self.inner.pending_changed.notify_one();
         }
-        rx.await.map_err(|_| connection_aborted())
+        rx.await
+            .map_err(|_| connection_aborted())?
+            .map_err(Into::into)
     }
 
     /// Send a request and convert error responses to `crate::Error`.
@@ -1577,6 +1594,48 @@ fn is_resource_refusal(error: &ServiceError) -> bool {
     error.module == "sync" && error.kind == "ResourceLimit"
 }
 
+/// Wait cancel-safely for one byte, reacting to newly completed uploads only
+/// before consuming it. Never restart the envelope decoder on a queue change:
+/// it may already have consumed a prefix or body. Idle sockets are untimed.
+async fn read_server_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    inner: &RemoteConnectionInner,
+) -> Result<Option<crate::message_io::Inbound<IncomingServerFrame>>, TransferError> {
+    use tokio::io::AsyncReadExt;
+
+    let elapsed = inner.budget.policy().first_response_timeout;
+    let mut first = [0u8; 1];
+    loop {
+        let changed = inner.pending_changed.notified();
+        let deadline = inner.pending_lock().front_mut().and_then(|pending| {
+            pending.uploaded.load(Ordering::Acquire).then(|| {
+                *pending
+                    .deadline
+                    .get_or_insert_with(|| tokio::time::Instant::now() + elapsed)
+            })
+        });
+        let expiry = async {
+            match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            () = expiry => return Err(TransferError::ResponseTimeout { elapsed }),
+            result = reader.read(&mut first) => {
+                if result? == 0 {
+                    return Ok(None);
+                }
+                break;
+            }
+            () = changed => {}
+        }
+    }
+    let mut prefixed = std::io::Cursor::new(first).chain(reader);
+    read_message(&mut prefixed, &inner.budget, ReadOptions::default()).await
+}
+
 /// Background task driving the read half of the socket.
 ///
 /// Loops on [`read_message`] and demuxes by [`IncomingServerFrame`] variant:
@@ -1603,37 +1662,30 @@ fn is_resource_refusal(error: &ServiceError) -> bool {
 /// in turn drops every remaining oneshot sender in `pending`, surfacing
 /// as a `RecvError` on each awaiting `request()` (translated to a
 /// connection-closed `io::Error` there).
-async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionInner>) {
+async fn run_reader_task<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    inner: Arc<RemoteConnectionInner>,
+) {
     loop {
-        let options = ReadOptions {
-            allow_clean_eof: true,
-            ..Default::default()
-        };
-        let message =
-            match read_message::<_, IncomingServerFrame>(&mut reader, &inner.budget, options).await
-            {
-                Ok(Some(message)) => message,
-                Ok(None) => break, // Clean EOF
-                Err(e) => {
-                    tracing::debug!("RemoteConnection reader error: {e}");
-                    if e.is_resource()
-                        && let Some(tx) = inner.pending_lock().pop_front()
-                    {
-                        let refusal = ServiceError::from(&crate::Error::from(e));
-                        let _ = tx.send(ServiceResponse::Error(refusal));
-                    }
-                    break;
+        let message = match read_server_frame(&mut reader, &inner).await {
+            Ok(Some(message)) => message,
+            Ok(None) => break, // Clean EOF
+            Err(e) => {
+                tracing::debug!("RemoteConnection reader error: {e}");
+                if let Some(pending) = inner.pending_lock().pop_front() {
+                    let _ = pending.response.send(Err(e));
                 }
-            };
+                break;
+            }
+        };
 
         match message.value {
             IncomingServerFrame::Response(resp) => {
                 let next = inner.pending_lock().pop_front();
                 match next {
-                    Some(tx) => {
-                        // Receiver dropped → the caller has already given
-                        // up. Not an error worth logging.
-                        let _ = tx.send(*resp);
+                    Some(pending) => {
+                        // Receiver dropped → keep consuming its FIFO slot.
+                        let _ = pending.response.send(Ok(*resp));
                     }
                     None => {
                         tracing::warn!(
@@ -1939,6 +1991,8 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
 
 #[cfg(test)]
 mod compatibility_tests;
+#[cfg(test)]
+mod response_timing_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1948,6 +2002,12 @@ mod tests {
 
     /// Exercise the real connect/handshake/background-reader path, not a mock FIFO.
     pub(super) async fn connect_peer() -> (RemoteConnection, UnixStream) {
+        connect_peer_with_budget(TransferBudget::default()).await
+    }
+
+    pub(super) async fn connect_peer_with_budget(
+        budget: TransferBudget,
+    ) -> (RemoteConnection, UnixStream) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peer.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
@@ -1966,7 +2026,7 @@ mod tests {
             stream
         };
         let (conn, peer) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(RemoteConnection::connect(&path), peer)
+            tokio::join!(RemoteConnection::connect_with_budget(&path, budget), peer)
         })
         .await
         .unwrap();
@@ -1996,6 +2056,7 @@ mod tests {
             writer: Mutex::new(Some(writer)),
             budget: TransferBudget::default(),
             pending: std::sync::Mutex::new(VecDeque::new()),
+            pending_changed: Notify::new(),
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
@@ -2106,6 +2167,33 @@ mod frame_cancellation_tests {
     use crate::service::protocol::write_frame;
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn silent_service_must_enforce_response_timeout() {
+        let policy = crate::message_io::TransferPolicy {
+            first_response_timeout: Duration::from_millis(20),
+            ..Default::default()
+        };
+        let budget = TransferBudget::new(policy).unwrap();
+        let (conn, mut peer) = super::tests::connect_peer_with_budget(budget).await;
+        let mut request = Box::pin(conn.request(ServiceRequest::TrustedLoginAccount {
+            username: "observed".into(),
+        }));
+        tokio::select! {
+            _ = super::tests::read_request(&mut peer, "observed") => {},
+            result = &mut request => panic!("response before consumed request: {result:?}"),
+        }
+        // Positive wire observation precedes this bound; no queue or bulk body is active.
+        let result = tokio::time::timeout(Duration::from_millis(200), &mut request).await;
+        assert!(
+            result.is_ok(),
+            "configured 20ms first-response bound ignored after request consumption"
+        );
+        assert!(
+            matches!(result.unwrap(), Err(crate::Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(conn.inner.closed.load(Ordering::Acquire));
+    }
 
     #[tokio::test]
     async fn cancelled_partial_service_frame_retires_connection() {

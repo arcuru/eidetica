@@ -1,39 +1,41 @@
-//! Additional memory of the production message paths as messages grow.
+//! Requested-heap evidence for the production encoders and native send paths.
 //!
-//! A message is measured whole, end to end, with both peers in this process:
-//! `additional` is the peak of live heap beyond the owned source value and the
-//! owned decoded value. Those two remain proportional to their contents by
-//! design, and a decoded value's slack is excluded by taking its capacity.
-//!
-//! The meter counts requested bytes, so it says nothing about RSS, allocator
-//! overhead or `realloc` overlap. It needs a process per test, which nextest
-//! provides; run with `--no-capture` to see each measurement.
+//! The opposite peer drains bytes without decoding an owned result. Therefore
+//! no future result capacity is subtracted from a historical peak: even an
+//! exact-capacity encoded copy dropped before decoding must be visible.
+//! Receiver output allocation is intentionally not measured by this oracle;
+//! fixed decoder queues/reader buffers are inspected separately. This is not
+//! RSS, allocator overhead/realloc overlap, storage or a process-wide bound.
+//! Nextest supplies one process per test, isolating the global peak meter.
 
 use std::sync::{Arc, Mutex};
 
 use eidetica::{
     Entry,
     entry::ID,
-    message_io::TransferBudget,
     sync::{
         Address,
         handler::SyncHandler,
         protocol::{BootstrapResponse, RequestContext, SyncRequest, SyncResponse},
-        transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
+        transports::{
+            SyncTransport,
+            http::{HttpTransport, SYNC_MEDIA_TYPE, SYNC_PATH},
+            iroh::IrohTransport,
+        },
     },
 };
-use iroh::RelayMode;
+use futures_util::StreamExt;
+use iroh::{
+    Endpoint, RelayMode,
+    endpoint::{PortmapperConfig, presets},
+};
+use iroh_tickets::{Ticket, endpoint::EndpointTicket};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{peak_allocation, reset_peak_allocation};
 
 const MIB: usize = 1024 * 1024;
-
-/// Wire sizes measured, spanning both former limits many times over.
 const SIZES: [usize; 3] = [16 * MIB, 48 * MIB, 96 * MIB];
-
-/// Allowed rise in additional memory across [`SIZES`]. Native windows and socket
-/// buffers fill by the smallest size, so what remains is measurement noise; a
-/// path keeping any fraction of a message would exceed this many times over.
 const GROWTH_ALLOWANCE: usize = 4 * MIB;
 
 fn entry(bytes: usize) -> Entry {
@@ -43,161 +45,258 @@ fn entry(bytes: usize) -> Entry {
         .unwrap()
 }
 
-fn held(entry: &Entry) -> usize {
-    entry.data("data").unwrap().capacity()
+fn envelope(value: &impl serde::Serialize) -> Vec<u8> {
+    let body = cbor4ii::serde::to_vec(Vec::new(), value).unwrap();
+    let mut message = (body.len() as u64).to_be_bytes().to_vec();
+    message.extend(body);
+    message
 }
 
-fn additional(baseline: usize, owned_result: usize) -> usize {
-    peak_allocation().saturating_sub(baseline + owned_result)
+fn overhead(baseline: usize) -> usize {
+    peak_allocation().saturating_sub(baseline)
 }
 
 fn assert_bounded(path: &str, samples: &[usize]) {
-    for (size, additional) in SIZES.iter().zip(samples) {
+    for (size, extra) in SIZES.iter().zip(samples) {
         eprintln!(
-            "{path}: wire {} MiB, additional {additional} bytes",
+            "{path}: payload {} MiB, peak above initial owned source {extra} bytes",
             size / MIB
         );
     }
     let growth = samples[samples.len() - 1].saturating_sub(samples[0]);
     assert!(
         growth < GROWTH_ALLOWANCE,
-        "{path}: additional memory grew {growth} bytes with the message: {samples:?}"
+        "{path}: extra heap grew {growth} bytes: {samples:?}"
     );
 }
 
-/// Records what arrived and answers with whatever the test left for it.
+/// Drain one envelope without creating a decoded value, using copy's fixed I/O
+/// buffer. This observes the complete body and (for peers) the required FIN.
+async fn drain(reader: &mut (impl AsyncRead + Unpin), end: bool) -> u64 {
+    let length = reader.read_u64().await.unwrap();
+    let read = tokio::io::copy(&mut (&mut *reader).take(length), &mut tokio::io::sink())
+        .await
+        .unwrap();
+    assert_eq!(read, length);
+    if end {
+        assert_eq!(reader.read(&mut [0u8; 1]).await.unwrap(), 0);
+    }
+    length
+}
+
 #[derive(Default)]
-struct Peer {
-    received: Mutex<usize>,
-    response: Mutex<Option<SyncResponse>>,
-}
+struct Peer(Mutex<Option<SyncResponse>>);
 
-#[async_trait::async_trait]
-impl SyncHandler for Peer {
-    async fn handle_request(&self, request: &SyncRequest, _: &RequestContext) -> SyncResponse {
-        if let SyncRequest::SendEntries(entries) = request {
-            *self.received.lock().unwrap() = entries.iter().map(held).sum();
-        }
-        let response = self.response.lock().unwrap().take();
-        response.unwrap_or(SyncResponse::Ack)
-    }
-}
-
-async fn measure_transport<T: SyncTransport>(
-    name: &str,
-    build: impl Fn() -> T,
-    address: impl Fn(String) -> Address,
-) {
-    let peer = Arc::new(Peer::default());
-    let server = build();
-    server.start_server(peer.clone()).await.unwrap();
-    let target = address(server.get_server_address().unwrap());
-    let client = build();
-
-    // One exchange first, so connection setup and lazy state are not measured.
-    client.send_owned_entries(&target, vec![]).await.unwrap();
-
-    let mut uploads = Vec::new();
-    for size in SIZES {
-        let source = entry(size);
-        let baseline = reset_peak_allocation();
-        client
-            .send_owned_entries(&target, vec![source])
-            .await
-            .unwrap();
-        uploads.push(additional(baseline, *peer.received.lock().unwrap()));
-    }
-    assert_bounded(&format!("{name} upload"), &uploads);
-
-    let mut downloads = Vec::new();
-    for size in SIZES {
-        let source = entry(size);
-        *peer.response.lock().unwrap() = Some(SyncResponse::Bootstrap(BootstrapResponse {
+impl Peer {
+    fn respond_with(&self, source: Entry) {
+        *self.0.lock().unwrap() = Some(SyncResponse::Bootstrap(BootstrapResponse {
             tree_id: ID::default(),
             root_entry: source,
             all_entries: Vec::new(),
             key_approved: false,
             granted_permission: None,
         }));
+    }
+}
+
+#[async_trait::async_trait]
+impl SyncHandler for Peer {
+    async fn handle_request(&self, _: &SyncRequest, _: &RequestContext) -> SyncResponse {
+        self.0.lock().unwrap().take().unwrap_or(SyncResponse::Ack)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_send_buffers_do_not_grow_with_the_message() {
+    use axum::{Router, body::Body, http::header, routing::post};
+    let router = Router::new().route(
+        SYNC_PATH,
+        post(|body: Body| async {
+            let mut chunks = body.into_data_stream();
+            let mut bytes = 0;
+            while let Some(chunk) = chunks.next().await {
+                bytes += chunk.unwrap().len();
+            }
+            assert!(bytes >= 8);
+            (
+                [(header::CONTENT_TYPE, SYNC_MEDIA_TYPE)],
+                envelope(&SyncResponse::Ack),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = Address::http(listener.local_addr().unwrap().to_string());
+    let raw = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let client = HttpTransport::new().unwrap();
+    client.send_owned_entries(&target, vec![]).await.unwrap();
+    let mut uploads = Vec::new();
+    for size in SIZES {
+        let request = SyncRequest::SendEntries(vec![entry(size)]);
         let baseline = reset_peak_allocation();
-        let response = client
-            .send_request_owned(&target, SyncRequest::SendEntries(vec![]))
+        client.send_request_owned(&target, request).await.unwrap();
+        uploads.push(overhead(baseline));
+    }
+    assert_bounded("http upload encoder/native send", &uploads);
+    raw.abort();
+    let _ = raw.await;
+
+    let peer = Arc::new(Peer::default());
+    let server = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
+    server.start_server(peer.clone()).await.unwrap();
+    let url = format!("http://{}{SYNC_PATH}", server.get_server_address().unwrap());
+    let client = reqwest::Client::new();
+    let request = envelope(&SyncRequest::SendEntries(vec![]));
+    let mut downloads = Vec::new();
+    // The first exchange warms the HTTP connection before measurement.
+    for size in [0].into_iter().chain(SIZES) {
+        peer.respond_with(entry(size));
+        let baseline = reset_peak_allocation();
+        let mut response = client
+            .post(&url)
+            .header("content-type", SYNC_MEDIA_TYPE)
+            .body(request.clone())
+            .send()
             .await
             .unwrap();
-        let SyncResponse::Bootstrap(response) = response else {
-            panic!("expected the prepared response, got {response:?}");
-        };
-        downloads.push(additional(baseline, held(&response.root_entry)));
+        assert!(response.status().is_success());
+        let mut bytes = 0;
+        while let Some(chunk) = response.chunk().await.unwrap() {
+            bytes += chunk.len();
+        }
+        assert!(bytes > size);
+        if size != 0 {
+            downloads.push(overhead(baseline));
+        }
     }
-    assert_bounded(&format!("{name} download"), &downloads);
-
+    assert_bounded("http download encoder/native send", &downloads);
     server.stop_server().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn http_additional_memory_does_not_grow_with_the_message() {
-    measure_transport(
-        "http",
-        || {
-            HttpTransport::builder()
-                .bind("127.0.0.1:0")
-                .transfer_budget(TransferBudget::default())
-                .build_sync()
-                .unwrap()
-        },
-        Address::http,
-    )
-    .await;
+async fn endpoint() -> Endpoint {
+    Endpoint::builder(presets::N0)
+        .alpns(vec![b"eidetica/v1".to_vec()])
+        .relay_mode(RelayMode::Disabled)
+        .clear_address_lookup()
+        .portmapper_config(PortmapperConfig::Disabled)
+        .bind()
+        .await
+        .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn iroh_additional_memory_does_not_grow_with_the_message() {
-    measure_transport(
-        "iroh",
-        || {
-            IrohTransport::builder()
-                .relay_mode(RelayMode::Disabled)
-                .mdns(false)
-                .n0_dns(false)
-                .build()
-                .unwrap()
-        },
-        Address::iroh,
-    )
-    .await;
+async fn iroh_send_buffers_do_not_grow_with_the_message() {
+    let raw = endpoint().await;
+    let target = Address::iroh(EndpointTicket::new(raw.addr()).encode_string());
+    let accept = tokio::spawn({
+        let endpoint = raw.clone();
+        async move {
+            for _ in 0..=SIZES.len() {
+                let connection = endpoint.accept().await.unwrap().await.unwrap();
+                let (mut send, mut recv) = connection.accept_bi().await.unwrap();
+                assert!(drain(&mut recv, true).await > 0);
+                send.write_all(&envelope(&SyncResponse::Ack)).await.unwrap();
+                send.finish().unwrap();
+                let _ = send.stopped().await;
+            }
+        }
+    });
+    let client = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .portmapper_config(PortmapperConfig::Disabled)
+        .mdns(false)
+        .n0_dns(false)
+        .build()
+        .unwrap();
+    client.send_owned_entries(&target, vec![]).await.unwrap();
+    let mut uploads = Vec::new();
+    for size in SIZES {
+        let request = SyncRequest::SendEntries(vec![entry(size)]);
+        let baseline = reset_peak_allocation();
+        client.send_request_owned(&target, request).await.unwrap();
+        uploads.push(overhead(baseline));
+    }
+    accept.await.unwrap();
+    assert_bounded("iroh upload encoder/native send", &uploads);
+    raw.close().await;
+
+    let peer = Arc::new(Peer::default());
+    let server = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .portmapper_config(PortmapperConfig::Disabled)
+        .mdns(false)
+        .n0_dns(false)
+        .build()
+        .unwrap();
+    server.start_server(peer.clone()).await.unwrap();
+    let target = EndpointTicket::decode_string(&server.get_server_address().unwrap()).unwrap();
+    let raw = endpoint().await;
+    let connection = raw
+        .connect(target.endpoint_addr().clone(), b"eidetica/v1")
+        .await
+        .unwrap();
+    let request = envelope(&SyncRequest::SendEntries(vec![]));
+    let mut downloads = Vec::new();
+    for size in [0].into_iter().chain(SIZES) {
+        peer.respond_with(entry(size));
+        let baseline = reset_peak_allocation();
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
+        send.write_all(&request).await.unwrap();
+        send.finish().unwrap();
+        assert!(drain(&mut recv, true).await > size as u64);
+        downloads.push(overhead(baseline));
+    }
+    assert_bounded("iroh download encoder/native send", &downloads[1..]);
+    connection.close(0u32.into(), b"done");
+    raw.close().await;
+    server.stop_server().await.unwrap();
 }
 
-/// The positive control: this meter must see a path that does keep a whole
-/// encoded message, or the bounds above would prove nothing.
+/// An exact-capacity copy must be visible even when freed before the oracle is
+/// queried. The same mutation is also exercised in the production encoder.
 #[test]
-fn the_meter_sees_a_whole_encoded_copy() {
+fn the_meter_sees_a_dropped_exact_capacity_encoded_copy() {
     let source = entry(SIZES[0]);
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    cbor4ii::serde::to_writer(&mut count, &source).unwrap();
     let baseline = reset_peak_allocation();
-    let encoded = cbor4ii::serde::to_vec(Vec::new(), &source).unwrap();
-    assert!(encoded.len() > SIZES[0]);
-    assert!(additional(baseline, 0) >= SIZES[0]);
+    let encoded = cbor4ii::serde::to_vec(Vec::with_capacity(count.0), &source).unwrap();
+    assert_eq!(encoded.len(), count.0);
+    std::hint::black_box(&encoded);
+    drop(encoded);
+    assert!(overhead(baseline) >= count.0);
 }
 
 #[cfg(all(unix, feature = "service"))]
 mod service {
+    use super::*;
     use eidetica::{
         auth::{crypto::generate_keypair, types::SigKey},
         service::protocol::{
             AuthenticatedDbRequest, DatabaseOp, ServerFrame, ServiceRequest, ServiceResponse,
-            read_classified_request, read_classified_response, write_owned_frame,
+            write_owned_frame,
         },
     };
     use tokio::net::UnixStream;
 
-    use super::*;
-
-    /// The service wire end to end, through the classifying decoders.
     #[tokio::test(flavor = "multi_thread")]
-    async fn service_additional_memory_does_not_grow_with_the_message() {
+    async fn service_send_buffers_do_not_grow_with_the_message() {
         let (_, public_key) = generate_keypair();
         let (mut near, mut far) = UnixStream::pair().unwrap();
-
         let mut uploads = Vec::new();
+        let mut downloads = Vec::new();
         for size in SIZES {
             let request = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
                 root_id: ID::default(),
@@ -207,35 +306,23 @@ mod service {
                 },
             }));
             let baseline = reset_peak_allocation();
-            let (sent, received) = tokio::join!(
+            let (sent, bytes) = tokio::join!(
                 write_owned_frame(&mut near, request),
-                read_classified_request(&mut far),
+                drain(&mut far, false)
             );
             sent.unwrap();
-            let Some(ServiceRequest::AuthenticatedDb(request)) = received.unwrap() else {
-                panic!("expected the request back");
-            };
-            let DatabaseOp::SubmitSignedEntry { entry } = &request.op else {
-                panic!("expected the same operation");
-            };
-            uploads.push(additional(baseline, held(entry)));
-        }
-        assert_bounded("service upload", &uploads);
+            assert!(bytes > size as u64);
+            uploads.push(overhead(baseline));
 
-        let mut downloads = Vec::new();
-        for size in SIZES {
             let frame = ServerFrame::Response(Box::new(ServiceResponse::Entry(entry(size))));
             let baseline = reset_peak_allocation();
-            let (sent, received) = tokio::join!(
-                write_owned_frame(&mut near, frame),
-                read_classified_response(&mut far),
-            );
+            let (sent, bytes) =
+                tokio::join!(write_owned_frame(&mut near, frame), drain(&mut far, false));
             sent.unwrap();
-            let Some(ServiceResponse::Entry(entry)) = received.unwrap() else {
-                panic!("expected the entry back");
-            };
-            downloads.push(additional(baseline, held(&entry)));
+            assert!(bytes > size as u64);
+            downloads.push(overhead(baseline));
         }
-        assert_bounded("service download", &downloads);
+        assert_bounded("service upload encoder/native send", &uploads);
+        assert_bounded("service download encoder/native send", &downloads);
     }
 }
