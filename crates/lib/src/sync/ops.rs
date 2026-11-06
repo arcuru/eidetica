@@ -533,8 +533,6 @@ impl Sync {
     /// preference writes call `sync_account` for their exact login directly.
     /// Activation tokens suppress unchanged combined-setting writes.
     pub(crate) async fn reconcile_account_settings(&self) -> Result<()> {
-        let _guard = self.reconciliation.lock().await;
-
         let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
         for (login_id, account_info) in crate::account::local_logins::records(&instance).await? {
             self.sync_account(&login_id, &account_info.account_id)

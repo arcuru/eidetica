@@ -115,6 +115,8 @@ Its `signer` method returns an independently owned private-key clone.
 There is no plaintext `Debug`, `Clone` or serialization interface on `UnlockedCredentials`.
 
 Dropping an unlock/session does not destroy independent clones, invalidate existing database handles or revoke Auth.
+Connected keyed handles retain only their own signer and renew its possession proof after a successful re-login replaces the connection's public keyset.
+Login handshakes, key registration and database requests are serialized on the connection so a retained handle cannot race a half-completed authentication exchange.
 Signing keys use their existing zeroizing owner, but parser/serde/allocator/crypto internal copies, caller-owned passwords, swap, core dumps and a compromised process are outside this cleanup claim.
 Password rewrap reseals the same keys; older bundles/backups remain usable under their old password.
 Recovery/export, live revocation and background-device authority are separate work.

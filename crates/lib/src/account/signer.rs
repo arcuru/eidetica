@@ -96,7 +96,7 @@ impl AccountSigner {
                 .await?;
             return Ok(Database::open_remote(
                 instance,
-                connection,
+                connection.with_signer(self.key.signing_key().clone()),
                 root_id,
                 self.key.identity().clone(),
             )

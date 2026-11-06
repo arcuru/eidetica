@@ -1290,9 +1290,14 @@ impl Instance {
             // `RemoteBackend` are accepted.
             conn.register_session_key(signing_key).await?;
             let identity = SigKey::from_pubkey(&signing_key.public_key());
-            return Ok(Database::open_remote(self, conn, root_id, identity)
-                .await?
-                .with_key(signing_key.clone()));
+            return Ok(Database::open_remote(
+                self,
+                conn.with_signer(signing_key.clone()),
+                root_id,
+                identity,
+            )
+            .await?
+            .with_key(signing_key.clone()));
         }
         Ok(Database::open(self, root_id)
             .await?
