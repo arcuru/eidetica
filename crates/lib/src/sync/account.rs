@@ -41,6 +41,9 @@ impl Sync {
         login_id: impl AsRef<str>,
         preferences_db_id: &ID,
     ) -> Result<()> {
+        // Native CAS protects each login's inputs, not the shared scalar
+        // linked-account lists derived from them. Serialize every entry point.
+        let _guard = self.reconciliation.lock().await;
         let user_uuid_str = login_id.as_ref();
 
         // CRITICAL: Single transaction for all sync tree updates
@@ -159,6 +162,7 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or an error.
     pub async fn remove_account(&self, login_id: impl AsRef<str>) -> Result<()> {
+        let _guard = self.reconciliation.lock().await;
         let user_uuid_str = login_id.as_ref();
         let tx = self.sync_tree.new_transaction().await?;
         let user_mgr = AccountSyncManager::new(&tx);
@@ -195,48 +199,82 @@ impl Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Instance, NewAccount, backend::database::InMemory, crdt::Doc,
-        account::SyncSettings};
+    use crate::{
+        Instance, NewAccount, account::SyncSettings, backend::database::InMemory, crdt::Doc,
+    };
 
     #[tokio::test]
     async fn direct_preference_refresh_serializes_shared_account_links() -> Result<()> {
-        let (instance, mut first) = Instance::create_backend(
-            Box::new(InMemory::new()), NewAccount::passwordless("first"),
-        ).await?;
-        first.admin().await?.create_account(NewAccount::passwordless("second")).await?;
+        let (instance, mut first) =
+            Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("first"))
+                .await?;
+        first
+            .admin()
+            .await?
+            .create_account(NewAccount::passwordless("second"))
+            .await?;
         let mut second = instance.login_account("second", None).await?;
         let first_key = first.get_default_key()?;
         let second_key = second.get_default_key()?;
         let target = first.create_database(Doc::new(), &first_key).await?;
         let tx = target.new_transaction().await?;
-        tx.get_settings()?.set_auth_key(&second_key,
-            crate::auth::AuthKey::active(None, crate::auth::Permission::Write(0))).await?;
+        tx.get_settings()?
+            .set_auth_key(
+                &second_key,
+                crate::auth::AuthKey::active(None, crate::auth::Permission::Write(0)),
+            )
+            .await?;
         tx.commit().await?;
         // Both native choices exist before the coordinator is initialized.
-        first.track_database(target.root_id(), &first_key, SyncSettings::enabled()).await?;
-        second.track_database(target.root_id(), &second_key, SyncSettings::enabled()).await?;
+        first
+            .track_database(target.root_id(), &first_key, SyncSettings::enabled())
+            .await?;
+        second
+            .track_database(target.root_id(), &second_key, SyncSettings::enabled())
+            .await?;
         instance.enable_sync().await?;
         let sync = instance.sync().unwrap();
         {
-        let guard = sync.reconciliation.lock().await;
-        let refresh = sync.sync_account(first.login_id(), first.account().id());
-        tokio::pin!(refresh);
-        assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(refresh.as_mut().poll(cx))).await.is_pending(),
-            "direct refresh bypassed shared reconciliation serialization");
-        drop(guard);
-        refresh.await?;
+            let guard = sync.reconciliation.lock().await;
+            let refresh = sync.sync_account(first.login_id(), first.account().id());
+            tokio::pin!(refresh);
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(refresh.as_mut().poll(cx)))
+                    .await
+                    .is_pending(),
+                "direct refresh bypassed shared reconciliation serialization"
+            );
+            drop(guard);
+            refresh.await?;
         }
+        first
+            .set_sync_preferences(target.root_id(), false, false, None)
+            .await?;
+        second
+            .set_sync_preferences(target.root_id(), false, false, None)
+            .await?;
         let (a, b) = tokio::join!(
-            sync.sync_account(first.login_id(), first.account().id()),
-            sync.sync_account(second.login_id(), second.account().id()),
+            first.set_sync_preferences(target.root_id(), true, true, None),
+            second.set_sync_preferences(target.root_id(), true, true, None),
         );
         a?;
         b?;
-        first.set_sync_preferences(target.root_id(), false, false, None).await?;
+        first
+            .set_sync_preferences(target.root_id(), false, false, None)
+            .await?;
         let tx = sync.sync_tree.new_transaction().await?;
         let manager = AccountSyncManager::new(&tx);
-        assert_eq!(manager.get_linked_accounts(target.root_id()).await?, vec![second.login_id()]);
-        assert!(manager.get_combined_settings(target.root_id()).await?.unwrap().sync_enabled);
+        assert_eq!(
+            manager.get_linked_accounts(target.root_id()).await?,
+            vec![second.login_id()]
+        );
+        assert!(
+            manager
+                .get_combined_settings(target.root_id())
+                .await?
+                .unwrap()
+                .sync_enabled
+        );
         Ok(())
     }
 }

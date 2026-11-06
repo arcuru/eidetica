@@ -122,7 +122,7 @@ pub fn set_sweep_interval_for_test(d: std::time::Duration) {
 ///
 /// Holds only the public key the daemon verified during challenge-response.
 /// The plaintext signing key is intentionally **not** stored here — it lives
-/// in the `AccountSession::key_manager` session that owns this connection. The
+/// in the caller's `AccountSession` or independently keyed database handle. The
 /// daemon-side `ConnectionState::Authenticated` is what carries the
 /// `login_id` (for chunk 6's cache scoping); the client doesn't need it.
 #[derive(Clone, Debug)]
@@ -238,6 +238,9 @@ struct RemoteConnectionInner {
     /// per-request wire chatter for the common case where a single per-DB
     /// key is reused across many ops.
     registered_keys: Mutex<HashSet<PublicKey>>,
+    /// Keep compound possession proofs and database requests outside a racing
+    /// login handshake, which replaces the server's connection keyset.
+    authentication: Mutex<()>,
     /// Per-tree subscription state. Entries are inserted on first call to
     /// [`RemoteConnection::subscribe_writes`] and never removed on success
     /// (subscriptions live for the connection's lifetime; the daemon scrubs
@@ -466,6 +469,9 @@ impl RemoteConnectionInner {
 #[derive(Clone)]
 pub struct RemoteConnection {
     inner: Arc<RemoteConnectionInner>,
+    /// A keyed database handle retains only its own signer, never a login's
+    /// entire bundle. It can renew possession after connection reauthentication.
+    signer: Option<PrivateKey>,
     /// `Some` on every user-facing handle; `None` on internal handles
     /// minted from a task that must not keep the connection alive (the
     /// sweep). Cloning a user handle clones the token, so teardown fires
@@ -550,6 +556,7 @@ impl RemoteConnection {
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
+            authentication: Mutex::new(()),
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             subscription_locks: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
@@ -579,7 +586,16 @@ impl RemoteConnection {
         tokio::spawn(run_sweep_task(weak_for_sweep));
 
         let _live = Some(Arc::new(ConnLiveness(inner.clone())));
-        Ok(Self { inner, _live })
+        Ok(Self {
+            inner,
+            _live,
+            signer: None,
+        })
+    }
+
+    pub(crate) fn with_signer(mut self, signer: PrivateKey) -> Self {
+        self.signer = Some(signer);
+        self
     }
 
     /// Attach an `Instance` to this connection so the reader task can
@@ -666,6 +682,10 @@ impl RemoteConnection {
         identity: SigKey,
         op: DatabaseOp,
     ) -> crate::Result<ServiceResponse> {
+        let _guard = self.inner.authentication.lock().await;
+        if let Some(signer) = &self.signer {
+            self.register_session_key_locked(signer).await?;
+        }
         self.request_ok(ServiceRequest::AuthenticatedDb(Box::new(
             AuthenticatedDbRequest {
                 root_id,
@@ -678,6 +698,8 @@ impl RemoteConnection {
 
     /// Prove a caller-owned signer, with no daemon credential-store dependency.
     pub(crate) async fn authenticate_signer(&self, signer: &PrivateKey) -> crate::Result<()> {
+        let _guard = self.inner.authentication.lock().await;
+        self.inner.registered_keys.lock().await.clear();
         let response = self
             .request_ok(ServiceRequest::SignerChallenge {
                 pubkey: signer.public_key(),
@@ -792,6 +814,9 @@ impl RemoteConnection {
         username: &str,
         password: Option<&str>,
     ) -> crate::Result<(String, AccountInfo, crate::account::UnlockedCredentials)> {
+        let _guard = self.inner.authentication.lock().await;
+        // A failed/abandoned attempt also invalidates the server keyset.
+        self.inner.registered_keys.lock().await.clear();
         // Step 1: name the user, receive challenge + user record.
         let resp = self
             .request_ok(ServiceRequest::TrustedLoginAccount {
@@ -849,6 +874,11 @@ impl RemoteConnection {
     ///    { pubkey, signature }` → server verifies and inserts the pubkey
     ///    into its `session_keyset`.
     pub(crate) async fn register_session_key(&self, signing_key: &PrivateKey) -> crate::Result<()> {
+        let _guard = self.inner.authentication.lock().await;
+        self.register_session_key_locked(signing_key).await
+    }
+
+    async fn register_session_key_locked(&self, signing_key: &PrivateKey) -> crate::Result<()> {
         let pubkey = signing_key.public_key();
         {
             let cache = self.inner.registered_keys.lock().await;
@@ -1852,7 +1882,11 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
         // batch handle drops at the end of a tick. The strong `inner`
         // moved in here is released when `conn` drops at the end of the
         // tick, before the next `upgrade()`.
-        let conn = RemoteConnection { inner, _live: None };
+        let conn = RemoteConnection {
+            inner,
+            _live: None,
+            signer: None,
+        };
 
         for tree_id in candidates {
             // Per-tree fence: hold across the full Unsubscribe RTT so
@@ -1983,13 +2017,21 @@ mod tests {
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
+            authentication: Mutex::new(()),
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             subscription_locks: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             tree_workers: std::sync::Mutex::new(HashMap::new()),
             reader_abort: std::sync::Mutex::new(None),
         });
-        (RemoteConnection { inner, _live: None }, peer)
+        (
+            RemoteConnection {
+                inner,
+                _live: None,
+                signer: None,
+            },
+            peer,
+        )
     }
 
     /// Regression: `transition_to_idle` must not flip a tree to `Idle` while

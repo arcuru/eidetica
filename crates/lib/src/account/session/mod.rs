@@ -619,7 +619,14 @@ impl AccountSession {
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = self.instance.remote_connection() {
             conn.register_session_key(signing_key).await?;
-            return match Database::open_remote(&self.instance, conn, root_id, sigkey).await {
+            return match Database::open_remote(
+                &self.instance,
+                conn.with_signer(signing_key.clone()),
+                root_id,
+                sigkey,
+            )
+            .await
+            {
                 Ok(database) => Ok(self.with_local_account(database.with_key(key))),
                 Err(e) if e.is_not_found() => {
                     Err(super::errors::AccountError::DatabaseAccessPending {

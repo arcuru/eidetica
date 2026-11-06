@@ -393,7 +393,7 @@ impl Database {
                 root: new_root_id.clone(),
                 instance: instance.downgrade(),
                 ops: Arc::new(RemoteBackend::new(
-                    conn,
+                    conn.with_signer(signing_key.clone()),
                     Some(SigKey::from_pubkey(&pubkey_for_identity)),
                 )),
                 key: Some(DatabaseKey::new(signing_key)),
