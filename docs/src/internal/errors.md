@@ -27,6 +27,6 @@ pub struct ServiceError {
 }
 ```
 
-Invalid staging capabilities and oversized records have explicit backend errors: an expired, foreign, or already-published Store-state token returns `InvalidStoreStateStagingToken`, and a record that cannot fit below the service frame bound returns `RecordTooLarge`.
+Invalid staging capabilities and oversized records have explicit backend errors: an expired, foreign, or already-published Store-state token returns `InvalidStoreStateStagingToken`, and a message over the [resource policy](message_delivery.md#resource-policy) is refused with `SyncError::ResourceLimit`.
 
 On the client side, `service_error_to_eidetica_error()` reconstructs the appropriate `crate::Error` variant by matching on `(module, kind)`. Recognized error types are reconstructed precisely (e.g., `BackendError::EntryNotFound`); unrecognized combinations fall back to `Error::Io` with the original message. This means error-handling code using `is_not_found()` and similar helpers works identically for local and remote instances.

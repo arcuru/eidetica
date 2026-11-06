@@ -18,10 +18,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
-use tokio::net::{
-    UnixStream,
-    unix::{OwnedReadHalf, OwnedWriteHalf},
-};
+use tokio::net::{UnixStream, unix::OwnedWriteHalf};
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
 use crate::account::AccountError;
@@ -35,14 +32,17 @@ use crate::backend::{
 };
 use crate::entry::{Entry, ID};
 use crate::instance::WeakInstance;
-use crate::service::error::service_error_to_eidetica_error;
+use crate::message_io::{
+    ProgressMonitor, ReadOptions, TransferBudget, TransferError, prepare_message, read_message,
+};
+use crate::service::error::{ServiceError, service_error_to_eidetica_error};
 #[cfg(test)]
 use crate::service::protocol::ServerFrame;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, IncomingServerFrame, MergeState,
     Notification, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse,
-    TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext, WireCrdtValue, read_frame,
-    write_frame,
+    TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext, WireCrdtValue,
+    read_handshake, write_handshake,
 };
 use crate::snapshot::Snapshot;
 
@@ -119,6 +119,10 @@ pub fn set_idle_grace_window_for_test(d: std::time::Duration) {
 pub fn set_sweep_interval_for_test(d: std::time::Duration) {
     let _ = TEST_SWEEP_INTERVAL.set(d);
 }
+
+/// How long a failed request write waits for the server's correlated refusal.
+/// The server refuses and closes; the send can fail on that close first.
+const REFUSAL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Per-connection session state, populated by `trusted_login` on success.
 ///
@@ -200,19 +204,30 @@ enum SubRole {
 }
 
 /// Internal state for a remote connection, wrapped in Arc for Clone.
+struct PendingResponse {
+    response: oneshot::Sender<Result<ServiceResponse, TransferError>>,
+    uploaded: Arc<AtomicBool>,
+    /// Starts only when this fully uploaded slot reaches the reader's front.
+    /// Notifications must not renew it.
+    deadline: Option<tokio::time::Instant>,
+}
+
 struct RemoteConnectionInner {
     /// Owns the write half of the socket. `tokio::sync::Mutex` because
-    /// `write_frame` is async (held across awaits). Only ever held for the
+    /// writing a message is async (held across awaits). Only ever held for the
     /// duration of one frame's write plus the FIFO push into [`Self::pending`];
     /// the await on the response itself happens *after* the lock is released
     /// so concurrent callers don't serialise on read-side latency.
     writer: Mutex<Option<OwnedWriteHalf>>,
+    /// Admission and limits shared by every message on this connection.
+    budget: TransferBudget,
     /// FIFO of awaiting response slots. `request()` pushes one before
     /// releasing the writer lock; the reader task pops the front on every
     /// `ServerFrame::Response` so request and response order line up. The
     /// VecDeque is guarded by a plain `std::sync::Mutex` — never held
     /// across an await — so it can't deadlock with the writer lock.
-    pending: std::sync::Mutex<VecDeque<oneshot::Sender<ServiceResponse>>>,
+    pending: std::sync::Mutex<VecDeque<PendingResponse>>,
+    pending_changed: Notify,
     /// Set once by [`RemoteConnection::attach_instance`] right after
     /// `Instance::connect` has finished building the Instance. The reader
     /// task reads (cheap clone of the inner `Weak`) on each
@@ -358,7 +373,7 @@ struct RemoteConnectionInner {
     /// Abort handle for the background reader task, so [`Self::mark_dead`] can
     /// force the reader out when the connection is torn down against a *wedged*
     /// daemon — one that neither answers nor closes the socket. Without it the
-    /// reader blocks in `read_frame` forever, holding its own `Arc<inner>` clone
+    /// reader blocks in `read_message` forever, holding its own `Arc<inner>` clone
     /// (leaking the task + socket, since the field docs on [`Self::closed`] note
     /// dropping the user-facing `RemoteConnection` does not tear down `inner`)
     /// and re-spawning per-tree workers on the next notification after
@@ -386,9 +401,7 @@ impl RemoteConnectionInner {
     }
 
     /// Acquire the pending-queue lock, tolerating poisoning.
-    fn pending_lock(
-        &self,
-    ) -> std::sync::MutexGuard<'_, VecDeque<oneshot::Sender<ServiceResponse>>> {
+    fn pending_lock(&self) -> std::sync::MutexGuard<'_, VecDeque<PendingResponse>> {
         self.pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -426,7 +439,7 @@ impl RemoteConnectionInner {
     /// 3. Drop every per-tree worker sender so workers exit cleanly.
     /// 4. Abort the reader task. On the reader's *own* exit path this is a
     ///    no-op (the task is already returning). When the sweep calls this on a
-    ///    wedged daemon it forces the reader out of its blocking `read_frame`,
+    ///    wedged daemon it forces the reader out of its blocking `read_message`,
     ///    dropping the reader's `Arc<inner>` clone so `inner` can finally drop,
     ///    and stopping it from re-spawning the workers step 3 just cleared.
     ///    The handle is `take`n so a later `mark_dead` is a no-op.
@@ -458,7 +471,7 @@ impl RemoteConnectionInner {
 ///
 /// **Teardown.** The reader task holds a strong `Arc<RemoteConnectionInner>`
 /// and `inner` owns the socket's `WriteHalf`, so neither half of the split
-/// stream can drop on its own: the reader parks in `read_frame` until the
+/// stream can drop on its own: the reader parks in `read_message` until the
 /// daemon EOFs, and the daemon only EOFs once our socket closes. The
 /// `live` token breaks that cycle — when the last user-facing handle drops
 /// it calls `RemoteConnectionInner::mark_dead`, aborting the reader so
@@ -519,6 +532,16 @@ impl RemoteConnection {
     /// the attached `Instance`'s callback registry (after
     /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
+        Self::connect_with_budget(path, TransferBudget::default()).await
+    }
+
+    /// Connect under an explicit transfer budget.
+    ///
+    /// Pass a clone of one budget to several connections to share its limits.
+    pub async fn connect_with_budget(
+        path: impl AsRef<Path>,
+        budget: TransferBudget,
+    ) -> crate::Result<Self> {
         let stream = UnixStream::connect(path.as_ref()).await?;
         let (mut reader, mut writer) = stream.into_split();
 
@@ -526,10 +549,10 @@ impl RemoteConnection {
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION,
         };
-        write_frame(&mut writer, &handshake).await?;
+        write_handshake(&mut writer, &handshake).await?;
 
         // Read ack
-        let ack: HandshakeAck = read_frame(&mut reader).await?.ok_or_else(|| {
+        let ack: HandshakeAck = read_handshake(&mut reader).await?.ok_or_else(|| {
             crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionAborted,
                 "Server closed connection during handshake",
@@ -548,7 +571,9 @@ impl RemoteConnection {
 
         let inner = Arc::new(RemoteConnectionInner {
             writer: Mutex::new(Some(writer)),
+            budget,
             pending: std::sync::Mutex::new(VecDeque::new()),
+            pending_changed: Notify::new(),
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
@@ -612,11 +637,26 @@ impl RemoteConnection {
     /// An interrupted or failed write shuts down the write half and clears all
     /// pending responses. Dropping only the response wait leaves its FIFO slot
     /// for the reader to consume, so subsequent responses keep their association.
+    ///
+    /// The message is sized before the lock is taken: a local resource refusal
+    /// happens with nothing on the wire and leaves the connection usable.
     async fn request(&self, req: ServiceRequest) -> crate::Result<ServiceResponse> {
+        let policy = self.inner.budget.policy();
+        match policy.overall_timeout {
+            None => self.exchange(req).await,
+            Some(elapsed) => tokio::time::timeout(elapsed, self.exchange(req))
+                .await
+                .map_err(|_| TransferError::OverallTimeout { elapsed })?,
+        }
+    }
+
+    async fn exchange(&self, req: ServiceRequest) -> crate::Result<ServiceResponse> {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(connection_aborted());
         }
-        let (tx, rx) = oneshot::channel::<ServiceResponse>();
+        let message = prepare_message(req, &self.inner.budget).await?;
+        let (tx, mut rx) = oneshot::channel();
+        let uploaded = Arc::new(AtomicBool::new(false));
         {
             let mut writer = self.inner.writer.lock().await;
             // Re-check under the writer lock to close the race where the
@@ -633,16 +673,42 @@ impl RemoteConnection {
                 writer: &mut writer,
                 complete: false,
             };
-            self.inner.pending_lock().push_back(tx);
+            self.inner.pending_lock().push_back(PendingResponse {
+                response: tx,
+                uploaded: uploaded.clone(),
+                deadline: None,
+            });
             // Reader teardown publishes closed before draining pending. The
             // slot must exist before this last check or it can miss the drain.
             if self.inner.closed.load(Ordering::Acquire) {
                 return Err(connection_aborted());
             }
-            write_frame(frame.writer.as_mut().ok_or_else(connection_aborted)?, &req).await?;
+            let monitor = ProgressMonitor::new(self.inner.budget.policy());
+            let writer = frame.writer.as_mut().ok_or_else(connection_aborted)?;
+            if let Err(error) = message.write_to(writer, &monitor).await {
+                // Stop writing, but leave the reader running: the server may
+                // have refused this message and closed, which is what failed
+                // the write. The guard retires the connection on the way out.
+                frame.writer.take();
+                self.inner.closed.store(true, Ordering::Release);
+                let refusal = tokio::time::timeout(REFUSAL_GRACE, &mut rx).await;
+                return match refusal {
+                    Ok(Ok(Ok(ServiceResponse::Error(refusal))))
+                        if is_resource_refusal(&refusal) =>
+                    {
+                        Ok(ServiceResponse::Error(refusal))
+                    }
+                    Ok(Ok(Err(refusal))) if refusal.is_resource() => Err(refusal.into()),
+                    _ => Err(error.into()),
+                };
+            }
             frame.complete = true;
+            uploaded.store(true, Ordering::Release);
+            self.inner.pending_changed.notify_one();
         }
-        rx.await.map_err(|_| connection_aborted())
+        rx.await
+            .map_err(|_| connection_aborted())?
+            .map_err(Into::into)
     }
 
     /// Send a request and convert error responses to `crate::Error`.
@@ -1417,7 +1483,10 @@ impl RemoteConnection {
             DatabaseOp::StageStoreStateRecords {
                 token,
                 chunk_id,
-                records: records.into_iter().collect(),
+                records: records
+                    .into_iter()
+                    .map(|(key, value)| (key.into(), value.map(Into::into)))
+                    .collect(),
             },
         )
         .await
@@ -1499,7 +1568,7 @@ impl RemoteConnection {
             )
             .await?
         {
-            ServiceResponse::RecordPage(page) => Ok(page),
+            ServiceResponse::RecordPage(page) => Ok(page.into()),
             other => Err(unexpected_response("RecordPage", &other)),
         }
     }
@@ -1521,9 +1590,55 @@ fn connection_aborted() -> crate::Error {
     ))
 }
 
+fn is_resource_refusal(error: &ServiceError) -> bool {
+    error.module == "sync" && error.kind == "ResourceLimit"
+}
+
+/// Wait cancel-safely for one byte, reacting to newly completed uploads only
+/// before consuming it. Never restart the envelope decoder on a queue change:
+/// it may already have consumed a prefix or body. Idle sockets are untimed.
+async fn read_server_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    inner: &RemoteConnectionInner,
+) -> Result<Option<crate::message_io::Inbound<IncomingServerFrame>>, TransferError> {
+    use tokio::io::AsyncReadExt;
+
+    let elapsed = inner.budget.policy().first_response_timeout;
+    let mut first = [0u8; 1];
+    loop {
+        let changed = inner.pending_changed.notified();
+        let deadline = inner.pending_lock().front_mut().and_then(|pending| {
+            pending.uploaded.load(Ordering::Acquire).then(|| {
+                *pending
+                    .deadline
+                    .get_or_insert_with(|| tokio::time::Instant::now() + elapsed)
+            })
+        });
+        let expiry = async {
+            match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            () = expiry => return Err(TransferError::ResponseTimeout { elapsed }),
+            result = reader.read(&mut first) => {
+                if result? == 0 {
+                    return Ok(None);
+                }
+                break;
+            }
+            () = changed => {}
+        }
+    }
+    let mut prefixed = std::io::Cursor::new(first).chain(reader);
+    read_message(&mut prefixed, &inner.budget, ReadOptions::default()).await
+}
+
 /// Background task driving the read half of the socket.
 ///
-/// Loops on [`read_frame`] and demuxes by [`IncomingServerFrame`] variant:
+/// Loops on [`read_message`] and demuxes by [`IncomingServerFrame`] variant:
 ///
 /// - `Response(r)`: pop the front of the pending FIFO and resolve its
 ///   oneshot. If the queue is empty something has gone badly wrong
@@ -1538,32 +1653,43 @@ fn connection_aborted() -> crate::Error {
 ///   notification is silently dropped — both are expected end-states,
 ///   not errors.
 ///
+/// A response this client's resource policy refuses cannot be skipped without
+/// reading it, so the connection is retired, but the caller it belongs to learns
+/// why: the next pending slot is that response's slot.
+///
 /// Exit conditions: clean EOF (server closed), any read error, or any
 /// deserialisation error. On exit the task drops its `Arc<inner>`, which
 /// in turn drops every remaining oneshot sender in `pending`, surfacing
 /// as a `RecvError` on each awaiting `request()` (translated to a
 /// connection-closed `io::Error` there).
-async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionInner>) {
+async fn run_reader_task<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    inner: Arc<RemoteConnectionInner>,
+) {
     loop {
-        let frame_result: crate::Result<Option<IncomingServerFrame>> =
-            read_frame(&mut reader).await;
-        let frame = match frame_result {
-            Ok(Some(f)) => f,
+        let message = match read_server_frame(&mut reader, &inner).await {
+            Ok(Some(message)) => message,
             Ok(None) => break, // Clean EOF
             Err(e) => {
                 tracing::debug!("RemoteConnection reader error: {e}");
+                // Preserve connection-aborted semantics for malformed/partial
+                // frames, but surface explicit policy refusals and response waits.
+                if (e.is_resource() || matches!(e, TransferError::ResponseTimeout { .. }))
+                    && let Some(pending) = inner.pending_lock().pop_front()
+                {
+                    let _ = pending.response.send(Err(e));
+                }
                 break;
             }
         };
 
-        match frame {
+        match message.value {
             IncomingServerFrame::Response(resp) => {
                 let next = inner.pending_lock().pop_front();
                 match next {
-                    Some(tx) => {
-                        // Receiver dropped → the caller has already given
-                        // up. Not an error worth logging.
-                        let _ = tx.send(*resp);
+                    Some(pending) => {
+                        // Receiver dropped → keep consuming its FIFO slot.
+                        let _ = pending.response.send(Ok(*resp));
                     }
                     None => {
                         tracing::warn!(
@@ -1869,25 +1995,34 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
 
 #[cfg(test)]
 mod compatibility_tests;
+#[cfg(test)]
+mod response_timing_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::protocol::read_frame;
     use std::time::Duration;
 
     /// Exercise the real connect/handshake/background-reader path, not a mock FIFO.
     pub(super) async fn connect_peer() -> (RemoteConnection, UnixStream) {
+        connect_peer_with_budget(TransferBudget::default()).await
+    }
+
+    pub(super) async fn connect_peer_with_budget(
+        budget: TransferBudget,
+    ) -> (RemoteConnection, UnixStream) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peer.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let peer = async {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let handshake: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
-            assert_eq!(handshake.protocol_version, 0);
-            write_frame(
+            let handshake: Handshake = read_handshake(&mut stream).await.unwrap().unwrap();
+            assert_eq!(handshake.protocol_version, PROTOCOL_VERSION);
+            write_handshake(
                 &mut stream,
                 &HandshakeAck {
-                    protocol_version: 0,
+                    protocol_version: PROTOCOL_VERSION,
                 },
             )
             .await
@@ -1895,7 +2030,7 @@ mod tests {
             stream
         };
         let (conn, peer) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(RemoteConnection::connect(&path), peer)
+            tokio::join!(RemoteConnection::connect_with_budget(&path, budget), peer)
         })
         .await
         .unwrap();
@@ -1923,7 +2058,9 @@ mod tests {
         let (_reader, writer) = client_side.into_split();
         let inner = Arc::new(RemoteConnectionInner {
             writer: Mutex::new(Some(writer)),
+            budget: TransferBudget::default(),
             pending: std::sync::Mutex::new(VecDeque::new()),
+            pending_changed: Notify::new(),
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
@@ -2031,8 +2168,36 @@ mod tests {
 #[cfg(test)]
 mod frame_cancellation_tests {
     use super::*;
+    use crate::service::protocol::write_frame;
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn silent_service_must_enforce_response_timeout() {
+        let policy = crate::message_io::TransferPolicy {
+            first_response_timeout: Duration::from_millis(20),
+            ..Default::default()
+        };
+        let budget = TransferBudget::new(policy).unwrap();
+        let (conn, mut peer) = super::tests::connect_peer_with_budget(budget).await;
+        let mut request = Box::pin(conn.request(ServiceRequest::TrustedLoginAccount {
+            username: "observed".into(),
+        }));
+        tokio::select! {
+            _ = super::tests::read_request(&mut peer, "observed") => {},
+            result = &mut request => panic!("response before consumed request: {result:?}"),
+        }
+        // Positive wire observation precedes this bound; no queue or bulk body is active.
+        let result = tokio::time::timeout(Duration::from_millis(200), &mut request).await;
+        assert!(
+            result.is_ok(),
+            "configured 20ms first-response bound ignored after request consumption"
+        );
+        assert!(
+            matches!(result.unwrap(), Err(crate::Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(conn.inner.closed.load(Ordering::Acquire));
+    }
 
     #[tokio::test]
     async fn cancelled_partial_service_frame_retires_connection() {
@@ -2042,14 +2207,18 @@ mod frame_cancellation_tests {
             username: "x".repeat(2 * 1024 * 1024),
         };
         let mut sending = Box::pin(conn.request(request));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(30), &mut sending)
-                .await
-                .is_err()
-        );
-        let mut prefix = [0; 4];
-        peer.read_exact(&mut prefix).await.unwrap();
-        let expected = u32::from_be_bytes(prefix) as usize;
+        let mut prefix = [0; 8];
+        // Drive preparation and writing until bytes really arrive, rather than
+        // assuming a worker was scheduled within a short wall-clock interval.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut sending => panic!("partial write unexpectedly finished: {result:?}"),
+                read = peer.read_exact(&mut prefix) => read.unwrap(),
+            }
+        })
+        .await
+        .expect("the frame must begin before it can be cancelled");
+        let expected = u64::from_be_bytes(prefix) as usize;
         assert!(
             expected > 1024 * 1024,
             "positive control: frame write never began"

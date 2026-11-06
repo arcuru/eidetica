@@ -30,6 +30,10 @@ blake3 = "1.8"
 cid = { version = "0.11", features = ["serde", "std"] }
 multihash-codetable = { version = "0.2", features = ["sha2", "blake3"] }
 serde_ipld_dagcbor = "0.6"
+# Noncanonical streaming wire codec; already locked through serde_ipld_dagcbor.
+cbor4ii = { version = "0.2.14", features = ["serde1", "use_std"] }
+# Validates bounded discarded wire values; cbor4ii's skip omits UTF-8 checks.
+ciborium = "0.2.2"
 ipld-core = "0.4"
 thiserror = "2"
 tracing = "0.1"
@@ -64,6 +68,7 @@ tower-cookies = "0.11"
 reqwest = { version = "0.12", features = [
     "json",
     "rustls-tls",
+    "stream",
 ], default-features = false }
 async-trait = "0.1"
 # Only for concurrent stream combinators (`buffer_unordered`) in the sync

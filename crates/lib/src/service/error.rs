@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::BackendError;
 use crate::entry::ID;
 use crate::instance::InstanceError;
+use crate::sync::SyncError;
 
 /// Wire-format error for the service protocol.
 ///
@@ -89,6 +90,7 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
         ("instance", "InstanceAlreadyExists") => InstanceError::InstanceAlreadyExists.into(),
         ("instance", "DeviceKeyNotFound") => InstanceError::DeviceKeyNotFound.into(),
         ("instance", "AuthenticationRequired") => InstanceError::AuthenticationRequired.into(),
+        ("sync", "ResourceLimit") => SyncError::ResourceLimit(err.message).into(),
         _ => {
             // Fall back to an IO error carrying the original message
             crate::Error::Io(std::io::Error::other(format!(
@@ -261,6 +263,7 @@ mod tests {
             crate::Error::Instance(Box::new(InstanceError::InstanceAlreadyExists)),
             crate::Error::Instance(Box::new(InstanceError::DeviceKeyNotFound)),
             crate::Error::Instance(Box::new(InstanceError::AuthenticationRequired)),
+            SyncError::ResourceLimit("rt".to_string()).into(),
         ];
 
         for original in &cases {

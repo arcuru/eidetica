@@ -251,7 +251,7 @@ pub struct HttpTransport {
 **Implementation:**
 
 - Axum server with handler state injection
-- JSON serialization at `/api/v0` endpoint
+- Streamed binary messages at the `/api/v1` endpoint ([Message Delivery](../internal/message_delivery.md))
 - Handler processes requests with database access
 
 **Use cases:**
@@ -282,7 +282,7 @@ pub struct IrohTransport {
 
 - QUIC bidirectional streams for request/response
 - Handler integration in stream processing
-- JsonHandler for serialization consistency
+- The same streamed binary messages as HTTP, under ALPN `eidetica/v1`
 
 **Use cases:**
 

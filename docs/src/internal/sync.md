@@ -39,7 +39,7 @@ The same protocol handles both cases:
 - **HTTP**: REST API for server-based sync
 - **Iroh P2P**: QUIC-based with NAT traversal for peer-to-peer sync
 
-Both transports implement the same `SyncTransport` trait. Multiple transports can be enabled simultaneously.
+Both transports implement the same `SyncTransport` trait. Multiple transports can be enabled simultaneously. Their requests and responses use the shared [message delivery](message_delivery.md) layer, so an Entry or aggregate is not limited by a transport frame.
 
 ## Architecture
 

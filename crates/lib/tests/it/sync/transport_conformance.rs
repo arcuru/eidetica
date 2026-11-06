@@ -3,19 +3,30 @@
 //! These tests verify that all transport implementations provide consistent behavior
 //! for syncing entries between Instance instances.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use eidetica::{
-    Database, Instance, Result,
+    Database, Entry, Instance, Result,
     account::{AccountSession, types::SyncSettings},
     auth::crypto::PublicKey,
     crdt::Doc,
+    entry::ID,
+    message_io::{TransferBudget, TransferPolicy, TransferUsage},
     store::DocStore,
-    sync::Sync,
+    sync::{
+        Address, Sync, SyncError, TimeoutPhase,
+        handler::SyncHandler,
+        protocol::{RequestContext, SyncRequest, SyncResponse},
+        transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
+    },
 };
+use iroh::RelayMode;
 use tokio::time::sleep;
 
-use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};
+use super::helpers::{
+    HttpTransportFactory, IrohTransportFactory, TransportFactory, setup_public_sync_enabled_server,
+    setup_sync_enabled_client,
+};
 use crate::helpers::test_local_instance_with_user_and_key as test_instance_with_user_and_key;
 
 /// Set up two Instance instances with users and private keys
@@ -222,6 +233,229 @@ where
     Ok(())
 }
 
+const MIB: usize = 1024 * 1024;
+
+async fn write_large(database: &Database, key: &str, bytes: usize) -> Result<ID> {
+    let txn = database.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("data").await?;
+    store.set(key, "x".repeat(bytes)).await?;
+    txn.commit().await
+}
+
+/// Entries larger than the former 1 MiB peer limit and aggregates of them, in
+/// both directions, through ordinary sync APIs and without any paging.
+async fn test_large_messages_conformance<F>(factory: F) -> Result<()>
+where
+    F: TransportFactory,
+{
+    let (db1, mut user1, key_id1, db2, mut user2, key_id2) = setup_databases().await?;
+    let (sync1, sync2, peer1_pubkey, peer2_pubkey) =
+        setup_sync_with_peers(&factory, &db1, &db2).await?;
+    let (tree1, tree2) = setup_sync_hooks(
+        &mut user1,
+        &mut user2,
+        &key_id1,
+        &key_id2,
+        &sync1,
+        &sync2,
+        &peer1_pubkey,
+        &peer2_pubkey,
+    )
+    .await?;
+
+    // Upload one oversized Entry, then an aggregate far over the former limit.
+    let single = write_large(&tree1, "single", 3 * MIB).await?;
+    sync1.flush().await?;
+    assert_eq!(
+        db2.backend().get(&single).await?,
+        db1.backend().get(&single).await?
+    );
+
+    let mut batch = Vec::new();
+    for index in 0..6 {
+        batch.push(write_large(&tree1, &format!("batch{index}"), MIB / 2).await?);
+    }
+    sync1.flush().await?;
+    for id in &batch {
+        assert_eq!(db2.backend().get(id).await?, db1.backend().get(id).await?);
+    }
+
+    // The same from the other peer, so neither end is only ever a sender.
+    let reverse = write_large(&tree2, "reverse", 2 * MIB).await?;
+    sync2.flush().await?;
+    assert_eq!(
+        db1.backend().get(&reverse).await?,
+        db2.backend().get(&reverse).await?
+    );
+
+    cleanup_sync(sync1, sync2).await
+}
+
+/// Download direction: a bootstrap response holding oversized Entries, then an
+/// incremental response with another.
+async fn test_large_download_conformance<F>(factory: F) -> Result<()>
+where
+    F: TransportFactory,
+{
+    let (server, _user, _key, database, tree_id, server_sync) =
+        setup_public_sync_enabled_server("server_user", "server_key", "large").await;
+    let first = write_large(&database, "first", 3 * MIB).await?;
+    let second = write_large(&database, "second", 3 * MIB).await?;
+
+    let server_sync = {
+        let _ = server_sync;
+        factory.create_sync(server.clone()).await?
+    };
+    server_sync.accept_connections().await?;
+    let address = factory.create_address(&server_sync.get_server_address().await?);
+
+    let (client, _client_user, _client_key, _client_sync) =
+        setup_sync_enabled_client("client_user", "client_key").await;
+    let client_sync = factory.create_sync(client.clone()).await?;
+
+    client_sync.sync_with_peer(&address, Some(&tree_id)).await?;
+    client_sync.flush().await?;
+    for id in [&first, &second] {
+        assert_eq!(
+            client.backend().get(id).await?,
+            server.backend().get(id).await?
+        );
+    }
+
+    let third = write_large(&database, "third", 3 * MIB).await?;
+    client_sync.sync_with_peer(&address, Some(&tree_id)).await?;
+    client_sync.flush().await?;
+    assert_eq!(
+        client.backend().get(&third).await?,
+        server.backend().get(&third).await?
+    );
+
+    client_sync.stop_server().await.ok();
+    server_sync.stop_server().await
+}
+
+/// A peer's resource refusal reaches the sender as that, on each transport, and
+/// leaves no Entry behind, including while the upload is still running.
+async fn test_resource_refusal_conformance<T, B>(
+    build: impl Fn(TransferBudget) -> B,
+    address: impl Fn(String) -> Address,
+) -> Result<()>
+where
+    T: SyncTransport,
+    B: Future<Output = T>,
+{
+    let mut policy = TransferPolicy::default();
+    policy.max_message_bytes = MIB as u64;
+    let server = build(TransferBudget::new(policy)?).await;
+    let (instance, handler) = super::helpers::setup_test_handler().await;
+    server.start_server(handler).await?;
+    let target = address(server.get_server_address()?);
+
+    let entry = Entry::root_builder()
+        .set_subtree_data("data", "x".repeat(32 * MIB))
+        .build()?;
+    let id = entry.id();
+    let client = build(TransferBudget::default()).await;
+    let refused = client.send_owned_entries(&target, vec![entry]).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(eidetica::Error::is_resource_limit),
+        "{refused:?}"
+    );
+    assert!(instance.backend().get(&id).await.is_err());
+
+    // The server still serves a request within its policy.
+    let small = Entry::root_builder()
+        .set_subtree_data("data", "small")
+        .build()?;
+    let small_id = small.id();
+    client.send_owned_entries(&target, vec![small]).await?;
+    assert!(instance.backend().get(&small_id).await.is_ok());
+
+    // A sender's own limit refuses before any byte leaves.
+    let mut policy = TransferPolicy::default();
+    policy.max_message_bytes = MIB as u64;
+    let limited = build(TransferBudget::new(policy)?).await;
+    let large = Entry::root_builder()
+        .set_subtree_data("data", "x".repeat(2 * MIB))
+        .build()?;
+    let refused = limited.send_owned_entries(&target, vec![large]).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(eidetica::Error::is_resource_limit),
+        "{refused:?}"
+    );
+
+    server.stop_server().await
+}
+
+/// A handler that takes the request and never answers.
+struct NeverAnswers;
+
+#[async_trait::async_trait]
+impl SyncHandler for NeverAnswers {
+    async fn handle_request(&self, _: &SyncRequest, _: &RequestContext) -> SyncResponse {
+        std::future::pending().await
+    }
+}
+
+/// A caller's overall deadline ends an exchange that no other timer would, and
+/// cancelling any exchange gives back everything it was admitted.
+async fn test_deadline_and_cancellation_conformance<T, B>(
+    build: impl Fn(TransferBudget) -> B,
+    address: impl Fn(String) -> Address,
+) -> Result<()>
+where
+    T: SyncTransport,
+    B: Future<Output = T>,
+{
+    let server = build(TransferBudget::default()).await;
+    server.start_server(Arc::new(NeverAnswers)).await?;
+    let target = address(server.get_server_address()?);
+    let large = || {
+        Entry::root_builder()
+            .set_subtree_data("data", "x".repeat(2 * MIB))
+            .build()
+            .unwrap()
+    };
+
+    let mut policy = TransferPolicy::default();
+    policy.overall_timeout = Some(Duration::from_millis(500));
+    let client = build(TransferBudget::new(policy)?).await;
+    let started = std::time::Instant::now();
+    let failed = client.send_owned_entries(&target, vec![large()]).await;
+    assert!(started.elapsed() < Duration::from_secs(10), "{failed:?}");
+    assert!(
+        matches!(
+            &failed,
+            Err(eidetica::Error::Sync(error)) if matches!(
+                **error,
+                SyncError::Timeout { phase: TimeoutPhase::Transfer, .. }
+            )
+        ),
+        "{failed:?}"
+    );
+
+    let budget = TransferBudget::default();
+    let client = build(budget.clone()).await;
+    let cancelled = tokio::time::timeout(
+        Duration::from_millis(500),
+        client.send_owned_entries(&target, vec![large()]),
+    );
+    assert!(cancelled.await.is_err(), "the peer never answers");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while budget.usage() != TransferUsage::default() {
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a cancelled exchange must release its admission");
+
+    server.stop_server().await
+}
+
 /// Test bidirectional sync to ensure both directions work
 async fn test_bidirectional_sync_conformance<F>(factory: F) -> Result<()>
 where
@@ -335,4 +569,88 @@ async fn test_iroh_bidirectional_conformance() {
     test_bidirectional_sync_conformance(IrohTransportFactory)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn test_http_large_messages() {
+    test_large_messages_conformance(HttpTransportFactory)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_iroh_large_messages() {
+    test_large_messages_conformance(IrohTransportFactory)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_http_large_download() {
+    test_large_download_conformance(HttpTransportFactory)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_iroh_large_download() {
+    test_large_download_conformance(IrohTransportFactory)
+        .await
+        .unwrap();
+}
+
+fn http_transport(budget: TransferBudget) -> HttpTransport {
+    HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .transfer_budget(budget)
+        .build_sync()
+        .unwrap()
+}
+
+fn iroh_transport(budget: TransferBudget) -> IrohTransport {
+    IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .transfer_budget(budget)
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_http_deadline_and_cancellation() {
+    test_deadline_and_cancellation_conformance(
+        |budget| async move { http_transport(budget) },
+        Address::http,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_iroh_deadline_and_cancellation() {
+    test_deadline_and_cancellation_conformance(
+        |budget| async move { iroh_transport(budget) },
+        Address::iroh,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_http_resource_refusal() {
+    test_resource_refusal_conformance(
+        |budget| async move { http_transport(budget) },
+        Address::http,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_iroh_resource_refusal() {
+    test_resource_refusal_conformance(
+        |budget| async move { iroh_transport(budget) },
+        Address::iroh,
+    )
+    .await
+    .unwrap();
 }

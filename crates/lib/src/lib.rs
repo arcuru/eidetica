@@ -27,6 +27,7 @@ pub mod database;
 pub mod entry;
 pub mod height;
 pub mod instance;
+pub mod message_io;
 #[cfg(all(unix, feature = "service"))]
 pub mod service;
 pub mod snapshot;
@@ -218,6 +219,12 @@ impl Error {
     /// connection — as opposed to one that answered and refused. A caller
     /// deciding whether another request to the same peer is worth making wants
     /// this distinction: the first is worth retrying, the second is not.
+    /// A resource policy refused a message. The data is not invalid; a retry
+    /// can succeed under different load or configuration.
+    pub fn is_resource_limit(&self) -> bool {
+        matches!(self, Error::Sync(e) if matches!(**e, sync::SyncError::ResourceLimit(_)))
+    }
+
     pub fn is_network_error(&self) -> bool {
         match self {
             Error::Sync(sync_err) => sync_err.is_network_error(),

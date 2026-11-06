@@ -91,7 +91,7 @@ quotas. Metadata, staging, two separately retained reader generations, database
 workspace and authoritative history have separate costs. This implementation
 still folds whole history and may build whole logical/physical row maps on a
 cold read or bypass. It is not incremental materialization, bounded-history
-streaming, or a whole-SDK memory bound. Existing service frame and single-record
-limits remain; old SDKs can surface quota refusal as an error rather than
+streaming, or a whole-SDK memory bound. The message resource policy still applies
+to what crosses the wire; old SDKs can surface quota refusal as an error rather than
 transparently bypassing it. No deployment/support-version promise follows from
 these local storage changes.

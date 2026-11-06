@@ -1,15 +1,18 @@
 //! Raw sockets deliberately bypass this client's enum encoder.
 
 use super::*;
-use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp, MAX_FRAME_SIZE};
+use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp, encode_json_fixture};
 use serde_json::json;
 
+/// Send a hand-written message. Text that is not JSON stands for bytes that are
+/// not CBOR either.
 async fn send_raw(writer: &mut WriteHalf<UnixStream>, json: &str) {
+    let body = encode_json_fixture(json).unwrap_or_else(|| vec![0xff]);
     writer
-        .write_all(&(json.len() as u32).to_be_bytes())
+        .write_all(&(body.len() as u64).to_be_bytes())
         .await
         .unwrap();
-    writer.write_all(json.as_bytes()).await.unwrap();
+    writer.write_all(&body).await.unwrap();
 }
 
 async fn response(reader: &mut ReadHalf<UnixStream>) -> ServiceResponse {
@@ -55,12 +58,12 @@ async fn v0_unknown_requests_have_no_effects_across_auth_states() {
         op: DatabaseOp::GetVerifiedTips,
     }));
     let unknown_db = json!({"AuthenticatedDb": {
-        "root_id": root, "identity": identity,
+        "root_id": null, "identity": identity,
         "op": {"FutureWrite": {"SetInstanceMetadata": null, "SubmitSignedEntry": null}}
     }})
     .to_string();
     let unknown_unit_db = json!({"AuthenticatedDb": {
-        "root_id": root, "identity": identity, "op": "FutureWrite"
+        "root_id": null, "identity": identity, "op": "FutureWrite"
     }})
     .to_string();
     let (mut reader, mut writer) = raw_handshake(&path).await;
@@ -206,14 +209,14 @@ async fn v0_server_rejects_malformed_and_required_unknown_messages() {
         r#"{"TrustedLoginProve":{"signature":"bad"}}"#,
         r#"{"SessionKeyChallenge":{"pubkey":"unknown-key-format"}}"#,
         r#"{"AuthenticatedDb":{"op":"FutureOp"}}"#,
-        r#"{"AuthenticatedDb":{"root_id":"","root_id":"","identity":{"Direct":{"hint":{}}},"op":"FutureOp"}}"#,
-        r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":"FutureOp","op":"GetVerifiedTips"}}"#,
-        r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":[]}}"#,
-        r#"{"AuthenticatedDb":{"root_id":"","identity":{"FutureIdentity":{}},"op":"FutureOp"}}"#,
+        r#"{"AuthenticatedDb":{"root_id":null,"root_id":null,"identity":{"Direct":{"hint":{}}},"op":"FutureOp"}}"#,
+        r#"{"AuthenticatedDb":{"root_id":null,"identity":{"Direct":{"hint":{}}},"op":"FutureOp","op":"GetVerifiedTips"}}"#,
+        r#"{"AuthenticatedDb":{"root_id":null,"identity":{"Direct":{"hint":{}}},"op":[]}}"#,
+        r#"{"AuthenticatedDb":{"root_id":null,"identity":{"FutureIdentity":{}},"op":"FutureOp"}}"#,
         r#"{"AuthenticatedDb":{"root_id":"bad-cid","identity":{"Direct":{"hint":{}}},"op":"FutureOp"}}"#,
-        r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"BeginTransaction":{"stores":[],"scope":"FutureScope"}}}}"#,
-        r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"SubmitSignedEntry":{}}}}"#,
-        r#"{"AuthenticatedDb":{"root_id":"","identity":{"Direct":{"hint":{}}},"op":{"GetStoreState":{"store":4}}}}"#,
+        r#"{"AuthenticatedDb":{"root_id":null,"identity":{"Direct":{"hint":{}}},"op":{"BeginTransaction":{"stores":[],"scope":"FutureScope"}}}}"#,
+        r#"{"AuthenticatedDb":{"root_id":null,"identity":{"Direct":{"hint":{}}},"op":{"SubmitSignedEntry":{}}}}"#,
+        r#"{"AuthenticatedDb":{"root_id":null,"identity":{"Direct":{"hint":{}}},"op":{"GetStoreState":{"store":4}}}}"#,
     ] {
         let (mut reader, mut writer) = raw_handshake(&path).await;
         send_raw(&mut writer, malformed).await;
@@ -229,9 +232,9 @@ async fn v0_server_rejects_malformed_and_required_unknown_messages() {
         );
     }
     for (header, body) in [
-        ((MAX_FRAME_SIZE + 1).to_be_bytes().to_vec(), vec![]),
         (vec![0, 0], vec![]),
-        (50u32.to_be_bytes().to_vec(), b"{\"Future\":".to_vec()),
+        (50u64.to_be_bytes().to_vec(), vec![0xa1, 0x61]),
+        (0u64.to_be_bytes().to_vec(), vec![]),
     ] {
         let (mut reader, mut writer) = raw_handshake(&path).await;
         writer.write_all(&header).await.unwrap();
@@ -254,17 +257,17 @@ async fn v0_server_rejects_malformed_and_required_unknown_messages() {
 }
 
 #[tokio::test]
-async fn v0_handshake_advertises_zero_and_rejects_nonzero() {
+async fn handshake_advertises_v1_and_refuses_other_versions_before_any_operation() {
     let (path, _shutdown, _server, _dir) = start_test_server().await;
-    assert_eq!(PROTOCOL_VERSION, 0);
-    for version in [0, 1, u32::MAX] {
+    assert_eq!(PROTOCOL_VERSION, 1);
+    for version in [1, 0, 2, u32::MAX] {
         let mut stream = UnixStream::connect(&path).await.unwrap();
-        write_frame(&mut stream, &json!({"protocol_version": version}))
+        write_handshake(&mut stream, &json!({"protocol_version": version}))
             .await
             .unwrap();
-        let ack: serde_json::Value = read_frame(&mut stream).await.unwrap().unwrap();
-        assert_eq!(ack, json!({"protocol_version": 0}));
-        if version == 0 {
+        let ack: serde_json::Value = read_handshake(&mut stream).await.unwrap().unwrap();
+        assert_eq!(ack, json!({"protocol_version": 1}));
+        if version == 1 {
             write_frame(&mut stream, &ServiceRequest::GetInstanceMetadata)
                 .await
                 .unwrap();

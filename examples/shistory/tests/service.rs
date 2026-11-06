@@ -1784,7 +1784,8 @@ async fn traced_cli(
     history: &ID,
 ) -> CaptureTrace {
     use eidetica::service::protocol::{
-        DatabaseOp, Handshake, ServiceRequest, read_frame, write_frame,
+        DatabaseOp, Handshake, ServiceRequest, read_frame, read_handshake, write_frame,
+        write_handshake,
     };
     use tokio::{
         io::AsyncWriteExt,
@@ -1808,8 +1809,10 @@ async fn traced_cli(
         let mut history_snapshots = 0;
         let mut pre_submit = None;
         let requests = async {
-            let handshake: Handshake = read_frame(&mut client_read).await.unwrap().unwrap();
-            write_frame(&mut server_write, &handshake).await.unwrap();
+            let handshake: Handshake = read_handshake(&mut client_read).await.unwrap().unwrap();
+            write_handshake(&mut server_write, &handshake)
+                .await
+                .unwrap();
             while let Ok(Some(request)) = read_frame::<_, ServiceRequest>(&mut client_read).await {
                 if let ServiceRequest::AuthenticatedDb(db) = &request
                     && pre_submit.is_none()

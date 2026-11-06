@@ -20,7 +20,7 @@ use eidetica::crdt::Doc;
 use eidetica::service::ServiceServer;
 use eidetica::service::protocol::{
     Handshake, HandshakeAck, PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest,
-    ServiceResponse, read_frame, write_frame,
+    ServiceResponse, read_frame, read_handshake, write_frame, write_handshake,
 };
 use eidetica::store::{DocStore, PasswordStore, Table};
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,7 @@ use tokio::sync::watch;
 use crate::helpers::LocalBackendTestExt;
 
 mod compatibility;
+mod large_messages;
 mod notifications;
 
 /// Read the next server frame and unwrap it as a `ServiceResponse`. Tests
@@ -321,7 +322,7 @@ async fn test_instance_identity_round_trip() {
 async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHalf<UnixStream>) {
     let stream = UnixStream::connect(socket_path).await.unwrap();
     let (mut reader, mut writer) = tokio::io::split(stream);
-    write_frame(
+    write_handshake(
         &mut writer,
         &Handshake {
             protocol_version: PROTOCOL_VERSION,
@@ -329,7 +330,7 @@ async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHal
     )
     .await
     .unwrap();
-    let _ack: HandshakeAck = read_frame(&mut reader).await.unwrap().unwrap();
+    let _ack: HandshakeAck = read_handshake(&mut reader).await.unwrap().unwrap();
     (reader, writer)
 }
 
@@ -1495,25 +1496,30 @@ async fn test_daemon_survives_malformed_frame_from_client() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
 
-    // Raw client #1: complete the handshake, then send a length prefix that
-    // exceeds `MAX_FRAME_SIZE`. `read_frame` on the server side must reject
-    // and close this connection.
+    // Raw client #1: complete the handshake, then declare a message over the
+    // resource policy. The server must refuse explicitly and close.
     {
         let (mut reader, mut writer) = raw_handshake(&socket_path).await;
-        let oversize_len = eidetica::service::protocol::MAX_FRAME_SIZE + 1;
+        let oversize_len = u64::MAX;
         writer
             .write_all(&oversize_len.to_be_bytes())
             .await
             .expect("write of bogus header should succeed at the socket layer");
-        // The server is expected to drop the connection. Reading from the
-        // half-closed stream should either return EOF (None) or an I/O error;
-        // either way, the daemon must not panic or wedge.
-        let _ = tokio::time::timeout(
+        let refusal = tokio::time::timeout(Duration::from_secs(2), read_response(&mut reader))
+            .await
+            .expect("server must answer the refused message");
+        match refusal {
+            ServiceResponse::Error(error) => assert_eq!(error.kind, "ResourceLimit"),
+            other => panic!("expected a resource refusal, got {other:?}"),
+        }
+        // The connection is retired with the rest of the body unread.
+        let closed = tokio::time::timeout(
             Duration::from_secs(2),
             read_frame::<_, ServerFrame>(&mut reader),
         )
         .await
-        .expect("server must close the bad connection within the timeout");
+        .expect("server must close the refused connection");
+        assert!(matches!(closed, Ok(None) | Err(_)));
     }
 
     // Daemon should still serve a fresh connection.

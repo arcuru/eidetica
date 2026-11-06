@@ -374,7 +374,7 @@ in {
         PORT=$(sed -n 's/.*Dashboard listening on http:\/\/127.0.0.1:\([0-9]*\).*/\1/p' "$DAEMON_LOG" | head -1)
         test -n "$PORT"
         curl -fsS "http://127.0.0.1:$PORT/health" | grep '"backend":"sqlite"' >/dev/null
-        test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/api/v0")" = 404
+        test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/api/v1")" = 404
         test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'username=admin' "http://127.0.0.1:$PORT/login")" = 403
         curl -fsS -D "$TMPDIR/login-headers" -c "$TMPDIR/admin-cookies" -o /dev/null -X POST \
           -H "Origin: http://127.0.0.1:$PORT" -d 'username=admin' "http://127.0.0.1:$PORT/login"

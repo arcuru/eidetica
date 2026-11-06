@@ -104,7 +104,7 @@ pub(super) async fn run_handshake(ctx: HandshakeCtx, address: Address) -> Result
 
     // Send handshake request
     let request = SyncRequest::Handshake(handshake_request);
-    let response = transport.send_request(&address, &request).await?;
+    let response = transport.send_request_owned(&address, request).await?;
 
     // Process handshake response
     match response {
