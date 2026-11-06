@@ -18,14 +18,18 @@ use super::{
 };
 use crate::{
     Entry,
-    account::{AccountCredentials, AccountInfo, AccountStatus, KeyStorage},
     auth::{crypto::PrivateKey, types::AuthInfo},
+    sync::protocol::{SyncRequest, SyncResponse},
+};
+
+#[cfg(all(unix, feature = "service"))]
+use crate::{
+    account::{AccountCredentials, AccountInfo, AccountStatus, KeyStorage},
     entry::ID,
     service::protocol::{
         IncomingRequest, IncomingServerFrame, ServerFrame, ServiceResponse, TransactionContext,
         WireRecordPage, encode_json_fixture,
     },
-    sync::protocol::{SyncRequest, SyncResponse},
 };
 
 const MIB: usize = 1024 * 1024;
@@ -34,6 +38,7 @@ fn encode<T: Serialize>(value: &T) -> Vec<u8> {
     cbor4ii::serde::to_vec(Vec::new(), value).unwrap()
 }
 
+#[cfg(all(unix, feature = "service"))]
 fn fixture(json: &str) -> Vec<u8> {
     encode_json_fixture(json).unwrap()
 }
@@ -102,6 +107,7 @@ async fn receive<T: serde::de::DeserializeOwned + Send + 'static>(
     Ok(message.expect("message").value)
 }
 
+#[cfg(all(unix, feature = "service"))]
 #[test]
 fn json_null_stays_distinct_from_an_empty_array() {
     let value = json!({"nested": [null, [], {"null": null}], "text": "x"});
@@ -125,6 +131,7 @@ fn json_null_stays_distinct_from_an_empty_array() {
     assert_eq!(decoded.settings_value, value);
 }
 
+#[cfg(all(unix, feature = "service"))]
 #[test]
 fn both_key_storage_variants_cross_the_wire_unchanged() {
     let key = PrivateKey::generate();
@@ -167,6 +174,7 @@ fn both_key_storage_variants_cross_the_wire_unchanged() {
     }
 }
 
+#[cfg(all(unix, feature = "service"))]
 #[test]
 fn a_record_is_one_value_however_long_it_is() {
     let page = crate::backend::RecordPage {
@@ -205,6 +213,7 @@ fn signed_entries_keep_their_identity_on_the_wire() {
     crate::auth::crypto::verify_entry_signature(&decoded[0], &key.public_key()).unwrap();
 }
 
+#[cfg(all(unix, feature = "service"))]
 #[test]
 fn optional_variants_classify_and_known_payloads_stay_strict() {
     let classify = |json: &str| decode::<IncomingRequest, _>(fixture(json).as_slice(), &policy());
@@ -268,9 +277,6 @@ fn truncation_and_trailing_bytes_are_never_a_value() {
 
 #[test]
 fn decode_quotas_refuse_by_name() {
-    #[derive(Deserialize, Debug)]
-    struct Open {}
-
     let nodes = encode(&vec![1u8; 100]);
     let limited = budget_with(|policy| policy.max_nodes = 99);
     assert_eq!(
@@ -297,6 +303,13 @@ fn decode_quotas_refuse_by_name() {
         )),
         ResourceLimit::Depth
     );
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[test]
+fn service_decode_byte_allowances_refuse_by_name() {
+    #[derive(Deserialize, Debug)]
+    struct Open {}
 
     // A discriminant is an identifier, whether a field name or a whole message.
     let long = "x".repeat(5000);
@@ -329,6 +342,7 @@ fn decode_quotas_refuse_by_name() {
     );
 }
 
+#[cfg(all(unix, feature = "service"))]
 #[test]
 fn discarded_values_are_validated_but_valid_tagged_ones_pass() {
     // {"Future": <text with an invalid UTF-8 byte>}

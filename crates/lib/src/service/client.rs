@@ -2115,13 +2115,17 @@ mod frame_cancellation_tests {
             username: "x".repeat(2 * 1024 * 1024),
         };
         let mut sending = Box::pin(conn.request(request));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(30), &mut sending)
-                .await
-                .is_err()
-        );
         let mut prefix = [0; 8];
-        peer.read_exact(&mut prefix).await.unwrap();
+        // Drive preparation and writing until bytes really arrive, rather than
+        // assuming a worker was scheduled within a short wall-clock interval.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut sending => panic!("partial write unexpectedly finished: {result:?}"),
+                read = peer.read_exact(&mut prefix) => read.unwrap(),
+            }
+        })
+        .await
+        .expect("the frame must begin before it can be cancelled");
         let expected = u64::from_be_bytes(prefix) as usize;
         assert!(
             expected > 1024 * 1024,
