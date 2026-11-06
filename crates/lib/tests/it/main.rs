@@ -29,6 +29,7 @@ struct CountingAllocator;
 
 static LIVE_ALLOCATION_BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PEAK_ALLOCATION_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -38,7 +39,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         // SAFETY: delegates allocation to the system allocator with the layout supplied by Rust.
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
-            LIVE_ALLOCATION_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+            add_live_bytes(layout.size());
             LIVE_ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
         }
         ptr
@@ -56,10 +57,27 @@ unsafe impl GlobalAlloc for CountingAllocator {
         let new_ptr = unsafe { System.realloc(ptr, layout, new_size) };
         if !new_ptr.is_null() {
             LIVE_ALLOCATION_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
-            LIVE_ALLOCATION_BYTES.fetch_add(new_size, Ordering::Relaxed);
+            add_live_bytes(new_size);
         }
         new_ptr
     }
+}
+
+fn add_live_bytes(bytes: usize) {
+    let live = LIVE_ALLOCATION_BYTES.fetch_add(bytes, Ordering::Relaxed) + bytes;
+    PEAK_ALLOCATION_BYTES.fetch_max(live, Ordering::Relaxed);
+}
+
+/// Start a new peak measurement, returning the live bytes it starts from.
+/// Nextest gives each test a process, so nothing else is allocating here.
+fn reset_peak_allocation() -> usize {
+    let live = LIVE_ALLOCATION_BYTES.load(Ordering::Relaxed);
+    PEAK_ALLOCATION_BYTES.store(live, Ordering::Relaxed);
+    live
+}
+
+fn peak_allocation() -> usize {
+    PEAK_ALLOCATION_BYTES.load(Ordering::Relaxed)
 }
 
 fn live_allocations() -> (usize, usize) {
@@ -111,6 +129,7 @@ mod database;
 mod entry;
 mod helpers;
 mod instance;
+mod message_memory;
 #[cfg(all(unix, feature = "service"))]
 mod service;
 #[cfg(all(unix, feature = "service"))]

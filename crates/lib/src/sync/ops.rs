@@ -355,9 +355,15 @@ impl Sync {
         entries: impl AsRef<[Entry]>,
         address: &Address,
     ) -> Result<()> {
-        let entries_vec = entries.as_ref().to_vec();
-        let request = SyncRequest::SendEntries(entries_vec);
-        let response = self.send_request(&request, address).await?;
+        self.send_owned_entries(entries.as_ref().to_vec(), address)
+            .await
+    }
+
+    /// [`Self::send_entries`] for entries the caller no longer needs, which move
+    /// to the transport rather than being copied for it.
+    pub async fn send_owned_entries(&self, entries: Vec<Entry>, address: &Address) -> Result<()> {
+        let request = SyncRequest::SendEntries(entries);
+        let response = self.send_request(request, address).await?;
 
         match response {
             SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
@@ -585,7 +591,7 @@ impl Sync {
     /// The sync response from the peer.
     pub(super) async fn send_request(
         &self,
-        request: &SyncRequest,
+        request: SyncRequest,
         address: &Address,
     ) -> Result<SyncResponse> {
         let (tx, rx) = oneshot::channel();
@@ -596,7 +602,7 @@ impl Sync {
             .send(SyncCommand::SendRequest {
                 span: tracing::Span::current(),
                 address: address.clone(),
-                request: Box::new(request.clone()),
+                request: Box::new(request),
                 response: tx,
             })
             .await

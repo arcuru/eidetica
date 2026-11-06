@@ -40,7 +40,7 @@ and `--dashboard-port` (default **127.0.0.1:5942**). The default daemon remains
 socket-only. Both listeners and the Iroh sync listener use the **same
 Instance/backend**, whether SQLite, PostgreSQL, or in-memory; no separate
 `serve` process is needed. The dashboard does not expose the trusted Unix
-service RPC or `/api/v0` HTTP peer-sync endpoint. Peer sync continues over
+service RPC or `/api/v1` HTTP peer-sync endpoint. Peer sync continues over
 Iroh. If either listener stops unexpectedly, the daemon stops both, flushes
 sync, and exits with an error. Shutdown removes its socket.
 

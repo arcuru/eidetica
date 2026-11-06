@@ -520,7 +520,7 @@ impl BackgroundSync {
                         tokio::spawn(
                             async move {
                                 debug!(address = ?address, "Sending sync request");
-                                let result = transport.send_request(&address, &request).await;
+                                let result = transport.send_request_owned(&address, *request).await;
                                 let _ = response.send(result);
                             }
                             .instrument(span),
@@ -723,7 +723,7 @@ impl BackgroundSync {
             let (transport, address) = self
                 .select_route(&addresses, peer.public_key(), &mut operation)
                 .await?;
-            let response = transport.send_request(&address, &request).await?;
+            let response = transport.send_request_owned(&address, request).await?;
 
             match response {
                 SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
@@ -1087,7 +1087,7 @@ impl BackgroundSync {
                 auth: Some(auth),
             });
 
-            let response = self.transport_manager.send_request(address, &request).await?;
+            let response = self.transport_manager.send_request_owned(address, request).await?;
 
             match response {
                 SyncResponse::Bootstrap(bootstrap_response) => {

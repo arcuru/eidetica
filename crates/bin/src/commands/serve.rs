@@ -4,7 +4,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
     Form, Router,
-    extract::{ConnectInfo, Json as ExtractJson, Query, State},
+    extract::{ConnectInfo, Query, Request, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -20,12 +20,14 @@ use eidetica::{
     auth::{Permission, crypto::PublicKey},
     backend::database::{DbKind, InMemory, SqlxBackend},
     entry::ID,
+    message_io::TransferBudget,
     sync::{
         DatabaseTicket, SyncError,
         handler::{SyncHandler, SyncHandlerImpl},
-        peer_types::Address,
-        protocol::{RequestContext, SyncRequest, SyncResponse},
-        transports::{http::HttpTransport, iroh::IrohTransport},
+        transports::{
+            http::{HttpTransport, SYNC_PATH, serve_sync_request},
+            iroh::IrohTransport,
+        },
     },
 };
 
@@ -44,6 +46,7 @@ const SESSION_COOKIE: &str = "eidetica_session";
 struct AppState {
     instance: Arc<Instance>,
     sync_handler: Arc<dyn SyncHandler>,
+    transfer_budget: TransferBudget,
     sessions: SessionStore,
 }
 
@@ -156,7 +159,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!("  POST /dashboard/requests/decide - Approve or reject an exact request");
     println!("  POST /dashboard/database/sync - Save account sync preferences");
     println!("  GET  /stats        - Server statistics");
-    println!("  POST /api/v0       - Eidetica sync protocol endpoint");
+    println!("  POST {SYNC_PATH}       - Eidetica sync protocol endpoint");
     println!();
     println!("📝 To connect from chat app, use your Iroh Node ID above");
     println!();
@@ -228,6 +231,7 @@ pub(super) fn web_router(instance: Instance, include_http_sync: bool) -> Router 
     let state = AppState {
         instance: Arc::new(instance),
         sync_handler,
+        transfer_budget: TransferBudget::default(),
         sessions: SessionStore::new(),
     };
     dashboard_router(state, include_http_sync)
@@ -251,7 +255,7 @@ fn dashboard_router(state: AppState, include_http_sync: bool) -> Router {
         .route("/dashboard/database/sync", post(handle_sync_preferences))
         .route("/stats", get(handle_stats_request));
     if include_http_sync {
-        app = app.route("/api/v0", post(handle_sync_request));
+        app = app.route(SYNC_PATH, post(handle_sync_request));
     }
     app.layer(CookieManagerLayer::new()).with_state(state)
 }
@@ -956,22 +960,19 @@ async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {
     Html(html)
 }
 
-/// Handler for POST /api/v0 - Eidetica sync endpoint
+/// Handler for the Eidetica sync endpoint.
 async fn handle_sync_request(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    ExtractJson(request): ExtractJson<SyncRequest>,
-) -> axum::Json<SyncResponse> {
-    let context = RequestContext {
-        remote_address: Some(Address {
-            transport_type: "http".to_string(),
-            address: addr.to_string(),
-        }),
-        peer_pubkey: None,
-    };
-
-    let response = state.sync_handler.handle_request(&request, &context).await;
-    axum::Json(response)
+    request: Request,
+) -> Response {
+    serve_sync_request(
+        state.sync_handler.as_ref(),
+        &state.transfer_budget,
+        addr,
+        request,
+    )
+    .await
 }
 
 #[cfg(test)]

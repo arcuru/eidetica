@@ -26,6 +26,7 @@ impl Web {
                 instance.clone(),
                 sync.sync_tree_root_id().clone(),
             )),
+            transfer_budget: TransferBudget::default(),
             sessions: SessionStore::new(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

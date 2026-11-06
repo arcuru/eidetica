@@ -157,6 +157,20 @@ pub trait SyncTransport: Send + Sync {
     /// The response from the peer, or an error if the request failed.
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse>;
 
+    /// Send a sync request this caller owns, and receive a response.
+    ///
+    /// Prefer this when the request is not needed afterwards: a transport that
+    /// streams can move it to an encoder, where a borrowed request would first
+    /// have to be cloned. The default forwards to [`Self::send_request`], so
+    /// existing implementations keep working.
+    async fn send_request_owned(
+        &self,
+        address: &Address,
+        request: SyncRequest,
+    ) -> Result<SyncResponse> {
+        self.send_request(address, &request).await
+    }
+
     /// Send entries to a sync peer and ensure they are acknowledged.
     ///
     /// This is a convenience method that wraps send_request and validates the response.
@@ -168,8 +182,14 @@ pub trait SyncTransport: Send + Sync {
     /// # Returns
     /// A Result indicating whether the entries were successfully acknowledged.
     async fn send_entries(&self, address: &Address, entries: &[Entry]) -> Result<()> {
-        let request = SyncRequest::SendEntries(entries.to_vec());
-        let response = self.send_request(address, &request).await?;
+        self.send_owned_entries(address, entries.to_vec()).await
+    }
+
+    /// [`Self::send_entries`] for entries this caller owns, avoiding the copy
+    /// a slice requires.
+    async fn send_owned_entries(&self, address: &Address, entries: Vec<Entry>) -> Result<()> {
+        let request = SyncRequest::SendEntries(entries);
+        let response = self.send_request_owned(address, request).await?;
         match response {
             SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
             SyncResponse::Error(msg) => Err(SyncError::Network(msg).into()),

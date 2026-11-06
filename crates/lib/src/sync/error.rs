@@ -19,12 +19,16 @@ pub enum TimeoutPhase {
     /// The connection was established and the exchange then stalled, so the peer
     /// is reachable.
     Request,
+    /// A message body stopped making progress, or an overall deadline passed.
+    Transfer,
+    /// A message could not be sized in time. Says nothing about the peer.
+    Prepare,
 }
 
 impl TimeoutPhase {
     /// Whether the peer answered far enough to prove it is reachable.
     pub fn peer_reachable(&self) -> bool {
-        matches!(self, TimeoutPhase::Request)
+        matches!(self, TimeoutPhase::Request | TimeoutPhase::Transfer)
     }
 }
 
@@ -33,6 +37,8 @@ impl std::fmt::Display for TimeoutPhase {
         match self {
             TimeoutPhase::Connect => write!(f, "connecting"),
             TimeoutPhase::Request => write!(f, "awaiting a response"),
+            TimeoutPhase::Transfer => write!(f, "transferring a message"),
+            TimeoutPhase::Prepare => write!(f, "preparing a message"),
         }
     }
 }
@@ -101,6 +107,13 @@ pub enum SyncError {
         phase: TimeoutPhase,
         elapsed: Duration,
     },
+
+    /// A resource policy refused a message.
+    ///
+    /// The refusal is about this endpoint's configured limits, not about whether
+    /// the data is valid. Partial data was not accepted.
+    #[error("{0}")]
+    ResourceLimit(String),
 
     /// Device key not found in backend storage.
     #[error("Device key '{key_name}' not found in backend storage")]

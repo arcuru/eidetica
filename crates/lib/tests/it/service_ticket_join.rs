@@ -19,7 +19,7 @@ use eidetica::{
         protocol::{
             Handshake, HandshakeAck, PROTOCOL_VERSION, ServerFrame, ServiceRequest,
             ServiceResponse, TicketBootstrapOutcome, TicketBootstrapRequest, read_frame,
-            write_frame,
+            read_handshake, write_frame, write_handshake,
         },
     },
     store::DocStore,
@@ -447,7 +447,7 @@ async fn daemon_refuses_unproven_keys_and_mismatched_proofs() {
 
     let stream = UnixStream::connect(&daemon.socket).await.unwrap();
     let (mut reader, mut writer) = tokio::io::split(stream);
-    write_frame(
+    write_handshake(
         &mut writer,
         &Handshake {
             protocol_version: PROTOCOL_VERSION,
@@ -455,7 +455,7 @@ async fn daemon_refuses_unproven_keys_and_mismatched_proofs() {
     )
     .await
     .unwrap();
-    let _: HandshakeAck = read_frame(&mut reader).await.unwrap().unwrap();
+    let _: HandshakeAck = read_handshake(&mut reader).await.unwrap().unwrap();
 
     // Before login, even route selection is refused.
     let response = request(
@@ -737,7 +737,7 @@ async fn disconnected_join_requires_explicit_retry_after_peer_approval() {
 
     let stream = UnixStream::connect(&daemon.socket).await.unwrap();
     let (mut reader, mut writer) = tokio::io::split(stream);
-    write_frame(
+    write_handshake(
         &mut writer,
         &Handshake {
             protocol_version: PROTOCOL_VERSION,
@@ -745,7 +745,7 @@ async fn disconnected_join_requires_explicit_retry_after_peer_approval() {
     )
     .await
     .unwrap();
-    let _: HandshakeAck = read_frame(&mut reader).await.unwrap().unwrap();
+    let _: HandshakeAck = read_handshake(&mut reader).await.unwrap().unwrap();
     let ServiceResponse::TrustedLoginChallenge { challenge, .. } = request(
         &mut reader,
         &mut writer,

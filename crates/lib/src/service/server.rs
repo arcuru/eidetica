@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::net::UnixListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::Instance;
@@ -27,11 +28,15 @@ use crate::backend::{
 use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
+use crate::message_io::{
+    Inbound, Lease, PreparedMessage, ProgressMonitor, ReadOptions, TransferBudget, TransferError,
+    encode_control, prepare_admitted, prepare_message, read_message,
+};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, HandshakeAck, IncomingRequest, MergeState, Notification,
     PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, TicketBootstrapOutcome,
-    TicketBootstrapRequest, read_frame, write_frame,
+    TicketBootstrapRequest, read_handshake, write_handshake,
 };
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
 
@@ -57,12 +62,48 @@ struct SessionStaging {
     last_used: Instant,
 }
 
+/// One frame queued for a connection's writer, with any admission it holds.
+struct QueuedFrame {
+    body: QueuedBody,
+    _response_slot: Option<OwnedSemaphorePermit>,
+}
+
+enum QueuedBody {
+    Prepared(PreparedMessage),
+    Notification { frame: ServerFrame, lease: Lease },
+}
+
+/// Signals that a connection must stop: every wait on it wakes, so nothing can
+/// leave a connection half-alive with shifted response association.
+#[derive(Clone)]
+struct Retirement(Arc<watch::Sender<bool>>);
+
+impl Retirement {
+    fn new() -> Self {
+        Self(Arc::new(watch::channel(false).0))
+    }
+
+    fn retire(&self) {
+        self.0.send_replace(true);
+    }
+
+    async fn wait(&self) {
+        let mut retired = self.0.subscribe();
+        // The sender is held by `self`, so the wait cannot fail.
+        let _ = retired.wait_for(|retired| *retired).await;
+    }
+}
+
 /// Per-connection context carried through the dispatch chain. Holds:
 ///
 /// - `tx`: the writer-channel sender — both `ServerFrame::Response`s from
 ///   the dispatcher and `ServerFrame::Notification`s from subscribed
 ///   per-db callbacks ride through this same channel, so the order
-///   observed by the client is the order frames hit `frame_tx`.
+///   observed by the client is the order frames hit `frame_tx`. The channel is
+///   bounded: a response reserves its slot before dispatch, and a notification
+///   that finds no slot retires the connection.
+/// - `retirement`: wakes every wait on this connection when it must stop.
+/// - `budget`: admission shared by every connection of this server.
 /// - `instance`: needed in `Drop` to call `remove_write_callback` for
 ///   the connection's registered subscriptions.
 /// - `subscribed`: `root_id -> CallbackId` for every `SubscribeWrites`
@@ -76,7 +117,9 @@ struct SessionStaging {
 /// per-tree callback list, no separate fan-out mechanism required.
 struct ConnectionContext {
     conn_id: ConnectionId,
-    tx: mpsc::UnboundedSender<ServerFrame>,
+    tx: mpsc::Sender<QueuedFrame>,
+    retirement: Retirement,
+    budget: TransferBudget,
     instance: Instance,
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
@@ -214,6 +257,7 @@ pub struct ServiceServer {
     socket_identity: SocketIdentity,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
+    budget: TransferBudget,
     _lock_file: File,
 }
 
@@ -243,7 +287,23 @@ impl ServiceServer {
     /// * `instance` - The Instance to serve. The server holds a strong reference.
     /// * `socket_path` - Path for the Unix domain socket.
     pub async fn bind(instance: Instance, socket_path: impl Into<PathBuf>) -> crate::Result<Self> {
-        Self::bind_inner(instance, socket_path.into(), TOKEN_IDLE_TTL, TOKEN_IDLE_TTL).await
+        Self::bind_with_budget(instance, socket_path, TransferBudget::default()).await
+    }
+
+    /// Bind under an explicit transfer budget, shared by all connections.
+    pub async fn bind_with_budget(
+        instance: Instance,
+        socket_path: impl Into<PathBuf>,
+        budget: TransferBudget,
+    ) -> crate::Result<Self> {
+        Self::bind_inner(
+            instance,
+            socket_path.into(),
+            TOKEN_IDLE_TTL,
+            TOKEN_IDLE_TTL,
+            budget,
+        )
+        .await
     }
 
     /// Bind with independent staging-token and published-view lifetimes for expiry tests.
@@ -259,6 +319,7 @@ impl ServiceServer {
             socket_path.into(),
             staging_ttl,
             published_view_ttl,
+            TransferBudget::default(),
         )
         .await
     }
@@ -268,6 +329,7 @@ impl ServiceServer {
         socket_path: PathBuf,
         staging_idle_ttl: Duration,
         published_view_idle_ttl: Duration,
+        budget: TransferBudget,
     ) -> crate::Result<Self> {
         let socket_path = absolute_socket_path(socket_path)?;
         prepare_parent(&socket_path).await?;
@@ -290,6 +352,7 @@ impl ServiceServer {
             socket_identity,
             staging_idle_ttl,
             published_view_idle_ttl,
+            budget,
             _lock_file: lock_file,
         })
     }
@@ -327,9 +390,10 @@ impl ServiceServer {
                             let instance = self.instance.clone();
                             let staging_idle_ttl = self.staging_idle_ttl;
                             let published_view_idle_ttl = self.published_view_idle_ttl;
+                            let budget = self.budget.clone();
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl, budget).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -577,16 +641,116 @@ impl Drop for ServiceServer {
     }
 }
 
+/// Drain queued frames to the socket until the queue closes or the connection
+/// is retired. Failing to deliver one retires the connection: a frame cannot
+/// be skipped without shifting every later response onto the wrong request.
+async fn run_writer(
+    mut writer: tokio::io::WriteHalf<tokio::net::UnixStream>,
+    mut frames: mpsc::Receiver<QueuedFrame>,
+    budget: TransferBudget,
+    retirement: Retirement,
+    conn_id: ConnectionId,
+) {
+    loop {
+        let queued = tokio::select! {
+            () = retirement.wait() => return,
+            queued = frames.recv() => queued,
+        };
+        let Some(queued) = queued else { return };
+        tokio::select! {
+            () = retirement.wait() => return,
+            written = write_queued(&mut writer, queued, &budget) => {
+                if let Err(e) = written {
+                    tracing::debug!(conn_id, "Connection writer error: {e}");
+                    retirement.retire();
+                    return;
+                }
+            }
+        }
+    }
+}
+
+async fn write_queued(
+    writer: &mut tokio::io::WriteHalf<tokio::net::UnixStream>,
+    queued: QueuedFrame,
+    budget: &TransferBudget,
+) -> Result<(), TransferError> {
+    let QueuedFrame {
+        body,
+        _response_slot,
+    } = queued;
+    let message = match body {
+        QueuedBody::Prepared(message) => message,
+        QueuedBody::Notification { frame, lease } => {
+            prepare_admitted(frame, budget, Some(lease)).await?
+        }
+    };
+    let monitor = ProgressMonitor::new(budget.policy());
+    message.write_to(writer, &monitor).await
+}
+
+fn refusal_frame(refusal: TransferError) -> ServerFrame {
+    let error = ServiceError::from(&crate::Error::from(refusal));
+    ServerFrame::Response(Box::new(ServiceResponse::Error(error)))
+}
+
+fn refusal_message(
+    refusal: TransferError,
+) -> Result<crate::message_io::PreparedMessage, TransferError> {
+    encode_control(&refusal_frame(refusal))
+}
+
+/// Admission for a notification, taken synchronously before it is enqueued.
+/// Cursor frames are normally inline-sized; a larger one is charged the maximum,
+/// since a callback must not serialize it to learn its size.
+fn notification_lease(ids: usize, budget: &TransferBudget) -> Result<Lease, TransferError> {
+    // Fixed field overhead plus an upper bound on each tagged CID. No payload
+    // clone or serialization is needed in the synchronous callback.
+    let bytes = (ids as u64).saturating_add(4).saturating_mul(128);
+    if bytes <= 64 * 1024 {
+        return budget.try_inline(bytes);
+    }
+    let mut lease = budget.try_outbound()?;
+    lease.reserve(budget.policy().max_message_bytes)?;
+    Ok(lease)
+}
+
+/// Queue a notification without waiting, from a synchronous write callback.
+///
+/// A full queue or refused admission retires the connection rather than losing
+/// the event. A closed queue needs nothing: the connection is already going.
+fn queue_notification(
+    tx: &mpsc::Sender<QueuedFrame>,
+    retirement: &Retirement,
+    budget: &TransferBudget,
+    ids: usize,
+    frame: impl FnOnce() -> ServerFrame,
+) {
+    let Ok(lease) = notification_lease(ids, budget) else {
+        retirement.retire();
+        return;
+    };
+    let queued = QueuedFrame {
+        body: QueuedBody::Notification {
+            frame: frame(),
+            lease,
+        },
+        _response_slot: None,
+    };
+    if let Err(TrySendError::Full(_)) = tx.try_send(queued) {
+        retirement.retire();
+    }
+}
+
 /// Handle a single client connection.
 ///
 /// I/O is split across two tasks:
 ///
-/// - **Writer task** (spawned below) owns the `WriteHalf` and drains an
-///   `mpsc::UnboundedReceiver<ServerFrame>` into `write_frame` in
-///   submission order. Responses (dispatched from the request loop) and
-///   server-pushed notifications (from subscribed per-db callbacks both
-///   capture clones of the same `frame_tx`, so a single connection-local
-///   order is preserved.
+/// - **Writer task** ([`run_writer`]) owns the `WriteHalf` and drains a bounded
+///   `mpsc::Receiver<QueuedFrame>` to the socket in submission order. Responses
+///   (dispatched from the request loop) and server-pushed notifications (from
+///   subscribed per-db callbacks) capture clones of the same `frame_tx`, so a
+///   single connection-local order is preserved.
 ///
 /// - **This task** owns the `ReadHalf`, runs the auth/request loop, and
 ///   sends `ServerFrame::Response(...)` into the channel. It also holds
@@ -602,11 +766,12 @@ async fn handle_connection(
     conn_id: ConnectionId,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
+    budget: TransferBudget,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
     // 1. Read and validate handshake (inline writer, no channel yet).
-    let handshake: crate::service::protocol::Handshake = match read_frame(&mut reader).await? {
+    let handshake: crate::service::protocol::Handshake = match read_handshake(&mut reader).await? {
         Some(h) => h,
         None => return Ok(()), // Client disconnected before handshake
     };
@@ -616,7 +781,7 @@ async fn handle_connection(
         let ack = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
         };
-        write_frame(&mut writer, &ack).await?;
+        write_handshake(&mut writer, &ack).await?;
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
@@ -630,49 +795,36 @@ async fn handle_connection(
     let ack = HandshakeAck {
         protocol_version: PROTOCOL_VERSION,
     };
-    write_frame(&mut writer, &ack).await?;
+    write_handshake(&mut writer, &ack).await?;
 
     // 2. Spin up the per-connection writer task.
     //
-    // TODO(backpressure): this channel is `unbounded`, so a stalled client
-    // reader buffers frames in daemon memory without limit. Socket access is
-    // fully trusted, so an unresponsive reader is a client bug rather than an
-    // adversarial input. Before serving untrusted clients this
-    // needs a bound + drop policy. Complication: this single channel
-    // carries both `Response` and `Notification` frames. Naive bounding
-    // is wrong — dropping a `Response` breaks request/response
-    // correlation. Two viable shapes for the follow-up:
-    //
-    //   a) **Split**: separate `response_tx` (bounded, block-send) from
-    //      `notification_tx` (bounded, drop-oldest); writer `select!`s
-    //      with response priority. Cleanest semantics but touches every
-    //      `frame_tx.clone()` site and the cleanup-ordering comment at
-    //      the end of this function needs migration.
-    //
-    //   b) **Variant-aware drop**: bound the single channel; on full,
-    //      `try_send` returns `Full(frame)`; reject if Notification,
-    //      block if Response. Less plumbing, policy duplicated per send
-    //      site.
-    //
-    // Under the cursor-only `Notification::DatabaseWrite` shape (no entry
-    // bodies, just `previous_tips`/`post_tips`), drops are *recoverable*:
-    // a subscriber that misses event N still sees event N+1's `post_tips`
-    // and calls `ids_added(cursor, post_tips)` to catch up. That makes
-    // drop-oldest the right policy and considerably softens the cost of
-    // dropping at all — but the work still needs doing for prod.
-    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
-    let writer_task = tokio::spawn(async move {
-        while let Some(frame) = frame_rx.recv().await {
-            if let Err(e) = write_frame(&mut writer, &frame).await {
-                tracing::debug!(conn_id, "Connection writer error: {e}");
-                break;
-            }
-        }
-    });
+    // The channel is bounded, so a stalled client reader cannot grow daemon
+    // memory. One channel carries responses and notifications so a single
+    // connection-local order is kept. Dispatch is serial and reserves a slot
+    // first, so the response side stays within `service_queue_slots`; cursor
+    // notifications are small and get their own allowance on top. Saturation
+    // retires the connection: a response cannot be dropped without breaking FIFO
+    // association, and silently losing the final notification would strand a
+    // subscriber on a stale cursor.
+    let policy = budget.policy();
+    let capacity = policy.service_queue_slots + policy.notification_queue_slots;
+    let (frame_tx, frame_rx) = mpsc::channel::<QueuedFrame>(capacity);
+    let response_slots = Arc::new(Semaphore::new(policy.service_queue_slots));
+    let retirement = Retirement::new();
+    let writer_task = tokio::spawn(run_writer(
+        writer,
+        frame_rx,
+        budget.clone(),
+        retirement.clone(),
+        conn_id,
+    ));
 
     let ctx = Arc::new(ConnectionContext {
         conn_id,
         tx: frame_tx.clone(),
+        retirement: retirement.clone(),
+        budget: budget.clone(),
         instance: instance.clone(),
         subscribed: std::sync::Mutex::new(HashMap::new()),
         staging: std::sync::Mutex::new(HashMap::new()),
@@ -686,24 +838,65 @@ async fn handle_connection(
     let mut state = ConnectionState::PreAuth;
     let loop_result: crate::Result<()> = async {
         loop {
-            let request: IncomingRequest = match read_frame(&mut reader).await? {
-                Some(req) => req,
-                None => break, // Clean EOF
+            let options = ReadOptions {
+                allow_clean_eof: true,
+                ..Default::default()
+            };
+            let message = tokio::select! {
+                () = retirement.wait() => break,
+                message = read_message::<_, IncomingRequest>(&mut reader, &budget, options) => message,
+            };
+            let Inbound { value, lease } = match message {
+                Ok(Some(message)) => message,
+                Ok(None) => break, // Clean EOF
+                Err(refusal) if refusal.is_resource() => {
+                    // Answer the refused request, then close without reading
+                    // the rest of its body.
+                    let frame = QueuedFrame {
+                        body: QueuedBody::Prepared(refusal_message(refusal.clone())?),
+                        _response_slot: None,
+                    };
+                    tokio::select! {
+                        () = retirement.wait() => {}
+                        _ = frame_tx.send(frame) => {}
+                    }
+                    return Err(refusal.into());
+                }
+                Err(error) => return Err(error.into()),
             };
 
-            let response = match request {
+            // Reserve the response's queue slot before running the operation,
+            // so a finished result never waits outside the queue's bound.
+            let response_slot = tokio::select! {
+                () = retirement.wait() => break,
+                slot = response_slots.clone().acquire_owned() => slot.expect("not closed"),
+            };
+            let permit = tokio::select! {
+                () = retirement.wait() => break,
+                permit = frame_tx.reserve() => match permit {
+                    Ok(permit) => permit,
+                    // Writer task has exited; nothing more we can send.
+                    Err(_) => break,
+                },
+            };
+            let response = match value {
                 IncomingRequest::Known(request) => {
                     dispatch(&instance, &mut state, &ctx, *request).await
                 }
                 IncomingRequest::Unsupported => ServiceResponse::Unsupported,
             };
-            if frame_tx
-                .send(ServerFrame::Response(Box::new(response)))
-                .is_err()
-            {
-                // Writer task has exited; nothing more we can send.
-                break;
-            }
+            drop(lease);
+            let frame = ServerFrame::Response(Box::new(response));
+            let message = match prepare_message(frame, &budget).await {
+                Ok(message) => message,
+                // No bytes left yet; answer this slot with a bounded refusal.
+                Err(refusal) if refusal.is_resource() => refusal_message(refusal)?,
+                Err(error) => return Err(error.into()),
+            };
+            permit.send(QueuedFrame {
+                body: QueuedBody::Prepared(message),
+                _response_slot: Some(response_slot),
+            });
         }
         Ok(())
     }
@@ -1037,15 +1230,10 @@ async fn dispatch_database_op(
             chunk_id,
             records,
         } => {
-            let digest = serde_json::to_vec(&records)?;
-            if digest.len() > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
-                return Err(crate::backend::BackendError::RecordTooLarge {
-                    encoded_bytes: digest.len(),
-                }
-                .into());
-            }
+            let digest = records_digest(&records);
             let records = records
                 .into_iter()
+                .map(|(key, value)| (key.into_vec(), value.map(serde_bytes::ByteBuf::into_vec)))
                 .collect::<crate::backend::RecordMutations>();
             let (backend, duplicate) =
                 session_staging(ctx, login_id, &root_id, &token, chunk_id, &digest)?;
@@ -1146,7 +1334,6 @@ async fn dispatch_database_op(
                 .backend()
                 .store_state_record_get(&crate::backend::RecordView { namespace_id }, &key)
                 .await?;
-            ensure_record_fits(record.as_ref())?;
             Ok(ServiceResponse::Record(record))
         }
         DatabaseOp::StoreStateRecordScan {
@@ -1182,8 +1369,8 @@ async fn dispatch_database_op(
                     )
                     .await?,
                 max_encoded_bytes,
-            )?;
-            Ok(ServiceResponse::RecordPage(page))
+            );
+            Ok(ServiceResponse::RecordPage(page.into()))
         }
 
         DatabaseOp::GetEntry { id } => {
@@ -1362,6 +1549,8 @@ async fn dispatch_database_op(
                 }
             }
             let tx = ctx.tx.clone();
+            let retirement = ctx.retirement.clone();
+            let budget = ctx.budget.clone();
             // Capture the initial cursor and register the callback atomically
             // under the tree lock. The fire path (`put_entry` /
             // `Database::verify`) holds this same lock while advancing cursors,
@@ -1409,26 +1598,31 @@ async fn dispatch_database_op(
                     // would push it out of the locked section onto the runtime's
                     // scheduler and let same-tree frames reorder (the bug fixed
                     // in "preserve write-notification order under concurrent
-                    // writers"). `mpsc::UnboundedSender::send` is non-blocking
-                    // and takes `&self`, which is exactly what makes a
-                    // synchronous send here possible.
+                    // writers"). `mpsc::Sender::try_send` is non-blocking and
+                    // takes `&self`, which is exactly what makes a synchronous
+                    // send here possible.
                     //
-                    // Send failure (writer task gone) is silently dropped; the
-                    // connection is about to be torn down and the guard's Drop
-                    // will unregister us next.
+                    // A full queue or refused admission retires the connection
+                    // rather than losing this event: the subscriber reconnects
+                    // and re-reads instead of waiting on a cursor that will
+                    // never advance. Send failure (writer task gone) is silently
+                    // dropped; the connection is about to be torn down and the
+                    // guard's Drop will unregister us next.
                     //
                     // The closure only fires for settled-state writes today
                     // (Verified). Unverified writes go through `put_entry`
                     // without firing `fire_write_callbacks`, so no notification
                     // is ever *triggered* by them — though the cursors shipped
                     // here are raw frontiers and can bracket an unsettled tip.
-                    let frame = ServerFrame::Notification(Notification::DatabaseWrite {
-                        root_id: db.root_id().clone(),
-                        previous_tips: event.previous_tips().clone(),
-                        post_tips: event.post_tips().clone(),
-                        source: event.source(),
+                    let ids = event.previous_tips().len() + event.post_tips().len();
+                    queue_notification(&tx, &retirement, &budget, ids, || {
+                        ServerFrame::Notification(Notification::DatabaseWrite {
+                            root_id: db.root_id().clone(),
+                            previous_tips: event.previous_tips().clone(),
+                            post_tips: event.post_tips().clone(),
+                            source: event.source(),
+                        })
                     });
-                    let _ = tx.send(frame);
                     async move { Ok(()) }
                 },
             );
@@ -1478,49 +1672,48 @@ fn random_token() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// Refuse a record the wire cannot carry, before it is framed.
-fn ensure_record_fits(record: Option<&Vec<u8>>) -> crate::Result<()> {
-    if let Some(record) = record {
-        let encoded = serde_json::to_vec(record)?.len();
-        if encoded > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
-            return Err(crate::backend::BackendError::RecordTooLarge {
-                encoded_bytes: encoded,
+/// Identify a staged chunk's content, so a retried chunk can be recognized
+/// without retaining its records.
+fn records_digest(records: &crate::service::protocol::WireRecordMutations) -> Vec<u8> {
+    let mut digest = blake3::Hasher::new();
+    for (key, value) in records {
+        digest.update(&(key.len() as u64).to_be_bytes());
+        digest.update(key);
+        match value {
+            Some(value) => {
+                digest.update(&[1]);
+                digest.update(&(value.len() as u64).to_be_bytes());
+                digest.update(value);
             }
-            .into());
+            None => {
+                digest.update(&[0]);
+            }
         }
     }
-    Ok(())
+    digest.finalize().as_bytes().to_vec()
 }
 
-/// Trim a page to the caller's encoded-byte budget, re-deriving the exclusive
-/// continuation key from what actually survives. A single record that cannot
-/// fit under the budget is an error rather than a silently empty page.
+/// Trim a page to the caller's byte budget, re-deriving the exclusive
+/// continuation key from what actually survives. The first record always stays:
+/// it cannot be split, so the message resource policy decides whether it travels.
 fn bounded_page(
     mut page: crate::backend::RecordPage,
     max_encoded_bytes: u32,
-) -> crate::Result<crate::backend::RecordPage> {
-    let limit = max_encoded_bytes.min(crate::service::protocol::MAX_RECORD_CHUNK_BYTES) as usize;
-    let mut size = 2usize;
+) -> crate::backend::RecordPage {
+    let mut size = 0usize;
     let mut keep = 0usize;
-    for record in &page.records {
-        let record_size = serde_json::to_vec(record)?.len();
-        if record_size > limit {
-            return Err(crate::backend::BackendError::RecordTooLarge {
-                encoded_bytes: record_size,
-            }
-            .into());
-        }
-        if size + record_size > limit {
+    for (key, value) in &page.records {
+        size += key.len() + value.len();
+        if keep > 0 && size > max_encoded_bytes as usize {
             break;
         }
-        size += record_size;
         keep += 1;
     }
     if keep < page.records.len() {
         page.records.truncate(keep);
         page.next = page.records.last().map(|(key, _)| key.clone());
     }
-    Ok(page)
+    page
 }
 
 /// Bind a client-supplied Store-state request to the authenticated session.
@@ -1941,7 +2134,63 @@ async fn gate_entry_read(
 mod tests {
     use super::*;
     use crate::backend::database::InMemory;
-    use crate::service::protocol::{Handshake, write_frame};
+    use crate::service::protocol::{Handshake, read_frame, write_frame};
+
+    fn notification() -> ServerFrame {
+        ServerFrame::Notification(Notification::DatabaseWrite {
+            root_id: ID::default(),
+            previous_tips: Default::default(),
+            post_tips: Default::default(),
+            source: WriteSource::Local,
+        })
+    }
+
+    fn is_retired(retirement: &Retirement) -> bool {
+        *retirement.0.borrow()
+    }
+
+    /// A subscriber that has stopped reading must learn it missed something by
+    /// losing its connection, not by waiting on a cursor that never advances.
+    #[tokio::test]
+    async fn a_full_notification_queue_retires_rather_than_drops() {
+        let budget = TransferBudget::default();
+        let retirement = Retirement::new();
+        let (tx, mut queue) = mpsc::channel(1);
+
+        queue_notification(&tx, &retirement, &budget, 2, notification);
+        assert!(!is_retired(&retirement));
+        assert_eq!(queue.len(), 1);
+        assert!(budget.usage().reserved_bytes > 0);
+
+        queue_notification(&tx, &retirement, &budget, 2, notification);
+        assert!(is_retired(&retirement));
+        assert_eq!(
+            queue.len(),
+            1,
+            "the event must not be queued past the bound"
+        );
+
+        // Whatever was refused or queued gives its admission back.
+        queue.recv().await.unwrap();
+        assert_eq!(budget.usage(), Default::default());
+    }
+
+    #[tokio::test]
+    async fn a_refused_notification_retires_without_building_its_frame() {
+        let policy = crate::message_io::TransferPolicy {
+            max_message_bytes: 64,
+            max_reserved_bytes: 64,
+            ..Default::default()
+        };
+        let budget = TransferBudget::new(policy).unwrap();
+        let retirement = Retirement::new();
+        let (tx, _queue) = mpsc::channel(1);
+
+        queue_notification(&tx, &retirement, &budget, 2, || {
+            panic!("a refused notification must not be built")
+        });
+        assert!(is_retired(&retirement));
+    }
 
     fn private_tempdir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -2175,10 +2424,10 @@ mod tests {
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION.saturating_add(1),
         };
-        write_frame(&mut writer, &handshake).await.unwrap();
+        write_handshake(&mut writer, &handshake).await.unwrap();
 
         // Read ack (server sends its version back)
-        let ack: Option<HandshakeAck> = read_frame(&mut reader).await.unwrap();
+        let ack: Option<HandshakeAck> = read_handshake(&mut reader).await.unwrap();
         let ack = ack.unwrap();
         assert_eq!(ack.protocol_version, PROTOCOL_VERSION);
 
@@ -2285,7 +2534,7 @@ mod tests {
         let stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
         let (mut reader, mut writer) = tokio::io::split(stream);
 
-        write_frame(
+        write_handshake(
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
@@ -2293,7 +2542,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let _ack: Option<HandshakeAck> = read_frame(&mut reader).await.unwrap();
+        let _ack: Option<HandshakeAck> = read_handshake(&mut reader).await.unwrap();
 
         // Send an AuthenticatedDb request without completing TrustedLogin.
         write_frame(
@@ -2333,7 +2582,7 @@ mod tests {
         let (mut reader, mut writer) = tokio::io::split(stream);
 
         // Handshake
-        write_frame(
+        write_handshake(
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
@@ -2341,7 +2590,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let _ack: Option<HandshakeAck> = read_frame(&mut reader).await.unwrap();
+        let _ack: Option<HandshakeAck> = read_handshake(&mut reader).await.unwrap();
 
         // Request metadata
         write_frame(&mut writer, &ServiceRequest::GetInstanceMetadata)

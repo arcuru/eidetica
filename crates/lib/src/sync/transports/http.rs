@@ -1,24 +1,36 @@
 //! HTTP transport implementation for sync communication.
 //!
 //! This module provides HTTP-based sync communication using a single
-//! JSON endpoint (/api/v0) with axum for the server and reqwest for the client.
+//! binary endpoint ([`SYNC_PATH`]) with axum for the server and reqwest for the
+//! client. Bodies carry the common message envelope and are streamed in both
+//! directions, so neither side collects a whole message.
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
     Router,
-    extract::{ConnectInfo, Json as ExtractJson, State},
-    response::Json,
+    body::Body,
+    extract::{ConnectInfo, Request, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
     routing::post,
 };
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    sync::oneshot,
+};
 
 use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
 use crate::{
     Result,
     crdt::Doc,
+    message_io::{
+        ProgressMonitor, ReadOptions, TransferBudget, TransferError, into_body_stream,
+        prepare_message, read_message, reader_for_stream,
+    },
     store::Registered,
     sync::{
         error::{SyncError, TimeoutPhase},
@@ -28,32 +40,36 @@ use crate::{
     },
 };
 
+/// The sync endpoint. Its version is the wire version: a peer on another version
+/// has no such route, which is a compatibility failure and never a cue to resend
+/// an operation some other way.
+pub const SYNC_PATH: &str = "/api/v1";
+
+/// Media type of a message on this endpoint.
+pub const SYNC_MEDIA_TYPE: &str = "application/vnd.eidetica.cbor;version=1";
+
+/// How much of a refused body the server discards, and for how long, so the
+/// refusal is not lost to a connection reset while the client is still sending.
+/// Bounded: refusing a body must never mean reading all of it.
+const REFUSED_BODY_DISCARD_BYTES: usize = 8 * 1024 * 1024;
+const REFUSED_BODY_DISCARD_TIME: Duration = Duration::from_secs(1);
+
 /// Maximum time spent establishing a TCP connection to a peer.
 ///
 /// A peer that is down or firewalled is detected within this bound rather than
 /// at the operating system's connect timeout, which can run into minutes.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Maximum time an outbound request may spend waiting for the peer to send
-/// something, reset by every byte that arrives.
+/// Build the outbound HTTP client.
 ///
-/// reqwest applies no timeout by default, so without this a peer that accepts
-/// the connection and never answers holds the request open forever. Requests
-/// are awaited inline by the background sync engine, so an unbounded one stalls
-/// every other thing that engine does.
-///
-/// This bounds silence rather than the whole exchange, because the two are not
-/// the same request. A bootstrap response carries an entire database, so a
-/// deadline on the exchange would fail a transfer that is making progress on a
-/// slow link or against a large tree, while adding nothing against the peer
-/// that has stopped sending.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Build the outbound HTTP client with both deadlines applied.
+/// Time after connecting belongs to the message progress policy: reqwest's read
+/// timeout would also fire during a healthy upload longer than itself. Redirects
+/// are off so a request is never replayed to another address, and content
+/// encodings stay off because they would hide the bytes admission accounts for.
 fn build_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| SyncError::Network(format!("Failed to build HTTP client: {e}")).into())
 }
@@ -61,25 +77,14 @@ fn build_client() -> Result<reqwest::Client> {
 /// The timeout a failed request represents, or `None` if it failed some other
 /// way.
 ///
-/// Which deadline expired says what the peer proved about itself: one that
-/// never completed the connection may not be there, while one that accepted it
-/// and then went quiet is reachable. Both are timeouts, so both carry the phase
-/// rather than being sorted into different variants.
+/// The only deadline reqwest itself enforces here is the connection's. A peer
+/// that never completed the connection may not be there, which is a different
+/// statement from one that accepted it and then went quiet.
 fn timeout_error(error: &reqwest::Error, address: &str) -> Option<SyncError> {
-    if !error.is_timeout() {
-        return None;
-    }
-
-    let (phase, elapsed) = if error.is_connect() {
-        (TimeoutPhase::Connect, CONNECT_TIMEOUT)
-    } else {
-        (TimeoutPhase::Request, REQUEST_TIMEOUT)
-    };
-
-    Some(SyncError::Timeout {
+    (error.is_timeout() && error.is_connect()).then(|| SyncError::Timeout {
         address: address.to_string(),
-        phase,
-        elapsed,
+        phase: TimeoutPhase::Connect,
+        elapsed: CONNECT_TIMEOUT,
     })
 }
 
@@ -119,6 +124,7 @@ impl TransportConfig for HttpTransportConfig {}
 #[derive(Debug, Clone, Default)]
 pub struct HttpTransportBuilder {
     bind_address: Option<String>,
+    budget: TransferBudget,
 }
 
 impl HttpTransportBuilder {
@@ -143,6 +149,14 @@ impl HttpTransportBuilder {
         self
     }
 
+    /// Set the transfer budget, shared by this transport's sends and serving.
+    ///
+    /// Give several transports a clone of one budget to share its limits.
+    pub fn transfer_budget(mut self, budget: TransferBudget) -> Self {
+        self.budget = budget;
+        self
+    }
+
     /// Build the transport synchronously (for backwards compatibility).
     ///
     /// Note: The bind address is stored but the server is not started.
@@ -152,6 +166,7 @@ impl HttpTransportBuilder {
             server_state: ServerState::new(),
             bind_address: self.bind_address,
             client: build_client()?,
+            budget: self.budget,
         })
     }
 }
@@ -168,6 +183,7 @@ impl TransportBuilder for HttpTransportBuilder {
             server_state: ServerState::new(),
             bind_address: self.bind_address,
             client: build_client()?,
+            budget: self.budget,
         };
         Ok((transport, None))
     }
@@ -182,6 +198,8 @@ pub struct HttpTransport {
     /// Outbound HTTP client, shared across requests so its connection pool
     /// survives between sends rather than being rebuilt per request.
     client: reqwest::Client,
+    /// Admission and limits shared by every message on this transport.
+    budget: TransferBudget,
 }
 
 impl HttpTransport {
@@ -194,6 +212,7 @@ impl HttpTransport {
             server_state: ServerState::new(),
             bind_address: None,
             client: build_client()?,
+            budget: TransferBudget::default(),
         })
     }
 
@@ -202,12 +221,99 @@ impl HttpTransport {
         HttpTransportBuilder::new()
     }
 
-    /// Create the axum router with single JSON endpoint and handler state.
-    fn create_router(handler: Arc<dyn SyncHandler>) -> Router {
+    /// Create the axum router with its single endpoint and handler state.
+    fn create_router(handler: Arc<dyn SyncHandler>, budget: TransferBudget) -> Router {
         Router::new()
-            .route("/api/v0", post(handle_sync_request))
-            .with_state(handler)
+            .route(SYNC_PATH, post(handle_sync_request))
+            .with_state((handler, budget))
     }
+
+    /// Stream one request to `url` and read its response.
+    async fn exchange(
+        &self,
+        address: &str,
+        request: SyncRequest,
+    ) -> std::result::Result<SyncResponse, SyncError> {
+        let budget = &self.budget;
+        let failed = |error: TransferError| error.into_sync_error(address);
+
+        let message = prepare_message(request, budget).await.map_err(failed)?;
+        let stream_bytes = message.stream_bytes();
+        let monitor = Arc::new(ProgressMonitor::new(budget.policy()));
+        let body = reqwest::Body::wrap_stream(into_body_stream(message, monitor.clone(), true));
+
+        let send = self
+            .client
+            .post(format!("http://{address}{SYNC_PATH}"))
+            .header(header::CONTENT_TYPE, SYNC_MEDIA_TYPE)
+            .header(header::ACCEPT, SYNC_MEDIA_TYPE)
+            .header(header::CONTENT_LENGTH, stream_bytes)
+            .body(body)
+            .send();
+        let response = tokio::select! {
+            response = send => response.map_err(|e| {
+                timeout_error(&e, address).unwrap_or_else(|| SyncError::ConnectionFailed {
+                    address: address.to_string(),
+                    reason: e.to_string(),
+                })
+            })?,
+            failure = monitor.expired() => return Err(failed(failure)),
+        };
+        monitor.response_started();
+
+        match response.status() {
+            status if status.is_success() => {}
+            StatusCode::PAYLOAD_TOO_LARGE => {
+                // The status is sufficient. An untrusted error body must not
+                // bypass message admission by being collected as text.
+                return Err(SyncError::ResourceLimit(
+                    "peer refused the request under its resource policy".to_string(),
+                ));
+            }
+            status => {
+                return Err(SyncError::Network(format!(
+                    "Server returned error: {status}"
+                )));
+            }
+        }
+        if !monitor.is_body_complete() {
+            return Err(SyncError::Network(
+                "peer answered before the request body finished".to_string(),
+            ));
+        }
+        if !is_sync_media(response.headers()) {
+            return Err(SyncError::Network(
+                "Response is not a sync message".to_string(),
+            ));
+        }
+
+        let declared_stream_bytes = response.content_length();
+        let chunks = stream::unfold(response, |mut response| async move {
+            match response.chunk().await {
+                Ok(Some(chunk)) => Some((Ok(chunk), response)),
+                Ok(None) => None,
+                Err(error) => Some((Err(error), response)),
+            }
+        });
+        let mut reader = reader_for_stream(chunks.boxed());
+        let options = ReadOptions {
+            require_end: true,
+            declared_stream_bytes,
+            first_byte_timeout: true,
+            ..Default::default()
+        };
+        let inbound = read_message::<_, SyncResponse>(&mut reader, budget, options)
+            .await
+            .map_err(failed)?
+            .ok_or_else(|| failed(TransferError::Truncated))?;
+        Ok(inbound.value)
+    }
+}
+
+fn is_sync_media(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|value| value == SYNC_MEDIA_TYPE)
 }
 
 #[async_trait]
@@ -234,7 +340,7 @@ impl SyncTransport for HttpTransport {
                 reason: format!("Invalid address: {e}"),
             })?;
 
-        let router = Self::create_router(handler);
+        let router = Self::create_router(handler, self.budget.clone());
 
         // Create server coordination channels
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -319,7 +425,17 @@ impl SyncTransport for HttpTransport {
         Ok(())
     }
 
+    /// Compatibility adapter. It must clone `request`, so its memory cost is
+    /// the caller's choice; prefer [`SyncTransport::send_request_owned`].
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
+        self.send_request_owned(address, request.clone()).await
+    }
+
+    async fn send_request_owned(
+        &self,
+        address: &Address,
+        request: SyncRequest,
+    ) -> Result<SyncResponse> {
         if !self.can_handle_address(address) {
             return Err(SyncError::UnsupportedTransport {
                 transport_type: address.transport_type.clone(),
@@ -327,39 +443,16 @@ impl SyncTransport for HttpTransport {
             .into());
         }
 
-        let url = format!("http://{}/api/v0", address.address);
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&request) // Send SyncRequest as JSON body
-            .send()
-            .await
-            .map_err(|e| {
-                timeout_error(&e, &address.address).unwrap_or_else(|| SyncError::ConnectionFailed {
-                    address: address.address.clone(),
-                    reason: e.to_string(),
-                })
-            })?;
-
-        if !response.status().is_success() {
-            return Err(SyncError::Network(format!(
-                "Server returned error: {}",
-                response.status()
-            ))
-            .into());
-        }
-
-        // The response body is read here rather than above, so a peer that
-        // stops sending partway through one runs out of time here too. Without
-        // this the stall would be reported as a malformed response, which is a
-        // different fault with a different remedy.
-        let sync_response: SyncResponse = response.json().await.map_err(|e| {
-            timeout_error(&e, &address.address)
-                .unwrap_or_else(|| SyncError::Network(format!("Failed to parse response: {e}")))
-        })?;
-
-        Ok(sync_response)
+        let exchange = self.exchange(&address.address, request);
+        let response = match self.budget.policy().overall_timeout {
+            None => exchange.await?,
+            Some(elapsed) => tokio::time::timeout(elapsed, exchange)
+                .await
+                .map_err(|_| {
+                    TransferError::OverallTimeout { elapsed }.into_sync_error(&address.address)
+                })??,
+        };
+        Ok(response)
     }
 
     fn is_server_running(&self) -> bool {
@@ -371,12 +464,53 @@ impl SyncTransport for HttpTransport {
     }
 }
 
-/// Handler for the /api/v0 endpoint - accepts JSON SyncRequest and returns JSON SyncResponse.
+/// Handler for the sync endpoint on this transport's own server.
 async fn handle_sync_request(
-    State(handler): State<Arc<dyn SyncHandler>>,
+    State((handler, budget)): State<(Arc<dyn SyncHandler>, TransferBudget)>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    ExtractJson(request): ExtractJson<SyncRequest>,
-) -> Json<SyncResponse> {
+    request: Request,
+) -> Response {
+    serve_sync_request(handler.as_ref(), &budget, addr, request).await
+}
+
+/// Serve one streamed sync request.
+///
+/// Other HTTP servers embedding the sync endpoint at [`SYNC_PATH`] use this too,
+/// so every server applies one admission and streaming behavior.
+pub async fn serve_sync_request(
+    handler: &dyn SyncHandler,
+    budget: &TransferBudget,
+    addr: SocketAddr,
+    request: Request,
+) -> Response {
+    if !is_sync_media(request.headers()) {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    }
+    let declared_stream_bytes = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok());
+
+    let mut reader = reader_for_stream(request.into_body().into_data_stream());
+    let options = ReadOptions {
+        require_end: true,
+        declared_stream_bytes,
+        first_byte_timeout: true,
+        ..Default::default()
+    };
+    let inbound = match read_message::<_, SyncRequest>(&mut reader, budget, options).await {
+        Ok(Some(inbound)) => inbound,
+        Ok(None) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(refusal) if refusal.is_resource() => {
+            tokio::spawn(discard_refused_body(reader));
+            return transfer_failure(refusal);
+        }
+        Err(error) => return transfer_failure(error),
+    };
+    drop(reader);
+    let request = inbound.value;
+
     // Extract peer_pubkey from SyncTreeRequest if present
     let peer_pubkey = match &request {
         SyncRequest::SyncTree(sync_tree_request) => sync_tree_request.peer_pubkey.clone(),
@@ -392,10 +526,54 @@ async fn handle_sync_request(
         peer_pubkey,
     };
 
-    // Call handler directly (Transaction is now Send since it uses Arc<Mutex>)
     let response = handler.handle_request(&request, &context).await;
+    drop(request);
+    drop(inbound.lease);
 
-    Json(response)
+    let message = match prepare_message(response, budget).await {
+        Ok(message) => message,
+        Err(error) => return transfer_failure(error),
+    };
+    let stream_bytes = message.stream_bytes();
+    let monitor = Arc::new(ProgressMonitor::new(budget.policy()));
+    let body = Body::from_stream(into_body_stream(message, monitor, false));
+    (
+        [
+            (header::CONTENT_TYPE, SYNC_MEDIA_TYPE.to_string()),
+            (header::CONTENT_LENGTH, stream_bytes.to_string()),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Read and discard part of a refused body while its refusal is sent.
+async fn discard_refused_body(mut reader: impl AsyncRead + Unpin) {
+    let mut sink = vec![0u8; 16 * 1024];
+    let mut left = REFUSED_BODY_DISCARD_BYTES;
+    let discard = async {
+        while left > 0 {
+            match reader.read(&mut sink).await {
+                Ok(read) if read > 0 => left = left.saturating_sub(read),
+                _ => break,
+            }
+        }
+    };
+    let _ = tokio::time::timeout(REFUSED_BODY_DISCARD_TIME, discard).await;
+}
+
+/// A failed message as a small response. A refusal stays explicit so the peer
+/// can tell it from a fault.
+fn transfer_failure(error: TransferError) -> Response {
+    let status = match error {
+        TransferError::Resource { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+        TransferError::Malformed(_) | TransferError::Truncated => StatusCode::BAD_REQUEST,
+        TransferError::Stalled { .. }
+        | TransferError::InsufficientProgress { .. }
+        | TransferError::ResponseTimeout { .. } => StatusCode::REQUEST_TIMEOUT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, error.to_string()).into_response()
 }
 
 #[cfg(test)]
@@ -405,36 +583,46 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+    use crate::message_io::TransferPolicy;
 
     /// A peer that accepts the connection and then says nothing is reported as
     /// a timeout, in the phase that records it was reachable. This is the
-    /// classification the tree walk and every log reader act on, and it rests
-    /// on how the HTTP client reports a deadline, so it is pinned here rather
-    /// than assumed.
+    /// classification the tree walk and every log reader act on.
     #[tokio::test]
     async fn a_peer_that_accepts_and_says_nothing_times_out_in_the_request_phase() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
 
-        // Accept the connection and hold it open without answering.
+        // Accept the connection, read the request and never answer.
         tokio::spawn(async move {
-            let _accepted = listener.accept().await;
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut sink = [0u8; 1024];
+            while tokio::io::AsyncReadExt::read(&mut stream, &mut sink)
+                .await
+                .is_ok_and(|read| read > 0)
+            {}
             pending::<()>().await;
         });
 
-        let client = reqwest::Client::builder()
-            .read_timeout(Duration::from_millis(200))
-            .build()
+        let policy = TransferPolicy {
+            first_response_timeout: Duration::from_millis(200),
+            ..Default::default()
+        };
+        let transport = HttpTransport::builder()
+            .transfer_budget(TransferBudget::new(policy).unwrap())
+            .build_sync()
             .unwrap();
-        let error = client
-            .post(format!("http://{address}/api/v0"))
-            .send()
+        let error = transport
+            .send_request_owned(&Address::http(&address), SyncRequest::SendEntries(vec![]))
             .await
             .expect_err("a peer that never answers cannot produce a response");
 
-        match timeout_error(&error, &address) {
-            Some(SyncError::Timeout { phase, .. }) => assert_eq!(phase, TimeoutPhase::Request),
-            other => panic!("expected a request-phase timeout, got {other:?}"),
+        match error {
+            crate::Error::Sync(error) => match *error {
+                SyncError::Timeout { phase, .. } => assert_eq!(phase, TimeoutPhase::Request),
+                other => panic!("expected a request-phase timeout, got {other:?}"),
+            },
+            other => panic!("expected a sync error, got {other:?}"),
         }
     }
 
@@ -451,11 +639,136 @@ mod tests {
 
         let client = build_client().unwrap();
         let error = client
-            .post(format!("http://{address}/api/v0"))
+            .post(format!("http://{address}{SYNC_PATH}"))
             .send()
             .await
             .expect_err("nothing is listening on that port");
 
         assert!(timeout_error(&error, &address).is_none());
+    }
+    /// A refusal must be observed without collecting the peer's arbitrary
+    /// status-body (which need not end, even after the upload is refused).
+    #[tokio::test]
+    async fn early_resource_refusal_does_not_read_an_unbounded_error_body() {
+        use tokio::io::AsyncWriteExt;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 999999999\r\n\r\n")
+                .await
+                .unwrap();
+            pending::<()>().await;
+        });
+        let policy = TransferPolicy {
+            overall_timeout: Some(Duration::from_millis(500)),
+            ..Default::default()
+        };
+        let transport = HttpTransport::builder()
+            .transfer_budget(TransferBudget::new(policy).unwrap())
+            .build_sync()
+            .unwrap();
+        let refused = transport
+            .send_request_owned(&Address::http(address), SyncRequest::SendEntries(vec![]))
+            .await;
+        peer.abort();
+        let _ = peer.await;
+        assert!(
+            refused.as_ref().is_err_and(crate::Error::is_resource_limit),
+            "{refused:?}"
+        );
+    }
+
+    /// A client that stops reading a response stops hyper polling the body, so
+    /// only the monitor can see it. The worker must not hold admission forever.
+    #[tokio::test]
+    async fn a_client_that_stops_reading_a_response_frees_server_admission() {
+        use tokio::io::AsyncWriteExt;
+
+        struct LargeAnswer;
+        #[async_trait]
+        impl SyncHandler for LargeAnswer {
+            async fn handle_request(&self, _: &SyncRequest, _: &RequestContext) -> SyncResponse {
+                SyncResponse::Error("x".repeat(64 * 1024 * 1024))
+            }
+        }
+
+        let policy = TransferPolicy {
+            stall_timeout: Duration::from_millis(200),
+            ..Default::default()
+        };
+        let budget = TransferBudget::new(policy).unwrap();
+        let server = HttpTransport::builder()
+            .bind("127.0.0.1:0")
+            .transfer_budget(budget.clone())
+            .build_sync()
+            .unwrap();
+        server.start_server(Arc::new(LargeAnswer)).await.unwrap();
+        let address = server.get_server_address().unwrap();
+
+        let body = cbor4ii::serde::to_vec(Vec::new(), &SyncRequest::SendEntries(vec![])).unwrap();
+        let mut client = tokio::net::TcpStream::connect(&address).await.unwrap();
+        let head = format!(
+            "POST {SYNC_PATH} HTTP/1.1\r\nHost: {address}\r\nContent-Type: {SYNC_MEDIA_TYPE}\r\n\
+             Content-Length: {}\r\n\r\n",
+            body.len() + 8
+        );
+        client.write_all(head.as_bytes()).await.unwrap();
+        client
+            .write_all(&(body.len() as u64).to_be_bytes())
+            .await
+            .unwrap();
+        client.write_all(&body).await.unwrap();
+
+        let saw_response = tokio::time::timeout(Duration::from_secs(5), async {
+            while budget.usage().outbound_messages == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+        saw_response.await.expect("the response began");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while budget.usage().outbound_messages != 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a stalled response must release its worker's admission");
+        assert_eq!(budget.usage().reserved_bytes, 0);
+        drop(client);
+        server.stop_server().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn early_success_cannot_excuse_an_incomplete_upload() {
+        use tokio::io::AsyncWriteExt;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let body = cbor4ii::serde::to_vec(Vec::new(), &SyncResponse::Ack).unwrap();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {SYNC_MEDIA_TYPE}\r\nContent-Length: {}\r\n\r\n",
+                body.len() + 8
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream
+                .write_all(&(body.len() as u64).to_be_bytes())
+                .await
+                .unwrap();
+            stream.write_all(&body).await.unwrap();
+            pending::<()>().await;
+        });
+        let entry = crate::Entry::root_builder()
+            .set_subtree_data("data", "x".repeat(32 * 1024 * 1024))
+            .build()
+            .unwrap();
+        let transport = HttpTransport::new().unwrap();
+        let result = transport
+            .send_owned_entries(&Address::http(address), vec![entry])
+            .await;
+        peer.abort();
+        let _ = peer.await;
+        assert!(result.is_err(), "an incomplete upload cannot succeed");
     }
 }

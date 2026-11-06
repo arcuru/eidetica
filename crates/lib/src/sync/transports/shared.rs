@@ -7,10 +7,7 @@ use std::sync::Mutex;
 
 use tokio::sync::oneshot;
 
-use crate::sync::{
-    error::SyncError,
-    protocol::{SyncRequest, SyncResponse},
-};
+use crate::sync::error::SyncError;
 
 /// Manages server state common to all transport implementations.
 ///
@@ -142,35 +139,6 @@ impl Drop for ServerStart<'_> {
         if !self.completed {
             self.state.startup_failed();
         }
-    }
-}
-
-/// Utilities for handling JSON serialization/deserialization in transports.
-pub struct JsonHandler;
-
-impl JsonHandler {
-    /// Serialize a SyncRequest to JSON bytes.
-    pub fn serialize_request(request: &SyncRequest) -> Result<Vec<u8>, SyncError> {
-        serde_json::to_vec(request)
-            .map_err(|e| SyncError::Network(format!("Failed to serialize request: {e}")))
-    }
-
-    /// Serialize a SyncResponse to JSON bytes.
-    pub fn serialize_response(response: &SyncResponse) -> Result<Vec<u8>, SyncError> {
-        serde_json::to_vec(response)
-            .map_err(|e| SyncError::Network(format!("Failed to serialize response: {e}")))
-    }
-
-    /// Deserialize JSON bytes to a SyncRequest.
-    pub fn deserialize_request(bytes: &[u8]) -> Result<SyncRequest, SyncError> {
-        serde_json::from_slice(bytes)
-            .map_err(|e| SyncError::Network(format!("Failed to deserialize request: {e}")))
-    }
-
-    /// Deserialize JSON bytes to a SyncResponse.
-    pub fn deserialize_response(bytes: &[u8]) -> Result<SyncResponse, SyncError> {
-        serde_json::from_slice(bytes)
-            .map_err(|e| SyncError::Network(format!("Failed to deserialize response: {e}")))
     }
 }
 

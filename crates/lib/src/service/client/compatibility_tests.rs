@@ -1,15 +1,19 @@
 use super::tests::{connect_peer, read_request};
 use super::*;
+use crate::service::protocol::{encode_json_fixture, read_frame, write_frame};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Send a hand-written message. Text that is not JSON stands for bytes that are
+/// not CBOR either.
 async fn send_raw(peer: &mut UnixStream, json: &str) {
-    peer.write_all(&(json.len() as u32).to_be_bytes())
+    let body = encode_json_fixture(json).unwrap_or_else(|| vec![0xff]);
+    peer.write_all(&(body.len() as u64).to_be_bytes())
         .await
         .unwrap();
-    peer.write_all(json.as_bytes()).await.unwrap();
+    peer.write_all(&body).await.unwrap();
 }
 
 fn start_call(
@@ -252,15 +256,22 @@ async fn v0_client_fails_closed_on_malformed_or_required_unknown_frames() {
 
 #[tokio::test]
 async fn v0_client_fails_closed_on_oversize_and_truncated_frames() {
+    // A declaration over this client's policy is refused by name, not read.
+    let (conn, mut peer) = connect_peer().await;
+    let call = start_call(&conn, "waiting");
+    read_request(&mut peer, "waiting").await;
+    peer.write_all(&u64::MAX.to_be_bytes()).await.unwrap();
+    let result = tokio::time::timeout(TIMEOUT, call).await.unwrap().unwrap();
+    assert!(result.unwrap_err().is_resource_limit());
+    assert!(
+        conn.request_ok(ServiceRequest::GetInstanceMetadata)
+            .await
+            .is_err()
+    );
+
     for (header, body) in [
-        (
-            (crate::service::protocol::MAX_FRAME_SIZE + 1)
-                .to_be_bytes()
-                .to_vec(),
-            vec![],
-        ),
         (vec![0, 0], vec![]),
-        (50u32.to_be_bytes().to_vec(), b"{\"Response\":".to_vec()),
+        (50u64.to_be_bytes().to_vec(), vec![0xa1, 0x61]),
     ] {
         let (conn, mut peer) = connect_peer().await;
         let call = start_call(&conn, "waiting");
@@ -533,18 +544,18 @@ async fn v0_unknown_required_login_enums_retire_connection() {
 }
 
 #[tokio::test]
-async fn v0_client_rejects_nonzero_handshake_ack() {
+async fn client_refuses_a_v0_handshake_ack() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("version.sock");
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
     let peer = async {
         let (mut stream, _) = listener.accept().await.unwrap();
-        let handshake: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
-        assert_eq!(handshake.protocol_version, 0);
-        write_frame(
+        let handshake: Handshake = read_handshake(&mut stream).await.unwrap().unwrap();
+        assert_eq!(handshake.protocol_version, PROTOCOL_VERSION);
+        write_handshake(
             &mut stream,
             &HandshakeAck {
-                protocol_version: 1,
+                protocol_version: 0,
             },
         )
         .await

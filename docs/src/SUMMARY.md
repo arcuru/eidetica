@@ -38,6 +38,7 @@
 - [Authentication](internal/authentication.md)
 - [Encryption](internal/encryption.md)
 - [Sync](internal/sync.md)
+  - [Message Delivery](internal/message_delivery.md)
 - [Service (Daemon)](internal/service.md)
 - [Bootstrap](internal/bootstrap.md)
 - [Testing](internal/testing.md)

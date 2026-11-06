@@ -67,7 +67,7 @@
 //!
 //! Two transport implementations are available:
 //!
-//! - **HTTP** ([`transports::http::HttpTransport`]): REST API at `/api/v0`, JSON serialization
+//! - **HTTP** ([`transports::http::HttpTransport`]): streamed binary messages at `/api/v1`
 //! - **Iroh P2P** ([`transports::iroh::IrohTransport`]): QUIC-based with NAT traversal
 //!
 //! Transports are registered via [`Sync::register_transport`] with their builders.

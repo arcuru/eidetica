@@ -1,7 +1,9 @@
 //! Wire protocol types for the Eidetica service.
 //!
-//! The protocol uses length-prefixed JSON frames over a Unix domain socket.
-//! Each frame is a 4-byte big-endian length followed by the JSON payload.
+//! A connection opens with one small length-prefixed JSON [`Handshake`] exchange
+//! that only compares versions. Every later message uses the common binary
+//! envelope from [`crate::message_io`], so a message's size is a resource-policy
+//! question rather than a property of the socket protocol.
 //!
 //! ## Request shape
 //!
@@ -31,8 +33,11 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize, de};
-use serde_json::value::RawValue;
+use serde::{
+    Deserialize, Serialize,
+    de::{self, IntoDeserializer},
+};
+use serde_bytes::ByteBuf;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::account::AccountInfo;
@@ -41,26 +46,30 @@ use crate::auth::types::{Permission, SigKey};
 use crate::backend::{InstanceMetadata, RecordPage, RecordRange, StoreStateRequest};
 use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
+use crate::message_io::{CLASSIFIER_NAME, DiscriminantSeed, wire};
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 
-/// Protocol version. Version 0 indicates an unstable protocol that may change
-/// without notice between releases.
+/// Protocol version.
 ///
-/// Updated peers reject unknown operations with [`ServiceResponse::Unsupported`],
-/// fail one call for unknown responses, and ignore unknown optional notification
+/// Version 1 replaced whole JSON frames with the binary message envelope, so a
+/// v0 peer cannot talk to it: the handshake refuses the connection before any
+/// operation is sent, and nothing falls back to v0.
+///
+/// Peers reject unknown operations with [`ServiceResponse::Unsupported`], fail
+/// one call for unknown responses, and ignore unknown optional notification
 /// variants. Known payloads and required nested types remain strict. There is no
-/// capability negotiation or downgrade. Pre-change v0 peers still disconnect on
-/// unknown variants; keeping v0 does not retroactively make them extensible.
-/// `#[non_exhaustive]` protects Rust source compatibility, not the wire.
-pub const PROTOCOL_VERSION: u32 = 0;
+/// capability negotiation or downgrade. `#[non_exhaustive]` protects Rust source
+/// compatibility, not the wire.
+pub const PROTOCOL_VERSION: u32 = 1;
 
-/// Maximum frame size: 64 MiB.
-pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
+/// Largest handshake frame, which only ever carries a version number.
+pub const MAX_HANDSHAKE_BYTES: u32 = 4 * 1024;
 
-/// Record payload budget leaving room for the JSON envelope and length prefix.
-pub const MAX_RECORD_CHUNK_BYTES: u32 = MAX_FRAME_SIZE - 1024 * 1024;
+/// Upper bound on one chunk of record payload, measured as JSON. This sizes
+/// store-state chunking; it is not a limit on messages.
+pub const MAX_RECORD_CHUNK_BYTES: u32 = 63 * 1024 * 1024;
 
 /// Default upper bound for an encoded record page.
 pub const MAX_RECORD_PAGE_BYTES: u32 = 4 * 1024 * 1024;
@@ -119,6 +128,7 @@ pub struct TransactionContext {
     pub settings_tips: Vec<ID>,
     /// Merged `_settings` state the entry is authored against (used to build
     /// the auth settings the signature is validated under).
+    #[serde(serialize_with = "wire::json_value")]
     pub settings_value: WireCrdtValue,
 }
 
@@ -134,8 +144,44 @@ pub struct MergeState {
     pub path: Vec<ID>,
 }
 
-/// JSON-safe wire representation of opaque byte-keyed record mutations.
-pub type WireRecordMutations = Vec<(Vec<u8>, Option<Vec<u8>>)>;
+/// Wire representation of opaque byte-keyed record mutations. Byte strings, so
+/// a record is one decoded value rather than one per byte.
+pub type WireRecordMutations = Vec<(ByteBuf, Option<ByteBuf>)>;
+
+/// Wire form of [`RecordPage`], with records as byte strings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireRecordPage {
+    /// Ordered key/value records.
+    pub records: Vec<(ByteBuf, ByteBuf)>,
+    /// Exclusive continuation key.
+    pub next: Option<ByteBuf>,
+}
+
+impl From<RecordPage> for WireRecordPage {
+    fn from(page: RecordPage) -> Self {
+        Self {
+            records: page
+                .records
+                .into_iter()
+                .map(|(key, value)| (ByteBuf::from(key), ByteBuf::from(value)))
+                .collect(),
+            next: page.next.map(ByteBuf::from),
+        }
+    }
+}
+
+impl From<WireRecordPage> for RecordPage {
+    fn from(page: WireRecordPage) -> Self {
+        Self {
+            records: page
+                .records
+                .into_iter()
+                .map(|(key, value)| (key.into_vec(), value.into_vec()))
+                .collect(),
+            next: page.next.map(ByteBuf::into_vec),
+        }
+    }
+}
 
 /// Database-level operations the server runs on its local `Database`.
 ///
@@ -527,9 +573,9 @@ pub enum ServiceResponse {
     /// Native historical signature/permission verdict, not a stored status.
     EntrySignatureValid(bool),
     /// One optional opaque record.
-    Record(Option<Vec<u8>>),
+    Record(#[serde(with = "serde_bytes")] Option<Vec<u8>>),
     /// One bounded, ordered record page.
-    RecordPage(RecordPage),
+    RecordPage(WireRecordPage),
     /// View onto one published record set.
     RecordView(Option<String>),
     /// Capability for one private build.
@@ -537,7 +583,7 @@ pub enum ServiceResponse {
     /// Transaction-build context (response to `DatabaseOp::BeginTransaction`).
     TransactionContext(TransactionContext),
     /// Materialized CRDT store state (response to `DatabaseOp::GetStoreState`).
-    CrdtValue(WireCrdtValue),
+    CrdtValue(#[serde(serialize_with = "wire::json_value")] WireCrdtValue),
     /// Merge state: lowest common ancestor + path to tips (response to
     /// `DatabaseOp::ComputeMergeState`).
     MergeState(MergeState),
@@ -565,7 +611,7 @@ pub enum ServiceResponse {
         challenge: Vec<u8>,
         #[serde(rename = "user_uuid")]
         login_id: String,
-        #[serde(rename = "user_info")]
+        #[serde(rename = "user_info", with = "wire::account_info")]
         account_info: AccountInfo,
     },
     /// Trusted login succeeded; the connection is now authenticated.
@@ -644,37 +690,122 @@ const RESPONSE_VARIANTS: &[&str] = &[
     "TicketBootstrapOutcome",
 ];
 
-/// Read an externally tagged JSON enum's name without erasing duplicate keys
-/// or changing its payload. RawValue preserves the original known-wire decoder.
-/// Only a string or a single-key object can represent an optional variant.
-fn variant_name(raw: &RawValue) -> serde_json::Result<String> {
-    struct VariantName;
-    impl<'de> de::Visitor<'de> for VariantName {
-        type Value = String;
+/// Replays one consumed discriminant to a derived decoder, whose payload is then
+/// read from the original stream. Only the name is ever replayed.
+struct WithKey<'a, A> {
+    key: Option<String>,
+    map: &'a mut A,
+}
 
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.write_str("an enum name or single-key enum object")
-        }
+impl<'de, A: de::MapAccess<'de>> de::MapAccess<'de> for WithKey<'_, A> {
+    type Error = A::Error;
 
-        fn visit_str<E: de::Error>(self, name: &str) -> Result<String, E> {
-            Ok(name.to_owned())
-        }
-
-        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<String, A::Error> {
-            let name = map
-                .next_key::<String>()?
-                .ok_or_else(|| de::Error::custom("empty enum object"))?;
-            map.next_value::<de::IgnoredAny>()?;
-            if map.next_key::<de::IgnoredAny>()?.is_some() {
-                return Err(de::Error::custom("enum object must have exactly one key"));
-            }
-            Ok(name)
+    fn next_key_seed<K: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, A::Error> {
+        match self.key.take() {
+            Some(key) => seed.deserialize(key.into_deserializer()).map(Some),
+            None => self.map.next_key_seed(seed),
         }
     }
-    let mut decoder = serde_json::Deserializer::from_str(raw.get());
-    let name = de::Deserializer::deserialize_any(&mut decoder, VariantName)?;
-    decoder.end()?;
-    Ok(name)
+
+    fn next_value_seed<V: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<V::Value, A::Error> {
+        self.map.next_value_seed(seed)
+    }
+}
+
+/// Decode a known one-key enum object through its original derived decoder.
+fn known_variant<'de, T: Deserialize<'de>, A: de::MapAccess<'de>>(
+    key: String,
+    map: &mut A,
+) -> Result<T, A::Error> {
+    T::deserialize(de::value::MapAccessDeserializer::new(WithKey {
+        key: Some(key),
+        map,
+    }))
+}
+
+fn only_key<'de, A: de::MapAccess<'de>>(map: &mut A) -> Result<(), A::Error> {
+    if map.next_key::<de::IgnoredAny>()?.is_some() {
+        return Err(de::Error::custom("enum object must have exactly one key"));
+    }
+    Ok(())
+}
+
+/// An enum that is an optional extension point on the wire.
+trait Classified {
+    const NAMES: &'static [&'static str];
+}
+
+impl<T: Classified> Classified for Box<T> {
+    const NAMES: &'static [&'static str] = T::NAMES;
+}
+
+impl Classified for DatabaseOp {
+    const NAMES: &'static [&'static str] = DATABASE_OP_VARIANTS;
+}
+
+impl Classified for ServiceResponse {
+    const NAMES: &'static [&'static str] = RESPONSE_VARIANTS;
+}
+
+impl Classified for Notification {
+    const NAMES: &'static [&'static str] = &["DatabaseWrite"];
+}
+
+/// A value that is `None` when its variant is unknown. Only a string or a
+/// single-key object can be one; the unknown payload is skipped under the
+/// discarded-value allowance, never collected.
+struct Optional<T>(Option<T>);
+
+impl<'de, T: Deserialize<'de> + Classified> Deserialize<'de> for Optional<T> {
+    fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        struct OptionalVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de> + Classified> de::Visitor<'de> for OptionalVisitor<T> {
+            type Value = Optional<T>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an enum name or single-key enum object")
+            }
+
+            fn visit_newtype_struct<D: de::Deserializer<'de>>(
+                self,
+                decoder: D,
+            ) -> Result<Self::Value, D::Error> {
+                decoder.deserialize_any(self)
+            }
+
+            fn visit_str<E: de::Error>(self, name: &str) -> Result<Self::Value, E> {
+                if T::NAMES.contains(&name) {
+                    T::deserialize(name.into_deserializer()).map(|value| Optional(Some(value)))
+                } else {
+                    Ok(Optional(None))
+                }
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let key = map
+                    .next_key_seed(DiscriminantSeed)?
+                    .ok_or_else(|| de::Error::custom("empty enum object"))?;
+                let value = if T::NAMES.contains(&key.as_str()) {
+                    Some(known_variant(key, &mut map)?)
+                } else {
+                    map.next_value::<de::IgnoredAny>()?;
+                    None
+                };
+                only_key(&mut map)?;
+                Ok(Optional(value))
+            }
+        }
+
+        decoder
+            .deserialize_newtype_struct(CLASSIFIER_NAME, OptionalVisitor(std::marker::PhantomData))
+    }
 }
 
 /// Inbound-only classification: unsupported operations never reach dispatch,
@@ -686,38 +817,65 @@ pub(crate) enum IncomingRequest {
 
 impl<'de> Deserialize<'de> for IncomingRequest {
     fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
-        let raw = Box::<RawValue>::deserialize(decoder)?;
-        let decode = || -> serde_json::Result<Self> {
-            let name = variant_name(&raw)?;
-            if !REQUEST_VARIANTS.contains(&name.as_str()) {
-                return Ok(Self::Unsupported);
+        struct RequestVisitor;
+
+        impl<'de> de::Visitor<'de> for RequestVisitor {
+            type Value = IncomingRequest;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an enum name or single-key enum object")
             }
-            if name == "AuthenticatedDb" {
-                #[derive(Deserialize)]
-                enum Envelope {
-                    AuthenticatedDb(Scope),
-                }
-                #[derive(Deserialize)]
-                struct Scope {
-                    root_id: ID,
-                    identity: SigKey,
-                    op: Box<RawValue>,
-                }
-                let Envelope::AuthenticatedDb(scope) = serde_json::from_str(raw.get())?;
-                let name = variant_name(&scope.op)?;
-                if !DATABASE_OP_VARIANTS.contains(&name.as_str()) {
-                    return Ok(Self::Unsupported);
-                }
-                let request = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
-                    root_id: scope.root_id,
-                    identity: scope.identity,
-                    op: serde_json::from_str(scope.op.get())?,
-                }));
-                return Ok(Self::Known(Box::new(request)));
+
+            fn visit_newtype_struct<D: de::Deserializer<'de>>(
+                self,
+                decoder: D,
+            ) -> Result<Self::Value, D::Error> {
+                decoder.deserialize_any(self)
             }
-            serde_json::from_str(raw.get()).map(Self::Known)
-        };
-        decode().map_err(de::Error::custom)
+
+            fn visit_str<E: de::Error>(self, name: &str) -> Result<Self::Value, E> {
+                if REQUEST_VARIANTS.contains(&name) {
+                    let request = ServiceRequest::deserialize(name.into_deserializer())?;
+                    Ok(IncomingRequest::Known(Box::new(request)))
+                } else {
+                    Ok(IncomingRequest::Unsupported)
+                }
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let key = map
+                    .next_key_seed(DiscriminantSeed)?
+                    .ok_or_else(|| de::Error::custom("empty enum object"))?;
+                let request = if key == "AuthenticatedDb" {
+                    #[derive(Deserialize)]
+                    struct Scope {
+                        root_id: ID,
+                        identity: SigKey,
+                        op: Optional<DatabaseOp>,
+                    }
+                    let scope = map.next_value::<Scope>()?;
+                    match scope.op.0 {
+                        Some(op) => IncomingRequest::Known(Box::new(
+                            ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+                                root_id: scope.root_id,
+                                identity: scope.identity,
+                                op,
+                            })),
+                        )),
+                        None => IncomingRequest::Unsupported,
+                    }
+                } else if REQUEST_VARIANTS.contains(&key.as_str()) {
+                    IncomingRequest::Known(Box::new(known_variant(key, &mut map)?))
+                } else {
+                    map.next_value::<de::IgnoredAny>()?;
+                    IncomingRequest::Unsupported
+                };
+                only_key(&mut map)?;
+                Ok(request)
+            }
+        }
+
+        decoder.deserialize_newtype_struct(CLASSIFIER_NAME, RequestVisitor)
     }
 }
 
@@ -732,46 +890,29 @@ impl<'de> Deserialize<'de> for IncomingServerFrame {
     fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         enum Envelope {
-            Response(Box<RawValue>),
-            Notification(Box<RawValue>),
+            Response(Optional<Box<ServiceResponse>>),
+            Notification(Optional<Notification>),
         }
-        let envelope = Envelope::deserialize(decoder)?;
-        let decode = || -> serde_json::Result<Self> {
-            match envelope {
-                Envelope::Response(raw) => {
-                    let name = variant_name(&raw)?;
-                    let response = if RESPONSE_VARIANTS.contains(&name.as_str()) {
-                        serde_json::from_str(raw.get())?
-                    } else {
-                        ServiceResponse::Unsupported
-                    };
-                    Ok(Self::Response(Box::new(response)))
-                }
-                Envelope::Notification(raw) => {
-                    let notification = if variant_name(&raw)? == "DatabaseWrite" {
-                        Some(serde_json::from_str(raw.get())?)
-                    } else {
-                        None
-                    };
-                    Ok(Self::Notification(notification))
-                }
+        Ok(match Envelope::deserialize(decoder)? {
+            Envelope::Response(Optional(response)) => {
+                Self::Response(response.unwrap_or_else(|| Box::new(ServiceResponse::Unsupported)))
             }
-        };
-        decode().map_err(de::Error::custom)
+            Envelope::Notification(Optional(notification)) => Self::Notification(notification),
+        })
     }
 }
 
-/// Write a length-prefixed JSON frame to an async writer.
-pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
+/// Write a length-prefixed JSON handshake frame.
+pub async fn write_handshake<W: AsyncWrite + Unpin, T: Serialize>(
     writer: &mut W,
     value: &T,
 ) -> crate::Result<()> {
     let payload = serde_json::to_vec(value)?;
     let len = payload.len() as u32;
-    if len > MAX_FRAME_SIZE {
+    if len > MAX_HANDSHAKE_BYTES {
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
+            format!("handshake too large: {len} bytes (max {MAX_HANDSHAKE_BYTES})"),
         )));
     }
     writer.write_all(&len.to_be_bytes()).await?;
@@ -780,11 +921,11 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     Ok(())
 }
 
-/// Read a length-prefixed JSON frame from an async reader.
+/// Read a length-prefixed JSON handshake frame.
 ///
 /// Returns `None` only on EOF before any length-prefix bytes are read.
 /// EOF within the length prefix or payload returns an `UnexpectedEof` I/O error.
-pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
+pub async fn read_handshake<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> crate::Result<Option<T>> {
     let mut len_buf = [0u8; 4];
@@ -793,16 +934,170 @@ pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     }
     reader.read_exact(&mut len_buf[1..]).await?;
     let len = u32::from_be_bytes(len_buf);
-    if len > MAX_FRAME_SIZE {
+    if len > MAX_HANDSHAKE_BYTES {
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
+            format!("handshake too large: {len} bytes (max {MAX_HANDSHAKE_BYTES})"),
         )));
     }
     let mut payload = vec![0u8; len as usize];
     reader.read_exact(&mut payload).await?;
     let value = serde_json::from_slice(&payload)?;
     Ok(Some(value))
+}
+
+/// Write one binary message, for tests that speak the wire by hand.
+#[cfg(any(test, feature = "testing"))]
+pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
+    writer: &mut W,
+    value: &T,
+) -> crate::Result<()> {
+    let payload = cbor4ii::serde::to_vec(Vec::new(), value)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    writer
+        .write_all(&(payload.len() as u64).to_be_bytes())
+        .await?;
+    writer.write_all(&payload).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Encode JSON as the equivalent CBOR message body, keeping duplicate keys, for
+/// tests that describe wire shapes by hand. `None` if `json` is not JSON.
+#[cfg(any(test, feature = "testing"))]
+pub fn encode_json_fixture(json: &str) -> Option<Vec<u8>> {
+    use serde::ser::{SerializeMap, SerializeSeq};
+
+    enum Node {
+        Null,
+        Bool(bool),
+        Int(i64),
+        Text(String),
+        List(Vec<Node>),
+        Map(Vec<(String, Node)>),
+    }
+
+    impl<'de> Deserialize<'de> for Node {
+        fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+            struct NodeVisitor;
+            impl<'de> de::Visitor<'de> for NodeVisitor {
+                type Value = Node;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("JSON")
+                }
+                fn visit_unit<E>(self) -> Result<Node, E> {
+                    Ok(Node::Null)
+                }
+                fn visit_bool<E>(self, value: bool) -> Result<Node, E> {
+                    Ok(Node::Bool(value))
+                }
+                fn visit_i64<E>(self, value: i64) -> Result<Node, E> {
+                    Ok(Node::Int(value))
+                }
+                fn visit_u64<E>(self, value: u64) -> Result<Node, E> {
+                    Ok(Node::Int(value as i64))
+                }
+                fn visit_str<E>(self, value: &str) -> Result<Node, E> {
+                    Ok(Node::Text(value.to_owned()))
+                }
+                fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Node, A::Error> {
+                    let mut items = Vec::new();
+                    while let Some(item) = seq.next_element()? {
+                        items.push(item);
+                    }
+                    Ok(Node::List(items))
+                }
+                fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Node, A::Error> {
+                    let mut items = Vec::new();
+                    while let Some(item) = map.next_entry()? {
+                        items.push(item);
+                    }
+                    Ok(Node::Map(items))
+                }
+            }
+            decoder.deserialize_any(NodeVisitor)
+        }
+    }
+
+    impl Serialize for Node {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            match self {
+                Node::Null => serializer.serialize_none(),
+                Node::Bool(value) => serializer.serialize_bool(*value),
+                Node::Int(value) => serializer.serialize_i64(*value),
+                Node::Text(value) => serializer.serialize_str(value),
+                Node::List(items) => {
+                    let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                    for item in items {
+                        seq.serialize_element(item)?;
+                    }
+                    seq.end()
+                }
+                Node::Map(items) => {
+                    let mut map = serializer.serialize_map(Some(items.len()))?;
+                    for (key, value) in items {
+                        map.serialize_entry(key, value)?;
+                    }
+                    map.end()
+                }
+            }
+        }
+    }
+
+    let node: Node = serde_json::from_str(json).ok()?;
+    cbor4ii::serde::to_vec(Vec::new(), &node).ok()
+}
+
+/// Read one binary message, for tests that speak the wire by hand.
+#[cfg(any(test, feature = "testing"))]
+pub async fn read_frame<R, T>(reader: &mut R) -> crate::Result<Option<T>>
+where
+    R: AsyncRead + Unpin,
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    let options = crate::message_io::ReadOptions {
+        allow_clean_eof: true,
+        ..Default::default()
+    };
+    let budget = crate::message_io::TransferBudget::default();
+    let message = crate::message_io::read_message(reader, &budget, options).await?;
+    Ok(message.map(|message| message.value))
+}
+
+/// Encode and send one owned value through the production streaming path.
+#[cfg(any(test, feature = "testing"))]
+pub async fn write_owned_frame<W, T>(writer: &mut W, value: T) -> crate::Result<()>
+where
+    W: AsyncWrite + Unpin,
+    T: Serialize + Send + 'static,
+{
+    let budget = crate::message_io::TransferBudget::default();
+    let monitor = crate::message_io::ProgressMonitor::new(budget.policy());
+    let message = crate::message_io::prepare_message(value, &budget).await?;
+    message.write_to(writer, &monitor).await?;
+    Ok(())
+}
+
+/// Read one request as the server classifies it. `None` if it is unsupported.
+#[cfg(any(test, feature = "testing"))]
+pub async fn read_classified_request<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> crate::Result<Option<ServiceRequest>> {
+    Ok(match read_frame::<_, IncomingRequest>(reader).await? {
+        Some(IncomingRequest::Known(request)) => Some(*request),
+        _ => None,
+    })
+}
+
+/// Read one response as the client classifies it. `None` if it is a notification.
+#[cfg(any(test, feature = "testing"))]
+pub async fn read_classified_response<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> crate::Result<Option<ServiceResponse>> {
+    Ok(match read_frame::<_, IncomingServerFrame>(reader).await? {
+        Some(IncomingServerFrame::Response(response)) => Some(*response),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -1275,13 +1570,13 @@ mod tests {
         drop(server_stream);
 
         let (mut reader, _writer) = tokio::io::split(client);
-        let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut reader).await;
+        let result: crate::Result<Option<Handshake>> = read_handshake(&mut reader).await;
         assert!(result.unwrap().is_none());
     }
 
     async fn assert_truncated_header(header: &[u8]) {
         let mut reader = header;
-        let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut reader).await;
+        let result: crate::Result<Option<Handshake>> = read_handshake(&mut reader).await;
         assert!(matches!(
             result,
             Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof
@@ -1309,10 +1604,10 @@ mod tests {
         let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
         frame.extend_from_slice(payload);
         let mut reader = frame.as_slice();
-        let handshake: Handshake = read_frame(&mut reader).await.unwrap().unwrap();
+        let handshake: Handshake = read_handshake(&mut reader).await.unwrap().unwrap();
         assert_eq!(handshake.protocol_version, 0);
         assert!(
-            read_frame::<_, Handshake>(&mut reader)
+            read_handshake::<_, Handshake>(&mut reader)
                 .await
                 .unwrap()
                 .is_none()
@@ -1325,7 +1620,8 @@ mod tests {
         for received in 0..payload.len() {
             let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
             frame.extend_from_slice(&payload[..received]);
-            let result: crate::Result<Option<Handshake>> = read_frame(&mut frame.as_slice()).await;
+            let result: crate::Result<Option<Handshake>> =
+                read_handshake(&mut frame.as_slice()).await;
             assert!(matches!(
                 result,
                 Err(crate::Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof
@@ -1339,8 +1635,8 @@ mod tests {
         let (_read, mut write) = tokio::io::split(client);
 
         // Create a payload that's too large
-        let huge_string = "x".repeat(MAX_FRAME_SIZE as usize + 1);
-        let result = write_frame(&mut write, &huge_string).await;
+        let huge_string = "x".repeat(MAX_HANDSHAKE_BYTES as usize + 1);
+        let result = write_handshake(&mut write, &huge_string).await;
         assert!(result.is_err());
     }
 
@@ -1351,7 +1647,7 @@ mod tests {
         let (_server_read, mut server_write) = tokio::io::split(server);
 
         // Write a fake frame header with size > MAX_FRAME_SIZE from the server end
-        let fake_len = MAX_FRAME_SIZE + 1;
+        let fake_len = MAX_HANDSHAKE_BYTES + 1;
         tokio::spawn(async move {
             server_write
                 .write_all(&fake_len.to_be_bytes())
@@ -1359,7 +1655,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut client_read).await;
+        let result: crate::Result<Option<Handshake>> = read_handshake(&mut client_read).await;
         assert!(result.is_err());
     }
 }

@@ -85,9 +85,9 @@ async fn test_unified_message_handling() {
     http_transport.stop_server().await.unwrap();
 }
 
-/// Test that the new HTTP v0 endpoint format works with JSON requests
+/// Test that the HTTP endpoint carries requests and aggregate responses
 #[tokio::test]
-async fn test_http_v0_json_endpoint() {
+async fn test_http_v1_endpoint() {
     let transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
@@ -96,24 +96,16 @@ async fn test_http_v0_json_endpoint() {
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
     transport.start_server(handler).await.unwrap();
-    let addr = transport.get_server_address().unwrap();
+    let addr = Address::http(transport.get_server_address().unwrap());
+    let client = HttpTransport::new().unwrap();
 
-    // Test direct HTTP client call to verify endpoint format
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v0");
-
-    // Send single entry as JSON POST (same as transport does internally)
     let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "direct_http"}"#)
         .build()
         .expect("Entry should build successfully");
 
     let request = SyncRequest::SendEntries(vec![entry]);
-    let response = client.post(&url).json(&request).send().await.unwrap();
-
-    assert!(response.status().is_success());
-
-    let sync_response: SyncResponse = response.json().await.unwrap();
+    let sync_response = client.send_request(&addr, &request).await.unwrap();
     match sync_response {
         SyncResponse::Ack => {
             // Expected for single entry
@@ -121,7 +113,6 @@ async fn test_http_v0_json_endpoint() {
         _ => panic!("Expected Ack response"),
     }
 
-    // Send multiple entries as JSON POST
     let entry1 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "direct_http_1"}"#)
         .build()
@@ -132,11 +123,7 @@ async fn test_http_v0_json_endpoint() {
         .expect("Entry should build successfully");
 
     let multi_request = SyncRequest::SendEntries(vec![entry1, entry2]);
-    let response = client.post(&url).json(&multi_request).send().await.unwrap();
-
-    assert!(response.status().is_success());
-
-    let sync_response: SyncResponse = response.json().await.unwrap();
+    let sync_response = client.send_request(&addr, &multi_request).await.unwrap();
     match sync_response {
         SyncResponse::Count(count) => {
             assert_eq!(count, 2);

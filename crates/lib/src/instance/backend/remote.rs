@@ -101,13 +101,8 @@ impl Backend for RemoteBackend {
         let mut chunk = RecordMutations::new();
         let mut encoded = 0usize;
         for (key, value) in records {
-            let size = serde_json::to_vec(&(key.clone(), value.clone()))?.len();
-            if size > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
-                return Err(crate::backend::BackendError::RecordTooLarge {
-                    encoded_bytes: size,
-                }
-                .into());
-            }
+            // A larger record travels alone, under the message resource policy.
+            let size = key.len() + value.as_ref().map_or(0, Vec::len);
             if !chunk.is_empty()
                 && encoded + size > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize
             {

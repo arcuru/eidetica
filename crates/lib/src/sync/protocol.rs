@@ -269,6 +269,9 @@ pub enum SyncResponse {
     Count(usize),
     /// Error response
     Error(String),
+    /// The receiver's resource policy refused the message. The data was not
+    /// accepted; this says nothing about whether it is valid.
+    ResourceRefused(String),
 }
 
 /// Current protocol version - 0 indicates unstable.

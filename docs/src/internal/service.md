@@ -28,20 +28,13 @@ Historical Store state is served through the shared Store-state record substrate
 
 ## Wire Protocol
 
-The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
+A connection opens with one small JSON handshake, then carries binary messages over a Unix domain socket.
 
-### Frame Format
+### Handshake and Messages
 
-```text
-┌──────────────────┬──────────────────────┐
-│ Length (4 bytes) │ JSON payload         │
-│ big-endian u32   │ (up to 64 MiB)       │
-└──────────────────┴──────────────────────┘
-```
+The handshake is a 4-byte big-endian length prefix and a JSON `Handshake` or `HandshakeAck` of at most 4 KiB (`MAX_HANDSHAKE_BYTES`). It only compares versions, with no feature-capability negotiation. A mismatch receives the bounded ack and closes before any operation.
 
-Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF (before any length-prefix byte) and an `UnexpectedEof` I/O error when the stream ends mid-prefix or mid-payload.
-
-`PROTOCOL_VERSION` remains `0`, an unstable protocol. Version mismatches fail the handshake; the handshake and acknowledgment still advertise only the version, with no feature-capability negotiation.
+`PROTOCOL_VERSION` is `1`. Every later frame is one logical message in the common envelope, moved without a whole-message buffer. See [Message Delivery](message_delivery.md) for the format, resource policy, progress timing and memory scope. A clean EOF is allowed only before a message's first byte; EOF anywhere inside one retires the connection.
 
 Updated service peers tolerate additions at four named extension points:
 
@@ -49,9 +42,9 @@ Updated service peers tolerate additions at four named extension points:
 - An explicit `Unsupported` or unknown variant inside `Response` consumes exactly one FIFO response slot. That caller receives an I/O error with kind `Unsupported`; later responses retain their association, including after an abandoned response wait. There is no retry or execution fallback.
 - An unknown optional variant inside `Notification` is ignored without consuming a response slot or invoking callbacks. Known notifications retain their behavior.
 
-These are externally tagged JSON enums: a unit variant is a string; a payload variant is a single-key object. Known payloads still use their original strict serde decoders. Malformed JSON or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and oversize/truncated frames retire the connection. No authority is inferred from an unknown operation. The existing length prefix and 64 MiB cap are unchanged.
+These are externally tagged enums: a unit variant is a string; a payload variant is a single-key map. Decoding classifies the name as it streams, never buffering a payload, and known payloads still use their original strict serde decoders. Malformed CBOR or known payloads, unknown required nested types (including auth identities, read scopes, and `DatabaseWrite.source`), unknown or ambiguous outer server envelopes, and truncated messages retire the connection. An unknown value larger than `max_ignored_bytes` is a resource refusal, not an extension point. No authority is inferred from an unknown operation.
 
-This is **not retroactive compatibility**. Pre-change v0 binaries have fatal unknown-enum decoders. Common operations keep their named JSON encodings, but a new client sending a new operation to an unpatched v0 daemon may still disconnect. There is no silent downgrade, capability advertisement, or legacy execution fallback. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
+Version 1 is a deliberate break from v0: a v0 peer fails the handshake before any operation. There is no silent downgrade, capability advertisement, or legacy execution fallback. Required wire-shape or semantic changes still need an explicit compatibility decision; `#[non_exhaustive]` covers Rust source compatibility only, not the wire.
 
 ### Connection Lifecycle
 
@@ -101,7 +94,7 @@ The pending response slot is enqueued under the writer lock before sending the
 frame, preserving request/response order even if a response arrives immediately.
 Cancellation or failure during the frame write retires the **whole connection**:
 the client drops its write half, marks the connection dead, and clears pending
-waiters. A subsequent request cannot append bytes to an incomplete JSON frame.
+waiters. A subsequent request cannot append bytes to an incomplete message.
 Callers must reconnect rather than reuse that stream.
 
 Once the frame is completely written, dropping only the response wait leaves its
@@ -187,7 +180,7 @@ Operations deliberately **not** exposed over the wire — `update_verification_s
 
 `DatabaseOp::required_permission() -> Permission` returns `Write(0)` for `SubmitSignedEntry` (advisory only — the per-tree gate is skipped for submit) and for the Store-state staging operations, `Admin(0)` for `SetInstanceMetadata` (advisory — gated against `_databases` instead of `root_id`), and `Read` for every other variant. The match is exhaustive, so a new operation cannot inherit `Read` by falling through.
 
-Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The unchanged 64 MiB frame cap is enforced per request and response, so multi-record state is paged or chunked and a single record that cannot fit is refused with `RecordTooLarge`.
+Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. Multi-record state is paged or chunked to bound each operation, not to fit the wire: one record larger than a page or chunk still travels alone, and the [message resource policy](message_delivery.md#resource-policy) decides whether it may.
 
 ### ServiceResponse
 
@@ -330,6 +323,8 @@ Unrecognized combinations fall back to an `Io` error carrying the original messa
 The actual write travels as `DatabaseOp::SubmitSignedEntry` (verification-gated, see [above](#verification-gated-submit)). Server-side, after the daemon stores and verifies the entry, `Instance::fire_write_callbacks` runs — for both the daemon's own consumers (e.g. sync triggers) and a single global callback registered by `ServiceServer::run` that fans the event out to every subscribed connection. The fan-out builds a `Notification::DatabaseWrite { root_id, previous_tips, post_tips, source }` and pushes it through each subscriber's writer channel as `ServerFrame::Notification(...)`. The frame carries cursor brackets only — subscribers that need to enumerate the new entries call `Database::ids_added(previous_tips, post_tips)` locally, which on a connected instance routes each `backend.get(id)` through the permission-gated wire read path. This keeps the fan-out constant-size regardless of batch width and closes the post-revocation-leak window (the publisher fan-out doesn't re-check Read on each event, so cursor-only push means a subscriber whose permission is revoked mid-session can at most learn that _some_ write happened — never the contents).
 
 A connected client subscribes lazily: the first `Database::on_write` registration for a tree on a given connection spawns a task that sends `DatabaseOp::SubscribeWrites`. Further registrations on the same tree reuse the subscription. `RemoteConnection`'s background reader task demuxes inbound `ServerFrame`s — `Response` frames pop the next pending oneshot in FIFO order; `Notification` frames upgrade a `WeakInstance` and route into `Instance::fire_write_callbacks`, the same dispatch local instances use. The result: connected clients observe writes in daemon-canonical order with full `previous_tips`, including their own commits; subscriptions are torn down implicitly when the connection drops (a `ConnectionGuard` Drop in `handle_connection` scrubs the registry).
+
+A connection's writer queue is bounded. A response reserves its slot before dispatch, so a client that stops reading stops being read itself. A notification finding no slot or admission retires the connection rather than losing the event: the subscriber reconnects and re-reads instead of waiting on a cursor that will never advance.
 
 Teardown is refcounted with hysteresis rather than immediate. Dropping the last local callback for a tree moves its wire subscription to `Idle` without any round-trip; a sweep task sends `DatabaseOp::UnsubscribeWrites` once the idle grace window elapses, and a re-registration before that transitions straight back to `Subscribed`. Both the sweep and `subscribe_writes` hold a per-tree fence across their wire round-trips so an Unsubscribe and a racing Subscribe can't reorder. Client-side teardown hangs off the last user-facing `RemoteConnection` handle: it carries a drop token that marks the connection dead, aborting the reader task so the socket's `WriteHalf` can close and the daemon sees EOF.
 

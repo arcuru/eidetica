@@ -179,6 +179,21 @@ impl TransportManager {
         transport.send_request(address, request).await
     }
 
+    /// Send a request this caller owns, without copying it for the transport.
+    pub async fn send_request_owned(
+        &self,
+        address: &Address,
+        request: SyncRequest,
+    ) -> Result<SyncResponse> {
+        let transport =
+            self.get_for_address(address)
+                .ok_or_else(|| SyncError::NoTransportForAddress {
+                    address: address.clone(),
+                })?;
+
+        transport.send_request_owned(address, request).await
+    }
+
     /// Start servers on all transports.
     ///
     /// Each transport is started with the given handler using its pre-configured

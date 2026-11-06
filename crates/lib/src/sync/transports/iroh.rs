@@ -16,14 +16,16 @@ use iroh::{
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use serde::{Deserialize, Serialize};
-#[allow(unused_imports)] // Used by write_all method on streams
-use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 
 use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
 use crate::{
     Result,
     crdt::Doc,
+    message_io::{
+        ProgressMonitor, ReadOptions, TransferBudget, TransferError, encode_control,
+        prepare_message, read_message,
+    },
     store::Registered,
     sync::{
         error::{SyncError, TimeoutPhase},
@@ -33,7 +35,13 @@ use crate::{
     },
 };
 
-const SYNC_ALPN: &[u8] = b"eidetica/v0";
+/// The peer wire this transport speaks. Old peers are refused at connection
+/// establishment, before any operation, and nothing falls back to them.
+const SYNC_ALPN: &[u8] = b"eidetica/v1";
+
+/// How long a failed upload waits for the peer's correlated refusal: the peer
+/// stops reading when it refuses, which is what failed the upload.
+const REFUSAL_GRACE: Duration = Duration::from_secs(1);
 
 /// Maximum time spent establishing a connection to a peer.
 ///
@@ -43,15 +51,6 @@ const SYNC_ALPN: &[u8] = b"eidetica/v0";
 /// seconds, and cutting it short would report a reachable peer as unreachable
 /// rather than merely slow.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Maximum time for the request/response exchange once connected, covering
-/// opening the stream, writing the request and reading the response.
-///
-/// Without it, a peer that completes the QUIC handshake and then stops
-/// answering holds the request open forever. Requests are awaited inline by the
-/// background sync engine, so an unbounded one stalls every other thing that
-/// engine does.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Serializable relay mode setting for transport configuration.
 ///
@@ -219,6 +218,7 @@ pub struct IrohTransportBuilder {
     portmapper_config: Option<PortmapperConfig>,
     mdns: bool,
     n0_dns: bool,
+    budget: TransferBudget,
 }
 
 impl IrohTransportBuilder {
@@ -238,7 +238,17 @@ impl IrohTransportBuilder {
             portmapper_config: None,
             mdns: true,
             n0_dns: true,
+            budget: TransferBudget::default(),
         }
+    }
+
+    /// Set the transfer budget, shared by this transport's sends and serving.
+    ///
+    /// Give several transports a clone of one budget to share its limits. Like
+    /// [`Self::mdns`], this is not persisted.
+    pub fn transfer_budget(mut self, budget: TransferBudget) -> Self {
+        self.budget = budget;
+        self
     }
 
     /// Set the relay mode for the transport.
@@ -363,6 +373,7 @@ impl IrohTransportBuilder {
                 mdns: self.mdns,
                 n0_dns: self.n0_dns,
             },
+            budget: self.budget,
         })
     }
 }
@@ -430,6 +441,7 @@ impl TransportBuilder for IrohTransportBuilder {
                 mdns: self.mdns,
                 n0_dns: self.n0_dns,
             },
+            budget: self.budget,
         };
 
         Ok((transport, updated))
@@ -501,6 +513,8 @@ pub struct IrohTransport {
     server_state: ServerState,
     /// Runtime configuration (relay mode, secret key, etc.)
     runtime_config: IrohRuntimeConfig,
+    /// Admission and limits shared by every message on this transport.
+    budget: TransferBudget,
 }
 
 impl IrohTransport {
@@ -607,6 +621,7 @@ impl IrohTransport {
         handler: Arc<dyn SyncHandler>,
     ) -> Result<()> {
         let mut shutdown_rx = shutdown_rx;
+        let budget = self.budget.clone();
 
         // Signal that we're ready
         let _ = ready_tx.send(());
@@ -624,9 +639,10 @@ impl IrohTransport {
                         match connection_result {
                             Some(connecting) => {
                                 let handler_clone = handler.clone();
+                                let budget = budget.clone();
                                 tokio::spawn(async move {
                                     if let Ok(conn) = connecting.await {
-                                        Self::handle_connection(conn, handler_clone).await;
+                                        Self::handle_connection(conn, handler_clone, budget).await;
                                     }
                                 });
                             }
@@ -643,7 +659,11 @@ impl IrohTransport {
     }
 
     /// Handle an incoming connection.
-    async fn handle_connection(conn: Connection, handler: Arc<dyn SyncHandler>) {
+    async fn handle_connection(
+        conn: Connection,
+        handler: Arc<dyn SyncHandler>,
+        budget: TransferBudget,
+    ) {
         // Get the remote peer node ID for context
         let remote_endpoint_id = conn.remote_id();
         let remote_address = Address {
@@ -660,6 +680,7 @@ impl IrohTransport {
                 recv_stream,
                 handler.clone(),
                 remote_address.clone(),
+                &budget,
             )
             .await;
         }
@@ -671,24 +692,31 @@ impl IrohTransport {
         mut recv_stream: RecvStream,
         handler: Arc<dyn SyncHandler>,
         remote_address: Address,
+        budget: &TransferBudget,
     ) {
-        // Read the request with size limit (1MB)
-        let buffer: Vec<u8> = match recv_stream.read_to_end(1024 * 1024).await {
-            Ok(buffer) => buffer,
+        let options = ReadOptions {
+            require_end: true,
+            first_byte_timeout: true,
+            ..Default::default()
+        };
+        let inbound = read_message::<_, SyncRequest>(&mut recv_stream, budget, options).await;
+        let inbound = match inbound {
+            Ok(Some(inbound)) => inbound,
+            Ok(None) => return,
+            Err(refusal) if refusal.is_resource() => {
+                // Answer, then drop the receive side without reading the rest.
+                let response = SyncResponse::ResourceRefused(refusal.to_string());
+                if let Err(e) = send_refusal(&mut send_stream, &response, budget).await {
+                    tracing::debug!("Failed to send resource refusal: {e}");
+                }
+                return;
+            }
             Err(e) => {
-                tracing::error!("Failed to read stream: {e}");
+                tracing::error!("Failed to read request: {e}");
                 return;
             }
         };
-
-        // Deserialize the request using JsonHandler
-        let request: SyncRequest = match JsonHandler::deserialize_request(&buffer) {
-            Ok(req) => req,
-            Err(e) => {
-                tracing::error!("Failed to deserialize request: {e}");
-                return;
-            }
-        };
+        let request = inbound.value;
 
         // Extract peer_pubkey from SyncTreeRequest if present
         let peer_pubkey = match &request {
@@ -704,23 +732,105 @@ impl IrohTransport {
 
         // Handle the request using the SyncHandler
         let response = handler.handle_request(&request, &context).await;
+        drop(request);
+        drop(inbound.lease);
 
-        // Serialize and send response using JsonHandler
-        match JsonHandler::serialize_response(&response) {
-            Ok(response_bytes) => {
-                if let Err(e) = send_stream.write_all(&response_bytes).await {
-                    tracing::error!("Failed to write response: {e}");
-                    return;
+        let message = match prepare_message(response, budget).await {
+            Ok(message) => message,
+            Err(refusal) if refusal.is_resource() => {
+                let response = SyncResponse::ResourceRefused(refusal.to_string());
+                if let Err(e) = send_refusal(&mut send_stream, &response, budget).await {
+                    tracing::debug!("Failed to send resource refusal: {e}");
                 }
-                if let Err(e) = send_stream.finish() {
-                    tracing::error!("Failed to finish stream: {e}");
-                }
+                return;
             }
             Err(e) => {
-                tracing::error!("Failed to serialize response: {e}");
+                tracing::error!("Failed to prepare response: {e}");
+                return;
             }
+        };
+        let monitor = ProgressMonitor::new(budget.policy());
+        if let Err(e) = message.write_to(&mut send_stream, &monitor).await {
+            tracing::error!("Failed to write response: {e}");
+            return;
+        }
+        if let Err(e) = send_stream.finish() {
+            tracing::error!("Failed to finish stream: {e}");
         }
     }
+
+    /// Upload one request and read its response on a native stream pair.
+    ///
+    /// Reading runs alongside the upload so that an early refusal is seen, and
+    /// is not lost behind the failure the peer's refusal causes in the upload.
+    /// A non-refusal response cannot excuse an upload that did not complete.
+    async fn exchange(
+        conn: &Connection,
+        request: SyncRequest,
+        budget: &TransferBudget,
+    ) -> std::result::Result<SyncResponse, TransferError> {
+        let message = prepare_message(request, budget).await?;
+        let (mut send_stream, mut recv_stream) =
+            conn.open_bi().await.map_err(std::io::Error::other)?;
+
+        let monitor = ProgressMonitor::new(budget.policy());
+        let upload = async {
+            message.write_to(&mut send_stream, &monitor).await?;
+            send_stream.finish().map_err(std::io::Error::other)?;
+            monitor.body_complete(true);
+            Ok::<_, TransferError>(())
+        };
+        let options = ReadOptions {
+            require_end: true,
+            response_to: Some(&monitor),
+            ..Default::default()
+        };
+        let download = read_message::<_, SyncResponse>(&mut recv_stream, budget, options);
+        tokio::pin!(upload, download);
+
+        let mut uploaded = false;
+        let received = loop {
+            tokio::select! {
+                result = &mut upload, if !uploaded => match result {
+                    Ok(()) => uploaded = true,
+                    Err(error) => {
+                        let received = timeout(REFUSAL_GRACE, &mut download).await;
+                        return match received {
+                            Ok(Ok(Some(inbound)))
+                                if matches!(inbound.value, SyncResponse::ResourceRefused(_)) =>
+                            {
+                                Ok(inbound.value)
+                            }
+                            _ => Err(error),
+                        };
+                    }
+                },
+                received = &mut download => break received?,
+                failure = monitor.expired() => return Err(failure),
+            }
+        };
+        let response = received.ok_or(TransferError::Truncated)?.value;
+        if !uploaded && !matches!(response, SyncResponse::ResourceRefused(_)) {
+            return Err(TransferError::Malformed(
+                "peer answered before the request finished".to_string(),
+            ));
+        }
+        Ok(response)
+    }
+}
+
+/// Send a small refusal, which must get through when data budgets are full.
+async fn send_refusal(
+    send_stream: &mut SendStream,
+    response: &SyncResponse,
+    budget: &TransferBudget,
+) -> std::result::Result<(), TransferError> {
+    let monitor = ProgressMonitor::new(budget.policy());
+    encode_control(response)?
+        .write_to(send_stream, &monitor)
+        .await?;
+    send_stream.finish().map_err(std::io::Error::other)?;
+    Ok(())
 }
 
 #[async_trait]
@@ -776,7 +886,17 @@ impl SyncTransport for IrohTransport {
         Ok(())
     }
 
+    /// Compatibility adapter. It must clone `request`, so its memory cost is
+    /// the caller's choice; prefer [`SyncTransport::send_request_owned`].
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
+        self.send_request_owned(address, request.clone()).await
+    }
+
+    async fn send_request_owned(
+        &self,
+        address: &Address,
+        request: SyncRequest,
+    ) -> Result<SyncResponse> {
         if !self.can_handle_address(address) {
             return Err(SyncError::UnsupportedTransport {
                 transport_type: address.transport_type.clone(),
@@ -797,62 +917,37 @@ impl SyncTransport for IrohTransport {
             })?;
         let endpoint_addr = endpoint_ticket.endpoint_addr().clone();
 
-        // Connect to the peer, bounding how long an unreachable one can cost.
-        let conn = timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, SYNC_ALPN))
-            .await
-            .map_err(|_| SyncError::Timeout {
-                address: address.address.clone(),
-                phase: TimeoutPhase::Connect,
-                elapsed: CONNECT_TIMEOUT,
-            })?
-            .map_err(|e| SyncError::ConnectionFailed {
-                address: address.address.clone(),
-                reason: e.to_string(),
-            })?;
-
-        // Serialize the request before starting the exchange clock.
-        let request_bytes = JsonHandler::serialize_request(request)?;
-
-        // One deadline covers the whole exchange: a peer can otherwise stall
-        // any single step of it indefinitely.
-        let response_bytes: Vec<u8> = timeout(REQUEST_TIMEOUT, async {
-            // Open a bidirectional stream
-            let (mut send_stream, mut recv_stream) = conn
-                .open_bi()
+        let budget = &self.budget;
+        let exchange = async {
+            // Connect to the peer, bounding how long an unreachable one can cost.
+            let conn = timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, SYNC_ALPN))
                 .await
-                .map_err(|e| SyncError::Network(format!("Failed to open stream: {e}")))?;
+                .map_err(|_| SyncError::Timeout {
+                    address: address.address.clone(),
+                    phase: TimeoutPhase::Connect,
+                    elapsed: CONNECT_TIMEOUT,
+                })?
+                .map_err(|e| SyncError::ConnectionFailed {
+                    address: address.address.clone(),
+                    reason: e.to_string(),
+                })?;
 
-            send_stream
-                .write_all(&request_bytes)
+            Self::exchange(&conn, request, budget)
                 .await
-                .map_err(|e| SyncError::Network(format!("Failed to write request: {e}")))?;
+                .map_err(|e| e.into_sync_error(&address.address))
+        };
 
-            send_stream
-                .finish()
-                .map_err(|e| SyncError::Network(format!("Failed to finish send stream: {e}")))?;
+        let response = match budget.policy().overall_timeout {
+            None => exchange.await?,
+            Some(elapsed) => timeout(elapsed, exchange).await.map_err(|_| {
+                TransferError::OverallTimeout { elapsed }.into_sync_error(&address.address)
+            })??,
+        };
 
-            // Read the response with size limit (1MB)
-            recv_stream
-                .read_to_end(1024 * 1024)
-                .await
-                .map_err(|e| SyncError::Network(format!("Failed to read response: {e}")))
-        })
-        .await
-        .map_err(|_| {
-            // The peer answered the connection attempt, so it is reachable:
-            // the phase records that, rather than the peer being reported as
-            // unreachable.
-            SyncError::Timeout {
-                address: address.address.clone(),
-                phase: TimeoutPhase::Request,
-                elapsed: REQUEST_TIMEOUT,
-            }
-        })??;
-
-        // Deserialize the response using JsonHandler
-        let response: SyncResponse = JsonHandler::deserialize_response(&response_bytes)?;
-
-        Ok(response)
+        match response {
+            SyncResponse::ResourceRefused(message) => Err(SyncError::ResourceLimit(message).into()),
+            response => Ok(response),
+        }
     }
 
     fn is_server_running(&self) -> bool {
