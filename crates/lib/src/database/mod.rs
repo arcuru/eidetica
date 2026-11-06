@@ -29,7 +29,7 @@ use crate::{
     crdt::{CRDT, Codec, Doc},
     entry::{Entry, ID},
     instance::{WriteCallback, WriteEvent, WriteSource, backend::Backend, errors::InstanceError},
-    store::{SettingsStore, Store, Table},
+    store::{SettingsStore, Store},
     sync::DatabaseTicket,
 };
 
@@ -193,7 +193,7 @@ pub struct Database {
     /// Private user context carried only by handles opened or created through
     /// an [`AccountSession`](crate::account::AccountSession) session. This owns caller-local sharing
     /// preferences; ordinary database handles remain context-free.
-    account_database: Option<Box<Database>>,
+    local_account: Option<(String, ID)>,
     /// When `false` (default), reads expose only the maximal all-`Verified`
     /// prefix of the DAG (the "Verified frontier"). When `true`, reads also
     /// include `Unverified` entries. `Failed` entries are dropped regardless.
@@ -208,7 +208,7 @@ impl Database {
             instance,
             ops,
             key: None,
-            account_database: None,
+            local_account: None,
             allow_unverified: false,
         }
     }
@@ -335,7 +335,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key.clone())),
-            account_database: None,
+            local_account: None,
             allow_unverified: false,
         };
 
@@ -397,7 +397,7 @@ impl Database {
                     Some(SigKey::from_pubkey(&pubkey_for_identity)),
                 )),
                 key: Some(DatabaseKey::new(signing_key)),
-                account_database: None,
+                local_account: None,
                 allow_unverified: false,
             });
         }
@@ -407,7 +407,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key)),
-            account_database: None,
+            local_account: None,
             allow_unverified: false,
         })
     }
@@ -454,7 +454,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: None,
-            account_database: None,
+            local_account: None,
             allow_unverified: false,
         })
     }
@@ -492,7 +492,7 @@ impl Database {
             instance: instance.downgrade(),
             ops,
             key: None,
-            account_database: None,
+            local_account: None,
             allow_unverified: false,
         })
     }
@@ -515,9 +515,9 @@ impl Database {
         }
     }
 
-    pub(crate) fn with_account_database(self, account_database: Database) -> Self {
+    pub(crate) fn with_local_account(self, login_id: &str, account_id: &ID) -> Self {
         Self {
-            account_database: Some(Box::new(account_database)),
+            local_account: Some((login_id.to_owned(), account_id.clone())),
             ..self
         }
     }
@@ -1064,7 +1064,7 @@ impl Database {
     /// Read this handle owner's private synchronization preferences.
     ///
     /// Database settings belong to the replicated database. Synchronization
-    /// preferences instead live in the owning user's private database, so only
+    /// preferences instead live in the owning login's native local record, so only
     /// handles returned by [`AccountSession::create_database`](crate::account::AccountSession::create_database)
     /// or [`AccountSession::open_database`](crate::account::AccountSession::open_database) carry this
     /// capability.
@@ -1085,24 +1085,20 @@ impl Database {
     /// [`Self::sync_settings`] again.
     pub async fn set_shared(&self, shared: bool) -> Result<()> {
         self.authorize_sharing().await?;
-        let account_database = self.account()?;
-        let tx = account_database.new_transaction().await?;
-        let table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
-        let key = self.root_id().to_string();
-        let mut tracked = table
-            .get(&key)
-            .await
-            .map_err(|_| AccountError::DatabaseNotTracked {
-                database_id: self.root_id().clone(),
-            })?;
-
-        if tracked.sync_settings.sync_enabled == shared {
-            return Ok(());
-        }
-
-        tracked.sync_settings.sync_enabled = shared;
-        table.set(&key, tracked).await?;
-        tx.commit().await?;
+        let (login_id, account_id) = self.account()?;
+        let instance = self.instance()?;
+        crate::account::local_state::update(&instance, login_id, |state| {
+            let tracked = state
+                .databases
+                .get_mut(&self.root_id().to_string())
+                .ok_or_else(|| AccountError::DatabaseNotTracked {
+                    database_id: self.root_id().clone(),
+                })?;
+            tracked.sync_settings.sync_enabled = shared;
+            Ok(())
+        })
+        .await?;
+        crate::account::local_state::refresh_sync(&instance, login_id, account_id).await?;
         Ok(())
     }
 
@@ -1138,23 +1134,26 @@ impl Database {
         crate::account::ticket_locator(&self.instance()?, self.root_id()).await
     }
 
-    fn account(&self) -> Result<&Database> {
-        self.account_database.as_deref().ok_or_else(|| {
-            AccountError::MissingDatabaseCapability {
-                database_id: self.root_id().clone(),
-            }
-            .into()
-        })
+    fn account(&self) -> Result<(&str, &ID)> {
+        self.local_account
+            .as_ref()
+            .map(|(login, account)| (login.as_str(), account))
+            .ok_or_else(|| {
+                AccountError::MissingDatabaseCapability {
+                    database_id: self.root_id().clone(),
+                }
+                .into()
+            })
     }
 
     async fn tracked_database(&self) -> Result<TrackedDatabase> {
-        let account_database = self.account()?;
-        account_database
-            .get_store_viewer::<Table<TrackedDatabase>>("databases")
+        let (login_id, _) = self.account()?;
+        crate::account::local_state::read(&self.instance()?, login_id)
             .await?
+            .databases
             .get(&self.root_id().to_string())
-            .await
-            .map_err(|_| {
+            .cloned()
+            .ok_or_else(|| {
                 AccountError::DatabaseNotTracked {
                     database_id: self.root_id().clone(),
                 }

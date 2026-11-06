@@ -27,7 +27,7 @@ async fn test_user_getters() {
 
     assert_eq!(user.username(), "test_user");
     assert!(!user.login_id().is_empty());
-    assert_eq!(user.account_info().username, "test_user");
+    assert_eq!(user.account_info().unwrap().username, "test_user");
     assert!(!user.account().id().to_string().is_empty());
 }
 
@@ -55,7 +55,7 @@ async fn test_user_drop() {
 }
 
 #[tokio::test]
-async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<()> {
+async fn local_mapping_edit_without_exchange_does_not_publish_cache() -> Result<()> {
     let (instance, mut user) = Instance::create_backend(
         Box::new(InMemory::new()),
         NewAccount::passwordless("client"),
@@ -63,67 +63,24 @@ async fn join_mapping_staging_and_future_drop_do_not_publish_cache() -> Result<(
     .await?;
     let key = user.get_default_key()?;
     let tree = ID::from_bytes("staged-only");
-    let before = user.account.database().snapshot().await?;
-    let tx = user.account.database().new_transaction().await?;
-    user.map_key_in_txn(&tx, &key, &tree, SigKey::from_pubkey(&key))
-        .await?;
+    let before = super::super::local_state::read_raw(&instance, user.login_id()).await?;
+    let mut staged = super::super::local_state::read(&instance, user.login_id()).await?;
+    AccountSession::map_key_in_state(&mut staged, &key, &tree, SigKey::from_pubkey(&key))?;
+    assert_eq!(user.key_mapping(&key, &tree)?, None);
+    drop(staged);
+    assert_eq!(
+        before,
+        super::super::local_state::read_raw(&instance, user.login_id()).await?
+    );
+    user.map_key(&key, &tree, SigKey::from_pubkey(&key)).await?;
     assert_eq!(
         user.key_mapping(&key, &tree)?,
-        None,
-        "mapping staging published cache"
+        Some(SigKey::from_pubkey(&key))
     );
-    drop(tx); // Failure/cancellation before staging preferences or putting AccountSession Entry.
-    assert_eq!(before, user.account.database().snapshot().await?);
-
-    let (owner, _) = crate::auth::crypto::generate_keypair();
-    let db = Database::create(&instance, owner, Doc::new()).await?;
-    db.with_transaction(|tx| async move {
-        tx.get_settings()?
-            .set_global_auth_key(crate::auth::AuthKey::active(None, Permission::Read))
-            .await
-    })
-    .await?;
-    let reached = Arc::new(tokio::sync::Notify::new());
-    let resume = Arc::new(tokio::sync::Notify::new());
-    let callback = user
-        .account
-        .database()
-        .on_write({
-            let reached = reached.clone();
-            let resume = resume.clone();
-            move |_, _| {
-                let reached = reached.clone();
-                let resume = resume.clone();
-                async move {
-                    reached.notify_one();
-                    resume.notified().await;
-                    Ok(())
-                }
-            }
-        })
-        .await?;
-    let mut tracking = Box::pin(user.track_database(db.root_id(), &key, SyncSettings::disabled()));
-    tokio::select! {
-        _ = reached.notified() => {},
-        result = &mut tracking => panic!("commit did not pause before acknowledgement: {result:?}"),
-        _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => panic!("AccountSession commit did not reach callback"),
-    }
-    drop(tracking);
+    let reloaded = instance.login_account("client", None).await?;
     assert_eq!(
-        user.key_mapping(&key, db.root_id())?,
-        None,
-        "dropped future speculatively published staged mapping"
-    );
-    resume.notify_one();
-    drop(callback);
-    let persisted = user.account.database().snapshot().await?;
-    // Retry reads the actual committed state without registry repair or duplicate history.
-    user.track_database(db.root_id(), &key, SyncSettings::disabled())
-        .await?;
-    assert_eq!(persisted, user.account.database().snapshot().await?);
-    assert_eq!(
-        user.key_mapping(&key, db.root_id())?,
-        Some(SigKey::global(&key))
+        reloaded.key_mapping(&key, &tree)?,
+        user.key_mapping(&key, &tree)?
     );
     Ok(())
 }
@@ -264,7 +221,7 @@ async fn join_final_open_checks_requested_permission_and_retains_committed_state
 }
 
 #[tokio::test]
-async fn join_concurrent_local_bookkeeping_writes_one_equivalent_entry() -> Result<()> {
+async fn join_concurrent_local_bookkeeping_preserves_state_without_account_entry() -> Result<()> {
     let (instance, mut first) = Instance::create_backend(
         Box::new(InMemory::new()),
         NewAccount::passwordless("client"),
@@ -296,7 +253,7 @@ async fn join_concurrent_local_bookkeeping_writes_one_equivalent_entry() -> Resu
     a?;
     b?;
     assert_eq!(
-        count + 1,
+        count,
         instance
             .require_local_engine()?
             .get_tree(first.account.id())

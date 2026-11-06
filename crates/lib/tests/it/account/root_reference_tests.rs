@@ -27,7 +27,7 @@ async fn test_account_root_reference_roundtrip_and_rename() {
     let mut session = instance.login_account("application", None).await.unwrap();
     let root = session.account().id().clone();
     let login = session.login_id().to_string();
-    assert_eq!(&root, &session.account_info().account_id);
+    assert_eq!(&root, &session.account_info().unwrap().account_id);
     assert_ne!(login, root.to_string());
     let target = create_target(&mut session, "display-name").await;
     session

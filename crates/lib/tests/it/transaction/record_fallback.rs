@@ -40,6 +40,23 @@ struct StaleThenUnsupported {
 
 #[async_trait::async_trait]
 impl<B: BackendImpl> BackendImpl for Recordless<B> {
+    async fn local_account_record(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        self.0.local_account_record(name).await
+    }
+    async fn local_account_names(&self) -> Result<Vec<String>> {
+        self.0.local_account_names().await
+    }
+    async fn compare_exchange_local_account_record(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool> {
+        self.0
+            .compare_exchange_local_account_record(name, expected, replacement)
+            .await
+    }
+
     async fn get(&self, id: &ID) -> Result<Entry> {
         self.0.get(id).await
     }

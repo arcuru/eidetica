@@ -1,18 +1,13 @@
 //! Cryptographic functions for account system
 //!
-//! Provides key derivation and encryption using:
-//! - Argon2id for key derivation from password + salt
-//! - AES-256-GCM for key encryption
+//! Pinned Account Argon2id key derivation. Authenticated bundle wrapping lives
+//! in the credential module; no separate per-key storage format is retained.
 
-use aes_gcm::{
-    Aes256Gcm, KeyInit, Nonce,
-    aead::{Aead, AeadCore, OsRng},
-};
-use argon2::{Argon2, password_hash::SaltString};
-use zeroize::Zeroize;
+use argon2::{Algorithm, Argon2, Params, Version, password_hash::SaltString};
+use zeroize::Zeroizing;
 
 use super::errors::AccountError;
-use crate::{Result, auth::crypto::PrivateKey};
+use crate::Result;
 
 /// Salt string length for Argon2 (base64 encoded, 22 chars)
 pub const SALT_LENGTH: usize = 22;
@@ -56,9 +51,16 @@ pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -
         reason: format!("Invalid salt format: {e}"),
     })?;
 
-    let argon2 = Argon2::default();
+    // Pin the existing Account format rather than inheriting future library
+    // defaults. PasswordStore has its own independently versioned KDF envelope.
+    let params = Params::new(19 * 1024, 2, 1, Some(KEY_LENGTH)).map_err(|_| {
+        AccountError::EncryptionFailed {
+            reason: "Invalid account KDF parameters".to_owned(),
+        }
+    })?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    let mut key = vec![0u8; KEY_LENGTH];
+    let mut key = Zeroizing::new(vec![0u8; KEY_LENGTH]);
     argon2
         .hash_password_into(
             password.as_ref().as_bytes(),
@@ -69,143 +71,33 @@ pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -
             reason: format!("Key derivation failed: {e}"),
         })?;
 
-    Ok(key)
-}
-
-/// Encrypt a private key with a password-derived encryption key.
-///
-/// # Arguments
-/// * `private_key` - The signing key to encrypt
-/// * `encryption_key` - The 32-byte encryption key
-///
-/// # Returns
-/// A tuple of (ciphertext, nonce) where:
-/// - ciphertext is the encrypted private key
-/// - nonce is the 12-byte nonce used for encryption
-pub fn encrypt_private_key(
-    private_key: &PrivateKey,
-    encryption_key: impl AsRef<[u8]>,
-) -> Result<(Vec<u8>, Vec<u8>)> {
-    let encryption_key = encryption_key.as_ref();
-    if encryption_key.len() != KEY_LENGTH {
-        return Err(AccountError::EncryptionFailed {
-            reason: format!(
-                "Invalid key length: expected {}, got {}",
-                KEY_LENGTH,
-                encryption_key.len()
-            ),
-        }
-        .into());
-    }
-
-    // Encode private key as prefixed string (e.g. "ed25519:base64...")
-    // This preserves the algorithm tag without a JSON wrapper.
-    let serialized = private_key.to_prefixed_string();
-
-    // Create cipher
-    let cipher =
-        Aes256Gcm::new_from_slice(encryption_key).map_err(|e| AccountError::EncryptionFailed {
-            reason: format!("Failed to create cipher: {e}"),
-        })?;
-
-    // Generate random nonce
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-
-    // Encrypt (serialized is Zeroizing<String>, auto-zeroized on drop)
-    let ciphertext = cipher.encrypt(&nonce, serialized.as_bytes()).map_err(|e| {
-        AccountError::EncryptionFailed {
-            reason: format!("Encryption failed: {e}"),
-        }
-    })?;
-
-    Ok((ciphertext, nonce.to_vec()))
-}
-
-/// Decrypt a private key.
-///
-/// # Arguments
-/// * `ciphertext` - The encrypted private key
-/// * `nonce` - The 12-byte nonce used for encryption
-/// * `encryption_key` - The 32-byte encryption key
-///
-/// # Returns
-/// The decrypted `PrivateKey`
-pub fn decrypt_private_key(
-    ciphertext: impl AsRef<[u8]>,
-    nonce: impl AsRef<[u8]>,
-    encryption_key: impl AsRef<[u8]>,
-) -> Result<PrivateKey> {
-    let encryption_key = encryption_key.as_ref();
-    let nonce_bytes = nonce.as_ref();
-    let ciphertext = ciphertext.as_ref();
-
-    if encryption_key.len() != KEY_LENGTH {
-        return Err(AccountError::DecryptionFailed {
-            reason: format!(
-                "Invalid key length: expected {}, got {}",
-                KEY_LENGTH,
-                encryption_key.len()
-            ),
-        }
-        .into());
-    }
-
-    if nonce_bytes.len() != NONCE_LENGTH {
-        return Err(AccountError::InvalidNonceLength {
-            expected: NONCE_LENGTH,
-            actual: nonce_bytes.len(),
-        }
-        .into());
-    }
-
-    // Create cipher
-    let cipher =
-        Aes256Gcm::new_from_slice(encryption_key).map_err(|e| AccountError::DecryptionFailed {
-            reason: format!("Failed to create cipher: {e}"),
-        })?;
-
-    // Create nonce - convert from fixed-size array
-    let nonce_array: [u8; NONCE_LENGTH] =
-        nonce_bytes
-            .try_into()
-            .map_err(|_| AccountError::InvalidNonceLength {
-                expected: NONCE_LENGTH,
-                actual: nonce_bytes.len(),
-            })?;
-    let nonce = Nonce::from(nonce_array);
-
-    // Decrypt
-    let plaintext =
-        cipher
-            .decrypt(&nonce, ciphertext)
-            .map_err(|e| AccountError::DecryptionFailed {
-                reason: format!("Decryption failed: {e}"),
-            })?;
-
-    // Convert to string and zeroize the raw bytes immediately
-    let mut prefixed = String::from_utf8(plaintext).map_err(|e| {
-        let mut bytes = e.into_bytes();
-        bytes.zeroize();
-        AccountError::DecryptionFailed {
-            reason: "Decrypted key is not valid UTF-8".to_string(),
-        }
-    })?;
-
-    let key = PrivateKey::from_prefixed_string(&prefixed).map_err(|e| {
-        prefixed.zeroize();
-        AccountError::DecryptionFailed {
-            reason: format!("Failed to parse decrypted private key: {e}"),
-        }
-    })?;
-
-    prefixed.zeroize();
-    Ok(key)
+    Ok(std::mem::take(&mut *key))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::crypto::generate_keypair;
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_account_kdf_v1_keeps_existing_text_salt_convention() {
+        let salt = "AAAAAAAAAAAAAAAAAAAAAA";
+        let password = "synthetic fixture password";
+        let actual = derive_encryption_key(password, salt).unwrap();
+        let mut legacy = [0; KEY_LENGTH];
+        Argon2::default()
+            .hash_password_into(password.as_bytes(), salt.as_bytes(), &mut legacy)
+            .unwrap();
+        assert_eq!(actual, legacy);
+        let mut raw_salt = [0; KEY_LENGTH];
+        Argon2::default()
+            .hash_password_into(password.as_bytes(), &[0; 16], &mut raw_salt)
+            .unwrap();
+        assert_ne!(
+            actual, raw_salt,
+            "raw salt would silently change stored Account credentials"
+        );
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
@@ -219,61 +111,5 @@ mod tests {
 
         // Salts should be different
         assert_ne!(salt1, salt2);
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
-    fn test_key_encryption_round_trip() {
-        let (private_key, _) = generate_keypair();
-        let password = "encryption_password";
-        let salt = generate_salt();
-
-        // Derive encryption key
-        let encryption_key = derive_encryption_key(password, &salt).unwrap();
-
-        // Encrypt
-        let (ciphertext, nonce) = encrypt_private_key(&private_key, &encryption_key).unwrap();
-
-        // Decrypt
-        let decrypted_key = decrypt_private_key(&ciphertext, &nonce, &encryption_key).unwrap();
-
-        // Verify keys match
-        assert_eq!(private_key.to_bytes(), decrypted_key.to_bytes());
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
-    fn test_encryption_wrong_key_fails() {
-        let (private_key, _) = generate_keypair();
-        let password1 = "password1";
-        let password2 = "password2";
-        let salt = generate_salt();
-
-        // Encrypt with password1
-        let encryption_key1 = derive_encryption_key(password1, &salt).unwrap();
-        let (ciphertext, nonce) = encrypt_private_key(&private_key, &encryption_key1).unwrap();
-
-        // Try to decrypt with password2
-        let encryption_key2 = derive_encryption_key(password2, &salt).unwrap();
-        let result = decrypt_private_key(&ciphertext, &nonce, &encryption_key2);
-
-        // Should fail
-        assert!(result.is_err());
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
-    fn test_nonce_uniqueness() {
-        let (private_key, _) = generate_keypair();
-        let password = "password";
-        let salt = generate_salt();
-        let encryption_key = derive_encryption_key(password, &salt).unwrap();
-
-        // Encrypt same key twice
-        let (_, nonce1) = encrypt_private_key(&private_key, &encryption_key).unwrap();
-        let (_, nonce2) = encrypt_private_key(&private_key, &encryption_key).unwrap();
-
-        // Nonces should be different
-        assert_ne!(nonce1, nonce2);
     }
 }

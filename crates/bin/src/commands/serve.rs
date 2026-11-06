@@ -677,8 +677,8 @@ async fn handle_sync_preferences(
         }
     };
 
-    // Serialize the complete read/modify/signed-write within this browser session.
-    // Other sessions/devices still use ordinary CRDT transaction semantics.
+    // Serialize preference edits within this browser session. Other sessions
+    // on this installation reconcile through the native record's compare/exchange.
     let mut user = user_lock.write().await;
     match user
         .set_sync_preferences(&database_id, form.enabled, form.sync_on_commit, interval)

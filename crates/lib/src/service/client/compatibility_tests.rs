@@ -297,7 +297,7 @@ const LOGIN_CHALLENGE: &[u8] = b"login challenge";
 const KEY_CHALLENGE: &[u8] = b"session key challenge";
 
 fn passwordless_login_challenge(key: &PrivateKey) -> ServerFrame {
-    use crate::account::{AccountCredentials, AccountStatus};
+    use crate::account::{AccountCredentials, AccountStatus, KeyStorage};
 
     ServerFrame::Response(Box::new(ServiceResponse::TrustedLoginChallenge {
         challenge: LOGIN_CHALLENGE.to_vec(),
@@ -307,8 +307,10 @@ fn passwordless_login_challenge(key: &PrivateKey) -> ServerFrame {
             account_id: ID::from_bytes("alice-db"),
             credentials: AccountCredentials {
                 root_key_id: key.public_key(),
-                root_key: KeyStorage::Unencrypted { key: key.clone() },
-                password_salt: None,
+                bundle: KeyStorage::Unencrypted {
+                    account_id: ID::from_bytes("alice-db"),
+                    keys: vec![key.clone()],
+                },
             },
             created_at: 1_700_000_000,
             status: AccountStatus::Active,
@@ -407,7 +409,7 @@ async fn v0_unsupported_key_registration_preserves_session_and_retries() {
                 .unwrap();
             assert_eq!(uuid, "uuid-alice");
             assert_eq!(info.credentials.root_key_id, login_key.public_key());
-            assert_eq!(key.public_key(), login_key.public_key());
+            assert_eq!(key.key_ids(), [login_key.public_key()]);
             let original_cache = conn.inner.registered_keys.lock().await.clone();
             assert_eq!(original_cache, HashSet::from([login_key.public_key()]));
 
@@ -508,7 +510,7 @@ async fn v0_unknown_required_login_enums_retire_connection() {
         let mut malformed = valid.clone();
         let info = &mut malformed["Response"]["TrustedLoginChallenge"]["user_info"];
         match field {
-            "KeyStorage" => info["credentials"]["root_key"]["type"] = "future-storage".into(),
+            "KeyStorage" => info["credentials"]["bundle"]["type"] = "future-storage".into(),
             "AccountStatus" => info["status"] = "FutureStatus".into(),
             _ => unreachable!(),
         }

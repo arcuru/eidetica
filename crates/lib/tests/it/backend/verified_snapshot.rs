@@ -613,6 +613,23 @@ struct Counting {
 
 #[async_trait::async_trait]
 impl BackendImpl for Counting {
+    async fn local_account_record(&self, name: &str) -> eidetica::Result<Option<Vec<u8>>> {
+        self.inner.local_account_record(name).await
+    }
+    async fn local_account_names(&self) -> eidetica::Result<Vec<String>> {
+        self.inner.local_account_names().await
+    }
+    async fn compare_exchange_local_account_record(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> eidetica::Result<bool> {
+        self.inner
+            .compare_exchange_local_account_record(name, expected, replacement)
+            .await
+    }
+
     async fn get(&self, id: &ID) -> eidetica::Result<Entry> {
         self.inner.get(id).await
     }

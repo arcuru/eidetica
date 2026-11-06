@@ -89,6 +89,9 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
         ("instance", "InstanceAlreadyExists") => InstanceError::InstanceAlreadyExists.into(),
         ("instance", "DeviceKeyNotFound") => InstanceError::DeviceKeyNotFound.into(),
         ("instance", "AuthenticationRequired") => InstanceError::AuthenticationRequired.into(),
+        ("transaction", "EntryValidationFailed") => {
+            crate::transaction::TransactionError::EntryValidationFailed.into()
+        }
         _ => {
             // Fall back to an IO error carrying the original message
             crate::Error::Io(std::io::Error::other(format!(
@@ -261,6 +264,9 @@ mod tests {
             crate::Error::Instance(Box::new(InstanceError::InstanceAlreadyExists)),
             crate::Error::Instance(Box::new(InstanceError::DeviceKeyNotFound)),
             crate::Error::Instance(Box::new(InstanceError::AuthenticationRequired)),
+            crate::Error::Transaction(Box::new(
+                crate::transaction::TransactionError::EntryValidationFailed,
+            )),
         ];
 
         for original in &cases {
