@@ -180,6 +180,18 @@ impl Fixture {
         })
     }
 
+    async fn connected_target(&self, mut identity: SigKey) -> eidetica::Result<Database> {
+        Database::create(&self._client, self.delegated.clone(), Doc::new()).await?;
+        *identity.hint_mut() = KeyHint::from_pubkey(&self.delegated.public_key());
+        Database::open_remote(
+            &self._client,
+            self._client.remote_connection().unwrap().clone(),
+            self.local.root_id(),
+            identity,
+        )
+        .await
+    }
+
     async fn delegated_entry(&self) -> eidetica::Result<ID> {
         publish(
             &self.local,
@@ -563,21 +575,7 @@ async fn test_historical_signature_revocation_and_each_hops_current_read() -> ei
 async fn test_connected_delegated_commit_verified() -> eidetica::Result<()> {
     with_timeout(async {
         let f = Fixture::new().await?;
-        let conn = f._client.remote_connection().unwrap();
-        Database::create(&f._client, f.delegated.clone(), Doc::new()).await?;
-        let SigKey::Delegation { path, .. } = f.identity.clone() else {
-            unreachable!()
-        };
-        let remote = Database::open_remote(
-            &f._client,
-            conn.clone(),
-            f.local.root_id(),
-            SigKey::Delegation {
-                path,
-                hint: KeyHint::from_pubkey(&f.delegated.public_key()),
-            },
-        )
-        .await?;
+        let remote = f.connected_target(f.identity.clone()).await?;
         let id = publish(
             &remote,
             DatabaseKey::with_identity(f.delegated.clone(), f.identity.clone()),
@@ -618,20 +616,12 @@ async fn test_connected_two_hop_commit_without_direct_middle_grant() -> eidetica
             path: vec![step(&f.authority).await?, step(&f.nested).await?],
             hint: KeyHint::from_pubkey(&f.delegated.public_key()),
         };
-        let conn = f._client.remote_connection().unwrap();
-        Database::create(&f._client, f.delegated.clone(), Doc::new()).await?;
+        let remote = f.connected_target(identity.clone()).await?;
         assert!(
             open_as(&f._client, &f.authority, &f.delegated)
                 .await
                 .is_err()
         );
-        let remote = Database::open_remote(
-            &f._client,
-            conn.clone(),
-            f.local.root_id(),
-            identity.clone(),
-        )
-        .await?;
         let id = publish(
             &remote,
             DatabaseKey::with_identity(f.delegated.clone(), identity),
@@ -654,20 +644,7 @@ async fn test_connected_delegated_commit_rejects_unauthorized_signer() -> eideti
         let before = f.remote.snapshot().await?;
         // The handle may read/write via the legitimate delegate, but the
         // attached signer is absent from that authority.
-        Database::create(&f._client, f.delegated.clone(), Doc::new()).await?;
-        let SigKey::Delegation { path, .. } = f.identity.clone() else {
-            unreachable!()
-        };
-        let remote = Database::open_remote(
-            &f._client,
-            f._client.remote_connection().unwrap().clone(),
-            f.local.root_id(),
-            SigKey::Delegation {
-                path,
-                hint: KeyHint::from_pubkey(&f.delegated.public_key()),
-            },
-        )
-        .await?;
+        let remote = f.connected_target(f.identity.clone()).await?;
         let error = publish(
             &remote,
             DatabaseKey::with_identity(f.forger.clone(), f.identity.clone()),
@@ -734,14 +711,7 @@ async fn test_connected_delegated_commit_preserves_inherited_floor() -> eidetica
             DatabaseKey::with_identity(f.delegated.clone(), fresh.clone()),
         )
         .await?;
-        Database::create(&f._client, f.delegated.clone(), Doc::new()).await?;
-        let remote = Database::open_remote(
-            &f._client,
-            f._client.remote_connection().unwrap().clone(),
-            f.local.root_id(),
-            fresh,
-        )
-        .await?;
+        let remote = f.connected_target(fresh).await?;
         let before = remote.snapshot().await?;
         let error = publish(
             &remote,
