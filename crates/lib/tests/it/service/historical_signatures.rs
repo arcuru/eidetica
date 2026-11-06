@@ -1,5 +1,6 @@
 //! Historical authentication over the socket, including Read gates on delegated proof.
 
+use crate::helpers::LocalBackendTestExt;
 use eidetica::{
     Database, Entry, Instance,
     auth::{
@@ -552,6 +553,241 @@ async fn test_historical_signature_revocation_and_each_hops_current_read() -> ei
                 assert!(f.remote.verify_entry_signature(id).await?);
             }
         }
+        Ok(())
+    })
+    .await
+}
+
+/// Commit on the connected client, rather than transporting a locally built entry.
+#[tokio::test]
+async fn test_connected_delegated_commit_verified() -> eidetica::Result<()> {
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        let conn = f._client.remote_connection().unwrap();
+        Database::create(&f._client, f.delegated.clone(), Doc::new()).await?;
+        let SigKey::Delegation { path, .. } = f.identity.clone() else {
+            unreachable!()
+        };
+        let remote = Database::open_remote(
+            &f._client,
+            conn.clone(),
+            f.local.root_id(),
+            SigKey::Delegation {
+                path,
+                hint: KeyHint::from_pubkey(&f.delegated.public_key()),
+            },
+        )
+        .await?;
+        let id = publish(
+            &remote,
+            DatabaseKey::with_identity(f.delegated.clone(), f.identity.clone()),
+        )
+        .await?;
+        assert!(f.remote.snapshot().await?.tips().contains(&id));
+        assert_eq!(
+            f.local.backend()?.get_verification_status(&id).await?,
+            VerificationStatus::Verified
+        );
+        assert_eq!(
+            remote
+                .new_transaction()
+                .await?
+                .get_store::<DocStore>("records")
+                .await?
+                .get_string("value")
+                .await?,
+            "signed"
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn test_connected_two_hop_commit_without_direct_middle_grant() -> eidetica::Result<()> {
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        let tx = f.authority.new_transaction().await?;
+        tx.get_settings()?
+            .revoke_auth_key(&f.delegated.public_key())
+            .await?;
+        tx.commit().await?;
+        // Refresh the first hop's configured floor to include the removal.
+        delegate(&f.local, &f.authority, Permission::Write(10)).await?;
+        let identity = SigKey::Delegation {
+            path: vec![step(&f.authority).await?, step(&f.nested).await?],
+            hint: KeyHint::from_pubkey(&f.delegated.public_key()),
+        };
+        let conn = f._client.remote_connection().unwrap();
+        Database::create(&f._client, f.delegated.clone(), Doc::new()).await?;
+        assert!(
+            open_as(&f._client, &f.authority, &f.delegated)
+                .await
+                .is_err()
+        );
+        let remote = Database::open_remote(
+            &f._client,
+            conn.clone(),
+            f.local.root_id(),
+            identity.clone(),
+        )
+        .await?;
+        let id = publish(
+            &remote,
+            DatabaseKey::with_identity(f.delegated.clone(), identity),
+        )
+        .await?;
+        assert!(f.remote.snapshot().await?.tips().contains(&id));
+        assert_eq!(
+            f.local.backend()?.get_verification_status(&id).await?,
+            VerificationStatus::Verified
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn test_connected_delegated_commit_rejects_unauthorized_signer() -> eidetica::Result<()> {
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        let before = f.remote.snapshot().await?;
+        // The handle may read/write via the legitimate delegate, but the
+        // attached signer is absent from that authority.
+        Database::create(&f._client, f.delegated.clone(), Doc::new()).await?;
+        let SigKey::Delegation { path, .. } = f.identity.clone() else {
+            unreachable!()
+        };
+        let remote = Database::open_remote(
+            &f._client,
+            f._client.remote_connection().unwrap().clone(),
+            f.local.root_id(),
+            SigKey::Delegation {
+                path,
+                hint: KeyHint::from_pubkey(&f.delegated.public_key()),
+            },
+        )
+        .await?;
+        let error = publish(
+            &remote,
+            DatabaseKey::with_identity(f.forger.clone(), f.identity.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, eidetica::Error::Transaction(ref e)
+            if matches!(**e, eidetica::transaction::TransactionError::EntryValidationFailed)),
+            "{error}"
+        );
+        assert_eq!(f.remote.snapshot().await?, before);
+        assert_eq!(
+            f.local.backend()?.snapshot(f.local.root_id()).await?,
+            before
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn test_connected_direct_and_unsigned_validation_without_private_key() -> eidetica::Result<()>
+{
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        let id = publish(&f.local, f.direct.clone()).await?;
+        // remote has an operating reader identity, but no attached signing key.
+        assert!(f.remote.verify_entry_signature(&id).await?);
+        let entry = f.remote.get_entry(&id).await?;
+        let settings = f.local.get_settings().await?.auth_snapshot().await?;
+        assert!(
+            AuthValidator::new()
+                .validate_entry(&entry, &settings, Some(&f._client))
+                .await?
+        );
+        let unsigned = Entry::root_builder().build()?;
+        assert!(
+            AuthValidator::new()
+                .validate_entry(&unsigned, &Default::default(), Some(&f._client))
+                .await?
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn test_connected_delegated_commit_preserves_inherited_floor() -> eidetica::Result<()> {
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        let stale = f.identity.clone();
+        let tx = f.authority.new_transaction().await?;
+        tx.get_settings()?.set_name("advance authority").await?;
+        tx.commit().await?;
+        let fresh = SigKey::Delegation {
+            path: vec![step(&f.authority).await?],
+            hint: KeyHint::from_pubkey(&f.delegated.public_key()),
+        };
+        // A parent observes the newer snapshot without changing the target's
+        // configured pointer; only its inherited floor forbids the old claim.
+        publish(
+            &f.local,
+            DatabaseKey::with_identity(f.delegated.clone(), fresh.clone()),
+        )
+        .await?;
+        Database::create(&f._client, f.delegated.clone(), Doc::new()).await?;
+        let remote = Database::open_remote(
+            &f._client,
+            f._client.remote_connection().unwrap().clone(),
+            f.local.root_id(),
+            fresh,
+        )
+        .await?;
+        let before = remote.snapshot().await?;
+        let error = publish(
+            &remote,
+            DatabaseKey::with_identity(f.delegated.clone(), stale),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, eidetica::Error::Transaction(ref e)
+            if matches!(**e, eidetica::transaction::TransactionError::EntryValidationFailed)),
+            "{error}"
+        );
+        assert_eq!(remote.snapshot().await?, before);
+        assert_eq!(
+            f.local.backend()?.snapshot(f.local.root_id()).await?,
+            before
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn test_connected_delegated_preflight_requires_proof_read() -> eidetica::Result<()> {
+    with_timeout(async {
+        let f = Fixture::new().await?;
+        // forger has direct Write on target but no Read on the authority.
+        Database::create(&f._client, f.forger.clone(), Doc::new()).await?;
+        let target_only = open_as(&f._client, &f.local, &f.forger).await?;
+        let before = target_only.snapshot().await?;
+        let error = publish(
+            &target_only,
+            DatabaseKey::with_identity(f.delegated.clone(), f.identity.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("PermissionDenied"), "{error}");
+        assert!(
+            !error.to_string().contains("DelegatedTreeUnsynced"),
+            "proof internals must stay redacted"
+        );
+        assert_eq!(target_only.snapshot().await?, before);
+        assert_eq!(
+            f.local.backend()?.snapshot(f.local.root_id()).await?,
+            before
+        );
         Ok(())
     })
     .await
