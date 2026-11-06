@@ -8,6 +8,7 @@ use eidetica::{
     backend::VerificationStatus,
     crdt::Doc,
     entry::ID,
+    store::DocStore,
 };
 
 use crate::helpers::{LocalBackendTestExt, test_backend};
@@ -39,6 +40,8 @@ impl Fixture {
         height: u64,
         store_height: Option<u64>,
     ) -> Entry {
+        let mut data = Doc::new();
+        data.set(format!("entry_{height}"), "present");
         let entry = Entry::builder(self.db.root_id().clone())
             .set_parents(main.to_vec())
             .set_height(height)
@@ -48,7 +51,7 @@ impl Fixture {
                 }))
                 .unwrap(),
             )
-            .set_subtree_data(store, b"{}")
+            .set_subtree_data(store, serde_json::to_vec(&data).unwrap())
             .set_subtree_parents(store, parents.to_vec())
             .set_subtree_height(store, store_height)
             .build()
@@ -255,4 +258,111 @@ async fn test_store_verification_incomplete_cut_is_not_an_empty_frontier() {
     assert_eq!(f.status(&omitted).await, VerificationStatus::Failed);
     assert_eq!(f.status(&valid).await, VerificationStatus::Verified);
     assert_eq!(f.db.snapshot().await.unwrap(), Snapshot::from([valid.id()]));
+}
+
+/// Main ancestry observes B but does not consume B's Store contribution.
+/// Exercise acceptance, snapshot discovery, cold/warm reads and authored joins.
+#[tokio::test]
+async fn test_store_verification_main_descendant_keeps_unconsumed_tip() {
+    let f = Fixture::new().await;
+    let a = f.first().await;
+    let b = f.entry(&[a.id()], "data", &[a.id()], 2, None);
+    let c = f.entry(&[b.id()], "data", &[a.id()], 3, None);
+    f.ingest(&b, VerificationStatus::Verified).await;
+    f.ingest(&c, VerificationStatus::Verified).await;
+    assert_eq!(f.db.snapshot().await.unwrap(), Snapshot::from([c.id()]));
+    let frontier = Snapshot::from([b.id(), c.id()]);
+    let backend = f.instance.backend();
+    assert_eq!(
+        backend
+            .store_snapshot(f.db.root_id(), "data")
+            .await
+            .unwrap(),
+        frontier
+    );
+    for boundary in [
+        Snapshot::from([c.id()]),
+        Snapshot::from([a.id(), b.id(), c.id()]),
+    ] {
+        assert_eq!(
+            backend
+                .store_snapshot_at(f.db.root_id(), "data", &boundary)
+                .await
+                .unwrap(),
+            frontier
+        );
+    }
+    let middle = f.entry(&[c.id()], "other", &[], 4, None);
+    f.ingest(&middle, VerificationStatus::Verified).await;
+    assert_eq!(
+        backend
+            .store_snapshot_at(f.db.root_id(), "data", &Snapshot::from([middle.id()]))
+            .await
+            .unwrap(),
+        frontier
+    );
+    for _ in 0..2 {
+        let view = f.db.get_store_viewer::<DocStore>("data").await.unwrap();
+        for height in 1..=3 {
+            assert_eq!(
+                view.get(&format!("entry_{height}")).await.unwrap(),
+                eidetica::crdt::doc::Value::Text("present".into())
+            );
+        }
+    }
+    // Ordinary transaction discovery must select BOTH tips, not just main C.
+    let tx = f.db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("joined", "yes")
+        .await
+        .unwrap();
+    let join = tx.commit().await.unwrap();
+    let joined = backend.get(&join).await.unwrap();
+    assert_eq!(
+        Snapshot::from(joined.subtree_parents("data").unwrap()),
+        frontier
+    );
+    assert_eq!(
+        backend.get_verification_status(&join).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    assert_eq!(
+        backend
+            .store_snapshot_at(f.db.root_id(), "data", &f.db.snapshot().await.unwrap())
+            .await
+            .unwrap(),
+        Snapshot::from([join])
+    );
+    let view = f.db.get_store_viewer::<DocStore>("data").await.unwrap();
+    assert_eq!(
+        view.get("entry_2").await.unwrap(),
+        eidetica::crdt::doc::Value::Text("present".into())
+    );
+    assert_eq!(
+        view.get("entry_3").await.unwrap(),
+        eidetica::crdt::doc::Value::Text("present".into())
+    );
+}
+
+/// Child-first sync must not mistake an unresolved main cut for an absent Store
+/// parent; after the dependency arrives both independent Store tips are visible.
+#[tokio::test]
+async fn test_store_verification_independent_branch_dependency_retry() {
+    let f = Fixture::new().await;
+    let a = f.first().await;
+    let b = f.entry(&[a.id()], "data", &[a.id()], 2, None);
+    let c = f.entry(&[b.id()], "data", &[a.id()], 3, None);
+    f.ingest(&c, VerificationStatus::Unverified).await;
+    f.ingest(&b, VerificationStatus::Verified).await;
+    assert_eq!(f.status(&c).await, VerificationStatus::Verified);
+    assert_eq!(
+        f.instance
+            .backend()
+            .store_snapshot_at(f.db.root_id(), "data", &f.db.snapshot().await.unwrap())
+            .await
+            .unwrap(),
+        Snapshot::from([b.id(), c.id()])
+    );
 }
