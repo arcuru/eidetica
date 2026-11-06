@@ -275,13 +275,30 @@ fn crafted_config(plaintext: &[u8], salt: &str, nonce: Vec<u8>) -> Doc {
             kdf: "argon2id".to_string(),
             salt: salt.to_string(),
             version: "v0".to_string(),
+            salt_encoding: None,
             argon2_m_cost: Some(8),
             argon2_t_cost: Some(1),
             argon2_p_cost: Some(1),
         },
         wrapped_config: EncryptedFragment { ciphertext, nonce },
+        wrapped_key: None,
     }
     .into()
+}
+
+/// Put the same synthetic metadata/data key behind a valid v1 raw-salt wrapping.
+fn crafted_v1_config(plaintext: &[u8], salt: &str, nonce: Vec<u8>) -> Doc {
+    let legacy = crafted_config(plaintext, SALT, nonce);
+    let mut config = PasswordStoreConfig::try_from(legacy).unwrap();
+    config.encryption = EncryptionInfo::current(8, 1, 1);
+    config.encryption.salt = SALT.to_string();
+    let wrapping_key = config.encryption.derive_key(PASSWORD, "secrets").unwrap();
+    config.wrapped_key = Some(
+        EncryptedFragment::encrypt(wrapping_key.as_bytes(), &test_key(PASSWORD), "secrets")
+            .unwrap(),
+    );
+    config.encryption.salt = salt.to_string();
+    config.into()
 }
 
 fn valid_wrapped(type_id: &str) -> Vec<u8> {
@@ -363,11 +380,7 @@ fn observer_detects_plain_drop_and_success_only_wipe() {
 fn completed_password_clones_wipe_independently() {
     let watch = Watch::start();
     let original = Password {
-        salt: SALT.to_string(),
         password: watched_password(&watch, PASSWORD),
-        argon2_m_cost: 8,
-        argon2_t_cost: 1,
-        argon2_p_cost: 1,
     };
     let mut clone = original.clone();
     watch.string(&mut clone.password);
@@ -395,7 +408,7 @@ async fn open_failures_wipe_converted_password() {
             "invalid salt",
             crafted_config(&valid_wrapped("docstore:v0"), "!", vec![7; 12]),
             PASSWORD,
-            2,
+            1,
         ),
         (
             "invalid nonce",
@@ -428,11 +441,40 @@ async fn open_failures_wipe_converted_password() {
             registrations,
             "{case}: {observations:?}"
         );
-        assert_eq!(observations[1].size, 32, "{case}: temporary key guarded");
+        if registrations > 1 {
+            assert_eq!(observations[1].size, 32, "{case}: temporary key guarded");
+        }
         assert!(
             observations.iter().all(Observation::wiped),
             "{case}: {observations:?}"
         );
+    }
+}
+
+#[tokio::test]
+async fn v1_open_failures_wipe_password_wrapping_key_and_data_key() {
+    for (plaintext, salt, nonce, password, registrations) in [
+        (
+            valid_wrapped("docstore:v0"),
+            SALT,
+            vec![7; 12],
+            "wrong-password",
+            2,
+        ),
+        (valid_wrapped("docstore:v0"), "!", vec![7; 12], PASSWORD, 1),
+        (valid_wrapped("docstore:v0"), SALT, vec![7; 11], PASSWORD, 3),
+        (b"not json".to_vec(), SALT, vec![7; 12], PASSWORD, 4),
+        (valid_wrapped("other:v0"), SALT, vec![7; 12], PASSWORD, 4),
+    ] {
+        let (_instance, db) = database().await;
+        write_config(&db, crafted_v1_config(&plaintext, salt, nonce)).await;
+        let watch = Watch::start();
+        assert!(
+            open_with::<DocStore>(&db, watched_password(&watch, password))
+                .await
+                .is_err()
+        );
+        assert_all_wiped(&watch.finish(), registrations);
     }
 }
 
@@ -761,6 +803,7 @@ async fn initialize_at_gate(mode: u8) -> (Option<Result<()>>, Vec<Observation>) 
         transaction: tx.clone(),
         config: None,
         cached_password: None,
+        data_key: None,
         _phantom: PhantomData,
     };
     let watch = Watch::start();
@@ -815,28 +858,34 @@ async fn initialize_persistence_failure_wipes_password() {
 async fn assert_malformed_metadata_redacted<S: Store>() {
     let malformed = format!(r#"{{"type":"{}","config":"{SENTINEL}"}}"#, S::type_id()).into_bytes();
     let (_instance, db) = database().await;
-    write_config(&db, crafted_config(&malformed, SALT, vec![7; 12])).await;
-    let error = open_with::<S>(&db, PASSWORD.to_string()).await.unwrap_err();
-    assert!(error.is_store_serialization_error(), "{error}");
-    assert!(!formatted_chain(&error).contains(SENTINEL));
+    for config in [
+        crafted_config(&malformed, SALT, vec![7; 12]),
+        crafted_v1_config(&malformed, SALT, vec![7; 12]),
+    ] {
+        write_config(&db, config).await;
+        let error = open_with::<S>(&db, PASSWORD.to_string()).await.unwrap_err();
+        assert!(error.is_store_serialization_error(), "{error}");
+        assert!(!formatted_chain(&error).contains(SENTINEL));
+    }
 }
 
 /// A decrypted wrapped type that does not match `S` is not echoed in the error.
 async fn assert_type_mismatch_redacted<S: Store>() {
     let (_instance, db) = database().await;
-    write_config(
-        &db,
+    for config in [
         crafted_config(&valid_wrapped(SENTINEL), SALT, vec![7; 12]),
-    )
-    .await;
-    let error = open_with::<S>(&db, PASSWORD.to_string()).await.unwrap_err();
-    assert!(error.is_store_type_error(), "{error}");
-    let chain = formatted_chain(&error);
-    assert!(!chain.contains(SENTINEL), "{chain}");
-    assert!(
-        chain.contains(S::type_id()),
-        "expected type stays visible: {chain}"
-    );
+        crafted_v1_config(&valid_wrapped(SENTINEL), SALT, vec![7; 12]),
+    ] {
+        write_config(&db, config).await;
+        let error = open_with::<S>(&db, PASSWORD.to_string()).await.unwrap_err();
+        assert!(error.is_store_type_error(), "{error}");
+        let chain = formatted_chain(&error);
+        assert!(!chain.contains(SENTINEL), "{chain}");
+        assert!(
+            chain.contains(S::type_id()),
+            "expected type stays visible: {chain}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -857,13 +906,7 @@ async fn decrypted_type_mismatch_errors_omit_plaintext_type() {
 
 fn record_encryptor() -> PasswordEncryptor {
     PasswordEncryptor::new(
-        Password {
-            salt: SALT.to_string(),
-            password: PASSWORD.to_string(),
-            argon2_m_cost: 8,
-            argon2_t_cost: 1,
-            argon2_p_cost: 1,
-        },
+        Arc::new(SecretBytes::from_vec(test_key(PASSWORD))),
         "first".to_string(),
         b"database",
     )
@@ -871,7 +914,7 @@ fn record_encryptor() -> PasswordEncryptor {
 
 /// Encrypt arbitrary envelope plaintext for a row under the encryptor's real AAD.
 fn crafted_record(encryptor: &PasswordEncryptor, physical_key: &[u8], plaintext: &[u8]) -> Vec<u8> {
-    let key = encryptor.record_value_material().unwrap();
+    let key = encryptor.record_value_material();
     let cipher = Aes256Gcm::new_from_slice(key.as_ref()).unwrap();
     let nonce = [9; AES_GCM_NONCE_SIZE];
     let aad = physical_record_aad(&encryptor.store_identity, physical_key);
@@ -925,13 +968,7 @@ fn existing_record_fixture_still_decrypts() {
 /// The encryptor used when the record fixture was produced.
 fn record_encryptor_for_fixture() -> PasswordEncryptor {
     PasswordEncryptor::new(
-        Password {
-            salt: SALT.to_string(),
-            password: "record-authentication".to_string(),
-            argon2_m_cost: 8,
-            argon2_t_cost: 1,
-            argon2_p_cost: 1,
-        },
+        Arc::new(SecretBytes::from_vec(test_key("record-authentication"))),
         "first".to_string(),
         b"database",
     )
@@ -948,6 +985,7 @@ async fn existing_initialized_config_fixture_still_opens() {
             kdf: "argon2id".to_string(),
             salt: String::from_utf8(hex::decode(CONFIG_FIXTURE_SALT_HEX).unwrap()).unwrap(),
             version: "v0".to_string(),
+            salt_encoding: None,
             argon2_m_cost: Some(DEFAULT_ARGON2_M_COST),
             argon2_t_cost: Some(DEFAULT_ARGON2_T_COST),
             argon2_p_cost: Some(DEFAULT_ARGON2_P_COST),
@@ -959,6 +997,7 @@ async fn existing_initialized_config_fixture_still_opens() {
             .unwrap(),
             nonce: hex::decode("f049d9fdd231d28a8f3bf567").unwrap(),
         },
+        wrapped_key: None,
     }
     .into();
     let (_instance, db) = database().await;
@@ -979,29 +1018,32 @@ async fn existing_initialized_config_fixture_still_opens() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn lazy_key_derivation_guards_and_moves_its_buffer() {
+fn authenticated_key_is_guarded_and_shared_without_copying() {
+    let mut encryption = EncryptionInfo::current(8, 1, 1);
     let watch = Watch::start();
-    let encryptor = record_encryptor();
-    encryptor.with_key(|key| Ok(key.len())).unwrap();
-    encryptor.with_key(|key| Ok(key.len())).unwrap();
-    let live = watch_snapshot_is_live(&encryptor);
+    let key = encryption.derive_key(PASSWORD, "first").unwrap();
+    let ptr = key.as_bytes().as_ptr();
+    let key = Arc::new(key);
+    let encryptor = PasswordEncryptor::new(Arc::clone(&key), "first".to_string(), b"database");
+    assert_eq!(encryptor.key.as_bytes().as_ptr(), ptr);
+    drop(key);
+    assert_eq!(
+        encryptor.key.as_bytes().as_ptr(),
+        ptr,
+        "encryptor retains the same allocation"
+    );
     drop(encryptor);
     let observations = watch.finish();
-    assert!(live, "derived key stays cached while its encryptor lives");
     assert_all_wiped(&observations, 1);
     assert_eq!(observations[0].size, 32);
 
+    encryption.salt = "!".to_string();
     let watch = Watch::start();
-    let mut invalid_salt = record_encryptor();
-    invalid_salt.password.salt = "!".to_string();
-    assert!(invalid_salt.with_key(|key| Ok(key.len())).is_err());
-    drop(invalid_salt);
-    assert_all_wiped(&watch.finish(), 1);
-}
-
-/// The cached key is the moved derivation buffer, not a copy.
-fn watch_snapshot_is_live(encryptor: &PasswordEncryptor) -> bool {
-    encryptor.derived_key.lock().unwrap().get().is_some()
+    assert!(encryption.derive_key(PASSWORD, "first").is_err());
+    assert!(
+        watch.finish().is_empty(),
+        "invalid salt fails before key allocation"
+    );
 }
 
 #[test]
@@ -1068,8 +1110,6 @@ fn guarded_json_is_allocated_once_at_its_final_size() {
 #[test]
 fn record_encryption_wipes_its_envelope_json() {
     let encryptor = record_encryptor();
-    // Derive the cached key first, so only the envelope is registered.
-    encryptor.with_key(|key| Ok(key.len())).unwrap();
     let watch = Watch::start();
     encryptor.encrypt_record(b"logical", b"plaintext").unwrap();
     assert_all_wiped(&watch.finish(), 1);
@@ -1203,7 +1243,7 @@ assert_not_impl!(
     serde::de::DeserializeOwned,
 );
 assert_not_impl!(Password, std::fmt::Debug, std::fmt::Display, Serialize);
-assert_not_impl!(DerivedKey, std::fmt::Debug, Clone, Serialize);
+assert_not_impl!(PasswordEncryptor, std::fmt::Debug, Clone, Serialize);
 assert_not_impl!(DecryptedRecordEnvelope, std::fmt::Debug, Clone, Serialize);
 assert_not_impl!(WrappedStoreInfo, std::fmt::Debug, Clone, Serialize);
 
@@ -1214,11 +1254,7 @@ fn secret_owners_still_allow_local_borrowing() {
     let borrowed: &[u8] = owner.as_bytes();
     assert_eq!(borrowed, b"abcd");
     let password = Password {
-        salt: SALT.to_string(),
         password: PASSWORD.to_string(),
-        argon2_m_cost: 8,
-        argon2_t_cost: 1,
-        argon2_p_cost: 1,
     };
     assert_eq!(password.password.as_str(), PASSWORD);
 }
