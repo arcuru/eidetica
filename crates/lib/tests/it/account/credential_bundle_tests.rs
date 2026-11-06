@@ -157,6 +157,7 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
         .unwrap();
     let root = first.get_default_key().unwrap();
     let a = first.add_private_key(Some("first")).await.unwrap();
+    let retained = first.create_database(eidetica::crdt::Doc::new(), &a).await.unwrap();
     let (imported, b) = generate_keypair();
     assert_eq!(
         stale
@@ -225,6 +226,14 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
         let key = returned.get_signing_key(id).unwrap();
         id.verify(b"relogin", &key.sign(b"relogin")).unwrap();
     }
+    // This handle owns its signer independently of the login that created it.
+    // Reauthentication must not silently replace it with the login root key.
+    let tx = retained.new_transaction().await.unwrap();
+    tx.get_store::<eidetica::store::DocStore>("data")
+        .await.unwrap().set("after-relogin", "written").await.unwrap();
+    let entry = tx.commit().await.unwrap();
+    eidetica::auth::crypto::verify_entry_signature(&retained.get_entry(entry).await.unwrap(), &a)
+        .unwrap();
     returned.logout().unwrap();
     let current_bytes = backend.local_account_record(&name).await.unwrap().unwrap();
     let current: serde_json::Value = serde_json::from_slice(&current_bytes).unwrap();
