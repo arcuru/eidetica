@@ -1,0 +1,16 @@
+rust_binary(
+    name = "todo",
+    crate_root = "src/main.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    env = {"CARGO_PKG_AUTHORS": "Patrick Jackson <patrick@jackson.dev>", "CARGO_PKG_VERSION": "0.2.0", "CARGO_PKG_DESCRIPTION": "Todo list example using Eidetica"},
+    deps = [
+        "//crates/lib:eidetica",
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:clap",
+        "//third-party:chrono",
+        "//third-party:uuid",
+        "//third-party:tokio",
+    ],
+)

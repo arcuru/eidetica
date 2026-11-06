@@ -29,6 +29,7 @@
 - [Overview](internal/index.md)
 - [Contributing](internal/contributing.md)
 - [CI/Build Infrastructure](internal/ci.md)
+- [Buck2 build](internal/buck2.md)
 - [Terminology](internal/terminology.md)
 - [DAG Structure](internal/dag.md)
 - [Subtrees](internal/subtrees.md)

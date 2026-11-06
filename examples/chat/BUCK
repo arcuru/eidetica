@@ -1,0 +1,20 @@
+rust_binary(
+    name = "chat",
+    crate_root = "src/main.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    env = {"CARGO_PKG_AUTHORS": "Patrick Jackson <patrick@jackson.dev>", "CARGO_PKG_VERSION": "0.2.0"},
+    deps = [
+        "//crates/lib:eidetica",
+        "//third-party:ratatui",
+        "//third-party:crossterm",
+        "//third-party:tokio",
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:chrono",
+        "//third-party:uuid",
+        "//third-party:clap",
+        "//third-party:tracing",
+        "//third-party:tracing-subscriber",
+    ],
+)

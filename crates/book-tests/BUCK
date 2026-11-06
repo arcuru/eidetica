@@ -1,0 +1,32 @@
+rust_binary(
+    name = "generator",
+    crate_root = "build.rs",
+    srcs = ["build.rs"],
+    edition = "2024",
+)
+
+genrule(
+    name = "generated",
+    srcs = ["//docs/src:markdown"],
+    out = "generated",
+    cmd = "mkdir -p \"$OUT\"; OUT_DIR=\"$OUT\" CARGO_MANIFEST_DIR=crates/book-tests EIDETICA_BOOK_DOCS=\"$SRCS\" $(exe :generator)",
+)
+
+rust_library(
+    name = "book",
+    crate = "eidetica_book_tests",
+    crate_root = "src/lib.rs",
+    srcs = ["src/lib.rs", ":generated"],
+    edition = "2024",
+    env = {"OUT_DIR": "$(location :generated)"},
+    doctests = True,
+    deps = [
+        "//crates/lib:eidetica",
+        "//third-party:tokio",
+        "//third-party:serde",
+        "//third-party:chrono",
+        "//third-party:iroh",
+        "//third-party:tracing-subscriber",
+        "//third-party:uuid",
+    ],
+)
