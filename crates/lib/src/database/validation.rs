@@ -4,14 +4,14 @@ use std::collections::{HashMap, HashSet};
 use super::Database;
 use crate::{
     Entry, Error, Result, Snapshot,
-    auth::{errors::AuthError, validation::floors::causal_store_frontiers},
+    auth::{errors::AuthError, validation::floors::causal_settings_frontier},
     backend::VerificationStatus,
     constants::SETTINGS,
     entry::ID,
 };
 
-pub(super) enum CausalFrontiers {
-    Complete(HashMap<String, Snapshot>),
+pub(super) enum ParentSettings {
+    Complete(Snapshot),
     Incomplete(Vec<ID>),
     Invalid,
 }
@@ -23,10 +23,10 @@ impl Database {
         if self.ops().local_engine().is_none() {
             return Ok(true);
         }
-        match self.causal_frontiers(entry).await? {
-            CausalFrontiers::Complete(_) => Ok(true),
-            CausalFrontiers::Invalid => Ok(false),
-            CausalFrontiers::Incomplete(missing) => Err(AuthError::DelegatedTreeUnsynced {
+        match self.validate_parent_settings(entry).await? {
+            ParentSettings::Complete(_) => Ok(true),
+            ParentSettings::Invalid => Ok(false),
+            ParentSettings::Incomplete(missing) => Err(AuthError::DelegatedTreeUnsynced {
                 tree_id: self.root_id().clone(),
                 missing,
             }
@@ -34,19 +34,15 @@ impl Database {
         }
     }
 
-    pub(super) async fn causal_frontiers(&self, entry: &Entry) -> Result<CausalFrontiers> {
+    pub(super) async fn validate_parent_settings(&self, entry: &Entry) -> Result<ParentSettings> {
         let instance = self.instance()?;
         let backend = instance.require_local_engine()?;
         let parents = entry.parents()?;
 
         // Check conclusive Store-edge evidence even when some main ancestry is
         // absent. Never fetch a Store edge as part of its own reachability proof.
-        let mut empty_stores = Vec::new();
         for store in entry.subtrees() {
             let store_parents = entry.subtree_parents(&store)?;
-            if store_parents.is_empty() {
-                empty_stores.push(store.clone());
-            }
             for id in store_parents {
                 let parent = match backend.get(&id).await {
                     Ok(parent) => parent,
@@ -54,21 +50,23 @@ impl Database {
                     Err(e) => return Err(e),
                 };
                 if !parent.in_tree(self.root_id()) || !parent.in_subtree(&store) {
-                    return Ok(CausalFrontiers::Invalid);
+                    return Ok(ParentSettings::Invalid);
                 }
                 match backend.get_verification_status(&id).await? {
-                    VerificationStatus::Failed => return Ok(CausalFrontiers::Invalid),
+                    VerificationStatus::Failed => return Ok(ParentSettings::Invalid),
                     VerificationStatus::Verified
                         if entry.subtree_height(&store)? <= parent.subtree_height(&store)? =>
                     {
-                        return Ok(CausalFrontiers::Invalid);
+                        return Ok(ParentSettings::Invalid);
                     }
                     _ => {}
                 }
             }
         }
 
-        // One main-only walk supplies every touched Store and the auth pin.
+        // Main links alone prove membership for named Store parents and
+        // supply the causal settings pin. Ordinary Store links need not consume
+        // every contribution observed through this ancestry.
         // Postorder, not writer-supplied height labels, establishes topology.
         let mut stack: Vec<_> = parents.iter().cloned().map(|id| (id, false)).collect();
         let mut seen = HashSet::new();
@@ -92,18 +90,21 @@ impl Database {
                 Err(e) => return Err(e),
             };
             if !ancestor.in_tree(self.root_id()) {
-                return Ok(CausalFrontiers::Invalid);
+                return Ok(ParentSettings::Invalid);
             }
             match backend.get_verification_status(&id).await? {
-                VerificationStatus::Failed => return Ok(CausalFrontiers::Invalid),
+                VerificationStatus::Failed => return Ok(ParentSettings::Invalid),
                 VerificationStatus::Unverified => pending.push(id.clone()),
-                // A known accepted contribution makes an empty declared Store
-                // frontier impossible, regardless of another missing branch.
+                // Only _settings must consume the entire causal frontier.
+                // A known settings contribution conclusively rules out an
+                // empty settings write, even if another main branch is missing.
                 VerificationStatus::Verified
                     if (parents.contains(&id) && entry.height() <= ancestor.height())
-                        || empty_stores.iter().any(|store| ancestor.in_subtree(store)) =>
+                        || (entry.in_subtree(SETTINGS)
+                            && entry.subtree_parents(SETTINGS)?.is_empty()
+                            && ancestor.in_subtree(SETTINGS)) =>
                 {
-                    return Ok(CausalFrontiers::Invalid);
+                    return Ok(ParentSettings::Invalid);
                 }
                 _ => {}
             }
@@ -112,27 +113,32 @@ impl Database {
             nodes.insert(id, ancestor);
         }
         if !pending.is_empty() {
-            return Ok(CausalFrontiers::Incomplete(pending));
+            return Ok(ParentSettings::Incomplete(pending));
         }
 
-        let mut stores = entry.subtrees();
-        if !stores.iter().any(|s| s == SETTINGS) {
-            stores.push(SETTINGS.to_string());
+        for store in entry.subtrees() {
+            if entry
+                .subtree_parents(&store)?
+                .iter()
+                .any(|id| !seen.contains(id))
+            {
+                // A complete main cut conclusively excludes this reference,
+                // whether or not its bytes have arrived over another path.
+                return Ok(ParentSettings::Invalid);
+            }
         }
-        let frontiers = match causal_store_frontiers(&ancestry, &parents, &stores) {
-            Ok(frontiers) => frontiers,
+        let settings = match causal_settings_frontier(&ancestry, &parents) {
+            Ok(settings) => settings,
             Err(Error::Auth(e)) if matches!(*e, AuthError::InvalidAuthConfiguration { .. }) => {
-                return Ok(CausalFrontiers::Invalid);
+                return Ok(ParentSettings::Invalid);
             }
             Err(e) => return Err(e),
         };
-        for store in entry.subtrees() {
-            if Snapshot::from(entry.subtree_parents(&store)?) != frontiers[&store] {
-                // A complete cut also conclusively rejects references whose
-                // bytes are absent: they cannot belong to its frontier.
-                return Ok(CausalFrontiers::Invalid);
-            }
+        if entry.in_subtree(SETTINGS)
+            && Snapshot::from(entry.subtree_parents(SETTINGS)?) != settings
+        {
+            return Ok(ParentSettings::Invalid);
         }
-        Ok(CausalFrontiers::Complete(frontiers))
+        Ok(ParentSettings::Complete(settings))
     }
 }

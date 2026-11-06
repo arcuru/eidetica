@@ -21,10 +21,13 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        let (instance, _) =
-            Instance::create_backend(test_backend().await, NewAccount::passwordless("admin"))
-                .await
-                .unwrap();
+        Self::with_backend(test_backend().await).await
+    }
+
+    async fn with_backend(backend: Box<dyn eidetica::backend::BackendImpl>) -> Self {
+        let (instance, _) = Instance::create_backend(backend, NewAccount::passwordless("admin"))
+            .await
+            .unwrap();
         let key = PrivateKey::generate();
         let db = Database::create(&instance, key.clone(), Doc::new())
             .await
@@ -124,7 +127,7 @@ async fn test_store_verification_rejects_sibling_and_wrong_targets() {
 }
 
 #[tokio::test]
-async fn test_store_verification_requires_complete_maximal_frontier() {
+async fn test_store_verification_allows_omitted_nonmaximal_and_redundant_parents() {
     let f = Fixture::new().await;
     let first = f.first().await;
     let a = f.entry(&[first.id()], "data", &[first.id()], 2, None);
@@ -138,14 +141,14 @@ async fn test_store_verification_requires_complete_maximal_frontier() {
         vec![first.id()],
         vec![first.id(), a.id(), b.id()],
     ] {
-        let invalid = f.entry(&[a.id(), b.id()], "data", &parents, 10, None);
-        f.ingest(&invalid, VerificationStatus::Failed).await;
+        let valid = f.entry(&[a.id(), b.id()], "data", &parents, 10, None);
+        f.ingest(&valid, VerificationStatus::Verified).await;
     }
     for parents in [vec![a.id(), b.id()], vec![b.id(), a.id()]] {
         let valid = f.entry(&[b.id(), a.id()], "data", &parents, 10, None);
         f.ingest(&valid, VerificationStatus::Verified).await;
     }
-    // A redundant main parent must not make its older Store contribution maximal.
+    // Redundant main parents do not change the ordinary Store-parent contract.
     let valid = f.entry(&[first.id(), a.id()], "data", &[a.id()], 11, None);
     f.ingest(&valid, VerificationStatus::Verified).await;
 }
@@ -162,7 +165,7 @@ async fn test_store_verification_preserves_untouched_stores_and_first_creation()
     let valid = f.entry(&[middle.id()], "data", &[first.id()], 3, Some(50));
     f.ingest(&valid, VerificationStatus::Verified).await;
     let omitted = f.entry(&[middle.id()], "data", &[], 3, None);
-    f.ingest(&omitted, VerificationStatus::Failed).await;
+    f.ingest(&omitted, VerificationStatus::Verified).await;
 }
 
 #[tokio::test]
@@ -238,10 +241,13 @@ async fn test_store_verification_invalid_evidence_beats_incomplete_ancestry() {
     for main in [vec![first.id(), missing.clone()], vec![missing, first.id()]] {
         let invalid = f.entry(&main, "data", &[first.id()], 10, Some(1));
         f.ingest(&invalid, VerificationStatus::Failed).await;
-        // A held Verified contribution rules out an empty Store frontier even
-        // when another main branch has not arrived.
+        // An independent ordinary Store root is valid, but must wait for its
+        // entire main ancestry like any other Entry.
         let omitted = f.entry(&main, "data", &[], 10, Some(100));
-        f.ingest(&omitted, VerificationStatus::Failed).await;
+        f.ingest(&omitted, VerificationStatus::Unverified).await;
+        let invalid_settings = f.entry(&main, "_settings", &[], 10, None);
+        f.ingest(&invalid_settings, VerificationStatus::Failed)
+            .await;
     }
 }
 
@@ -255,9 +261,12 @@ async fn test_store_verification_incomplete_cut_is_not_an_empty_frontier() {
         f.ingest(entry, VerificationStatus::Unverified).await;
     }
     f.ingest(&late, VerificationStatus::Verified).await;
-    assert_eq!(f.status(&omitted).await, VerificationStatus::Failed);
+    assert_eq!(f.status(&omitted).await, VerificationStatus::Verified);
     assert_eq!(f.status(&valid).await, VerificationStatus::Verified);
-    assert_eq!(f.db.snapshot().await.unwrap(), Snapshot::from([valid.id()]));
+    assert_eq!(
+        f.db.snapshot().await.unwrap(),
+        Snapshot::from([omitted.id(), valid.id()])
+    );
 }
 
 /// Main ancestry observes B but does not consume B's Store contribution.
@@ -365,4 +374,138 @@ async fn test_store_verification_independent_branch_dependency_retry() {
             .unwrap(),
         Snapshot::from([b.id(), c.id()])
     );
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn test_store_verification_branch_survives_reopen() {
+    #[cfg(feature = "sqlite")]
+    use eidetica::backend::database::Sqlite;
+    #[cfg(feature = "postgres")]
+    use eidetica::backend::database::SqlxBackend;
+    use eidetica::backend::{BackendImpl, database::InMemory};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("branches");
+    let modes = [
+        Some("memory"),
+        cfg!(feature = "sqlite").then_some("sqlite"),
+        (cfg!(feature = "postgres") && std::env::var("TEST_BACKEND").as_deref() == Ok("postgres"))
+            .then_some("postgres"),
+    ];
+    #[cfg(feature = "postgres")]
+    let (pg_url, schema) = (
+        std::env::var("TEST_POSTGRES_URL")
+            .unwrap_or_else(|_| "postgres://localhost/eidetica_test".into()),
+        format!("store_branch_{}", uuid::Uuid::new_v4().simple()),
+    );
+    for mode in modes.into_iter().flatten() {
+        let backend: Box<dyn BackendImpl> = match mode {
+            "memory" => Box::new(InMemory::new()),
+            #[cfg(feature = "sqlite")]
+            "sqlite" => Box::new(Sqlite::open(&path).await.unwrap()),
+            #[cfg(feature = "postgres")]
+            "postgres" => Box::new(
+                SqlxBackend::test_connect_postgres_schema(&pg_url, schema.clone())
+                    .await
+                    .unwrap(),
+            ),
+            _ => unreachable!(),
+        };
+        let f = Fixture::with_backend(backend).await;
+        let a = f.first().await;
+        let b = f.entry(&[a.id()], "data", &[a.id()], 2, None);
+        let c = f.entry(&[b.id()], "data", &[a.id()], 3, None);
+        f.ingest(&b, VerificationStatus::Verified).await;
+        f.ingest(&c, VerificationStatus::Verified).await;
+        // Populate a real derived read before restart as well as retained tips.
+        f.db.get_store_viewer::<DocStore>("data")
+            .await
+            .unwrap()
+            .get("entry_2")
+            .await
+            .unwrap();
+        let root = f.db.root_id().clone();
+        let key = f.key.clone();
+        if mode == "memory" {
+            f.instance
+                .backend()
+                .local_engine()
+                .unwrap()
+                .as_any()
+                .downcast_ref::<InMemory>()
+                .unwrap()
+                .save_to_file(&path)
+                .unwrap();
+        }
+        drop(f);
+        let reopened: Box<dyn BackendImpl> = match mode {
+            "memory" => {
+                let loaded = InMemory::load_from_file(&path).await.unwrap();
+                std::fs::remove_file(&path).unwrap();
+                Box::new(loaded)
+            }
+            #[cfg(feature = "sqlite")]
+            "sqlite" => Box::new(Sqlite::open(&path).await.unwrap()),
+            #[cfg(feature = "postgres")]
+            "postgres" => {
+                SqlxBackend::test_await_postgres_namespace_release(
+                    &pg_url,
+                    &schema,
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+                Box::new(
+                    SqlxBackend::test_connect_postgres_schema(&pg_url, schema.clone())
+                        .await
+                        .unwrap(),
+                )
+            }
+            _ => unreachable!(),
+        };
+        let instance = Instance::open_backend(reopened).await.unwrap();
+        let db = Database::open(&instance, &root)
+            .await
+            .unwrap()
+            .with_key(key);
+        for entry in [&a, &b, &c] {
+            assert_eq!(
+                instance
+                    .backend()
+                    .get_verification_status(&entry.id())
+                    .await
+                    .unwrap(),
+                VerificationStatus::Verified
+            );
+        }
+        assert_eq!(db.snapshot().await.unwrap(), Snapshot::from([c.id()]));
+        assert_eq!(
+            instance
+                .backend()
+                .store_snapshot_at(&root, "data", &Snapshot::from([c.id()]))
+                .await
+                .unwrap(),
+            Snapshot::from([b.id(), c.id()])
+        );
+        let view = db.get_store_viewer::<DocStore>("data").await.unwrap();
+        assert_eq!(
+            view.get("entry_2").await.unwrap(),
+            eidetica::crdt::doc::Value::Text("present".into())
+        );
+        assert_eq!(
+            view.get("entry_3").await.unwrap(),
+            eidetica::crdt::doc::Value::Text("present".into())
+        );
+        instance
+            .backend()
+            .clear_derived_store_state()
+            .await
+            .unwrap();
+        let cold = db.get_store_viewer::<DocStore>("data").await.unwrap();
+        assert_eq!(
+            cold.get("entry_2").await.unwrap(),
+            eidetica::crdt::doc::Value::Text("present".into())
+        );
+    }
 }

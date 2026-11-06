@@ -11,9 +11,13 @@
 //! in a transaction, the system must determine the correct parent entries for that subtree.
 //! This involves:
 //!
-//! 1. Checking for existing subtree tips (leaf nodes)
-//! 2. If no tips exist, traversing the DAG to find reachable subtree entries
-//! 3. Setting appropriate parent relationships (empty for first entry, or proper parents)
+//! 1. Fixing the main-parent boundary at transaction creation
+//! 2. Finding all unconsumed Store contributions in that main ancestry
+//! 3. Selecting those Store tips as the authored parents (empty for no history)
+//!
+//! This selection default is not ordinary Store validation: a received write
+//! may omit observed tips or start an independent Store branch. `_settings`
+//! writes and signed pins retain exact causal-frontier validation.
 
 pub mod errors;
 
@@ -135,8 +139,9 @@ pub(crate) trait Encryptor: Send + Sync {
 pub(crate) struct EntryMetadata {
     /// Snapshot of the `_settings` subtree at the time this entry was created.
     /// This is the entry's **pin**: the exact `_settings` state its
-    /// signature must be validated against. Used for sync performance,
-    /// sparse-checkout validation, and deferred re-verification.
+    /// signature must be validated against. It must equal the independently
+    /// derived causal pre-write settings frontier, not a signer-selected subset.
+    /// Verification still requires whole Entries and complete main ancestry.
     ///
     /// Wire name remains `settings_tips` for on-disk stability — `Snapshot`
     /// serializes as a bare ID array, identical to the legacy `Vec<ID>` shape.

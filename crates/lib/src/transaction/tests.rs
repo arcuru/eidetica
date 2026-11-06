@@ -537,7 +537,7 @@ async fn get_store_propagates_registry_read_not_found() {
     assert!(tx.get_local_data::<Doc>(INDEX).unwrap().is_none());
 }
 
-/// Corrupting a transaction's discovered Store parents must fail before storage,
+/// A Store parent outside the transaction's main cut must fail before storage,
 /// even though the height authoring path can calculate plausible heights for it.
 #[tokio::test]
 async fn local_commit_rejects_injected_store_frontier() {
@@ -559,15 +559,86 @@ async fn local_commit_rejects_injected_store_frontier() {
     }
     let backend = instance.require_local_engine().unwrap();
     let before = backend.get_tree(&root).await.unwrap().len();
-    for parents in [vec![], vec![branches[1].clone()]] {
-        let tx = database
-            .new_transaction_at(&Snapshot::from([branches[0].clone()]))
+    let tx = database
+        .new_transaction_at(&Snapshot::from([branches[0].clone()]))
+        .await
+        .unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("key", "invalid")
+        .await
+        .unwrap();
+    tx.entry_builder
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .set_subtree_parents_mut("data", vec![branches[1].clone()]);
+    assert!(
+        matches!(tx.commit().await, Err(Error::Transaction(e)) if matches!(*e, TransactionError::EntryValidationFailed))
+    );
+    assert_eq!(backend.get_tree(&root).await.unwrap().len(), before);
+}
+
+/// Local authoring and subsequent received verification share the branching
+/// contract; parent discovery is a default, not a validation restriction.
+#[tokio::test]
+async fn local_commit_preserves_independent_store_branch() {
+    let (instance, db) = test_database().await;
+    let mut ids: Vec<ID> = Vec::new();
+    for name in ["a", "b", "c"] {
+        let tx = db.new_transaction().await.unwrap();
+        tx.get_store::<DocStore>("data")
+            .await
+            .unwrap()
+            .set(name, name)
+            .await
+            .unwrap();
+        if name == "c" {
+            tx.entry_builder
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .set_subtree_parents_mut("data", vec![ids[0].clone()]);
+        }
+        ids.push(tx.commit().await.unwrap());
+    }
+    let backend = instance.require_local_engine().unwrap();
+    assert_eq!(
+        backend.get(&ids[2]).await.unwrap().parents().unwrap(),
+        vec![ids[1].clone()]
+    );
+    let expected = Snapshot::from([ids[1].clone(), ids[2].clone()]);
+    assert_eq!(
+        backend
+            .store_snapshot_at(db.root_id(), "data", &db.snapshot().await.unwrap())
+            .await
+            .unwrap(),
+        expected
+    );
+    let view = db.get_store_viewer::<DocStore>("data").await.unwrap();
+    assert_eq!(view.get("b").await.unwrap(), Value::Text("b".into()));
+    assert_eq!(view.get("c").await.unwrap(), Value::Text("c".into()));
+    instance
+        .demote_to_unverified(db.root_id(), &ids[2])
+        .await
+        .unwrap();
+    db.verify().await.unwrap();
+    assert_eq!(
+        backend.get_verification_status(&ids[2]).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    for parents in [vec![], vec![ids[0].clone(), ids[1].clone()]] {
+        let tx = db
+            .new_transaction_at(&Snapshot::from([ids[1].clone()]))
             .await
             .unwrap();
         tx.get_store::<DocStore>("data")
             .await
             .unwrap()
-            .set("key", "invalid")
+            .set("branch", "present")
             .await
             .unwrap();
         tx.entry_builder
@@ -575,10 +646,22 @@ async fn local_commit_rejects_injected_store_frontier() {
             .unwrap()
             .as_mut()
             .unwrap()
-            .set_subtree_parents_mut("data", parents);
-        assert!(
-            matches!(tx.commit().await, Err(Error::Transaction(e)) if matches!(*e, TransactionError::EntryValidationFailed))
+            .set_subtree_parents_mut("data", parents.clone());
+        let id = tx.commit().await.unwrap();
+        assert_eq!(
+            Snapshot::from(
+                backend
+                    .get(&id)
+                    .await
+                    .unwrap()
+                    .subtree_parents("data")
+                    .unwrap()
+            ),
+            Snapshot::from(parents)
         );
-        assert_eq!(backend.get_tree(&root).await.unwrap().len(), before);
+        assert_eq!(
+            backend.get_verification_status(&id).await.unwrap(),
+            VerificationStatus::Verified
+        );
     }
 }

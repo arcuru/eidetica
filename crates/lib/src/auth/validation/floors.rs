@@ -38,15 +38,11 @@ pub(crate) struct DerivedFloors {
     removed_direct: HashMap<ID, Snapshot>,
 }
 
-/// Derive canonical Store frontiers in one pass over complete, root-first main
-/// ancestry. Store links only prune already-proven causal contributions; each
-/// contribution must consume its exact main-parent frontier before it is used.
-pub(crate) fn causal_store_frontiers(
-    entries: &[Entry],
-    tips: &[ID],
-    stores: &[String],
-) -> Result<HashMap<String, Snapshot>> {
-    fn prune(candidates: Vec<ID>, nodes: &HashMap<ID, &Entry>, store: &str) -> Result<Snapshot> {
+/// Derive the complete canonical settings frontier at the specified main tips.
+/// `entries` must be a complete, root-first main ancestry for those tips.
+/// A signed settings write must consume exactly its main parents' frontier.
+pub(crate) fn causal_settings_frontier(entries: &[Entry], tips: &[ID]) -> Result<Snapshot> {
+    fn prune(candidates: Vec<ID>, nodes: &HashMap<ID, &Entry>) -> Result<Snapshot> {
         let candidates = Snapshot::from(candidates);
         if candidates.len() <= 1 {
             return Ok(candidates);
@@ -63,7 +59,7 @@ pub(crate) fn causal_store_frontiers(
                     dominated.insert(id.clone());
                 }
                 if let Some(ancestor) = nodes.get(&id) {
-                    stack.extend(ancestor.subtree_parents(store)?);
+                    stack.extend(ancestor.subtree_parents(SETTINGS)?);
                 }
             }
         }
@@ -76,62 +72,44 @@ pub(crate) fn causal_store_frontiers(
         ))
     }
 
-    let mut frontiers: HashMap<ID, HashMap<String, Snapshot>> = HashMap::new();
-    let mut nodes: HashMap<ID, &Entry> = HashMap::new();
+    let mut frontiers: HashMap<ID, Snapshot> = HashMap::new();
+    let mut settings_nodes: HashMap<ID, &Entry> = HashMap::new();
     for node in entries {
-        let parents = node.parents()?;
-        let mut current = HashMap::new();
-        for store in stores {
-            let mut candidates = Vec::new();
-            for parent in &parents {
-                let frontier =
-                    frontiers
-                        .get(parent)
-                        .ok_or_else(|| AuthError::InvalidAuthConfiguration {
-                            reason: "incomplete main ancestry for Store frontier".to_string(),
-                        })?;
-                candidates.extend(frontier[store].iter().cloned());
-            }
-            let expected = prune(candidates, &nodes, store)?;
-            let frontier = if node.in_subtree(store) {
-                if Snapshot::from(node.subtree_parents(store)?) != expected {
-                    return Err(AuthError::InvalidAuthConfiguration {
-                        reason: format!("{store} parents differ from main-parent causal frontier"),
-                    }
-                    .into());
-                }
-                Snapshot::from([node.id()])
-            } else {
-                expected
-            };
-            current.insert(store.clone(), frontier);
-        }
-        nodes.insert(node.id(), node);
-        frontiers.insert(node.id(), current);
-    }
-    let mut result = HashMap::new();
-    for store in stores {
         let mut candidates = Vec::new();
-        for tip in tips {
+        for parent in node.parents()? {
             let frontier =
                 frontiers
-                    .get(tip)
+                    .get(&parent)
                     .ok_or_else(|| AuthError::InvalidAuthConfiguration {
-                        reason: "missing main tip for Store frontier".to_string(),
+                        reason: "incomplete main ancestry for settings frontier".to_string(),
                     })?;
-            candidates.extend(frontier[store].iter().cloned());
+            candidates.extend(frontier.iter().cloned());
         }
-        result.insert(store.clone(), prune(candidates, &nodes, store)?);
+        let expected = prune(candidates, &settings_nodes)?;
+        let frontier = if node.in_subtree(SETTINGS) {
+            if Snapshot::from(node.subtree_parents(SETTINGS)?) != expected {
+                return Err(AuthError::InvalidAuthConfiguration {
+                    reason: "settings parents differ from main-parent causal frontier".to_string(),
+                }
+                .into());
+            }
+            settings_nodes.insert(node.id(), node);
+            Snapshot::from(vec![node.id()])
+        } else {
+            expected
+        };
+        frontiers.insert(node.id(), frontier);
     }
-    Ok(result)
-}
-
-pub(crate) fn causal_settings_frontier(entries: &[Entry], tips: &[ID]) -> Result<Snapshot> {
-    Ok(
-        causal_store_frontiers(entries, tips, &[SETTINGS.to_string()])?
-            .remove(SETTINGS)
-            .expect("requested settings frontier"),
-    )
+    let mut candidates = Vec::new();
+    for tip in tips {
+        let frontier = frontiers
+            .get(tip)
+            .ok_or_else(|| AuthError::InvalidAuthConfiguration {
+                reason: "missing main tip for settings frontier".to_string(),
+            })?;
+        candidates.extend(frontier.iter().cloned());
+    }
+    prune(candidates, &settings_nodes)
 }
 
 impl DerivedFloors {

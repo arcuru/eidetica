@@ -37,7 +37,7 @@ use crate::{
 mod tests;
 mod validation;
 
-use validation::CausalFrontiers;
+use validation::ParentSettings;
 
 tokio::task_local! {
     /// Set while a `verify()`/validation pass is on the call stack.
@@ -1835,10 +1835,10 @@ impl Database {
         let instance = self.instance()?;
         let backend = instance.backend();
 
-        let mut frontiers = match self.causal_frontiers(entry).await? {
-            CausalFrontiers::Incomplete(_) => return Ok(PinnedSettings::Incomplete),
-            CausalFrontiers::Invalid => return Ok(PinnedSettings::Invalid),
-            CausalFrontiers::Complete(frontiers) => frontiers,
+        let expected = match self.validate_parent_settings(entry).await? {
+            ParentSettings::Incomplete(_) => return Ok(PinnedSettings::Incomplete),
+            ParentSettings::Invalid => return Ok(PinnedSettings::Invalid),
+            ParentSettings::Complete(settings) => settings,
         };
 
         // The pin: `_settings` snapshot recorded in the entry's signed metadata.
@@ -1855,9 +1855,6 @@ impl Database {
         // pre-write settings frontier from the entry's MAIN parents. This
         // remains historical even if a revocation has landed on another branch.
         let parents = entry.parents()?;
-        let expected = frontiers
-            .remove(SETTINGS)
-            .expect("requested settings frontier");
         if Snapshot::from(settings_tips) != expected {
             return Ok(PinnedSettings::Invalid);
         }
@@ -2106,7 +2103,8 @@ impl Database {
     ///   sync) → left `Unverified` (retried once the ancestor verifies / the
     ///   missing entry arrives);
     /// - main or effective Store height not strictly greater than its Verified parent's → `Failed`;
-    /// - Store parents differ from the complete main-ancestry Store frontier → `Failed`;
+    /// - named Store parents outside main ancestry, the database or the Store → `Failed`;
+    /// - `_settings` parents differ from the complete causal settings frontier → `Failed`;
     /// - pinned `_settings` not fully held locally → left `Unverified`
     ///   (a later pass retries once the set syncs in);
     /// - signature + permissions valid → promoted to `Verified`;
