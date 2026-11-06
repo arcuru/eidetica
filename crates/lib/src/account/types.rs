@@ -12,30 +12,33 @@ use crate::{
     entry::ID,
 };
 
-/// Credentials for unlocking an account's root signing key.
-///
-/// For password-protected accounts, contains the salt (for Argon2id key derivation)
-/// and the encrypted root key (AES-256-GCM). Decryption failure IS password
-/// verification — no separate password hash is needed.
-/// For passwordless accounts, contains the unencrypted root key directly.
+/// Local login anchor: an explicit Account locator/key bundle and its login key.
+/// The public key is cross-checked against the unlocked authenticated payload.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountCredentials {
-    /// Public key (available without decryption)
     pub root_key_id: PublicKey,
-
-    /// Encrypted or unencrypted root private key
-    pub root_key: KeyStorage,
-
-    /// Salt for Argon2id key derivation (None for passwordless)
-    pub password_salt: Option<String>,
+    pub bundle: KeyStorage,
 }
 
-/// Instance-local login registration stored in the `_users` database.
+impl AccountCredentials {
+    pub(crate) fn unlock(
+        &self,
+        account_id: &ID,
+        password: Option<&str>,
+    ) -> crate::Result<super::UnlockedCredentials> {
+        let unlocked = self.bundle.unlock(account_id, password)?;
+        unlocked.signer(&self.root_key_id)?;
+        Ok(unlocked)
+    }
+}
+
+/// Instance-local login registration stored outside all Entry DAGs.
 ///
 /// The Table UUID and `username` identify a login on this instance, not the
 /// Account itself. `account_id` identifies the ordinary private root database.
-/// Credentials retain their existing storage layout; this is not a portable
-/// export format or a claim of instance-local private-key isolation.
+/// Credentials use the authenticated CredentialBundle format for protected logins.
+/// This is not a portable export or recovery backup.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountInfo {
     /// Unique username (login identifier)
@@ -89,40 +92,68 @@ pub struct AccountPreferences {
     pub properties: HashMap<String, String>,
 }
 
-/// How an account's private key is stored
-///
-/// Encrypted keys store AES-256-GCM ciphertext of a prefixed-string-encoded `PrivateKey`.
-/// Unencrypted keys store the `PrivateKey` directly (passwordless accounts only).
+/// Installation-local storage of one complete logical credential bundle.
+/// Protected logins use the same authenticated format as caller-held bundles.
+/// Passwordless storage is an explicit existing plaintext-local exception.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum KeyStorage {
-    /// Key is encrypted with a password-derived key (AES-256-GCM)
     Encrypted {
-        /// Encryption algorithm identifier
-        algorithm: String,
-        /// Encrypted prefixed-string-encoded PrivateKey
-        ciphertext: Vec<u8>,
-        /// Encryption nonce/IV (12 bytes for AES-GCM)
-        nonce: Vec<u8>,
+        bundle: super::CredentialBundle,
     },
-    /// Key is stored unencrypted (passwordless accounts only)
     Unencrypted {
-        /// PrivateKey stored directly — serde carries the signing algorithm tag
-        key: PrivateKey,
+        account_id: ID,
+        keys: Vec<PrivateKey>,
     },
 }
 
-/// Account's private key with database mappings
-///
-/// Keys can be either encrypted (for password-protected accounts) or
-/// unencrypted (for passwordless single-account mode).
+impl KeyStorage {
+    pub(crate) fn seal(
+        account_id: &ID,
+        keys: &[PrivateKey],
+        password: Option<&str>,
+    ) -> crate::Result<Self> {
+        match password {
+            Some(password) => Ok(Self::Encrypted {
+                bundle: super::CredentialBundle::seal(account_id, keys, password)?,
+            }),
+            None => super::UnlockedCredentials::passwordless(account_id.clone(), keys.to_vec())?
+                .storage(),
+        }
+    }
+
+    pub(crate) fn unlock(
+        &self,
+        account_id: &ID,
+        password: Option<&str>,
+    ) -> crate::Result<super::UnlockedCredentials> {
+        match (self, password) {
+            (Self::Encrypted { bundle }, Some(password)) => bundle.unlock_for(account_id, password),
+            (Self::Encrypted { .. }, None) => Err(super::AccountError::PasswordRequired {
+                operation: "unlock credential bundle".to_owned(),
+            }
+            .into()),
+            (
+                Self::Unencrypted {
+                    account_id: stored,
+                    keys,
+                },
+                None,
+            ) if stored == account_id => {
+                super::UnlockedCredentials::passwordless(stored.clone(), keys.clone())
+            }
+            _ => Err(super::AccountError::InvalidPassword.into()),
+        }
+    }
+}
+
+/// Public installation-local key metadata and database lookup hints.
+/// Private keys live together in the authenticated credential bundle, not here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountKey {
     /// Key identifier (the public key)
     pub key_id: PublicKey,
-
-    /// Key storage (encrypted ciphertext or plaintext PrivateKey)
-    pub storage: KeyStorage,
 
     /// Display name for this key
     pub display_name: Option<String>,
@@ -147,7 +178,7 @@ pub struct AccountKey {
 
 /// A database tracked by an account.
 ///
-/// Stored in the account's private database "databases" Table.
+/// Stored in this installation's native account-state record.
 /// Records which databases the account has added to their list, along with
 /// which key to use and sync preferences.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

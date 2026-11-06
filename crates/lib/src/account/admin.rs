@@ -15,9 +15,9 @@
 //! admin.create_account(NewAccount::passwordless("alice")).await?;
 //! ```
 //!
-//! Every operation signs `_users` / `_databases` writes with the account's
-//! **session key** (never the device key), so the same calls work on both
-//! local and remote instances.
+//! Promotion signs system Auth with the account's session key. Native login
+//! registration/listing use instance-admin-gated RPC on connected instances;
+//! passwords and password-protected plaintext keys remain client-side.
 
 use super::{session::AccountSession, system_databases};
 use crate::{Database, NewAccount, Result, auth::crypto::PublicKey, entry::ID};
@@ -43,13 +43,10 @@ impl<'a> InstanceAdmin<'a> {
 
     /// Create a new account.
     ///
-    /// Signs the `_users` write with this admin's session key and authors the
-    /// new account's database via the regular `Database::create` wire path. The
-    /// account-tree first-login bootstrap (root `AccountKey` row, device-key `Read`
-    /// grant) is deferred to first login, where the new account is themselves
-    /// the connection session and can author both writes directly. The result
-    /// is the same one code path on local and remote instances — no
-    /// daemon-side RPC and no plaintext password on the wire.
+    /// Authors the Account database with its new key and registers its wrapped
+    /// credentials in native local storage. Connected registration is gated by
+    /// the admin's session key; passwords and protected plaintext keys are not
+    /// sent to the daemon. First login retains the existing device-Read grant.
     ///
     /// Returns the new instance-local login ID (see
     /// [`AccountSession::login_id`]), not the Account root ID. Use
@@ -79,8 +76,8 @@ impl<'a> InstanceAdmin<'a> {
 
     /// List the login names of all accounts registered on this instance.
     ///
-    /// Reads `_users` via the admin's session key, so it works on both local
-    /// and remote instances.
+    /// Reads native local login names. Connected requests require instance-admin
+    /// on the daemon's `_users` Auth and return no credential records.
     pub async fn list_accounts(&self) -> Result<Vec<String>> {
         let signing_key = self.user.default_signing_key()?;
         let users_db = self

@@ -24,9 +24,7 @@ use tokio::net::{
 };
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
-use crate::account::AccountError;
-use crate::account::crypto::{decrypt_private_key, derive_encryption_key};
-use crate::account::types::{AccountInfo, KeyStorage};
+use crate::account::types::AccountInfo;
 use crate::auth::crypto::PrivateKey;
 use crate::auth::crypto::{PublicKey, create_challenge_response};
 use crate::auth::types::SigKey;
@@ -124,7 +122,7 @@ pub fn set_sweep_interval_for_test(d: std::time::Duration) {
 ///
 /// Holds only the public key the daemon verified during challenge-response.
 /// The plaintext signing key is intentionally **not** stored here — it lives
-/// in the `AccountSession::key_manager` session that owns this connection. The
+/// in the caller's `AccountSession` or independently keyed database handle. The
 /// daemon-side `ConnectionState::Authenticated` is what carries the
 /// `login_id` (for chunk 6's cache scoping); the client doesn't need it.
 #[derive(Clone, Debug)]
@@ -240,6 +238,9 @@ struct RemoteConnectionInner {
     /// per-request wire chatter for the common case where a single per-DB
     /// key is reused across many ops.
     registered_keys: Mutex<HashSet<PublicKey>>,
+    /// Keep compound possession proofs and database requests outside a racing
+    /// login handshake, which replaces the server's connection keyset.
+    authentication: Mutex<()>,
     /// Per-tree subscription state. Entries are inserted on first call to
     /// [`RemoteConnection::subscribe_writes`] and never removed on success
     /// (subscriptions live for the connection's lifetime; the daemon scrubs
@@ -468,6 +469,9 @@ impl RemoteConnectionInner {
 #[derive(Clone)]
 pub struct RemoteConnection {
     inner: Arc<RemoteConnectionInner>,
+    /// A keyed database handle retains only its own signer, never a login's
+    /// entire bundle. It can renew possession after connection reauthentication.
+    signer: Option<PrivateKey>,
     /// `Some` on every user-facing handle; `None` on internal handles
     /// minted from a task that must not keep the connection alive (the
     /// sweep). Cloning a user handle clones the token, so teardown fires
@@ -552,6 +556,7 @@ impl RemoteConnection {
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
+            authentication: Mutex::new(()),
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             subscription_locks: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
@@ -581,7 +586,16 @@ impl RemoteConnection {
         tokio::spawn(run_sweep_task(weak_for_sweep));
 
         let _live = Some(Arc::new(ConnLiveness(inner.clone())));
-        Ok(Self { inner, _live })
+        Ok(Self {
+            inner,
+            _live,
+            signer: None,
+        })
+    }
+
+    pub(crate) fn with_signer(mut self, signer: PrivateKey) -> Self {
+        self.signer = Some(signer);
+        self
     }
 
     /// Attach an `Instance` to this connection so the reader task can
@@ -668,6 +682,10 @@ impl RemoteConnection {
         identity: SigKey,
         op: DatabaseOp,
     ) -> crate::Result<ServiceResponse> {
+        let _guard = self.inner.authentication.lock().await;
+        if let Some(signer) = &self.signer {
+            self.register_session_key_locked(signer).await?;
+        }
         self.request_ok(ServiceRequest::AuthenticatedDb(Box::new(
             AuthenticatedDbRequest {
                 root_id,
@@ -676,6 +694,100 @@ impl RemoteConnection {
             },
         )))
         .await
+    }
+
+    /// Prove a caller-owned signer, with no daemon credential-store dependency.
+    pub(crate) async fn authenticate_signer(&self, signer: &PrivateKey) -> crate::Result<()> {
+        let _guard = self.inner.authentication.lock().await;
+        self.inner.registered_keys.lock().await.clear();
+        let response = self
+            .request_ok(ServiceRequest::SignerChallenge {
+                pubkey: signer.public_key(),
+            })
+            .await?;
+        let challenge = match response {
+            ServiceResponse::SignerChallenge { challenge } => challenge,
+            other => return Err(unexpected_response("SignerChallenge", &other)),
+        };
+        let signature = create_challenge_response(&challenge, signer);
+        match self
+            .request_ok(ServiceRequest::TrustedLoginProve { signature })
+            .await?
+        {
+            ServiceResponse::TrustedLoginOk => {
+                self.record_authenticated_key(signer.public_key()).await;
+                Ok(())
+            }
+            other => Err(unexpected_response("TrustedLoginOk", &other)),
+        }
+    }
+
+    async fn record_authenticated_key(&self, pubkey: PublicKey) {
+        *self.inner.session_write() = Some(SessionState {
+            session_pubkey: pubkey.clone(),
+        });
+        // Reauthentication replaces the server keyset. Mirror it exactly;
+        // retaining this cache would skip required possession proofs on reopen.
+        let mut keys = self.inner.registered_keys.lock().await;
+        keys.clear();
+        keys.insert(pubkey);
+    }
+
+    pub(crate) async fn register_local_account(
+        &self,
+        login_id: &str,
+        info: &AccountInfo,
+    ) -> crate::Result<()> {
+        match self
+            .request_ok(ServiceRequest::RegisterLocalAccount {
+                login_id: login_id.to_owned(),
+                account_info: Box::new(info.clone()),
+            })
+            .await?
+        {
+            ServiceResponse::Ok => Ok(()),
+            other => Err(unexpected_response("Ok", &other)),
+        }
+    }
+    pub(crate) async fn list_local_accounts(&self) -> crate::Result<Vec<String>> {
+        match self.request_ok(ServiceRequest::ListLocalAccounts).await? {
+            ServiceResponse::LocalAccounts(names) => Ok(names),
+            other => Err(unexpected_response("LocalAccounts", &other)),
+        }
+    }
+
+    pub(crate) async fn local_account_state(
+        &self,
+        login_id: &str,
+    ) -> crate::Result<Option<Vec<u8>>> {
+        match self
+            .request_ok(ServiceRequest::LocalAccountState {
+                login_id: login_id.to_owned(),
+            })
+            .await?
+        {
+            ServiceResponse::LocalAccountState(bytes) => Ok(bytes),
+            other => Err(unexpected_response("LocalAccountState", &other)),
+        }
+    }
+
+    pub(crate) async fn exchange_local_account_state(
+        &self,
+        login_id: &str,
+        expected: Option<&[u8]>,
+        value: &[u8],
+    ) -> crate::Result<bool> {
+        match self
+            .request_ok(ServiceRequest::ExchangeLocalAccountState {
+                login_id: login_id.to_owned(),
+                expected: expected.map(<[u8]>::to_vec),
+                value: value.to_vec(),
+            })
+            .await?
+        {
+            ServiceResponse::LocalAccountStateExchanged(changed) => Ok(changed),
+            other => Err(unexpected_response("LocalAccountStateExchanged", &other)),
+        }
     }
 
     /// Authenticate this connection as `username` by completing the
@@ -687,13 +799,13 @@ impl RemoteConnection {
     /// signing key in-process (or take it raw for passwordless users) → sign
     /// the challenge → send `TrustedLoginProve` → expect `TrustedLoginOk`.
     ///
-    /// The daemon never sees the password or the plaintext signing key; the
+    /// For password-protected logins the daemon never sees the password or plaintext signing key; the
     /// trust model for shipping the encrypted blob over the socket is captured
     /// in the Service Architecture doc § Trusted login threat model.
     ///
     /// On success the connection's server-side state is `Authenticated`. The
-    /// caller receives the user's record and the decrypted root key so it can
-    /// build the `AccountSession` session without a second wire read of `_users` —
+    /// caller receives the record and its unlocked credential owner so it can
+    /// build the `AccountSession` without a second login-directory lookup —
     /// reads through the wire always travel as the authenticated user, which
     /// with the per-tree gate means a fresh user without permissions on
     /// `_users` would not be able to re-fetch it.
@@ -701,7 +813,10 @@ impl RemoteConnection {
         &self,
         username: &str,
         password: Option<&str>,
-    ) -> crate::Result<(String, AccountInfo, PrivateKey)> {
+    ) -> crate::Result<(String, AccountInfo, crate::account::UnlockedCredentials)> {
+        let _guard = self.inner.authentication.lock().await;
+        // A failed/abandoned attempt also invalidates the server keyset.
+        self.inner.registered_keys.lock().await.clear();
         // Step 1: name the user, receive challenge + user record.
         let resp = self
             .request_ok(ServiceRequest::TrustedLoginAccount {
@@ -717,30 +832,10 @@ impl RemoteConnection {
             other => return Err(unexpected_response("TrustedLoginChallenge", &other)),
         };
 
-        // Step 2: decrypt the root signing key locally. Cross-check that the
-        // caller's password/no-password matches the credential's salt/no-salt;
-        // a mismatch is the same UX-level error as a wrong password.
+        // Unlock the authenticated Account locator and all supplied keys locally.
         let credentials = &account_info.credentials;
-        let is_passwordless = credentials.password_salt.is_none();
-        let signing_key = match (&credentials.root_key, password, is_passwordless) {
-            (KeyStorage::Unencrypted { key }, None, true) => key.clone(),
-            (
-                KeyStorage::Encrypted {
-                    ciphertext, nonce, ..
-                },
-                Some(pwd),
-                false,
-            ) => {
-                let salt = credentials.password_salt.as_deref().ok_or_else(|| {
-                    AccountError::PasswordRequired {
-                        operation: "decrypt root key for remote login".to_string(),
-                    }
-                })?;
-                let kek = derive_encryption_key(pwd, salt)?;
-                decrypt_private_key(ciphertext, nonce, &kek)?
-            }
-            _ => return Err(AccountError::InvalidPassword.into()),
-        };
+        let unlocked = credentials.unlock(&account_info.account_id, password)?;
+        let signing_key = unlocked.signer(&credentials.root_key_id)?;
 
         // Step 3: sign the challenge and send the proof.
         let signature = create_challenge_response(&challenge, &signing_key);
@@ -749,23 +844,9 @@ impl RemoteConnection {
             .await?;
         match resp {
             ServiceResponse::TrustedLoginOk => {
-                // Stash the verified session pubkey so subsequent
-                // `backend_request` calls can populate the `Authenticated`
-                // envelope's identity field.
-                *self.inner.session_write() = Some(SessionState {
-                    session_pubkey: credentials.root_key_id.clone(),
-                });
-                // The login pubkey is in the server-side session keyset by
-                // construction (the server seeds it there in
-                // `handle_trusted_login_prove`). Mirror that here so
-                // `register_session_key` short-circuits without a wire
-                // round-trip when called for the login key.
-                self.inner
-                    .registered_keys
-                    .lock()
-                    .await
-                    .insert(credentials.root_key_id.clone());
-                Ok((login_id, account_info, signing_key))
+                self.record_authenticated_key(credentials.root_key_id.clone())
+                    .await;
+                Ok((login_id, account_info, unlocked))
             }
             other => Err(unexpected_response("TrustedLoginOk", &other)),
         }
@@ -793,6 +874,11 @@ impl RemoteConnection {
     ///    { pubkey, signature }` → server verifies and inserts the pubkey
     ///    into its `session_keyset`.
     pub(crate) async fn register_session_key(&self, signing_key: &PrivateKey) -> crate::Result<()> {
+        let _guard = self.inner.authentication.lock().await;
+        self.register_session_key_locked(signing_key).await
+    }
+
+    async fn register_session_key_locked(&self, signing_key: &PrivateKey) -> crate::Result<()> {
         let pubkey = signing_key.public_key();
         {
             let cache = self.inner.registered_keys.lock().await;
@@ -1796,7 +1882,11 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
         // batch handle drops at the end of a tick. The strong `inner`
         // moved in here is released when `conn` drops at the end of the
         // tick, before the next `upgrade()`.
-        let conn = RemoteConnection { inner, _live: None };
+        let conn = RemoteConnection {
+            inner,
+            _live: None,
+            signer: None,
+        };
 
         for tree_id in candidates {
             // Per-tree fence: hold across the full Unsubscribe RTT so
@@ -1927,13 +2017,21 @@ mod tests {
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
+            authentication: Mutex::new(()),
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             subscription_locks: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             tree_workers: std::sync::Mutex::new(HashMap::new()),
             reader_abort: std::sync::Mutex::new(None),
         });
-        (RemoteConnection { inner, _live: None }, peer)
+        (
+            RemoteConnection {
+                inner,
+                _live: None,
+                signer: None,
+            },
+            peer,
+        )
     }
 
     /// Regression: `transition_to_idle` must not flip a tree to `Idle` while

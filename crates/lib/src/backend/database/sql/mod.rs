@@ -1164,6 +1164,42 @@ impl BackendImpl for SqlxBackend {
         traversal::get_path_from_to(self, tree_id, store, from_id, to_ids).await
     }
 
+    async fn local_account_record(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        let row: Option<(Vec<u8>,)> =
+            sqlx::query_as("SELECT data FROM local_accounts WHERE name = $1")
+                .bind(name)
+                .fetch_optional(self.pool())
+                .await
+                .sql_context("Failed to read local account record")?;
+        Ok(row.map(|(data,)| data))
+    }
+
+    async fn compare_exchange_local_account_record(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool> {
+        let result = if let Some(expected) = expected {
+            sqlx::query("UPDATE local_accounts SET data = $1 WHERE name = $2 AND data = $3")
+                .bind(replacement).bind(name).bind(expected)
+                .execute(self.pool()).await
+        } else {
+            sqlx::query("INSERT INTO local_accounts (name, data) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING")
+                .bind(name).bind(replacement)
+                .execute(self.pool()).await
+        }.sql_context("Failed to persist local account record")?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn local_account_names(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM local_accounts ORDER BY name")
+            .fetch_all(self.pool())
+            .await
+            .sql_context("Failed to list local account names")?;
+        Ok(rows.into_iter().map(|(name,)| name).collect())
+    }
+
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {
         storage::get_instance_metadata(self).await
     }

@@ -8,7 +8,7 @@ Routine discovery goes through the session's reference operations below.
 
 An **AccountSession** is an authenticated, unlocked handle on one Instance, with decrypted keys and the existing database access, key management, sharing, and sync-preference operations.
 `Instance::login_account` returns a session; `NewAccount` supplies initial account creation settings, and `InstanceAdmin::create_account` creates subsequent accounts.
-`AccountSession::login_id()` identifies the instance-local login record, while `username()` is its local login name.
+`AccountSession::login_id()` identifies the instance-local login record, while `username()` is its local login name; both are empty for caller-held sessions, whose `account_info()` is `None`.
 `AccountInfo` is that registration record, not the portable Account itself.
 A person, group, or app can have an Account; it is not necessarily one account per process, device, or conversation.
 
@@ -16,19 +16,25 @@ A person, group, or app can have an Account; it is not necessarily one account p
 An Account and an Identity need not have a one-to-one relationship.
 Neither an organizational link nor Account membership adds a new Role or grants access to another database.
 
+The [explicit credential and signer API](../user_guide/account_credentials.md) supports caller-held keys and proof-only service connections without daemon login storage.
+Its [native local-record substrate](../internal/account_credentials.md) is separate from the Entry DAG.
+The ordinary login/key/preference writers also use native local records; AccountDB does not carry those records.
+
 ## Current custody and security boundary
 
-This API slice does **not** relocate private keys or establish complete portable-account/scoped-key isolation.
-The existing internal layout remains: `_users` contains login records and root credentials; the Account root contains `keys`, `databases`, and `settings` bookkeeping.
-The historical serialized field names and trusted-login message encoding are retained; the Rust API has no deprecated User aliases.
-No data rewrite, credential deletion, or live rollout is performed by this rename.
+Fresh Account histories contain public Auth and portable application references, not private-key/unlock records or installation activation preferences.
+Native `login:<name>` and `account-state:<UUID>` records hold convenience credentials and local bookkeeping; `_users` retains instance-admin Auth only.
+Password-protected convenience logins use the authenticated `CredentialBundle` format: the Account locator and explicit keys are one payload under the established Account Argon2id/AES-GCM primitives.
+Passwordless logins retain plaintext local storage.
+`AccountSession::from_credentials` consumes caller-unlocked credentials and an explicit Account key; `from_signer` accepts a signer plus Account locator and optional explicit Identity context.
+Both check Account Auth without a daemon login lookup and keep their own tracking/key hints in session memory.
+They do not enable daemon background synchronization or install a credential-store backend.
 
-Password-protected credentials use the existing Argon2id/AES-256-GCM path; passwordless credentials retain the existing unencrypted storage behavior.
-Client-side unlock, proof of possession, per-tree service authorization, signer selection, and embedded/service boundaries are unchanged.
-The trusted Unix socket login still assumes filesystem-trusted callers; it is not a network password protocol.
-See [Service Architecture](../internal/service.md) and [Key Management](key_management.md).
-Moving secrets to instance-local custody, joining an Account on another instance with distinct keys, and linked-account management are separate work.
-Do not infer those guarantees from the Account name.
+No historical key deletion, compatibility import, live migration or deployment occurs here.
+Old histories can still contain credentials and must not be advertised as scrubbed.
+Trusted Unix-socket clients still unlock and sign in-process; the optional dashboard is the documented daemon-process exception.
+See [local record formats and lifetimes](../internal/account_credentials.md).
+Distinct-key two-installation regressions preload independently authorized registrations; they do not implement the separate enrollment or linked-account management workflow.
 
 ## Application-owned root references
 
@@ -40,11 +46,11 @@ Applications store direct database IDs in their Account under a namespace and na
 
 The namespace separates applications that share one Account; the name is an application alias.
 Reference names must be nonempty and contain no dots; invalid names are rejected before reading or writing.
-Each namespace is kept in its own store inside the Account, apart from the Account's key and tracking stores, so a namespace cannot overwrite them.
+Each namespace is kept in its own Account store; local key/tracking records are outside the DAG altogether.
 There is no mandatory account-wide catalog, alias index, tags schema, or recursive activation.
 Reading an ID does not download, activate, or authorize the referenced database.
 Opening goes through the existing key and Auth path, exactly as `AccountSession::open_database(id)` does.
-The retained `databases` tracking store still supports key/sync bookkeeping; it is not the required discovery interface.
+The native `databases` map supports local activation bookkeeping; it is not a portable discovery interface.
 `find_database` remains an optional linear display-name search, not the root-reference path.
 
 ```rust,no_run
@@ -88,7 +94,7 @@ This slice adds no lock service or second job engine.
 The todo example initializes its reference only when `connect_or_create` creates a new embedded instance, under that backend's exclusive storage ownership.
 Returning login opens the `todo`/`list` reference and fails on missing or broken metadata rather than creating another database.
 This is not a distributed initialization recipe or a migration for older example files.
-Concurrent local login creation retains the existing behavior: duplicate usernames are detected by login and reported as `AccountError::DuplicateAccountsDetected`, not silently selected.
+Native local login insertion is create-if-absent; a concurrent duplicate name is refused.
 
 ### Portable group versus device-local peer selection
 
@@ -96,7 +102,7 @@ An app's shared group/root database ID belongs in its Account's application meta
 A peer database selected for one installation is an operational choice, not a universally selected peer for every installation of that Account.
 Consumers should keep that selection in their own instance-local configuration, or explicitly key it by a stable installation identity; they must not interpret a single portable `peer` field as the local choice everywhere.
 A missing local peer selection requires explicit initialization under the same serialization rule.
-This library slice neither defines a generic peer catalog nor changes the existing key/sync storage layout.
+No generic peer catalog is defined; key mappings and activation preferences are now installation-local.
 
 ## Sharing and bootstrap remain existing mechanisms
 
@@ -112,15 +118,14 @@ See [Bootstrapping](bootstrap.md) for request, transfer, approval, and retry beh
 
 ### Mapping persistence and retry safety
 
-Key mappings and tracked-database preferences are written together in the Account
-database. Staging a mapping does not update the session's key-manager cache: cache
-publication follows commit acknowledgement or a read-back of Verified persisted
-metadata. A failed or lost acknowledgement is not rollback; read-back can recover
+Key mappings and tracked-database preferences are written together in one native
+installation-local record. Staging a mapping does not update the session's key-manager cache: cache
+publication follows compare/exchange acknowledgement or a read-back of persisted
+local metadata. A failed or lost acknowledgement is not rollback; read-back can recover
 an already committed mapping while the operation still reports its error.
 
 Tracking rediscovers the valid SigKey even for an unchanged key, so a legacy or
-provisional identity is not retained merely because a row exists. Equivalent
-mapping and preference rows do not append identical configuration history.
+provisional identity is not retained merely because a row exists. Mapping and preference edits append no Account configuration history.
 A Pending, Rejected, or failed network result does not start Account bookkeeping or
 delete existing legacy rows; successful access must precede bookkeeping.
 An error during the later bookkeeping step can still follow persistence.
@@ -133,5 +138,4 @@ can still proceed without overwriting that changed row. Explicit `track_database
 and the split `record_database_access()` form instead treat supplied preferences
 as current intent. Split callers can use `record_database_access_if_unchanged()`
 with the row observed before their network wait to preserve an intervening change.
-This is an observed-state check, not a guarantee against every concurrent or
-distributed preference update.
+The observed preference check is inside the local compare/exchange retry; it does not coordinate choices across installations.

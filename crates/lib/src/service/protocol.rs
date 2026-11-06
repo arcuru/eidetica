@@ -6,13 +6,13 @@
 //! ## Request shape
 //!
 //! `ServiceRequest` is a flat enum holding pre-authentication lifecycle messages
-//! (`TrustedLoginAccount`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
+//! (`TrustedLoginAccount`, `SignerChallenge`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
 //! query, and an `AuthenticatedDb` wrapper that carries every storage operation
 //! (including any user-management writes against `_users`). The wrapper
 //! bundles the `(root_id, identity)` scope so the server can validate each
 //! op against the connection's session keyset and the target database's
 //! auth settings. Pre-auth verification of the session pubkey happens once at
-//! login via a challenge-response handshake.
+//! authentication via a challenge-response handshake.
 //!
 //! The login lifecycle is **trusted** in the sense that the daemon ships the
 //! user's encrypted credentials (salt + AES-GCM ciphertext) to anyone who can
@@ -27,7 +27,7 @@
 //!
 //! `AuthenticatedDb` requests carry the caller's `root_id`/`identity` and are
 //! gated per-tree by the daemon's permission check; clients populate these
-//! from the session established by the `TrustedLogin*` flow.
+//! from the session established by trusted login or proof of a caller-held signer.
 
 use std::collections::BTreeMap;
 
@@ -80,7 +80,7 @@ pub struct HandshakeAck {
 // ===========================================================================
 // Database-level wire API.
 //
-// Every storage operation rides this single op enum: the server runs the
+// Every tree-scoped storage operation rides this single op enum: the server runs the
 // `Database` layer on its local instance, so verify-on-read and the Verified
 // frontier are server-side by construction, and every op is intrinsically
 // (tree, store, identity)-scoped. Carried in `ServiceRequest::AuthenticatedDb`.
@@ -372,10 +372,15 @@ pub enum ServiceRequest {
     #[serde(rename = "TrustedLoginUser")]
     TrustedLoginAccount { username: String },
     /// Step 2 of the trusted login flow. Client returns a signature over the
-    /// challenge from `TrustedLoginAccount`, computed with the user's root key.
-    /// Server verifies against the stored pubkey and, on success, marks the
+    /// challenge from `TrustedLoginAccount` or `SignerChallenge`, computed with
+    /// the selected private key. Server verifies the bound pubkey and marks the
     /// connection authenticated.
     TrustedLoginProve { signature: Vec<u8> },
+
+    /// Authenticate a caller-held signer without daemon login storage. The
+    /// challenge proves possession only; all existing per-tree Auth gates apply.
+    /// Complete with `TrustedLoginProve` on the same trusted local connection.
+    SignerChallenge { pubkey: PublicKey },
 
     // === Pre-auth: queries safe before login ===
     /// Fetch the server's instance metadata (including device id). Used by
@@ -403,6 +408,24 @@ pub enum ServiceRequest {
         signature: Vec<u8>,
     },
 
+    /// Register a new instance-local login. Requires instance-admin; contains
+    /// only already-wrapped credentials for password-protected logins.
+    RegisterLocalAccount {
+        login_id: String,
+        account_info: Box<AccountInfo>,
+    },
+    /// List login names, instance-admin only. Never returns personal bundles.
+    ListLocalAccounts,
+    /// Read only the authenticated login's installation-local state. An
+    /// explicit signer connection without a login record has no such scope.
+    LocalAccountState { login_id: String },
+    /// Atomic observed-byte replacement within that same login scope.
+    ExchangeLocalAccountState {
+        login_id: String,
+        expected: Option<Vec<u8>>,
+        value: Vec<u8>,
+    },
+
     // === Post-auth: ticket bootstrap through the daemon's sync engine ===
     /// Step 1 of joining a database from a ticket. The daemon races the
     /// ticket's address hints with its own transports and returns the route,
@@ -416,8 +439,8 @@ pub enum ServiceRequest {
     /// connection's session keyset (see `SessionKeyRegister`).
     TicketBootstrap(Box<TicketBootstrapRequest>),
 
-    // === Authenticated wrapper for every storage operation ===
-    /// All storage ops travel inside this wrapper. The inner
+    // === Authenticated wrapper for tree-scoped storage operations ===
+    /// Tree-scoped storage ops travel inside this wrapper. The inner
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
     /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
@@ -553,10 +576,10 @@ pub enum ServiceResponse {
     /// round-trip, and then build the `AccountSession` session from data the daemon
     /// already returned — no second wire read of `_users` is required.
     ///
-    /// `account_info.credentials` carries the (encrypted) root private key, its
-    /// `KeyStorage` envelope (algorithm/ciphertext/nonce for password-protected
-    /// users, raw `PrivateKey` for passwordless users), and the Argon2id salt
-    /// when password-protected. The non-credential fields (account_id,
+    /// `account_info.credentials` carries the public login key ID and a
+    /// `KeyStorage` bundle. Protected logins authenticate the Account locator
+    /// and explicit keys in the versioned `CredentialBundle` envelope;
+    /// passwordless logins deliberately carry a plaintext locator/key list. The non-credential fields (account_id,
     /// status, timestamps) are what `AccountSession::new` consumes after the proof
     /// step succeeds. See § Trusted login threat model in the Service
     /// Architecture doc for why this is safe to ship to anyone who can
@@ -570,6 +593,8 @@ pub enum ServiceResponse {
     },
     /// Trusted login succeeded; the connection is now authenticated.
     TrustedLoginOk,
+    /// Challenge for an explicit client-held signer (no credential record).
+    SignerChallenge { challenge: Vec<u8> },
     /// Challenge bytes returned in response to `SessionKeyChallenge`. The
     /// client signs these with the named pubkey's private key and returns the
     /// signature in `SessionKeyRegister`.
@@ -581,6 +606,12 @@ pub enum ServiceResponse {
         peer: PublicKey,
         tips: Snapshot,
     },
+    /// Installation-local login names.
+    LocalAccounts(Vec<String>),
+    /// Opaque installation-local state, never a replicated Entry.
+    LocalAccountState(Option<Vec<u8>>),
+    /// Whether observed-byte replacement succeeded.
+    LocalAccountStateExchanged(bool),
     /// Result of a ticket bootstrap (response to `TicketBootstrap`).
     TicketBootstrapOutcome(TicketBootstrapOutcome),
 }
@@ -589,6 +620,11 @@ pub enum ServiceResponse {
 // step with the wire enums above. Recognized payloads go through their original
 // serde decoders; a malformed known message must never become Unsupported.
 const REQUEST_VARIANTS: &[&str] = &[
+    "RegisterLocalAccount",
+    "ListLocalAccounts",
+    "LocalAccountState",
+    "ExchangeLocalAccountState",
+    "SignerChallenge",
     "TrustedLoginUser",
     "TrustedLoginProve",
     "GetInstanceMetadata",
@@ -621,6 +657,10 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "CreateTicket",
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
+    "LocalAccounts",
+    "LocalAccountState",
+    "LocalAccountStateExchanged",
+    "SignerChallenge",
     "Entry",
     "Entries",
     "Ids",
@@ -1086,12 +1126,13 @@ mod tests {
             account_id: ID::from_bytes("alice-db"),
             credentials: AccountCredentials {
                 root_key_id: pubkey.clone(),
-                root_key: KeyStorage::Encrypted {
-                    algorithm: "aes-256-gcm".to_string(),
-                    ciphertext: b"ct".to_vec(),
-                    nonce: b"123456789012".to_vec(),
+                bundle: KeyStorage::Encrypted {
+                    bundle: serde_json::from_value(serde_json::json!({
+                        "version": 1, "salt": "salt-string", "ciphertext": b"ct".to_vec(),
+                        "nonce": b"123456789012".to_vec(),
+                    }))
+                    .unwrap(),
                 },
-                password_salt: Some("salt-string".to_string()),
             },
             created_at: 1_700_000_000,
             status: AccountStatus::Active,
@@ -1118,9 +1159,10 @@ mod tests {
                     "user_database_id": account_info.account_id,
                     "credentials": {
                         "root_key_id": "PUBLIC_KEY",
-                        "root_key": {"type": "encrypted", "algorithm": "aes-256-gcm",
-                            "ciphertext": b"ct".to_vec(), "nonce": b"123456789012".to_vec()},
-                        "password_salt": "salt-string"
+                        "bundle": {"type": "encrypted", "bundle": {
+                            "version": 1, "salt": "salt-string",
+                            "ciphertext": b"ct".to_vec(), "nonce": b"123456789012".to_vec()
+                        }}
                     },
                     "created_at": 1_700_000_000, "status": "Active"
                 }
@@ -1139,8 +1181,8 @@ mod tests {
                 assert_eq!(ui2.account_id, account_info.account_id);
                 assert_eq!(ui2.credentials.root_key_id, pubkey);
                 assert_eq!(
-                    ui2.credentials.password_salt.as_deref(),
-                    Some("salt-string")
+                    serde_json::to_value(&ui2.credentials).unwrap(),
+                    serde_json::to_value(&account_info.credentials).unwrap()
                 );
             }
             _ => panic!("wrong variant"),

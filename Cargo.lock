@@ -1392,6 +1392,7 @@ dependencies = [
  "eidetica",
  "iroh",
  "serde",
+ "serde_json",
  "tokio",
  "tracing-subscriber",
  "uuid",

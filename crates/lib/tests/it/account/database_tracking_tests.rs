@@ -1,7 +1,7 @@
 //! Tests for AccountSession database tracking functionality
 
 use eidetica::{
-    Database, Error, ID, Instance, NewAccount, Result, Store,
+    Database, Error, ID, Instance, NewAccount, Result,
     account::types::SyncSettings,
     auth::{
         crypto::generate_keypair,
@@ -9,7 +9,6 @@ use eidetica::{
     },
     backend::database::InMemory,
     crdt::Doc,
-    store::{DocStore, StoreError},
 };
 
 use super::helpers::{login_account, setup_instance};
@@ -530,8 +529,9 @@ async fn split_access_bookkeeping_preserves_intervening_tracked_row() -> Result<
 /// The checked lookup never substitutes an absent row for invalid data.
 #[tokio::test]
 async fn test_checked_tracking_lookup_preserves_absence_and_decode_failure() -> Result<()> {
-    // Uses a genuine connected AccountSession under TEST_BACKEND=service.
-    let instance = setup_instance().await;
+    // Raw native-record fault injection needs an embedded backend. The service
+    // suite independently checks the connected lookup and scope boundary.
+    let instance = crate::helpers::test_local_instance().await;
     crate::helpers::create_account(&instance, "reader", None).await?;
     let mut user = login_account(&instance, "reader", None).await;
     let key = user.get_default_key()?;
@@ -558,42 +558,44 @@ async fn test_checked_tracking_lookup_preserves_absence_and_decode_failure() -> 
         assert_eq!(user.account().database().snapshot().await?, before);
     }
 
-    // Test-only raw access: corrupt an unrelated row first. A point lookup must
-    // not decode that row, unlike account-wide enumeration.
-    let tx = user.account().database().new_transaction().await?;
-    let raw = DocStore::load(&tx, "databases".into()).await?;
-    raw.set("unrelated", "not-json").await?;
-    tx.commit().await?;
-    assert!(user.tracked_database(db.root_id()).await?.is_some());
-    assert_eq!(user.tracked_database(&missing).await?, None);
+    // Native state is one typed record, not independently decoded Table rows.
+    // Corrupt storage must remain an error for both present and absent IDs.
+    let native = instance.backend().local_engine().unwrap();
+    let name = format!("account-state:{}", user.login_id());
+    let original = native.local_account_record(&name).await?.unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&original)?;
+    state["databases"][db.root_id().to_string()] = serde_json::json!("not a tracked row");
+    let malformed = serde_json::to_vec(&state)?;
     assert!(
-        user.databases().await.is_err(),
-        "positive control: corrupt row is detectable"
+        native
+            .compare_exchange_local_account_record(&name, Some(&original), &malformed)
+            .await?
+    );
+    let before = user.account().database().snapshot().await?;
+    for id in [db.root_id(), &missing] {
+        assert!(matches!(user.tracked_database(id).await,
+            Err(Error::Account(e)) if matches!(e.as_ref(), eidetica::account::AccountError::InvalidLocalState)));
+    }
+    assert!(user.databases().await.is_err());
+    assert_eq!(user.account().database().snapshot().await?, before);
+    assert_eq!(
+        native.local_account_record(&name).await?,
+        Some(malformed.clone())
     );
 
-    let tx = user.account().database().new_transaction().await?;
-    DocStore::load(&tx, "databases".into())
-        .await?
-        .set(db.root_id().to_string(), "not-json")
-        .await?;
-    tx.commit().await?;
-    let before = user.account().database().snapshot().await?;
-    assert!(matches!(user.tracked_database(db.root_id()).await,
-        Err(Error::Store(e)) if matches!(e.as_ref(), StoreError::DeserializationFailed { .. })));
-    assert_eq!(user.account().database().snapshot().await?, before);
-
-    let tx = user.account().database().new_transaction().await?;
-    DocStore::load(&tx, "databases".into())
-        .await?
-        .delete(db.root_id().to_string())
-        .await?;
-    tx.commit().await?;
+    assert!(
+        native
+            .compare_exchange_local_account_record(&name, Some(&malformed), &original)
+            .await?
+    );
+    user.untrack_database(db.root_id()).await?;
     assert_eq!(user.tracked_database(db.root_id()).await?, None);
+    assert_eq!(user.account().database().snapshot().await?, before);
     Ok(())
 }
 
 #[tokio::test]
-async fn test_checked_tracking_lookup_uses_constant_point_reads() -> Result<()> {
+async fn test_checked_tracking_lookup_uses_native_state_without_replicated_reads() -> Result<()> {
     // Embedded instrumentation is independent of wire timing.
     let (instance, mut user) = Instance::create_backend(
         Box::new(InMemory::new()),
@@ -605,13 +607,16 @@ async fn test_checked_tracking_lookup_uses_constant_point_reads() -> Result<()> 
     let missing = ID::from_bytes("not-tracked");
     let engine = instance.backend().local_engine().unwrap();
     let memory = engine.as_any().downcast_ref::<InMemory>().unwrap();
-    let mut baseline = None;
     for total in [1, 8, 32] {
         while user.databases().await?.len() < total {
             user.create_database(Doc::new(), &key).await?;
         }
-        // Warm the projection; cold reads may materialize historical Store state.
-        user.tracked_database(selected.root_id()).await?;
+        // The native record is the positive control: tracking exists without
+        // materializing or enumerating replicated Store state.
+        let name = format!("account-state:{}", user.login_id());
+        let bytes = engine.local_account_record(&name).await?.unwrap();
+        let state: serde_json::Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(state["databases"].as_object().unwrap().len(), total);
         let before = memory.store_state_read_counts();
         let history = memory.store_history_read_count();
         let snapshot = user.account().database().snapshot().await?;
@@ -620,9 +625,11 @@ async fn test_checked_tracking_lookup_uses_constant_point_reads() -> Result<()> 
         assert_eq!(user.account().database().snapshot().await?, snapshot);
         let after = memory.store_state_read_counts();
         let reads = (after.0 - before.0, after.1 - before.1);
-        assert!(reads.0 > 0, "positive control: selected rows were read");
-        assert_eq!(reads.1, 0, "lookup must not enumerate tracked rows");
-        assert_eq!(*baseline.get_or_insert(reads), reads);
+        assert_eq!(
+            reads,
+            (0, 0),
+            "native lookup must not read replicated records"
+        );
         assert_eq!(memory.store_history_read_count(), history);
         println!(
             "checked tracking: tracked={total}, point_reads={}, scan_pages={}",
@@ -631,9 +638,22 @@ async fn test_checked_tracking_lookup_uses_constant_point_reads() -> Result<()> 
     }
     let before = memory.store_state_read_counts();
     assert_eq!(user.databases().await?.len(), 32);
+    assert_eq!(memory.store_state_read_counts(), before);
+    let name = format!("account-state:{}", user.login_id());
+    let bytes = engine.local_account_record(&name).await?.unwrap();
     assert!(
-        memory.store_state_read_counts().1 > before.1,
-        "negative control: enumeration must be visible to the scan counter"
+        engine
+            .compare_exchange_local_account_record(&name, Some(&bytes), b"invalid native state")
+            .await?
+    );
+    assert!(
+        user.tracked_database(selected.root_id()).await.is_err(),
+        "positive control: lookup reaches native storage"
+    );
+    assert!(
+        engine
+            .compare_exchange_local_account_record(&name, Some(b"invalid native state"), &bytes)
+            .await?
     );
     Ok(())
 }

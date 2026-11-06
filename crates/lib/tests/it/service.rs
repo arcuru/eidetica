@@ -639,8 +639,17 @@ async fn test_database_submit_signed_entry() {
     let entry = Entry::builder(root_id.clone())
         .set_parents(parents)
         .set_subtree_data("submitted", b"{\"submitted\":true}")
+        .set_height(ctx.main_parents.iter().map(|(_, h)| *h).max().unwrap_or(0) + 1)
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": ctx.settings_tips,
+                "entropy": serde_json::Value::Null,
+            }))
+            .unwrap(),
+        )
         .build()
         .unwrap();
+    let entry = entry.with_auth(|auth| auth.key = identity.clone());
     let signature = sign_entry(&entry, &signing_key).unwrap();
     let entry = entry.with_auth(|auth| auth.signature = Some(signature));
     let entry_id = entry.id();
@@ -1253,7 +1262,7 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
             fixture.delegated_entry,
         )
         .await
-        .expect("submission stays accepted while verification remains incomplete");
+        .expect_err("unsettled submission must not acknowledge a successful commit");
 
     assert_eq!(
         receiver
@@ -1377,7 +1386,7 @@ async fn test_submit_delegated_snapshot_regression_is_failed() {
     remote_conn(&client)
         .submit_signed_entry(fixture.target_root, regressed.auth().key.clone(), regressed)
         .await
-        .unwrap();
+        .expect_err("quarantined snapshot regression must report commit rejection");
     assert_eq!(
         receiver
             .backend()
@@ -1393,8 +1402,8 @@ async fn test_submit_delegated_snapshot_regression_is_failed() {
 }
 
 /// An authenticated session submitting an entry whose signer holds no key
-/// on the target tree's auth: accepted at the socket (Change A skips the
-/// gate), but the server's verification pass marks it `Failed`/leaves
+/// on the target tree's auth: persisted for verification, but rejected in the
+/// response. The server's verification pass marks it `Failed`/leaves
 /// `Unverified`, so it never appears in the Verified frontier or any
 /// default read. Correctness is preserved by verification, not the gate.
 #[tokio::test]
@@ -1433,11 +1442,13 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let entry_id = entry.id();
     let admin_identity = eidetica::auth::types::SigKey::from_pubkey(&admin_pub);
 
-    // Accepted at the socket — Change A's relaxation. Verification is the
-    // boundary the server still enforces.
-    conn.submit_signed_entry(bob_root.clone(), admin_identity, entry)
+    // Stored for verification, but rejection must reach the transaction caller.
+    let error = conn
+        .submit_signed_entry(bob_root.clone(), admin_identity, entry)
         .await
-        .expect("submit accepted at socket; verification rejects in-handler");
+        .expect_err("verification rejection must not be reported as a successful commit");
+    assert!(matches!(error, eidetica::Error::Transaction(error)
+        if matches!(*error, eidetica::transaction::TransactionError::EntryValidationFailed)));
 
     // Bob's Verified frontier is unchanged: the unauthorized entry never
     // graduated past Unverified/Failed and is excluded from default reads.
@@ -2310,8 +2321,8 @@ async fn zero_budget_daemon_keeps_client_history_reads_available() {
         .unwrap();
 }
 
-/// AccountSession's checked lookup uses the authenticated service path, not a
-/// host-wide tracking scan or a default-filled client cache.
+/// AccountSession's checked lookup uses the login-scoped native service path,
+/// not replicated Store state or a default-filled client cache.
 #[tokio::test]
 async fn test_checked_tracking_lookup_service_read_scope_and_denial() {
     let (socket_path, _shutdown, server, _dir) = start_test_server().await;
@@ -2344,42 +2355,41 @@ async fn test_checked_tracking_lookup_service_read_scope_and_denial() {
     assert_eq!(row.database_id, *selected.root_id());
     assert_eq!(user.tracked_database(&missing).await.unwrap(), None);
     let after = memory.store_state_read_counts();
-    assert!(
-        after.0 > before.0,
-        "positive control: service fetched records"
+    assert_eq!(
+        after, before,
+        "native lookup must not read replicated records"
     );
-    assert_eq!(after.1, before.1, "selected lookup must not scan rows");
+    let name = format!("account-state:{}", owner.login_id());
+    let bytes = engine.local_account_record(&name).await.unwrap().unwrap();
+    assert!(
+        engine
+            .compare_exchange_local_account_record(&name, Some(&bytes), b"invalid native state")
+            .await
+            .unwrap()
+    );
+    for id in [selected.root_id(), &missing] {
+        assert!(
+            user.tracked_database(id).await.is_err(),
+            "native read failure is not absence"
+        );
+    }
+    assert!(
+        engine
+            .compare_exchange_local_account_record(&name, Some(b"invalid native state"), &bytes)
+            .await
+            .unwrap()
+    );
     assert_eq!(memory.store_history_read_count(), history);
     assert_eq!(
         owner.account().database().snapshot().await.unwrap(),
         snapshot
     );
 
-    // Revoke the Account handle's actual signing identity in this synthetic
-    // fixture. Being logged in must not bypass the daemon's per-tree gate.
-    let root_key = owner
-        .account()
-        .database()
-        .auth_identity()
-        .unwrap()
-        .hint()
-        .pubkey
-        .clone()
-        .unwrap();
-    let tx = owner.account().database().new_transaction().await.unwrap();
-    tx.get_settings()
-        .unwrap()
-        .set_auth_key(
-            &root_key,
-            eidetica::auth::AuthKey::new(
-                None,
-                Permission::Admin(0),
-                eidetica::auth::KeyStatus::Revoked,
-            ),
-        )
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    // Rebinding the connection cannot use a retained session to read a foreign
+    // login's native state. Native login scope is separate from per-tree Auth;
+    // live delegated target revocation is exercised by the test below.
+    create_user_via_admin(&server, "bob").await;
+    let _bob = client.login_account("bob", None).await.unwrap();
     let snapshot = owner.account().database().snapshot().await.unwrap();
     for id in [selected.root_id(), &missing] {
         let err = user
@@ -2390,7 +2400,7 @@ async fn test_checked_tracking_lookup_service_read_scope_and_denial() {
         // their module/kind prefix; this API does not redesign that contract.
         assert!(
             matches!(err, eidetica::Error::Io(ref e)
-            if e.to_string().starts_with("[auth::PermissionDenied]")),
+            if e.to_string().starts_with("[account::InsufficientPermissions]")),
             "{err:?}"
         );
     }
@@ -2532,4 +2542,214 @@ async fn live_delegation_service_rechecks_retained_session_identity() {
         retained.snapshot().await.is_err(),
         "a direct grant does not repair the removed delegated path"
     );
+}
+
+#[tokio::test]
+async fn test_signer_authentication_requires_fresh_proof_without_login_record() {
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (key, pubkey) = generate_keypair();
+    let (wrong, _) = generate_keypair();
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+    write_frame(
+        &mut writer,
+        &ServiceRequest::SignerChallenge {
+            pubkey: pubkey.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let first = match read_response(&mut reader).await {
+        ServiceResponse::SignerChallenge { challenge } => challenge,
+        other => panic!("expected proof-only challenge, got {other:?}"),
+    };
+    assert_eq!(first.len(), 32);
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&first, &wrong),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::Error(_)
+    ));
+    // Failed proof consumes the challenge, even when retried with the right key.
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&first, &key),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::Error(_)
+    ));
+    write_frame(
+        &mut writer,
+        &ServiceRequest::SessionKeyChallenge {
+            pubkey: pubkey.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::Error(_)
+    ));
+    write_frame(&mut writer, &ServiceRequest::SignerChallenge { pubkey })
+        .await
+        .unwrap();
+    let second = match read_response(&mut reader).await {
+        ServiceResponse::SignerChallenge { challenge } => challenge,
+        other => panic!("expected proof-only challenge, got {other:?}"),
+    };
+    assert_ne!(first, second);
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&second, &key),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+}
+
+#[tokio::test]
+async fn test_local_account_state_requires_exact_login_and_preserves_conflicts() {
+    let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "local-alice").await;
+    create_user_via_admin(&server, "local-bob").await;
+    let alice = server.login_account("local-alice", None).await.unwrap();
+    let bob = server.login_account("local-bob", None).await.unwrap();
+    let native = server.backend().local_engine().unwrap();
+    let alice_name = format!("account-state:{}", alice.login_id());
+    let bob_name = format!("account-state:{}", bob.login_id());
+    let alice_bytes = native
+        .local_account_record(&alice_name)
+        .await
+        .unwrap()
+        .unwrap();
+    let bob_bytes = native
+        .local_account_record(&bob_name)
+        .await
+        .unwrap()
+        .unwrap();
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LocalAccountState {
+            login_id: alice.login_id().to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(read_response(&mut reader).await, ServiceResponse::Error(_)),
+        "pre-auth read succeeded"
+    );
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginAccount {
+            username: "local-alice".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("expected challenge, got {other:?}"),
+    };
+    let signer = alice
+        .get_signing_key(&alice.get_default_key().unwrap())
+        .unwrap();
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, &signer),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    for request in [
+        ServiceRequest::LocalAccountState {
+            login_id: bob.login_id().to_owned(),
+        },
+        ServiceRequest::ExchangeLocalAccountState {
+            login_id: bob.login_id().to_owned(),
+            expected: Some(bob_bytes.clone()),
+            value: alice_bytes.clone(),
+        },
+        ServiceRequest::ListLocalAccounts,
+        ServiceRequest::RegisterLocalAccount {
+            login_id: uuid::Uuid::new_v4().to_string(),
+            account_info: Box::new(alice.account_info().unwrap().clone()),
+        },
+    ] {
+        write_frame(&mut writer, &request).await.unwrap();
+        assert!(
+            matches!(read_response(&mut reader).await, ServiceResponse::Error(_)),
+            "foreign state or admin operation succeeded"
+        );
+    }
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LocalAccountState {
+            login_id: alice.login_id().to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(read_response(&mut reader).await, ServiceResponse::LocalAccountState(Some(bytes)) if bytes == alice_bytes)
+    );
+    for (expected, exchanged) in [(Some(vec![0]), false), (Some(alice_bytes.clone()), true)] {
+        write_frame(
+            &mut writer,
+            &ServiceRequest::ExchangeLocalAccountState {
+                login_id: alice.login_id().to_owned(),
+                expected,
+                value: alice_bytes.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(read_response(&mut reader).await, ServiceResponse::LocalAccountStateExchanged(actual) if actual == exchanged)
+        );
+    }
+    assert_eq!(
+        native.local_account_record(&bob_name).await.unwrap(),
+        Some(bob_bytes)
+    );
+    assert_eq!(
+        native.local_account_record(&alice_name).await.unwrap(),
+        Some(alice_bytes)
+    );
+    for entry in native
+        .get_tree(
+            &native
+                .get_instance_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .users_db,
+        )
+        .await
+        .unwrap()
+    {
+        assert!(!entry.in_subtree("users"));
+        assert!(!entry.in_subtree("last_login"));
+    }
 }
