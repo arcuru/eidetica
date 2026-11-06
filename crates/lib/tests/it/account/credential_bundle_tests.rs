@@ -157,7 +157,10 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
         .unwrap();
     let root = first.get_default_key().unwrap();
     let a = first.add_private_key(Some("first")).await.unwrap();
-    let retained = first.create_database(eidetica::crdt::Doc::new(), &a).await.unwrap();
+    let retained = first
+        .create_database(eidetica::crdt::Doc::new(), &a)
+        .await
+        .unwrap();
     let (imported, b) = generate_keypair();
     assert_eq!(
         stale
@@ -230,11 +233,49 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
     // Reauthentication must not silently replace it with the login root key.
     let tx = retained.new_transaction().await.unwrap();
     tx.get_store::<eidetica::store::DocStore>("data")
-        .await.unwrap().set("after-relogin", "written").await.unwrap();
+        .await
+        .unwrap()
+        .set("after-relogin", "written")
+        .await
+        .unwrap();
     let entry = tx.commit().await.unwrap();
     eidetica::auth::crypto::verify_entry_signature(&retained.get_entry(entry).await.unwrap(), &a)
         .unwrap();
+    let (login, read) = tokio::join!(
+        client.login_account("local", Some("password")),
+        retained.snapshot(),
+    );
+    login.unwrap();
+    read.unwrap();
     returned.logout().unwrap();
+    server
+        .login_account("local", Some("password"))
+        .await
+        .unwrap()
+        .admin()
+        .await
+        .unwrap()
+        .create_account(eidetica::NewAccount::passwordless("other"))
+        .await
+        .unwrap();
+    let other = client.login_account("other", None).await.unwrap();
+    assert!(
+        other.get_signing_key(&a).is_err(),
+        "another login inherited a private key"
+    );
+    assert!(!other.list_keys().unwrap().contains(&a));
+    // Replacing the connection login does not replace independently held keys.
+    let tx = retained.new_transaction().await.unwrap();
+    tx.get_store::<eidetica::store::DocStore>("data")
+        .await
+        .unwrap()
+        .set("other-login", "still-own-signer")
+        .await
+        .unwrap();
+    let entry = tx.commit().await.unwrap();
+    eidetica::auth::crypto::verify_entry_signature(&retained.get_entry(entry).await.unwrap(), &a)
+        .unwrap();
+    other.logout().unwrap();
     let current_bytes = backend.local_account_record(&name).await.unwrap().unwrap();
     let current: serde_json::Value = serde_json::from_slice(&current_bytes).unwrap();
     assert_ne!(
