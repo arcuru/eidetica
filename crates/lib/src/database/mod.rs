@@ -1755,10 +1755,20 @@ impl Database {
         }
         let entry = self.get_entry(entry_id).await?;
 
+        self.validate_historical_entry_auth(&entry).await
+    }
+
+    /// Native authentication of a candidate as well as an already stored entry.
+    /// Only the local daemon may preflight a remote candidate: clients do not
+    /// hold the canonical verification evidence used by delegated floors.
+    pub(crate) async fn validate_historical_entry_auth(&self, entry: &Entry) -> Result<bool> {
+        if !entry.in_tree(self.root_id()) {
+            return Ok(false);
+        }
         // Validate against the `_settings` the entry pins, not current
         // settings — so a later key revocation cannot retroactively
         // invalidate (or validate) historical entries.
-        match self.get_historical_settings_for_entry(&entry).await? {
+        match self.get_historical_settings_for_entry(entry).await? {
             // We do not hold the pinned `_settings` set, so we cannot make a
             // verification decision: report not-verified rather than guess.
             PinnedSettings::Incomplete | PinnedSettings::Invalid => Ok(false),
@@ -1766,7 +1776,7 @@ impl Database {
                 let instance = self.instance()?;
                 let mut validator = AuthValidator::new();
                 validator
-                    .validate_entry(&entry, &auth_settings, Some(&instance))
+                    .validate_entry(entry, &auth_settings, Some(&instance))
                     .await
             }
         }

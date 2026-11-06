@@ -1322,6 +1322,29 @@ impl RemoteConnection {
         }
     }
 
+    /// Preflight a delegated commit without storing the candidate. The daemon
+    /// derives pinned settings itself and checks complete Verified proof/floors.
+    pub(crate) async fn validate_delegated_entry(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        entry: Entry,
+    ) -> crate::Result<bool> {
+        let resp = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::ValidateDelegatedEntry {
+                    entry: Box::new(entry),
+                },
+            )
+            .await?;
+        match resp {
+            ServiceResponse::EntrySignatureValid(valid) => Ok(valid),
+            other => Err(unexpected_response("EntrySignatureValid", &other)),
+        }
+    }
+
     /// Subtree tips reachable from given main-tree entries.
     pub async fn store_snapshot_at(
         &self,

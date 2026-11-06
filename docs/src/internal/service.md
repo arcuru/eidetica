@@ -170,6 +170,7 @@ Every storage operation rides a single `DatabaseOp` enum carried in `Authenticat
 | `GetStoreTipsUpToEntries { store, .. }`         | Store tips reachable from given main-tree entry IDs. Read.                                                                                                                       |
 | `ComputeMergeState { store, .. }`               | Lowest common ancestor + path to tip entries in a store DAG, fused into one RPC. Read.                                                                                           |
 | `GetEntry { id }`                               | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                  |
+| `ValidateDelegatedEntry { entry }`              | Preflight a connected delegated commit without storing it; native historical validation and per-hop proof Read gates.                                                            |
 | `VerifyEntrySignature { id }`                   | Re-run native historical authentication for one Entry; target and delegated-proof Read gates apply.                                                                              |
 | `CreateTicket`                                  | Build a point-in-time database locator after the request is gated for Read on the target database.                                                                               |
 | Store-state resolve / staging / record get/scan | Resolve, build, and lazily read cached state through opaque server-issued views onto published record sets. Read for reads, Write for staging.                                   |
@@ -179,7 +180,16 @@ Every storage operation rides a single `DatabaseOp` enum carried in `Authenticat
 The Entry must belong to the requested database; the session-keyset-validated acting identity needs current Read on that database and every claimed delegated tree.
 The 10-step/64-tip bounds are checked before delegated Read queries.
 The verdict does not set verification status, acquire missing evidence or fall back to privileged reads; access gates may still perform their normal opportunistic verification.
-Older v0 peers follow the compatibility limits above.
+`ValidateDelegatedEntry` uses the same native historical validator for a candidate not yet stored.
+Connected delegated transactions preflight here before submitting; direct and unsigned validation remain local and require no attached private key.
+The daemon derives the candidate's settings pin from its main ancestry, rather than accepting client-supplied auth settings or verification status.
+Target membership and path bounds are checked before proof queries.
+Each proof tree requires current Read under the session's acting identity, rebased to the remaining delegation suffix when that tree is on the acting path.
+For a target → intermediate → identity chain, the intermediate is read using identity → key, and the identity tree using the direct key; a direct grant on the intermediate is not required.
+The candidate's signing hint never replaces the session identity.
+Only a verdict is returned, with no proof contents; denied proof reads retain the normal permission-denial redaction.
+Submission still stores as Unverified and independently runs the daemon's verifier.
+Older v0 peers follow the compatibility limits above; unsupported preflight fails the commit without a validation fallback.
 
 Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and raw verification-status/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
 

@@ -214,6 +214,10 @@ pub enum DatabaseOp {
     /// Re-run native historical authentication for an entry in this database.
     /// Read-gated; never accepts client-supplied verification status.
     VerifyEntrySignature { id: ID },
+    /// Validate a not-yet-stored delegated commit using daemon-owned historical
+    /// settings and verification evidence. Gate Read on the target and proof
+    /// trees; return only an authentication verdict, never proof contents.
+    ValidateDelegatedEntry { entry: Box<Entry> },
 
     /// Rewrite the daemon's instance metadata (system-DB pointers). Gated by
     /// `Admin` on `_databases` (a daemon-global system tree, resolved
@@ -287,6 +291,7 @@ impl DatabaseOp {
             | DatabaseOp::ComputeMergeState { .. }
             | DatabaseOp::GetEntry { .. }
             | DatabaseOp::VerifyEntrySignature { .. }
+            | DatabaseOp::ValidateDelegatedEntry { .. }
             | DatabaseOp::ResolveStoreState { .. }
             | DatabaseOp::StoreStateRecordGet { .. }
             | DatabaseOp::StoreStateRecordScan { .. }
@@ -615,6 +620,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "ComputeMergeState",
     "GetEntry",
     "VerifyEntrySignature",
+    "ValidateDelegatedEntry",
     "SetInstanceMetadata",
     "SubscribeWrites",
     "UnsubscribeWrites",

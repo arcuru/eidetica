@@ -1230,6 +1230,60 @@ async fn dispatch_database_op(
             ))
         }
 
+        DatabaseOp::ValidateDelegatedEntry { entry } => {
+            use crate::auth::validation::delegation::{MAX_DELEGATION_STEPS, MAX_DELEGATION_TIPS};
+            // Check scope before inspecting dependencies. This is not submission
+            // and must never store a foreign, invalid, or incomplete candidate.
+            if !entry.in_tree(&root_id) || entry.validate().is_err() {
+                return Ok(ServiceResponse::EntrySignatureValid(false));
+            }
+            let SigKey::Delegation { path, .. } = &entry.auth().key else {
+                return Ok(ServiceResponse::EntrySignatureValid(false));
+            };
+            if path.is_empty()
+                || path.len() > MAX_DELEGATION_STEPS
+                || path
+                    .iter()
+                    .any(|step| step.tips.len() > MAX_DELEGATION_TIPS)
+            {
+                return Ok(ServiceResponse::EntrySignatureValid(false));
+            }
+            for step in path {
+                // Rebase the *acting* identity to the tree being read. In an
+                // A -> B -> key chain, B authorizes A's reads via B -> key,
+                // not by pretending the final key is directly declared in A.
+                // Never use the candidate's signer as the session's identity.
+                let proof_identity = match identity {
+                    SigKey::Delegation { path, hint } => {
+                        match path.iter().position(|s| s.tree == step.tree) {
+                            Some(index) if index + 1 == path.len() => {
+                                SigKey::Direct { hint: hint.clone() }
+                            }
+                            Some(index) => SigKey::Delegation {
+                                path: path[index + 1..].to_vec(),
+                                hint: hint.clone(),
+                            },
+                            None => identity.clone(),
+                        }
+                    }
+                    _ => identity.clone(),
+                };
+                gate_tree_permission(
+                    instance,
+                    acting_pubkey,
+                    &proof_identity,
+                    &step.tree,
+                    Permission::Read,
+                    true,
+                )
+                .await?;
+            }
+            let db = Database::open(instance, &root_id).await?;
+            Ok(ServiceResponse::EntrySignatureValid(
+                db.validate_historical_entry_auth(&entry).await?,
+            ))
+        }
+
         DatabaseOp::GetVerifiedTips => {
             // The server runs the Database layer, so `snapshot()` returns the
             // Verified frontier by construction — no client-side verify, no

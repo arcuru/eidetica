@@ -1798,9 +1798,37 @@ impl Transaction {
         let instance = self.db.instance()?;
 
         // Validate entry (signature + permissions)
-        let is_valid = validator
-            .validate_entry(&entry, &auth_settings_for_validation, Some(&instance))
-            .await?;
+        // A connected client cannot inspect daemon-local Verified evidence or
+        // derived floors. Preflight delegated candidates there, under this
+        // handle's acting identity, before storage. Direct/unsigned validation
+        // stays keyless and local; submit still independently verifies all entries.
+        #[cfg(all(unix, feature = "service"))]
+        let remote_verdict = if matches!(entry.auth().key, SigKey::Delegation { .. }) {
+            if let Some(conn) = self.db.ops().remote_connection() {
+                Some(
+                    conn.validate_delegated_entry(
+                        self.db.root_id().clone(),
+                        self.db.ops().remote_identity(),
+                        entry.clone(),
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        #[cfg(not(all(unix, feature = "service")))]
+        let remote_verdict: Option<bool> = None;
+        let is_valid = match remote_verdict {
+            Some(valid) => valid,
+            None => {
+                validator
+                    .validate_entry(&entry, &auth_settings_for_validation, Some(&instance))
+                    .await?
+            }
+        };
 
         if !is_valid {
             return Err(TransactionError::EntryValidationFailed.into());
