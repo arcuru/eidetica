@@ -1886,9 +1886,12 @@ async fn test_ids_added_guard_hides_only_failed_crafted_entries() {
     );
 }
 
-fn with_height_test_parents(entry: &Entry, parents: &[ID]) -> Entry {
+fn with_height_test_parents(entry: &Entry, parents: &[ID], store_parents: &[ID]) -> Entry {
     let mut value = serde_json::to_value(entry).unwrap();
     value["tree"]["parents"] = serde_json::json!(parents);
+    for store in value["subtrees"].as_array_mut().unwrap() {
+        store["parents"] = serde_json::json!(store_parents);
+    }
     serde_json::from_value(value).unwrap()
 }
 
@@ -1904,7 +1907,7 @@ async fn test_verify_height_checks_every_parent() {
     );
 
     for parents in [vec![parent.id(), high.id()], vec![high.id(), parent.id()]] {
-        let template = with_height_test_parents(&tip, &parents);
+        let template = with_height_test_parents(&tip, &parents, &[high.id()]);
         for height in [parent.height() + 1, high.height()] {
             let invalid = with_crafted_height(&template, height, &key);
             assert_eq!(
@@ -1928,10 +1931,10 @@ async fn test_verify_height_after_missing_parent_arrives() {
     for monotone in [false, true] {
         let (instance, db, key, tip, parent) = setup_height_test().await;
         let late_parent = with_crafted_height(&tip, parent.height() + 100, &key);
-        let template = with_height_test_parents(&tip, &[late_parent.id()]);
+        let template = with_height_test_parents(&tip, &[late_parent.id()], &[late_parent.id()]);
         let height = late_parent.height() + u64::from(monotone);
         let child = with_crafted_height(&template, height, &key);
-        let template = with_height_test_parents(&tip, &[child.id()]);
+        let template = with_height_test_parents(&tip, &[child.id()], &[child.id()]);
         let descendant = with_crafted_height(&template, height + 1, &key);
         let engine = instance.require_local_engine().unwrap();
 
@@ -1981,7 +1984,7 @@ async fn test_verify_height_failure_is_not_masked_by_missing_parent() {
         vec![parent.id(), missing.id()],
         vec![missing.id(), parent.id()],
     ] {
-        let template = with_height_test_parents(&tip, &parents);
+        let template = with_height_test_parents(&tip, &parents, &[parent.id()]);
         let child = with_crafted_height(&template, parent.height(), &key);
         assert_eq!(
             ingest_status(&instance, &db, child).await,

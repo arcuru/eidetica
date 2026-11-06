@@ -2533,3 +2533,67 @@ async fn live_delegation_service_rechecks_retained_session_identity() {
         "a direct grant does not repair the removed delegated path"
     );
 }
+/// A valid session/signature does not authorize malformed Store edges. The
+/// daemon retains submitted bytes but owns their acceptance decision.
+#[tokio::test]
+async fn test_submit_signed_entry_validates_store_frontier_and_height() {
+    let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket_path, "store-writer").await;
+    let user = server.login_account("store-writer", None).await.unwrap();
+    let signing_key = user
+        .get_signing_key(&user.get_default_key().unwrap())
+        .unwrap();
+    let db = eidetica::Database::open(&server, &root)
+        .await
+        .unwrap()
+        .with_key(signing_key.clone());
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("k", "v")
+        .await
+        .unwrap();
+    let parent_id = tx.commit().await.unwrap();
+    let parent = db.get_entry(&parent_id).await.unwrap();
+    for (parents, height, expected) in [
+        (vec![], None, VerificationStatus::Failed),
+        (
+            vec![parent_id.clone()],
+            Some(parent.subtree_height("data").unwrap()),
+            VerificationStatus::Failed,
+        ),
+        (
+            vec![parent_id.clone()],
+            Some(100),
+            VerificationStatus::Verified,
+        ),
+    ] {
+        let entry = Entry::builder(root.clone())
+            .set_parents(vec![parent_id.clone()])
+            .set_height(parent.height() + 1)
+            .set_metadata(parent.metadata().unwrap().to_vec())
+            .set_subtree_parents("data", parents)
+            .set_subtree_height("data", height)
+            .set_subtree_data("data", b"{}")
+            .build()
+            .unwrap()
+            .with_auth(|auth| auth.key = identity.clone());
+        let signature = sign_entry(&entry, &signing_key).unwrap();
+        let entry = entry.with_auth(|auth| auth.signature = Some(signature));
+        let id = entry.id();
+        remote_conn(&client)
+            .submit_signed_entry(root.clone(), identity.clone(), entry.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            server.backend().get_verification_status(&id).await.unwrap(),
+            expected
+        );
+        assert_eq!(server.backend().get(&id).await.unwrap(), entry);
+        assert_eq!(
+            db.snapshot().await.unwrap().contains(&id),
+            expected == VerificationStatus::Verified
+        );
+    }
+}

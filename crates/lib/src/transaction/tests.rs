@@ -536,3 +536,49 @@ async fn get_store_propagates_registry_read_not_found() {
     ));
     assert!(tx.get_local_data::<Doc>(INDEX).unwrap().is_none());
 }
+
+/// Corrupting a transaction's discovered Store parents must fail before storage,
+/// even though the height authoring path can calculate plausible heights for it.
+#[tokio::test]
+async fn local_commit_rejects_injected_store_frontier() {
+    let (instance, database) = test_database().await;
+    let root = database.root_id().clone();
+    let mut branches = Vec::new();
+    for value in ["first", "sibling"] {
+        let tx = database
+            .new_transaction_at(&Snapshot::from([root.clone()]))
+            .await
+            .unwrap();
+        tx.get_store::<DocStore>("data")
+            .await
+            .unwrap()
+            .set("key", value)
+            .await
+            .unwrap();
+        branches.push(tx.commit().await.unwrap());
+    }
+    let backend = instance.require_local_engine().unwrap();
+    let before = backend.get_tree(&root).await.unwrap().len();
+    for parents in [vec![], vec![branches[1].clone()]] {
+        let tx = database
+            .new_transaction_at(&Snapshot::from([branches[0].clone()]))
+            .await
+            .unwrap();
+        tx.get_store::<DocStore>("data")
+            .await
+            .unwrap()
+            .set("key", "invalid")
+            .await
+            .unwrap();
+        tx.entry_builder
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .set_subtree_parents_mut("data", parents);
+        assert!(
+            matches!(tx.commit().await, Err(Error::Transaction(e)) if matches!(*e, TransactionError::EntryValidationFailed))
+        );
+        assert_eq!(backend.get_tree(&root).await.unwrap().len(), before);
+    }
+}

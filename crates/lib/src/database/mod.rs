@@ -35,6 +35,9 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+mod validation;
+
+use validation::CausalFrontiers;
 
 tokio::task_local! {
     /// Set while a `verify()`/validation pass is on the call stack.
@@ -1832,6 +1835,12 @@ impl Database {
         let instance = self.instance()?;
         let backend = instance.backend();
 
+        let mut frontiers = match self.causal_frontiers(entry).await? {
+            CausalFrontiers::Incomplete(_) => return Ok(PinnedSettings::Incomplete),
+            CausalFrontiers::Invalid => return Ok(PinnedSettings::Invalid),
+            CausalFrontiers::Complete(frontiers) => frontiers,
+        };
+
         // The pin: `_settings` snapshot recorded in the entry's signed metadata.
         let settings_tips: Vec<ID> = match entry.metadata() {
             Some(raw) => match serde_json::from_slice::<crate::transaction::EntryMetadata>(raw) {
@@ -1846,40 +1855,9 @@ impl Database {
         // pre-write settings frontier from the entry's MAIN parents. This
         // remains historical even if a revocation has landed on another branch.
         let parents = entry.parents()?;
-        // The Backend seam has no raw tree walk on a remote handle. Walk
-        // every main edge here so missing ancestors cannot become a partial
-        // SQL/in-memory store snapshot, then process parents before children.
-        let mut stack = parents.clone();
-        let mut seen = std::collections::HashSet::new();
-        let mut ancestry = Vec::new();
-        while let Some(id) = stack.pop() {
-            if !seen.insert(id.clone()) {
-                continue;
-            }
-            let ancestor = match backend.get(&id).await {
-                Ok(entry) => entry,
-                Err(e) if e.is_not_found() => return Ok(PinnedSettings::Incomplete),
-                Err(e) => return Err(e),
-            };
-            if !ancestor.in_tree(self.root_id()) {
-                return Ok(PinnedSettings::Invalid);
-            }
-            stack.extend(ancestor.parents()?);
-            ancestry.push(ancestor);
-        }
-        ancestry.sort_by(|a, b| {
-            a.height()
-                .cmp(&b.height())
-                .then_with(|| a.id().cmp(&b.id()))
-        });
-        let expected =
-            match crate::auth::validation::floors::causal_settings_frontier(&ancestry, &parents) {
-                Ok(frontier) => frontier,
-                Err(Error::Auth(e)) if matches!(*e, AuthError::InvalidAuthConfiguration { .. }) => {
-                    return Ok(PinnedSettings::Invalid);
-                }
-                Err(e) => return Err(e),
-            };
+        let expected = frontiers
+            .remove(SETTINGS)
+            .expect("requested settings frontier");
         if Snapshot::from(settings_tips) != expected {
             return Ok(PinnedSettings::Invalid);
         }
@@ -2127,7 +2105,8 @@ impl Database {
     /// - an ancestor is still `Unverified`, or not held locally yet (partial
     ///   sync) → left `Unverified` (retried once the ancestor verifies / the
     ///   missing entry arrives);
-    /// - height not strictly greater than a Verified parent's → `Failed`;
+    /// - main or effective Store height not strictly greater than its Verified parent's → `Failed`;
+    /// - Store parents differ from the complete main-ancestry Store frontier → `Failed`;
     /// - pinned `_settings` not fully held locally → left `Unverified`
     ///   (a later pass retries once the set syncs in);
     /// - signature + permissions valid → promoted to `Verified`;
@@ -2254,39 +2233,6 @@ impl Database {
                 let mut any_promoted = false;
                 for id in &order {
                     let entry = unverified.get(id).expect("topo id is in set");
-                    let parents = entry.parents().unwrap_or_default();
-                    let mut compromised = false;
-                    let mut blocked = false;
-                    for p in &parents {
-                        match backend.get_verification_status(p).await {
-                            Ok(VerificationStatus::Verified) => {
-                                let parent = backend.get(p).await?;
-                                // Both height strategies require strict growth; gaps
-                                // are valid, but equal or decreasing heights are not.
-                                if !parent.in_tree(self.root_id())
-                                    || entry.height() <= parent.height()
-                                {
-                                    compromised = true;
-                                }
-                            }
-                            Ok(VerificationStatus::Failed) => compromised = true,
-                            Ok(VerificationStatus::Unverified) => blocked = true,
-                            Err(e) if e.is_not_found() => blocked = true,
-                            Err(e) => return Err(e),
-                        }
-                    }
-                    if compromised {
-                        backend
-                            .update_verification_status(id, VerificationStatus::Failed)
-                            .await?;
-                        report.failed += 1;
-                        continue;
-                    }
-                    if blocked {
-                        report.still_unverified += 1;
-                        continue;
-                    }
-
                     match self.get_historical_settings_for_entry(entry).await? {
                         PinnedSettings::Incomplete => report.still_unverified += 1,
                         PinnedSettings::Invalid => {
