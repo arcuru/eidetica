@@ -3,7 +3,14 @@
 //! This module provides HTTP-based sync communication using a single
 //! framed endpoint (/api/v1) with axum for the server and reqwest for the client.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use axum::{
@@ -471,6 +478,73 @@ async fn reject_legacy_request(body: Body) -> Json<SyncResponse> {
     ))
 }
 
+/// The body owns its driver, including while Hyper stops polling for socket
+/// backpressure. At most one encoded frame is queued and one is being produced
+/// or sent; the existing absolute deadline covers both production and sends.
+struct HttpResponse {
+    receiver: tokio::sync::mpsc::Receiver<Result<Vec<u8>>>,
+    producer: Option<tokio::task::JoinHandle<Result<()>>>,
+}
+
+impl futures_util::Stream for HttpResponse {
+    type Item = Result<Vec<u8>>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.receiver.poll_recv(cx) {
+            Poll::Ready(None) => {}
+            result => return result,
+        }
+        let Some(producer) = self.producer.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let result = match Pin::new(producer).poll(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(result) => result,
+        };
+        self.producer = None;
+        // A timeout or panic is not clean EOF, even if End was already queued.
+        Poll::Ready(match result {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(Err(error)),
+            Err(error) => Some(Err(SyncError::Network(format!(
+                "HTTP producer failed: {error}"
+            ))
+            .into())),
+        })
+    }
+}
+
+impl Drop for HttpResponse {
+    fn drop(&mut self) {
+        if let Some(producer) = &self.producer {
+            producer.abort();
+        }
+    }
+}
+
+fn response_body(
+    mut response: impl futures_util::Stream<Item = Result<Vec<u8>>> + Send + Unpin + 'static,
+    deadline: tokio::time::Instant,
+) -> Body {
+    use futures_util::StreamExt;
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    let producer = tokio::spawn(async move {
+        tokio::time::timeout_at(deadline, async move {
+            while let Some(bytes) = response.next().await {
+                if sender.send(bytes).await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await
+        .map_err(|_| SyncError::Network("peer exchange deadline".into()).into())
+    });
+    Body::from_stream(HttpResponse {
+        receiver,
+        producer: Some(producer),
+    })
+}
+
 async fn handle_sync_request(
     State(handler): State<Arc<dyn SyncHandler>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -492,9 +566,10 @@ async fn handle_sync_request(
     .await
     .unwrap_or_else(|_| Err(SyncError::Network("peer request deadline".into()).into()));
     match request {
-        Ok(request) => Body::from_stream(
+        Ok(request) => response_body(
             framing::response_bytes(handler, request, Address::http(addr.to_string()), deadline)
                 .await,
+            deadline,
         ),
         Err(error) => {
             Body::from(framing::encode(&framing::error_frame(error)).expect("bounded error frame"))
@@ -561,6 +636,209 @@ mod tests {
             .expect_err("nothing is listening on that port");
 
         assert!(timeout_error(&error, &address).is_none());
+    }
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures_util::StreamExt;
+    use tokio::sync::Notify;
+
+    use super::*;
+    use crate::{
+        Instance, NewAccount, Snapshot,
+        account::types::SyncSettings,
+        auth::{AuthKey, Permission},
+        backend::database::InMemory,
+        sync::{
+            handler::SyncHandlerImpl,
+            protocol::{RequestContext, SyncTreeRequest},
+        },
+    };
+
+    struct ProducerDrop(Arc<Notify>);
+    impl Drop for ProducerDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    // Observe a real HistoryProducer and its admission permit, not a stand-in
+    // timer. Exercise both a pending native producer and a blocked frame send.
+    struct ObservedHistory {
+        inner: Arc<SyncHandlerImpl>,
+        dropped: Arc<Notify>,
+        produced: Arc<AtomicUsize>,
+        stall: bool,
+    }
+
+    #[async_trait]
+    impl SyncHandler for ObservedHistory {
+        async fn handle_request(&self, _: &SyncRequest, _: &RequestContext) -> SyncResponse {
+            panic!("framed HTTP must not use the legacy handler")
+        }
+
+        async fn response_frames(
+            self: Arc<Self>,
+            request: SyncRequest,
+            context: RequestContext,
+            deadline: tokio::time::Instant,
+        ) -> Result<framing::FrameStream> {
+            let frames = self
+                .inner
+                .clone()
+                .response_frames(request, context, deadline)
+                .await?;
+            let guard = ProducerDrop(self.dropped.clone());
+            Ok(Box::pin(futures_util::stream::unfold(
+                (frames, guard),
+                move |(mut frames, guard)| {
+                    let observer = self.clone();
+                    async move {
+                        if observer.stall && observer.produced.load(Ordering::SeqCst) == 1 {
+                            std::future::pending::<()>().await;
+                        }
+                        let frame = frames.next().await?;
+                        observer.produced.fetch_add(1, Ordering::SeqCst);
+                        Some((frame, (frames, guard)))
+                    }
+                },
+            )))
+        }
+    }
+
+    async fn history_body(stall: bool) -> (Instance, SyncRequest, Arc<ObservedHistory>, Body) {
+        let (instance, mut owner) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            NewAccount::passwordless("http-lifetime"),
+        )
+        .await
+        .unwrap();
+        let key = owner.add_private_key(Some("owner")).await.unwrap();
+        let database = owner.create_database(Doc::new(), &key).await.unwrap();
+        let tree = database.root_id().clone();
+        let txn = database.new_transaction().await.unwrap();
+        txn.get_settings()
+            .unwrap()
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+        owner
+            .track_database(tree.clone(), &key, SyncSettings::enabled())
+            .await
+            .unwrap();
+        instance.enable_sync().await.unwrap();
+        let handler = Arc::new(ObservedHistory {
+            inner: Arc::new(SyncHandlerImpl::new(
+                instance.clone(),
+                instance.sync().unwrap().sync_tree_root_id().clone(),
+            )),
+            dropped: Arc::new(Notify::new()),
+            produced: Arc::new(AtomicUsize::new(0)),
+            stall,
+        });
+        let request = SyncRequest::SyncTree(SyncTreeRequest {
+            tree_id: tree,
+            our_tips: Snapshot::EMPTY,
+            peer_pubkey: None,
+            requesting_key: None,
+            requesting_key_name: None,
+            requested_permission: None,
+            metadata: None,
+            auth: None,
+        });
+        let mut bytes = Vec::new();
+        framing::write_request(&mut bytes, &request).await.unwrap();
+        let body = handle_sync_request(
+            State(handler.clone()),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Body::from(bytes),
+        )
+        .await;
+        (instance, request, handler, body)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_paging_http_unpolled_body_expires_and_releases_native_producer() {
+        let _other_permits: Vec<_> = (1
+            ..crate::backend::history_page::MAX_CONCURRENT_HISTORY_PAGES)
+            .map(|_| framing::admit_operation().unwrap())
+            .collect();
+        for stall in [false, true] {
+            let (_instance, request, handler, body) = history_body(stall).await;
+            assert!(
+                framing::admit_operation().is_err(),
+                "real producer must hold the last permit"
+            );
+            // Let the driver park at production/send without ever polling Body.
+            tokio::task::yield_now().await;
+            tokio::time::advance(REQUEST_TIMEOUT).await;
+            tokio::time::timeout(Duration::from_secs(1), handler.dropped.notified())
+                .await
+                .expect("unpolled body must drop its actual producer at the absolute deadline");
+            drop(
+                framing::admit_operation()
+                    .expect("deadline must release the native producer permit"),
+            );
+            assert_eq!(
+                handler.produced.load(Ordering::SeqCst),
+                if stall { 1 } else { 2 },
+                "only one queued frame and one current frame may be retained"
+            );
+            // Use a fresh collector deadline so rejection proves an incomplete
+            // prefix/unclean EOF, not merely the collector's own elapsed clock.
+            let mut collector =
+                framing::Collector::new(request, tokio::time::Instant::now() + REQUEST_TIMEOUT)
+                    .unwrap();
+            let mut decoder = framing::Decoder::default();
+            let mut body = body.into_data_stream();
+            let mut failed = false;
+            while let Some(bytes) = body.next().await {
+                match bytes {
+                    Ok(bytes) => {
+                        framing::receive_chunk(&mut decoder, &mut collector, &bytes).unwrap()
+                    }
+                    Err(_) => failed = true,
+                }
+            }
+            assert!(failed, "deadline must not manufacture clean EOF");
+            assert!(
+                collector.finish(decoder).is_err(),
+                "no complete prefix may escape expiry"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_paging_http_body_drop_aborts_native_production_and_blocked_sends() {
+        let _other_permits: Vec<_> = (1
+            ..crate::backend::history_page::MAX_CONCURRENT_HISTORY_PAGES)
+            .map(|_| framing::admit_operation().unwrap())
+            .collect();
+        for stall in [false, true] {
+            let (_instance, _, handler, body) = history_body(stall).await;
+            assert!(framing::admit_operation().is_err());
+            tokio::task::yield_now().await;
+            let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+            drop(body);
+            tokio::time::timeout(Duration::from_secs(1), handler.dropped.notified())
+                .await
+                .expect(
+                    "body drop must abort the actual producer without waiting for its deadline",
+                );
+            assert!(tokio::time::Instant::now() < deadline);
+            drop(
+                framing::admit_operation()
+                    .expect("body drop must release the native producer permit"),
+            );
+            assert_eq!(
+                handler.produced.load(Ordering::SeqCst),
+                if stall { 1 } else { 2 }
+            );
+        }
     }
 }
 

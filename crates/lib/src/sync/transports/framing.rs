@@ -27,8 +27,8 @@ use crate::{
     },
 };
 
-/// Demand-driven response production. Dropping the stream drops its producer;
-/// no detached task or unbounded page channel is involved.
+/// Demand-driven response production. Dropping the stream drops its producer.
+/// Transports must drive the absolute deadline independently of socket demand.
 pub type FrameStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Frame>> + Send>>;
 
 /// Complete encoded frame ceiling, including the prefix, for both transports.
@@ -990,7 +990,8 @@ pub async fn read_response<R: tokio::io::AsyncRead + Unpin>(
 }
 
 /// Prepare a demand-driven byte stream with the same absolute producer
-/// deadline as its transport. Body drop cancels production; no task outlives it.
+/// deadline as its transport. The transport must also bound unpolled time and
+/// drop this stream on cancellation; these checks run only while polled.
 pub async fn response_bytes(
     handler: std::sync::Arc<dyn crate::sync::handler::SyncHandler>,
     request: SyncRequest,

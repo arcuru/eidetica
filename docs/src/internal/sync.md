@@ -112,8 +112,13 @@ bounded body at a time; retries retain those IDs rather than cloning bodies.
 Direct caller-owned entries remain owned across retries, even if never stored
 locally. An incomplete submission is not ingested. Both transports keep a
 30-second absolute exchange deadline; successful reads/pages do not extend it.
-HTTP retains its connect/read-stall bounds. Dropping a body or the caller's
-response receiver cancels production. Inbound operations and outbound collectors
+HTTP retains its connect/read-stall bounds. Its response body owns an
+abort-on-drop producer task with a capacity-one frame channel: at most one
+encoded frame is queued and one is being produced or sent (each at most 1 MiB).
+The same absolute deadline covers production and channel sends independently
+of body polling, releasing the producer/admission permit even for a non-reading
+socket. Driver timeout or failure is not clean EOF. Dropping a body or the
+caller's response receiver cancels production. Inbound operations and outbound collectors
 have separate eight-operation admission ceilings, with native per-page permits
 released before network backpressure. Legacy `/api/v0` and `eidetica/v0` only
 return bounded unsupported-protocol errors; no legacy history fallback occurs.
