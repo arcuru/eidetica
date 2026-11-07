@@ -1,21 +1,29 @@
 //! HTTP transport implementation for sync communication.
 //!
 //! This module provides HTTP-based sync communication using a single
-//! JSON endpoint (/api/v0) with axum for the server and reqwest for the client.
+//! framed endpoint (/api/v1) with axum for the server and reqwest for the client.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use axum::{
     Router,
-    extract::{ConnectInfo, Json as ExtractJson, State},
+    body::Body,
+    extract::{ConnectInfo, State},
     response::Json,
     routing::post,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
+use super::{SyncTransport, TransportBuilder, TransportConfig, framing, shared::*};
 use crate::{
     Result,
     crdt::Doc,
@@ -24,7 +32,7 @@ use crate::{
         error::{SyncError, TimeoutPhase},
         handler::SyncHandler,
         peer_types::Address,
-        protocol::{RequestContext, SyncRequest, SyncResponse},
+        protocol::{SyncRequest, SyncResponse},
     },
 };
 
@@ -42,11 +50,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// are awaited inline by the background sync engine, so an unbounded one stalls
 /// every other thing that engine does.
 ///
-/// This bounds silence rather than the whole exchange, because the two are not
-/// the same request. A bootstrap response carries an entire database, so a
-/// deadline on the exchange would fail a transfer that is making progress on a
-/// slow link or against a large tree, while adding nothing against the peer
-/// that has stopped sending.
+/// Framed transfers additionally have this absolute whole-exchange deadline;
+/// successful reads and new pages never reset it.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Build the outbound HTTP client with both deadlines applied.
@@ -202,11 +207,124 @@ impl HttpTransport {
         HttpTransportBuilder::new()
     }
 
-    /// Create the axum router with single JSON endpoint and handler state.
-    fn create_router(handler: Arc<dyn SyncHandler>) -> Router {
+    /// Build the peer-only v1 router, with a bounded rejection-only v0 route.
+    /// Embedders use this same codec/handler seam rather than a legacy JSON RPC.
+    pub fn router(handler: Arc<dyn SyncHandler>) -> Router {
         Router::new()
-            .route("/api/v0", post(handle_sync_request))
+            .route("/api/v1", post(handle_sync_request))
+            .route("/api/v0", post(reject_legacy_request))
             .with_state(handler)
+    }
+}
+
+impl HttpTransport {
+    async fn send_framed(
+        &self,
+        address: &Address,
+        request: &SyncRequest,
+        source: Option<&framing::UploadSource<'_>>,
+    ) -> Result<SyncResponse> {
+        if !self.can_handle_address(address) {
+            return Err(SyncError::UnsupportedTransport {
+                transport_type: address.transport_type.clone(),
+            }
+            .into());
+        }
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+        tokio::time::timeout_at(deadline, async {
+            let mut upload_permit = None;
+            let url = format!("http://{}/api/v1", address.address);
+            let mut response = if source.is_some() || matches!(request, SyncRequest::SendEntries(_))
+            {
+                upload_permit = Some(framing::admit_outbound()?);
+                // One bounded bridge lets an owned reqwest body be driven by
+                // a borrowed input list, without a whole-transfer clone or a
+                // detached producer task. Caller drop cancels both futures.
+                let (reader, mut writer) = tokio::io::duplex(framing::MAX_FRAME_BYTES);
+                let body = futures_util::stream::try_unfold(reader, |mut reader| async move {
+                    let mut bytes = vec![0u8; 8192];
+                    let n = reader.read(&mut bytes).await?;
+                    bytes.truncate(n);
+                    Ok::<_, std::io::Error>((n != 0).then_some((bytes, reader)))
+                });
+                let send = self
+                    .client
+                    .post(&url)
+                    .header("content-type", "application/eidetica-peer-v1")
+                    .body(reqwest::Body::wrap_stream(body))
+                    .send();
+                let write = async {
+                    match source {
+                        Some(source) => {
+                            framing::write_upload(&mut writer, source, deadline).await?
+                        }
+                        None => framing::write_request(&mut writer, request).await?,
+                    }
+                    writer.shutdown().await?;
+                    Ok::<_, crate::Error>(())
+                };
+                let (_, response) = tokio::try_join!(write, async {
+                    send.await.map_err(|e| {
+                        timeout_error(&e, &address.address)
+                            .unwrap_or_else(|| SyncError::ConnectionFailed {
+                                address: address.address.clone(),
+                                reason: e.to_string(),
+                            })
+                            .into()
+                    })
+                })?;
+                response
+            } else {
+                // Control requests are one capped frame. In particular, a
+                // silent address must not reserve a history collector slot
+                // and starve the live winner in an existing address race.
+                self.client
+                    .post(&url)
+                    .header("content-type", "application/eidetica-peer-v1")
+                    .body(framing::encode(&framing::Frame::Request(request.clone()))?)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        timeout_error(&e, &address.address).unwrap_or_else(|| {
+                            SyncError::ConnectionFailed {
+                                address: address.address.clone(),
+                                reason: e.to_string(),
+                            }
+                        })
+                    })?
+            };
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(SyncError::PeerProtocolUnsupported.into());
+            }
+            if !response.status().is_success() {
+                return Err(SyncError::Network(format!(
+                    "Server returned error: {}",
+                    response.status()
+                ))
+                .into());
+            }
+            let _permit = match upload_permit {
+                Some(permit) => permit,
+                None => framing::admit_outbound()?,
+            };
+            let mut collector = framing::Collector::for_request(request, deadline)?;
+            let mut decoder = framing::Decoder::default();
+            while let Some(bytes) = response.chunk().await.map_err(|e| {
+                timeout_error(&e, &address.address)
+                    .unwrap_or_else(|| SyncError::Network(format!("Failed to read response: {e}")))
+            })? {
+                framing::receive_chunk(&mut decoder, &mut collector, &bytes)?;
+            }
+            collector.finish(decoder)
+        })
+        .await
+        .map_err(|_| SyncError::Timeout {
+            address: address.address.clone(),
+            phase: TimeoutPhase::Request,
+            elapsed: REQUEST_TIMEOUT,
+        })?
     }
 }
 
@@ -234,7 +352,7 @@ impl SyncTransport for HttpTransport {
                 reason: format!("Invalid address: {e}"),
             })?;
 
-        let router = Self::create_router(handler);
+        let router = Self::router(handler);
 
         // Create server coordination channels
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -320,46 +438,23 @@ impl SyncTransport for HttpTransport {
     }
 
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
-        if !self.can_handle_address(address) {
-            return Err(SyncError::UnsupportedTransport {
-                transport_type: address.transport_type.clone(),
-            }
-            .into());
-        }
+        self.send_framed(address, request, None).await
+    }
 
-        let url = format!("http://{}/api/v0", address.address);
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&request) // Send SyncRequest as JSON body
-            .send()
+    async fn send_upload(
+        &self,
+        address: &Address,
+        source: &framing::UploadSource<'_>,
+    ) -> Result<SyncResponse> {
+        self.send_framed(address, &SyncRequest::SendEntries(vec![]), Some(source))
             .await
-            .map_err(|e| {
-                timeout_error(&e, &address.address).unwrap_or_else(|| SyncError::ConnectionFailed {
-                    address: address.address.clone(),
-                    reason: e.to_string(),
-                })
-            })?;
+    }
 
-        if !response.status().is_success() {
-            return Err(SyncError::Network(format!(
-                "Server returned error: {}",
-                response.status()
-            ))
-            .into());
-        }
-
-        // The response body is read here rather than above, so a peer that
-        // stops sending partway through one runs out of time here too. Without
-        // this the stall would be reported as a malformed response, which is a
-        // different fault with a different remedy.
-        let sync_response: SyncResponse = response.json().await.map_err(|e| {
-            timeout_error(&e, &address.address)
-                .unwrap_or_else(|| SyncError::Network(format!("Failed to parse response: {e}")))
-        })?;
-
-        Ok(sync_response)
+    async fn send_entries(&self, address: &Address, entries: &[crate::Entry]) -> Result<()> {
+        framing::acknowledged(
+            self.send_upload(address, &framing::UploadSource::Entries(entries))
+                .await?,
+        )
     }
 
     fn is_server_running(&self) -> bool {
@@ -371,31 +466,115 @@ impl SyncTransport for HttpTransport {
     }
 }
 
-/// Handler for the /api/v0 endpoint - accepts JSON SyncRequest and returns JSON SyncResponse.
+/// Reject legacy peers without producing or ingesting an unpaged history.
+async fn reject_legacy_request(body: Body) -> Json<SyncResponse> {
+    let _ = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        axum::body::to_bytes(body, framing::MAX_FRAME_BYTES),
+    )
+    .await;
+    Json(SyncResponse::Error(
+        "Unsupported peer protocol v0; required v1".into(),
+    ))
+}
+
+/// The body owns its driver, including while Hyper stops polling for socket
+/// backpressure. At most one encoded frame is queued and one is being produced
+/// or sent; the existing absolute deadline covers both production and sends.
+struct HttpResponse {
+    receiver: tokio::sync::mpsc::Receiver<Result<Vec<u8>>>,
+    producer: Option<tokio::task::JoinHandle<Result<()>>>,
+}
+
+impl futures_util::Stream for HttpResponse {
+    type Item = Result<Vec<u8>>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.receiver.poll_recv(cx) {
+            Poll::Ready(None) => {}
+            result => return result,
+        }
+        let Some(producer) = self.producer.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let result = match Pin::new(producer).poll(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(result) => result,
+        };
+        self.producer = None;
+        // A timeout or panic is not clean EOF, even if End was already queued.
+        Poll::Ready(match result {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(Err(error)),
+            Err(error) => Some(Err(SyncError::Network(format!(
+                "HTTP producer failed: {error}"
+            ))
+            .into())),
+        })
+    }
+}
+
+impl Drop for HttpResponse {
+    fn drop(&mut self) {
+        if let Some(producer) = &self.producer {
+            producer.abort();
+        }
+    }
+}
+
+fn response_body(
+    mut response: impl futures_util::Stream<Item = Result<Vec<u8>>> + Send + Unpin + 'static,
+    deadline: tokio::time::Instant,
+) -> Body {
+    use futures_util::StreamExt;
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    let producer = tokio::spawn(async move {
+        tokio::time::timeout_at(deadline, async move {
+            while let Some(bytes) = response.next().await {
+                if sender.send(bytes).await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await
+        .map_err(|_| SyncError::Network("peer exchange deadline".into()).into())
+    });
+    Body::from_stream(HttpResponse {
+        receiver,
+        producer: Some(producer),
+    })
+}
+
 async fn handle_sync_request(
     State(handler): State<Arc<dyn SyncHandler>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    ExtractJson(request): ExtractJson<SyncRequest>,
-) -> Json<SyncResponse> {
-    // Extract peer_pubkey from SyncTreeRequest if present
-    let peer_pubkey = match &request {
-        SyncRequest::SyncTree(sync_tree_request) => sync_tree_request.peer_pubkey.clone(),
-        _ => None,
-    };
-
-    // Create request context with remote address and peer pubkey
-    let context = RequestContext {
-        remote_address: Some(Address {
-            transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
-            address: addr.to_string(),
-        }),
-        peer_pubkey,
-    };
-
-    // Call handler directly (Transaction is now Send since it uses Arc<Mutex>)
-    let response = handler.handle_request(&request, &context).await;
-
-    Json(response)
+    body: Body,
+) -> Body {
+    use futures_util::StreamExt;
+    let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+    let request = tokio::time::timeout_at(deadline, async {
+        let _permit = framing::admit_operation()?;
+        let mut body = body.into_data_stream();
+        let mut decoder = framing::Decoder::default();
+        let mut collector = framing::RequestCollector::new(deadline);
+        while let Some(bytes) = body.next().await {
+            let bytes = bytes.map_err(|e| SyncError::Network(e.to_string()))?;
+            framing::receive_request_chunk(&mut decoder, &mut collector, &bytes)?;
+        }
+        collector.finish(decoder)
+    })
+    .await
+    .unwrap_or_else(|_| Err(SyncError::Network("peer request deadline".into()).into()));
+    match request {
+        Ok(request) => response_body(
+            framing::response_bytes(handler, request, Address::http(addr.to_string()), deadline)
+                .await,
+            deadline,
+        ),
+        Err(error) => {
+            Body::from(framing::encode(&framing::error_frame(error)).expect("bounded error frame"))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -457,5 +636,319 @@ mod tests {
             .expect_err("nothing is listening on that port");
 
         assert!(timeout_error(&error, &address).is_none());
+    }
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures_util::StreamExt;
+    use tokio::sync::Notify;
+
+    use super::*;
+    use crate::{
+        Instance, NewAccount, Snapshot,
+        account::types::SyncSettings,
+        auth::{AuthKey, Permission},
+        backend::database::InMemory,
+        sync::{
+            handler::SyncHandlerImpl,
+            protocol::{RequestContext, SyncTreeRequest},
+        },
+    };
+
+    struct ProducerDrop(Arc<Notify>);
+    impl Drop for ProducerDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    // Observe a real HistoryProducer and its admission permit, not a stand-in
+    // timer. Exercise both a pending native producer and a blocked frame send.
+    struct ObservedHistory {
+        inner: Arc<SyncHandlerImpl>,
+        dropped: Arc<Notify>,
+        produced: Arc<AtomicUsize>,
+        stall: bool,
+    }
+
+    #[async_trait]
+    impl SyncHandler for ObservedHistory {
+        async fn handle_request(&self, _: &SyncRequest, _: &RequestContext) -> SyncResponse {
+            panic!("framed HTTP must not use the legacy handler")
+        }
+
+        async fn response_frames(
+            self: Arc<Self>,
+            request: SyncRequest,
+            context: RequestContext,
+            deadline: tokio::time::Instant,
+        ) -> Result<framing::FrameStream> {
+            let frames = self
+                .inner
+                .clone()
+                .response_frames(request, context, deadline)
+                .await?;
+            let guard = ProducerDrop(self.dropped.clone());
+            Ok(Box::pin(futures_util::stream::unfold(
+                (frames, guard),
+                move |(mut frames, guard)| {
+                    let observer = self.clone();
+                    async move {
+                        if observer.stall && observer.produced.load(Ordering::SeqCst) == 1 {
+                            std::future::pending::<()>().await;
+                        }
+                        let frame = frames.next().await?;
+                        observer.produced.fetch_add(1, Ordering::SeqCst);
+                        Some((frame, (frames, guard)))
+                    }
+                },
+            )))
+        }
+    }
+
+    async fn history_body(stall: bool) -> (Instance, SyncRequest, Arc<ObservedHistory>, Body) {
+        let (instance, mut owner) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            NewAccount::passwordless("http-lifetime"),
+        )
+        .await
+        .unwrap();
+        let key = owner.add_private_key(Some("owner")).await.unwrap();
+        let database = owner.create_database(Doc::new(), &key).await.unwrap();
+        let tree = database.root_id().clone();
+        let txn = database.new_transaction().await.unwrap();
+        txn.get_settings()
+            .unwrap()
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+        owner
+            .track_database(tree.clone(), &key, SyncSettings::enabled())
+            .await
+            .unwrap();
+        instance.enable_sync().await.unwrap();
+        let handler = Arc::new(ObservedHistory {
+            inner: Arc::new(SyncHandlerImpl::new(
+                instance.clone(),
+                instance.sync().unwrap().sync_tree_root_id().clone(),
+            )),
+            dropped: Arc::new(Notify::new()),
+            produced: Arc::new(AtomicUsize::new(0)),
+            stall,
+        });
+        let request = SyncRequest::SyncTree(SyncTreeRequest {
+            tree_id: tree,
+            our_tips: Snapshot::EMPTY,
+            peer_pubkey: None,
+            requesting_key: None,
+            requesting_key_name: None,
+            requested_permission: None,
+            metadata: None,
+            auth: None,
+        });
+        let mut bytes = Vec::new();
+        framing::write_request(&mut bytes, &request).await.unwrap();
+        let body = handle_sync_request(
+            State(handler.clone()),
+            ConnectInfo("127.0.0.1:1234".parse().unwrap()),
+            Body::from(bytes),
+        )
+        .await;
+        (instance, request, handler, body)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_paging_http_unpolled_body_expires_and_releases_native_producer() {
+        let _other_permits: Vec<_> = (1
+            ..crate::backend::history_page::MAX_CONCURRENT_HISTORY_PAGES)
+            .map(|_| framing::admit_operation().unwrap())
+            .collect();
+        for stall in [false, true] {
+            let (_instance, request, handler, body) = history_body(stall).await;
+            assert!(
+                framing::admit_operation().is_err(),
+                "real producer must hold the last permit"
+            );
+            // Let the driver park at production/send without ever polling Body.
+            tokio::task::yield_now().await;
+            tokio::time::advance(REQUEST_TIMEOUT).await;
+            tokio::time::timeout(Duration::from_secs(1), handler.dropped.notified())
+                .await
+                .expect("unpolled body must drop its actual producer at the absolute deadline");
+            drop(
+                framing::admit_operation()
+                    .expect("deadline must release the native producer permit"),
+            );
+            assert_eq!(
+                handler.produced.load(Ordering::SeqCst),
+                if stall { 1 } else { 2 },
+                "only one queued frame and one current frame may be retained"
+            );
+            // Use a fresh collector deadline so rejection proves an incomplete
+            // prefix/unclean EOF, not merely the collector's own elapsed clock.
+            let mut collector =
+                framing::Collector::new(request, tokio::time::Instant::now() + REQUEST_TIMEOUT)
+                    .unwrap();
+            let mut decoder = framing::Decoder::default();
+            let mut body = body.into_data_stream();
+            let mut failed = false;
+            while let Some(bytes) = body.next().await {
+                match bytes {
+                    Ok(bytes) => {
+                        framing::receive_chunk(&mut decoder, &mut collector, &bytes).unwrap()
+                    }
+                    Err(_) => failed = true,
+                }
+            }
+            assert!(failed, "deadline must not manufacture clean EOF");
+            assert!(
+                collector.finish(decoder).is_err(),
+                "no complete prefix may escape expiry"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_paging_http_body_drop_aborts_native_production_and_blocked_sends() {
+        let _other_permits: Vec<_> = (1
+            ..crate::backend::history_page::MAX_CONCURRENT_HISTORY_PAGES)
+            .map(|_| framing::admit_operation().unwrap())
+            .collect();
+        for stall in [false, true] {
+            let (_instance, _, handler, body) = history_body(stall).await;
+            assert!(framing::admit_operation().is_err());
+            tokio::task::yield_now().await;
+            let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+            drop(body);
+            tokio::time::timeout(Duration::from_secs(1), handler.dropped.notified())
+                .await
+                .expect(
+                    "body drop must abort the actual producer without waiting for its deadline",
+                );
+            assert!(tokio::time::Instant::now() < deadline);
+            drop(
+                framing::admit_operation()
+                    .expect("body drop must release the native producer permit"),
+            );
+            assert_eq!(
+                handler.produced.load(Ordering::SeqCst),
+                if stall { 1 } else { 2 }
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn peer_paging_http_v0_only_peer_is_explicitly_unsupported() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = Address::http(listener.local_addr().unwrap().to_string());
+        let (shutdown, stop) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let router = Router::new().route("/api/v0", post(|| async { Json(SyncResponse::Ack) }));
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    let _ = stop.await;
+                })
+                .await
+                .unwrap();
+        });
+        let error = HttpTransport::new()
+            .unwrap()
+            .send_request(&address, &SyncRequest::SendEntries(vec![]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::Error::Sync(error) if matches!(*error, SyncError::PeerProtocolUnsupported))
+        );
+        shutdown.send(()).unwrap();
+        tokio::time::timeout(REQUEST_TIMEOUT, server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn peer_paging_http_partial_upload_and_oversized_root_are_not_ingested() {
+        let (instance, _) = crate::Instance::create_backend(
+            Box::new(crate::backend::database::InMemory::new()),
+            crate::NewAccount::passwordless("partial-upload"),
+        )
+        .await
+        .unwrap();
+        instance.enable_sync().await.unwrap();
+        let handler = Arc::new(crate::sync::handler::SyncHandlerImpl::new(
+            instance.clone(),
+            instance.sync().unwrap().sync_tree_root_id().clone(),
+        ));
+        let server = HttpTransport::builder()
+            .bind("127.0.0.1:0")
+            .build_sync()
+            .unwrap();
+        let client = HttpTransport::new().unwrap();
+        server.start_server(handler).await.unwrap();
+        let address = Address::http(server.get_server_address().unwrap());
+        let entry = crate::Entry::root_builder()
+            .set_metadata(b"incomplete upload must stay absent".to_vec())
+            .build()
+            .unwrap();
+        let id = entry.id();
+        let mut bytes = Vec::new();
+        framing::write_request(&mut bytes, &SyncRequest::SendEntries(vec![entry]))
+            .await
+            .unwrap();
+        let mut input = bytes.as_slice();
+        let mut decoder = framing::Decoder::default();
+        let mut end_bytes = 0;
+        while !input.is_empty() {
+            if let Some(frame) = decoder.next(&mut input).unwrap()
+                && matches!(frame, framing::Frame::UploadEnd { .. })
+            {
+                end_bytes = framing::encode(&frame).unwrap().len();
+            }
+        }
+        assert!(end_bytes > 0);
+        bytes.truncate(bytes.len() - end_bytes);
+        let response = build_client()
+            .unwrap()
+            .post(format!("http://{}/api/v1", address.address))
+            .body(bytes)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert!(response.len() <= framing::MAX_FRAME_BYTES);
+        let mut collector = framing::Collector::for_request(
+            &SyncRequest::SendEntries(vec![]),
+            tokio::time::Instant::now() + REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        assert!(
+            framing::receive_chunk(&mut framing::Decoder::default(), &mut collector, &response)
+                .is_err()
+        );
+        assert!(
+            !instance.has_entry(&id).await,
+            "transport ingested an upload without End"
+        );
+        let huge = crate::Entry::root_builder()
+            .set_subtree_data("large", vec![255u8; framing::MAX_FRAME_BYTES])
+            .build()
+            .unwrap();
+        let huge_id = huge.id();
+        let error = client.send_entries(&address, &[huge]).await.unwrap_err();
+        assert!(
+            matches!(error, crate::Error::Sync(e) if matches!(*e, SyncError::EntryTooLarge { .. }))
+        );
+        assert!(!instance.has_entry(&huge_id).await);
+        server.stop_server().await.unwrap();
     }
 }

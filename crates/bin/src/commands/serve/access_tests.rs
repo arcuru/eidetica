@@ -5,7 +5,12 @@ use eidetica::{
     auth::{AuthKey, KeyStatus},
     crdt::Doc,
     store::DocStore,
-    sync::{DatabaseTicket, RequestStatus, peer_types::Address},
+    sync::{
+        DatabaseTicket, RequestStatus,
+        peer_types::Address,
+        protocol::{RequestContext, SyncRequest, SyncResponse},
+        transports::SyncTransport,
+    },
 };
 use reqwest::{Client, Response as HttpResponse, redirect::Policy};
 use tokio::task::JoinHandle;
@@ -676,25 +681,37 @@ struct Gate {
     resume: Arc<tokio::sync::Notify>,
 }
 
-async fn gated_sync(
-    State(gate): State<Gate>,
-    ExtractJson(request): ExtractJson<SyncRequest>,
-) -> axum::Json<SyncResponse> {
-    if matches!(&request, SyncRequest::SyncTree(request) if request.requesting_key.is_some())
-        && gate
-            .pause_next
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-    {
-        gate.entered.notify_one();
-        tokio::time::timeout(Duration::from_secs(5), gate.resume.notified())
-            .await
-            .unwrap();
+#[async_trait::async_trait]
+impl SyncHandler for Gate {
+    async fn handle_request(
+        &self,
+        request: &SyncRequest,
+        context: &RequestContext,
+    ) -> SyncResponse {
+        self.handler.handle_request(request, context).await
     }
-    axum::Json(
-        gate.handler
-            .handle_request(&request, &RequestContext::default())
-            .await,
-    )
+
+    async fn response_frames(
+        self: Arc<Self>,
+        request: SyncRequest,
+        context: RequestContext,
+        deadline: tokio::time::Instant,
+    ) -> eidetica::Result<eidetica::sync::transports::framing::FrameStream> {
+        if matches!(&request, SyncRequest::SyncTree(request) if request.requesting_key.is_some())
+            && self
+                .pause_next
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.entered.notify_one();
+            tokio::time::timeout(Duration::from_secs(5), self.resume.notified())
+                .await
+                .unwrap();
+        }
+        self.handler
+            .clone()
+            .response_frames(request, context, deadline)
+            .await
+    }
 }
 
 async fn gated_peer(peer: &Sharing) -> (Gate, DatabaseTicket, JoinHandle<()>) {
@@ -706,11 +723,14 @@ async fn gated_peer(peer: &Sharing) -> (Gate, DatabaseTicket, JoinHandle<()>) {
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
-    let app = Router::new()
-        .route("/api/v0", post(gated_sync))
-        .with_state(gate.clone());
+    let app = HttpTransport::router(Arc::new(gate.clone()));
     let task = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
     (
         gate,
@@ -874,15 +894,12 @@ async fn access_http_forged_bootstrap_proof_cannot_enqueue_a_request() {
             metadata: None,
             auth,
         });
-        let response: SyncResponse = peer
-            .web
-            .client
-            .post(format!("{}/api/v0", peer.web.url))
-            .json(&request)
-            .send()
-            .await
+        let response = HttpTransport::new()
             .unwrap()
-            .json()
+            .send_request(
+                &Address::http(peer.web.url.strip_prefix("http://").unwrap()),
+                &request,
+            )
             .await
             .unwrap();
         assert!(matches!(response, SyncResponse::Error(_)), "{response:?}");

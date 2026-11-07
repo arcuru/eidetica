@@ -85,16 +85,16 @@ async fn test_unified_message_handling() {
     http_transport.stop_server().await.unwrap();
 }
 
-/// Test that the new HTTP v0 endpoint format works with JSON requests
+/// Legacy requests receive a bounded rejection and ingest no unpaged entries.
 #[tokio::test]
-async fn test_http_v0_json_endpoint() {
+async fn test_http_v0_is_rejection_only() {
     let transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
 
     // Start server
-    let (_instance, handler) = super::helpers::setup_test_handler().await;
+    let (instance, handler) = super::helpers::setup_test_handler().await;
     transport.start_server(handler).await.unwrap();
     let addr = transport.get_server_address().unwrap();
 
@@ -108,6 +108,7 @@ async fn test_http_v0_json_endpoint() {
         .build()
         .expect("Entry should build successfully");
 
+    let entry_id = entry.id();
     let request = SyncRequest::SendEntries(vec![entry]);
     let response = client.post(&url).json(&request).send().await.unwrap();
 
@@ -115,11 +116,11 @@ async fn test_http_v0_json_endpoint() {
 
     let sync_response: SyncResponse = response.json().await.unwrap();
     match sync_response {
-        SyncResponse::Ack => {
-            // Expected for single entry
-        }
-        _ => panic!("Expected Ack response"),
+        SyncResponse::Error(error) => assert!(error.contains("Unsupported peer protocol v0")),
+        _ => panic!("Expected legacy rejection"),
     }
+
+    assert!(instance.backend().get(&entry_id).await.is_err());
 
     // Send multiple entries as JSON POST
     let entry1 = Entry::root_builder()
@@ -138,10 +139,8 @@ async fn test_http_v0_json_endpoint() {
 
     let sync_response: SyncResponse = response.json().await.unwrap();
     match sync_response {
-        SyncResponse::Count(count) => {
-            assert_eq!(count, 2);
-        }
-        _ => panic!("Expected Count response"),
+        SyncResponse::Error(error) => assert!(error.contains("Unsupported peer protocol v0")),
+        _ => panic!("Expected legacy rejection"),
     }
 
     // Clean up

@@ -1,5 +1,6 @@
 mod basic_operations;
 mod concurrent_writes;
+mod database_history_pages;
 // Compares the two reference backends against each other, so it needs both.
 #[cfg(feature = "sqlite")]
 mod cross_backend_ordering;

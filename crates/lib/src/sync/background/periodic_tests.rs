@@ -274,7 +274,10 @@ async fn background_send_emits_one_route_outcome() -> Result<()> {
     trace.clear();
     recipient
         .engine
-        .send_to_peer(&PeerId::from(source.instance.id()), vec![])
+        .send_to_peer(
+            &PeerId::from(source.instance.id()),
+            &RetrySource::Direct(vec![]),
+        )
         .await?;
     let output = trace.output();
     assert_fields(
@@ -288,5 +291,111 @@ async fn background_send_emits_one_route_outcome() -> Result<()> {
         ],
     );
     source.engine.stop_server(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn queued_id_retries_keep_ids_and_direct_retries_keep_unstored_entries() -> Result<()> {
+    let mut source = LocalPeer::new().await?;
+    let mut recipient = LocalPeer::new().await?;
+    let database = source.shared_tree().await?;
+    source.engine.start_server(None).await?;
+    recipient.follow(&source, &[&database]).await?;
+    recipient.engine.periodic_sync_all_peers().await;
+    let peer = PeerId::from(recipient.instance.id());
+    let mut ids = Vec::new();
+    for _ in 0..18 {
+        let id = write(&database, &"synthetic\"\\\n".repeat(8_000)).await?;
+        source
+            .sync
+            .queue
+            .enqueue(&peer, id.clone(), database.root_id().clone());
+        ids.push((id, database.root_id().clone()));
+    }
+    assert!(
+        source.engine.process_queue().await > 0,
+        "unserved peer must fail without losing IDs"
+    );
+    assert!(
+        matches!(&source.engine.retry_queue[0].source, RetrySource::Stored(actual) if actual == &ids)
+    );
+    recipient.engine.start_server(None).await?;
+    source
+        .sync
+        .add_peer_address(
+            peer.public_key(),
+            Address::http(
+                recipient
+                    .engine
+                    .transport_manager
+                    .get_server_address("http")?,
+            ),
+        )
+        .await?;
+    source
+        .sync
+        .add_tree_sync(peer.public_key(), database.root_id())
+        .await?;
+    assert_eq!(source.engine.flush_retry_queue().await, 0);
+    for (id, _) in &ids {
+        assert_eq!(
+            recipient
+                .instance
+                .backend()
+                .local_engine()
+                .unwrap()
+                .get_verification_status(id)
+                .await?,
+            crate::backend::VerificationStatus::Verified
+        );
+    }
+    assert_eq!(
+        source
+            .instance
+            .backend()
+            .snapshot(database.root_id())
+            .await?,
+        recipient
+            .instance
+            .backend()
+            .snapshot(database.root_id())
+            .await?
+    );
+    // Missing stored IDs are failures, not a successful skipped/empty batch.
+    source.sync.queue.enqueue(
+        &peer,
+        ID::from_bytes("missing queued body"),
+        database.root_id().clone(),
+    );
+    assert_eq!(source.engine.process_queue().await, 1);
+    assert!(
+        matches!(&source.engine.retry_queue[0].source, RetrySource::Stored(actual) if actual.len() == 1)
+    );
+    // A caller-owned direct send need not have been put in the sender backend.
+    let direct = Entry::root_builder()
+        .set_metadata(b"unstored caller entry".to_vec())
+        .build()?;
+    let direct_id = direct.id();
+    assert!(!source.instance.has_entry(&direct_id).await);
+    let direct_source = RetrySource::Direct(vec![direct.clone()]);
+    let unknown = PeerId::from(crate::auth::crypto::generate_keypair().1);
+    let error = source
+        .engine
+        .send_to_peer(&unknown, &direct_source)
+        .await
+        .unwrap_err();
+    source.engine.add_to_retry_queue(
+        peer,
+        direct_source,
+        error,
+        source.instance.clock().now_millis(),
+    );
+    // The deliberately missing stored body remains failed; the direct retry
+    // succeeds without an implicit local write or body reload.
+    assert_eq!(source.engine.flush_retry_queue().await, 1);
+    assert_eq!(recipient.instance.backend().get(&direct_id).await?, direct);
+    assert!(!source.instance.has_entry(&direct_id).await);
+    source.engine.stop_server(None).await?;
+    recipient.engine.stop_server(None).await?;
     Ok(())
 }

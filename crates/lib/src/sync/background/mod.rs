@@ -28,6 +28,7 @@ use crate::{
     Database, Error, Instance, Result, WeakInstance,
     auth::crypto::PublicKey,
     entry::{Entry, ID},
+    snapshot::Snapshot,
     store::DocStore,
 };
 
@@ -100,6 +101,16 @@ pub enum SyncCommand {
         response: oneshot::Sender<Result<SyncResponse>>,
     },
 
+    /// Send frozen reverse history with bounded native pages.
+    SendHistory {
+        span: tracing::Span,
+        address: Address,
+        tree: ID,
+        target: Snapshot,
+        known: Snapshot,
+        response: oneshot::Sender<Result<SyncResponse>>,
+    },
+
     /// Flush: process all queued entries and retry queue, then respond.
     Flush {
         response: oneshot::Sender<Result<()>>,
@@ -152,16 +163,25 @@ impl std::fmt::Debug for SyncCommand {
                 .field("address", address)
                 .field("request", request)
                 .finish(),
+            Self::SendHistory { tree, .. } => {
+                f.debug_struct("SendHistory").field("tree", tree).finish()
+            }
             Self::Flush { .. } => write!(f, "Flush"),
         }
     }
 }
 
 /// Entry in the retry queue for failed sends
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+enum RetrySource {
+    Direct(Vec<Entry>),
+    Stored(Vec<(ID, ID)>),
+}
+
+#[derive(Debug)]
 struct RetryEntry {
     peer: PeerId,
-    entries: Vec<Entry>,
+    source: RetrySource,
     attempts: u32,
     /// Timestamp of last attempt in milliseconds since Unix epoch
     last_attempt_ms: u64,
@@ -400,9 +420,10 @@ impl BackgroundSync {
     async fn handle_command(&mut self, command: SyncCommand) -> Result<()> {
         match command {
             SyncCommand::SendEntries { peer, entries } => {
-                if let Err(e) = self.send_to_peer(&peer, entries.clone()).await {
+                let source = RetrySource::Direct(entries);
+                if let Err(e) = self.send_to_peer(&peer, &source).await {
                     let now_ms = self.instance().map(|i| i.clock().now_millis()).unwrap_or(0);
-                    self.add_to_retry_queue(peer, entries, e, now_ms);
+                    self.add_to_retry_queue(peer, source, e, now_ms);
                 }
             }
 
@@ -520,11 +541,46 @@ impl BackgroundSync {
                         tokio::spawn(
                             async move {
                                 debug!(address = ?address, "Sending sync request");
-                                let result = transport.send_request(&address, &request).await;
-                                let _ = response.send(result);
+                                let mut response = response;
+                                tokio::select! {
+                                    biased;
+                                    _ = response.closed() => {},
+                                    result = transport.send_request(&address, &request) => {
+                                        let _ = response.send(result);
+                                    }
+                                }
                             }
                             .instrument(span),
                         );
+                    }
+                    None => {
+                        let _ =
+                            response.send(Err(SyncError::NoTransportForAddress { address }.into()));
+                    }
+                }
+            }
+
+            SyncCommand::SendHistory {
+                span,
+                address,
+                tree,
+                target,
+                known,
+                response,
+            } => {
+                let instance = self.instance()?;
+                match self.transport_manager.handle_for_address(&address) {
+                    Some(transport) => {
+                        tokio::spawn(async move {
+                            let mut response = response;
+                            let backend = instance.backend().local_engine().expect("sync requires local backend");
+                            let source = super::transports::framing::UploadSource::History { backend: backend.as_ref(), tree: &tree, target: &target, known: &known };
+                            tokio::select! {
+                                biased;
+                                _ = response.closed() => {},
+                                result = transport.send_upload(&address, &source) => { let _ = response.send(result); }
+                            }
+                        }.instrument(span));
                     }
                     None => {
                         let _ =
@@ -701,13 +757,13 @@ impl BackgroundSync {
     /// # Error Handling
     ///
     /// Failed sends are automatically added to the retry queue with exponential backoff.
-    #[tracing::instrument(skip_all, fields(peer = %peer, entry_count = entries.len()))]
-    async fn send_to_peer(&self, peer: &PeerId, entries: Vec<Entry>) -> Result<()> {
+    #[tracing::instrument(skip_all, fields(peer = %peer))]
+    async fn send_to_peer(&self, peer: &PeerId, source: &RetrySource) -> Result<()> {
         let mut operation = SyncOperation::new("send_entries");
         let span = operation.span();
         let result = async {
             // Get peer addresses from sync tree (extract and drop transaction before await)
-            let (addresses, request) = {
+            let addresses = {
                 let sync_tree = self.get_sync_tree().await?;
                 let txn = sync_tree.new_transaction().await?;
                 let peer_info = PeerManager::new(&txn)
@@ -715,27 +771,28 @@ impl BackgroundSync {
                     .await?
                     .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
 
-                let addresses = peer_info.addresses.clone();
-                let request = SyncRequest::SendEntries(entries);
-                (addresses, request)
+                peer_info.addresses.clone()
             }; // Transaction is dropped here
 
             let (transport, address) = self
                 .select_route(&addresses, peer.public_key(), &mut operation)
                 .await?;
-            let response = transport.send_request(&address, &request).await?;
-
-            match response {
-                SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
-                SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
-                    "Peer {peer} returned error: {msg}"
-                ))
-                .into()),
-                _ => Err(SyncError::UnexpectedResponse {
-                    expected: "Ack or Count",
-                    actual: format!("{response:?}"),
+            match source {
+                RetrySource::Direct(entries) => transport.send_entries(&address, entries).await,
+                RetrySource::Stored(entries) => {
+                    let instance = self.instance()?;
+                    let backend = instance
+                        .backend()
+                        .local_engine()
+                        .expect("sync requires local backend");
+                    let source = super::transports::framing::UploadSource::Stored {
+                        backend: backend.as_ref(),
+                        entries,
+                    };
+                    super::transports::framing::acknowledged(
+                        transport.send_upload(&address, &source).await?,
+                    )
                 }
-                .into()),
             }
         }
         .instrument(span)
@@ -745,12 +802,12 @@ impl BackgroundSync {
     }
 
     /// Add failed send to retry queue
-    fn add_to_retry_queue(&mut self, peer: PeerId, entries: Vec<Entry>, error: Error, now_ms: u64) {
+    fn add_to_retry_queue(&mut self, peer: PeerId, source: RetrySource, error: Error, now_ms: u64) {
         // Log send failure and add to retry queue
         tracing::warn!("Failed to send to {peer}: {error}. Adding to retry queue.");
         self.retry_queue.push(RetryEntry {
             peer,
-            entries,
+            source,
             attempts: 1,
             last_attempt_ms: now_ms,
         });
@@ -777,25 +834,10 @@ impl BackgroundSync {
 
         let mut failures = 0;
         for (peer, entry_ids) in batches {
-            // Fetch entries from backend
-            let mut entries = Vec::with_capacity(entry_ids.len());
-            for (entry_id, _tree_id) in &entry_ids {
-                match instance.backend().get(entry_id).await {
-                    Ok(entry) => entries.push(entry),
-                    Err(e) => {
-                        tracing::warn!("Failed to fetch entry {entry_id} for peer {peer}: {e}");
-                    }
-                }
-            }
-
-            if entries.is_empty() {
-                continue;
-            }
-
-            // Send batched entries to peer
-            if let Err(e) = self.send_to_peer(&peer, entries.clone()).await {
+            let source = RetrySource::Stored(entry_ids);
+            if let Err(e) = self.send_to_peer(&peer, &source).await {
                 let now_ms = instance.clock().now_millis();
-                self.add_to_retry_queue(peer, entries, e, now_ms);
+                self.add_to_retry_queue(peer, source, e, now_ms);
                 failures += 1;
             }
         }
@@ -818,7 +860,7 @@ impl BackgroundSync {
 
             if elapsed_ms >= backoff_ms {
                 // Try sending again
-                if let Err(_e) = self.send_to_peer(&entry.peer, entry.entries.clone()).await {
+                if let Err(_e) = self.send_to_peer(&entry.peer, &entry.source).await {
                     entry.attempts += 1;
                     entry.last_attempt_ms = now_ms;
 
@@ -853,7 +895,7 @@ impl BackgroundSync {
         // Try sending each entry immediately (ignore backoff)
         for mut retry_entry in retry_queue {
             if let Err(_e) = self
-                .send_to_peer(&retry_entry.peer, retry_entry.entries.clone())
+                .send_to_peer(&retry_entry.peer, &retry_entry.source)
                 .await
             {
                 retry_entry.attempts += 1;
@@ -1058,8 +1100,8 @@ impl BackgroundSync {
             // Get our tips for this tree (empty if tree doesn't exist)
             let instance = self.instance()?;
             let our_tips = instance
-                .backend()
-                .snapshot(tree_id)
+                .require_local_engine()?
+                .verified_snapshot(tree_id)
                 .await
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 

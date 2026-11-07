@@ -25,8 +25,6 @@ use crate::{
     store::Table,
 };
 
-use super::utils::collect_ancestors_to_send;
-
 impl Sync {
     // === Core Sync Methods ===
 
@@ -198,7 +196,7 @@ impl Sync {
         all_entries.extend(response.all_entries);
 
         // Store all entries and fire callbacks once
-        self.store_received_entries(&response.tree_id, all_entries)
+        self.store_verified_response_entries(&response.tree_id, all_entries)
             .await?;
 
         tracing::info!(tree_id = %response.tree_id, "Bootstrap completed successfully");
@@ -214,7 +212,7 @@ impl Sync {
         tracing::debug!(tree_id = %response.tree_id, "Processing incremental response");
 
         // Step 1: Store missing entries
-        self.store_received_entries(&response.tree_id, response.missing_entries)
+        self.store_verified_response_entries(&response.tree_id, response.missing_entries)
             .await?;
 
         // Step 2: Check if server is missing entries from us
@@ -237,23 +235,13 @@ impl Sync {
                 "Server is missing some of our entries, sending them back"
             );
 
-            // Collect entries server is missing
-            let engine = self
-                .backend()?
-                .local_engine()
-                .expect("sync requires local backend");
-            let entries_for_server =
-                collect_ancestors_to_send(engine.as_ref(), &missing_tip_ids, their_tips).await?;
-
-            if !entries_for_server.is_empty() {
-                // Send these entries back to server
-                self.send_missing_entries_to_peer(
-                    peer_address,
-                    &response.tree_id,
-                    entries_for_server,
-                )
-                .await?;
-            }
+            self.send_missing_history_to_peer(
+                peer_address,
+                &response.tree_id,
+                crate::snapshot::Snapshot::from(missing_tip_ids),
+                crate::snapshot::Snapshot::from(response.their_tips),
+            )
+            .await?;
         }
 
         tracing::debug!(tree_id = %response.tree_id, "Incremental sync completed");
@@ -261,33 +249,24 @@ impl Sync {
     }
 
     /// Send entries that the server is missing back to complete bidirectional sync
-    async fn send_missing_entries_to_peer(
+    async fn send_missing_history_to_peer(
         &self,
         peer_address: &peer_types::Address,
         tree_id: &ID,
-        entries: Vec<Entry>,
+        target: crate::snapshot::Snapshot,
+        known: crate::snapshot::Snapshot,
     ) -> Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-
-        tracing::debug!(
-            tree_id = %tree_id,
-            entry_count = entries.len(),
-            "Sending missing entries back to peer for bidirectional sync"
-        );
-
-        let request = protocol::SyncRequest::SendEntries(entries);
-
         // Send via command channel
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
-            .send(SyncCommand::SendRequest {
+            .send(SyncCommand::SendHistory {
                 span: tracing::Span::current(),
                 address: peer_address.clone(),
-                request: Box::new(request),
+                tree: tree_id.clone(),
+                target,
+                known,
                 response: tx,
             })
             .await
@@ -312,34 +291,6 @@ impl Sync {
             }
             .into()),
         }
-    }
-
-    /// Validate and store received entries from a peer, firing remote write callbacks.
-    pub(super) async fn store_received_entries(
-        &self,
-        tree_id: &ID,
-        entries: Vec<Entry>,
-    ) -> Result<()> {
-        // These entries arrive without per-entry declared IDs — they were batched
-        // under a single tree_id by the sender. Content is stored under whatever
-        // ID our local `entry.id()` derives, so substitution attacks on individual
-        // entries would fail DAG connectivity checks via parent pointers rather
-        // than a per-entry hash check here. Root-level integrity is verified by
-        // the bootstrap handler against the declared tree_id.
-        //
-        // TODO: Add signature verification and parent-existence / DAG-connectivity
-        // checks before marking entries as verified.
-
-        // Store entries and fire callbacks via Instance::put_remote_entries.
-        // Stored Unverified: these arrived from a peer and have not been
-        // verified by this node.
-        let instance = self.instance()?;
-        instance
-            .put_remote_entries(tree_id, entries)
-            .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")))?;
-
-        Ok(())
     }
 
     /// Send a batch of entries to a sync peer (async version).
@@ -799,25 +750,13 @@ impl Sync {
         .await
     }
 
-    /// Local tips used in an authenticated pull request.
+    /// Only a locally Verified ancestor-closed prefix may be advertised as
+    /// known. Raw tips left by a failed complete transfer are not coverage.
     pub(super) async fn tree_pull_tips(&self, tree_id: &ID) -> Result<crate::Snapshot> {
-        let backend = self.backend()?;
-        let tips = backend
-            .snapshot(tree_id)
+        self.instance()?
+            .require_local_engine()?
+            .verified_snapshot(tree_id)
             .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
-        match backend.get(tree_id).await {
-            Ok(_) => Ok(tips),
-            Err(error) if error.is_not_found() => {
-                if !tips.is_empty() {
-                    warn!(tree_id = %tree_id, "Ignoring orphan tips until the root is bootstrapped");
-                }
-                Ok(crate::Snapshot::EMPTY)
-            }
-            Err(error) => {
-                Err(SyncError::BackendError(format!("Failed to get local root: {error}")).into())
-            }
-        }
     }
 
     /// One address's attempt at [`Self::sync_tree_with_peer_auth`].
@@ -1014,20 +953,7 @@ impl Sync {
         tree_id: &ID,
         entries: Vec<Entry>,
     ) -> Result<()> {
-        let ids: Vec<_> = entries.iter().map(Entry::id).collect();
-        let instance = self.instance()?;
-        instance.put_remote_entries(tree_id, entries).await?;
-        let backend = instance.require_local_engine()?;
-        for id in ids {
-            let status = backend.get_verification_status(&id).await?;
-            if status != crate::backend::VerificationStatus::Verified {
-                return Err(SyncError::InvalidEntry(format!(
-                    "requested transfer entry {id} is {status:?}, not Verified"
-                ))
-                .into());
-            }
-        }
-        Ok(())
+        super::utils::store_verified_response_entries(&self.instance()?, tree_id, entries).await
     }
 
     // === Flush Operations ===

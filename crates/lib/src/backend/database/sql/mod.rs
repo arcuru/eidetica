@@ -1060,6 +1060,10 @@ impl BackendImpl for SqlxBackend {
         storage::get(self, id).await
     }
 
+    async fn peer_entry(&self, id: &ID, deadline: tokio::time::Instant) -> Result<Entry> {
+        traversal::peer_entry(self, id, deadline).await
+    }
+
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
         storage::get_verification_status(self, id).await
     }
@@ -1167,6 +1171,22 @@ impl BackendImpl for SqlxBackend {
         limits: crate::backend::HistoryPageLimits,
     ) -> Result<crate::backend::HistoryPage> {
         let query = crate::backend::history_page::HistoryQuery::new(tree, store, snapshot, after)?;
+        let _permit = crate::backend::history_page::admit()?;
+        traversal::store_history_page(self, &query, &limits).await
+    }
+
+    async fn database_history_page(
+        &self,
+        tree: &ID,
+        target: &Snapshot,
+        known: &Snapshot,
+        after: Option<&crate::backend::HistoryCursor>,
+        limits: crate::backend::HistoryPageLimits,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::backend::HistoryPage> {
+        let query = crate::backend::history_page::HistoryQuery::database(
+            tree, target, known, after, deadline,
+        )?;
         let _permit = crate::backend::history_page::admit()?;
         traversal::store_history_page(self, &query, &limits).await
     }

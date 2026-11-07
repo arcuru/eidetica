@@ -12,43 +12,37 @@ use crate::{
 };
 
 impl SyncHandlerImpl {
-    /// Get list of available trees for discovery
-    pub(super) async fn get_available_trees(&self) -> Vec<TreeInfo> {
-        // Get all root entries in the backend
-        let instance = match self.instance() {
-            Ok(i) => i,
-            Err(e) => {
-                error!(error = %e, "Failed to get instance");
-                return Vec::new();
-            }
-        };
-        match instance
+    /// Bounded best-effort discovery. Counts use the native page producer,
+    /// never an eager body walk independent of the peer resource/deadline caps.
+    pub(super) async fn get_available_trees(&self) -> Result<Vec<TreeInfo>> {
+        use crate::backend::history_page::{MAX_HISTORY_TIPS, resource};
+        let instance = self.instance()?;
+        let backend = instance
             .backend()
             .local_engine()
-            .expect("sync requires local backend")
-            .all_roots()
-            .await
-        {
-            Ok(roots) => {
-                let mut tree_infos = Vec::new();
-                for root_id in roots {
-                    // Get basic tree info
-                    if let Ok(entry_count) = self.count_tree_entries(&root_id).await {
-                        tree_infos.push(TreeInfo {
-                            tree_id: root_id,
-                            name: None, // Could extract from tree metadata in the future
-                            entry_count,
-                            last_modified: 0, // Could track modification times in the future
-                        });
-                    }
-                }
-                tree_infos
+            .expect("sync requires local backend");
+        let roots = backend.all_roots().await?;
+        if roots.len() > MAX_HISTORY_TIPS {
+            return Err(resource("peer discovery roots", MAX_HISTORY_TIPS));
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut infos = Vec::new();
+        for tree_id in roots {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(resource("peer discovery deadline", 0));
             }
-            Err(e) => {
-                error!(error = %e, "Failed to get available trees");
-                Vec::new()
+            // Preserve best-effort discovery: an unavailable/untransferable
+            // history is not advertised as a complete count.
+            if let Ok(entry_count) = self.count_tree_entries(&tree_id, deadline).await {
+                infos.push(TreeInfo {
+                    tree_id,
+                    name: None,
+                    entry_count,
+                    last_modified: 0,
+                });
             }
         }
+        Ok(infos)
     }
 
     /// Collect all entries in a tree (excluding the root)
@@ -170,35 +164,41 @@ impl SyncHandlerImpl {
         super::utils::collect_ancestors_to_send(engine.as_ref(), &missing_tip_ids, peer_tips).await
     }
 
-    /// Count entries in a tree
-    pub(super) async fn count_tree_entries(&self, tree_id: &ID) -> Result<usize> {
-        let mut count = 1; // Include root
-        let mut visited = std::collections::HashSet::new();
-        let mut to_visit = std::collections::VecDeque::new();
-
-        // Get tips to start traversal
-        let snapshot = self.instance()?.backend().snapshot(tree_id).await?;
-        to_visit.extend(snapshot.tips().iter().cloned());
-
-        // Count all entries
-        while let Some(entry_id) = to_visit.pop_front() {
-            if visited.contains(&entry_id) || entry_id == *tree_id {
-                continue;
-            }
-            visited.insert(entry_id.clone());
-            count += 1;
-
-            if let Ok(entry) = self.instance()?.backend().get(&entry_id).await
-                && let Ok(parent_ids) = entry.parents()
-            {
-                for parent_id in parent_ids {
-                    if !visited.contains(&parent_id) && parent_id != *tree_id {
-                        to_visit.push_back(parent_id);
-                    }
-                }
+    /// Count through the same bounded native traversal used for serving.
+    pub(super) async fn count_tree_entries(
+        &self,
+        tree_id: &ID,
+        deadline: tokio::time::Instant,
+    ) -> Result<usize> {
+        let instance = self.instance()?;
+        let backend = instance
+            .backend()
+            .local_engine()
+            .expect("sync requires local backend");
+        let target = backend.snapshot(tree_id).await?;
+        let limits = crate::backend::HistoryPageLimits {
+            max_entries: 1024,
+            max_encoded_bytes: crate::backend::MAX_DATABASE_PAGE_ENCODING,
+            allow_large_singleton: false,
+        };
+        let mut cursor = None;
+        let mut count = 0;
+        loop {
+            let page = backend
+                .database_history_page(
+                    tree_id,
+                    &target,
+                    &crate::snapshot::Snapshot::EMPTY,
+                    cursor.as_ref(),
+                    limits,
+                    deadline,
+                )
+                .await?;
+            count += page.entries.len();
+            cursor = page.next;
+            if cursor.is_none() {
+                return Ok(count);
             }
         }
-
-        Ok(count)
     }
 }

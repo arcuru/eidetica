@@ -87,18 +87,44 @@ enum Reply {
 }
 
 struct BridgeHandler {
-    inner: SyncHandlerImpl,
+    inner: Arc<SyncHandlerImpl>,
     reply: Reply,
     handshake_delay: Duration,
 }
 
 #[async_trait]
 impl SyncHandler for BridgeHandler {
+    async fn response_frames(
+        self: Arc<Self>,
+        request: SyncRequest,
+        context: RequestContext,
+        deadline: tokio::time::Instant,
+    ) -> Result<super::transports::framing::FrameStream> {
+        if let Some(response) = self.intercept(&request).await {
+            return Ok(Box::pin(futures_util::stream::iter([Ok(
+                super::transports::framing::Frame::Control(response),
+            )])));
+        }
+        self.inner
+            .clone()
+            .response_frames(request, context, deadline)
+            .await
+    }
+
     async fn handle_request(
         &self,
         request: &SyncRequest,
         context: &RequestContext,
     ) -> SyncResponse {
+        if let Some(response) = self.intercept(request).await {
+            return response;
+        }
+        self.inner.handle_request(request, context).await
+    }
+}
+
+impl BridgeHandler {
+    async fn intercept(&self, request: &SyncRequest) -> Option<SyncResponse> {
         match request {
             SyncRequest::Handshake(_) => {
                 let delay = if matches!(self.reply, Reply::SilentHandshake) {
@@ -114,15 +140,15 @@ impl SyncHandler for BridgeHandler {
                 // the test leaves no permanently pending handler behind.
                 Reply::Silent => tokio::time::sleep(Duration::from_secs(31)).await,
                 Reply::Refused => {
-                    return SyncResponse::BootstrapRejected {
+                    return Some(SyncResponse::BootstrapRejected {
                         request_id: "refusal-fixture".to_string(),
                         message: "access refused".to_string(),
-                    };
+                    });
                 }
             },
             _ => {}
         }
-        self.inner.handle_request(request, context).await
+        None
     }
 }
 
@@ -155,7 +181,10 @@ impl Bridge {
         let transport = HttpTransport::builder().bind("127.0.0.1:0").build_sync()?;
         transport
             .start_server(Arc::new(BridgeHandler {
-                inner: SyncHandlerImpl::new(instance.clone(), sync.sync_tree_root_id().clone()),
+                inner: Arc::new(SyncHandlerImpl::new(
+                    instance.clone(),
+                    sync.sync_tree_root_id().clone(),
+                )),
                 reply,
                 handshake_delay,
             }))

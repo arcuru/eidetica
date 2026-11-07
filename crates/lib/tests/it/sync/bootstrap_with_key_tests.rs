@@ -507,7 +507,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 #[tokio::test]
 async fn test_incremental_sync_after_bootstrap_with_key() {
     // Setup server
-    let (_server_instance, _user, _key_id, _server_db, server_sync, tree_id) =
+    let (_server_instance, _user, _key_id, server_db, server_sync, tree_id) =
         setup_global_wildcard_server().await;
 
     let root_entry = create_test_tree_entry();
@@ -545,19 +545,16 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
     // Flush any pending sync work
     client_sync.flush().await.ok();
 
-    // Add new content to server
-    let entry2 = Entry::builder(tree_id.clone())
-        .set_parents(vec![tree_id.clone()])
-        .set_subtree_data("messages", r#"{"msg2": {"text": "New message"}}"#)
-        .build()
-        .expect("Failed to build entry");
-
-    server_sync
-        .backend()
-        .expect("Failed to get backend")
-        .put_verified(entry2.clone())
+    // Commit a genuinely signed update. A test-only Verified label on an
+    // unsigned Entry is not verification evidence for a receiving instance.
+    let txn = server_db.new_transaction().await.unwrap();
+    txn.get_store::<DocStore>("messages")
+        .await
+        .unwrap()
+        .set_string("msg2", "New message")
         .await
         .unwrap();
+    let entry2_id = txn.commit().await.unwrap();
 
     // Do incremental sync (client already has the tree)
     println!("🧪 TEST: Attempting incremental sync after bootstrap...");
@@ -576,7 +573,7 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
         client_sync
             .backend()
             .expect("Failed to get backend")
-            .get(&entry2.id())
+            .get(&entry2_id)
             .await
             .is_ok(),
         "Client should have the new entry after incremental sync"

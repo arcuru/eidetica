@@ -126,6 +126,10 @@ pub enum SyncError {
     #[error("Serialization error: {0}")]
     SerializationError(String),
 
+    /// The peer lacks the bounded transport endpoint/ALPN or producer seam.
+    #[error("Peer does not support bounded sync protocol v1")]
+    PeerProtocolUnsupported,
+
     /// Protocol version mismatch.
     #[error("Protocol version mismatch: expected {expected}, received {received}")]
     ProtocolMismatch { expected: u32, received: u32 },
@@ -133,6 +137,16 @@ pub enum SyncError {
     /// Handshake failed.
     #[error("Handshake failed: {0}")]
     HandshakeFailed(String),
+
+    /// A single Entry cannot fit a complete peer envelope. The size is a
+    /// lower bound on the required page (including metadata), not a claim that
+    /// the whole encoding was allocated or that the Entry alone is that big.
+    #[error("Entry {id} cannot fit peer frame limit {limit} (page size at least {encoded_bytes})")]
+    EntryTooLarge {
+        id: ID,
+        limit: usize,
+        encoded_bytes: usize,
+    },
 
     /// Entry not found in backend storage.
     #[error("Entry not found: {0}")]

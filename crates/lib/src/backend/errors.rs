@@ -68,6 +68,10 @@ pub enum BackendError {
     #[error("Bounded Store history pages are not supported by this backend")]
     HistoryPageUnsupported,
 
+    /// No native bounded main-Database ancestry reader is available.
+    #[error("Bounded Database history pages are not supported by this backend")]
+    DatabaseHistoryPageUnsupported,
+
     /// The backend does not implement strict forward history deltas.
     #[error("Store history deltas are not supported by this backend")]
     HistoryDeltaUnsupported,

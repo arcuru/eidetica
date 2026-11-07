@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 
-use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
+use super::{SyncTransport, TransportBuilder, TransportConfig, framing, shared::*};
 use crate::{
     Result,
     crdt::Doc,
@@ -29,11 +29,12 @@ use crate::{
         error::{SyncError, TimeoutPhase},
         handler::SyncHandler,
         peer_types::Address,
-        protocol::{RequestContext, SyncRequest, SyncResponse},
+        protocol::{SyncRequest, SyncResponse},
     },
 };
 
-const SYNC_ALPN: &[u8] = b"eidetica/v0";
+const SYNC_ALPN: &[u8] = b"eidetica/v1";
+const LEGACY_ALPN: &[u8] = b"eidetica/v0";
 
 /// Maximum time spent establishing a connection to a peer.
 ///
@@ -552,7 +553,8 @@ impl IrohTransport {
 
     /// Configure the endpoint without binding sockets or starting discovery.
     fn endpoint_builder(&self) -> EndpointBuilder {
-        let mut builder = Endpoint::builder(presets::N0).alpns(vec![SYNC_ALPN.to_vec()]);
+        let mut builder =
+            Endpoint::builder(presets::N0).alpns(vec![SYNC_ALPN.to_vec(), LEGACY_ALPN.to_vec()]);
 
         if let Some(relay_mode) = &self.runtime_config.relay_mode {
             builder = builder.relay_mode(relay_mode.clone());
@@ -651,6 +653,8 @@ impl IrohTransport {
             address: remote_endpoint_id.to_string(),
         };
 
+        let legacy = conn.alpn() == LEGACY_ALPN;
+
         // Accept incoming streams and process sequentially
         // Note: We process streams sequentially because SyncHandler::handle_request
         // returns non-Send futures (internal types use Rc/RefCell).
@@ -660,6 +664,7 @@ impl IrohTransport {
                 recv_stream,
                 handler.clone(),
                 remote_address.clone(),
+                legacy,
             )
             .await;
         }
@@ -671,55 +676,148 @@ impl IrohTransport {
         mut recv_stream: RecvStream,
         handler: Arc<dyn SyncHandler>,
         remote_address: Address,
+        legacy: bool,
     ) {
-        // Read the request with size limit (1MB)
-        let buffer: Vec<u8> = match recv_stream.read_to_end(1024 * 1024).await {
-            Ok(buffer) => buffer,
-            Err(e) => {
-                tracing::error!("Failed to read stream: {e}");
-                return;
-            }
-        };
-
-        // Deserialize the request using JsonHandler
-        let request: SyncRequest = match JsonHandler::deserialize_request(&buffer) {
-            Ok(req) => req,
-            Err(e) => {
-                tracing::error!("Failed to deserialize request: {e}");
-                return;
-            }
-        };
-
-        // Extract peer_pubkey from SyncTreeRequest if present
-        let peer_pubkey = match &request {
-            SyncRequest::SyncTree(sync_tree_request) => sync_tree_request.peer_pubkey.clone(),
-            _ => None,
-        };
-
-        // Create request context with remote address and peer pubkey
-        let context = RequestContext {
-            remote_address: Some(remote_address),
-            peer_pubkey,
-        };
-
-        // Handle the request using the SyncHandler
-        let response = handler.handle_request(&request, &context).await;
-
-        // Serialize and send response using JsonHandler
-        match JsonHandler::serialize_response(&response) {
-            Ok(response_bytes) => {
-                if let Err(e) = send_stream.write_all(&response_bytes).await {
-                    tracing::error!("Failed to write response: {e}");
-                    return;
-                }
-                if let Err(e) = send_stream.finish() {
-                    tracing::error!("Failed to finish stream: {e}");
+        use futures_util::StreamExt;
+        let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+        // STOP_SENDING also cancels a producer stalled before its next write.
+        // Dropping the future releases native work/permits immediately rather
+        // than keeping the operation until the absolute exchange deadline.
+        let stopped = send_stream.stopped();
+        tokio::pin!(stopped);
+        let result: Result<()> = tokio::select! {
+            biased;
+            _ = &mut stopped => return,
+            result = tokio::time::timeout_at(deadline, async {
+            if legacy {
+                // Never serve a v0 history or fall back after v1 progress.
+                let _request = recv_stream
+                    .read_to_end(framing::MAX_FRAME_BYTES)
+                    .await
+                    .map_err(|e| SyncError::Network(e.to_string()))?;
+                let bytes = JsonHandler::serialize_response(&SyncResponse::Error(
+                    "Unsupported peer protocol v0; required v1".into(),
+                ))?;
+                send_stream
+                    .write_all(&bytes)
+                    .await
+                    .map_err(|e| SyncError::Network(e.to_string()))?;
+            } else {
+                let request = framing::read_request(&mut recv_stream, deadline).await?;
+                let mut response =
+                    framing::response_bytes(handler, request, remote_address, deadline).await;
+                while let Some(bytes) = response.next().await {
+                    send_stream
+                        .write_all(&bytes?)
+                        .await
+                        .map_err(|e| SyncError::Network(e.to_string()))?;
                 }
             }
-            Err(e) => {
-                tracing::error!("Failed to serialize response: {e}");
-            }
+            send_stream
+                .finish()
+                .map_err(|e| SyncError::Network(e.to_string()))?;
+            Ok(())
+        })
+            => result.unwrap_or_else(|_| Err(SyncError::Network("peer exchange deadline".into()).into())),
+        };
+        if let Err(error) = result {
+            tracing::debug!(%error, "Iroh framed exchange failed");
         }
+    }
+}
+
+impl IrohTransport {
+    async fn send_framed(
+        &self,
+        address: &Address,
+        request: &SyncRequest,
+        source: Option<&framing::UploadSource<'_>>,
+    ) -> Result<SyncResponse> {
+        if !self.can_handle_address(address) {
+            return Err(SyncError::UnsupportedTransport {
+                transport_type: address.transport_type.clone(),
+            }
+            .into());
+        }
+
+        // Ensure we have an endpoint (lazy initialization)
+        let endpoint = self.ensure_endpoint().await?;
+
+        // Deserialize the EndpointTicket address
+        let endpoint_ticket =
+            <EndpointTicket as Ticket>::decode_string(&address.address).map_err(|e| {
+                SyncError::SerializationError(format!(
+                    "Failed to parse EndpointTicket '{}': {e}",
+                    address.address
+                ))
+            })?;
+        let endpoint_addr = endpoint_ticket.endpoint_addr().clone();
+
+        // Connect to the peer, bounding how long an unreachable one can cost.
+        let conn = timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, SYNC_ALPN))
+            .await
+            .map_err(|_| SyncError::Timeout {
+                address: address.address.clone(),
+                phase: TimeoutPhase::Connect,
+                elapsed: CONNECT_TIMEOUT,
+            })?
+            .map_err(|error| {
+                use iroh::endpoint::{
+                    ConnectError, ConnectingError, ConnectionError, TransportErrorCode,
+                };
+                let connection_error = match &error {
+                    ConnectError::Connection { source, .. }
+                    | ConnectError::Connecting {
+                        source: ConnectingError::ConnectionError { source, .. },
+                        ..
+                    } => Some(source),
+                    _ => None,
+                };
+                // TLS no_application_protocol is positive evidence of version
+                // incompatibility, unlike an unreachable or silent peer.
+                let unsupported = connection_error.is_some_and(|error| match error {
+                    ConnectionError::TransportError(error) => {
+                        error.code == TransportErrorCode::crypto(120)
+                    }
+                    ConnectionError::ConnectionClosed(close) => {
+                        close.error_code == TransportErrorCode::crypto(120)
+                    }
+                    _ => false,
+                });
+                if unsupported {
+                    SyncError::PeerProtocolUnsupported
+                } else {
+                    SyncError::ConnectionFailed {
+                        address: address.address.clone(),
+                        reason: error.to_string(),
+                    }
+                }
+            })?;
+
+        // The absolute exchange deadline includes serialization and every page;
+        // no successful read or continuation resets it.
+        let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+        timeout(REQUEST_TIMEOUT, async {
+            let _permit = framing::admit_outbound()?;
+            let (mut send_stream, mut recv_stream) = conn
+                .open_bi()
+                .await
+                .map_err(|e| SyncError::Network(format!("Failed to open stream: {e}")))?;
+            match source {
+                Some(source) => framing::write_upload(&mut send_stream, source, deadline).await?,
+                None => framing::write_request(&mut send_stream, request).await?,
+            }
+            send_stream
+                .finish()
+                .map_err(|e| SyncError::Network(e.to_string()))?;
+            framing::read_response(&mut recv_stream, request, deadline).await
+        })
+        .await
+        .map_err(|_| SyncError::Timeout {
+            address: address.address.clone(),
+            phase: TimeoutPhase::Request,
+            elapsed: REQUEST_TIMEOUT,
+        })?
     }
 }
 
@@ -777,82 +875,23 @@ impl SyncTransport for IrohTransport {
     }
 
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
-        if !self.can_handle_address(address) {
-            return Err(SyncError::UnsupportedTransport {
-                transport_type: address.transport_type.clone(),
-            }
-            .into());
-        }
+        self.send_framed(address, request, None).await
+    }
 
-        // Ensure we have an endpoint (lazy initialization)
-        let endpoint = self.ensure_endpoint().await?;
-
-        // Deserialize the EndpointTicket address
-        let endpoint_ticket =
-            <EndpointTicket as Ticket>::decode_string(&address.address).map_err(|e| {
-                SyncError::SerializationError(format!(
-                    "Failed to parse EndpointTicket '{}': {e}",
-                    address.address
-                ))
-            })?;
-        let endpoint_addr = endpoint_ticket.endpoint_addr().clone();
-
-        // Connect to the peer, bounding how long an unreachable one can cost.
-        let conn = timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, SYNC_ALPN))
+    async fn send_upload(
+        &self,
+        address: &Address,
+        source: &framing::UploadSource<'_>,
+    ) -> Result<SyncResponse> {
+        self.send_framed(address, &SyncRequest::SendEntries(vec![]), Some(source))
             .await
-            .map_err(|_| SyncError::Timeout {
-                address: address.address.clone(),
-                phase: TimeoutPhase::Connect,
-                elapsed: CONNECT_TIMEOUT,
-            })?
-            .map_err(|e| SyncError::ConnectionFailed {
-                address: address.address.clone(),
-                reason: e.to_string(),
-            })?;
+    }
 
-        // Serialize the request before starting the exchange clock.
-        let request_bytes = JsonHandler::serialize_request(request)?;
-
-        // One deadline covers the whole exchange: a peer can otherwise stall
-        // any single step of it indefinitely.
-        let response_bytes: Vec<u8> = timeout(REQUEST_TIMEOUT, async {
-            // Open a bidirectional stream
-            let (mut send_stream, mut recv_stream) = conn
-                .open_bi()
-                .await
-                .map_err(|e| SyncError::Network(format!("Failed to open stream: {e}")))?;
-
-            send_stream
-                .write_all(&request_bytes)
-                .await
-                .map_err(|e| SyncError::Network(format!("Failed to write request: {e}")))?;
-
-            send_stream
-                .finish()
-                .map_err(|e| SyncError::Network(format!("Failed to finish send stream: {e}")))?;
-
-            // Read the response with size limit (1MB)
-            recv_stream
-                .read_to_end(1024 * 1024)
-                .await
-                .map_err(|e| SyncError::Network(format!("Failed to read response: {e}")))
-        })
-        .await
-        .map_err(|_| {
-            // The peer answered the connection attempt, so it is reachable:
-            // the phase records that, rather than the peer being reported as
-            // unreachable.
-            SyncError::Timeout {
-                address: address.address.clone(),
-                phase: TimeoutPhase::Request,
-                elapsed: REQUEST_TIMEOUT,
-            }
-        })??;
-
-        // Deserialize the response using JsonHandler
-        let response: SyncResponse = JsonHandler::deserialize_response(&response_bytes)?;
-
-        Ok(response)
+    async fn send_entries(&self, address: &Address, entries: &[crate::Entry]) -> Result<()> {
+        framing::acknowledged(
+            self.send_upload(address, &framing::UploadSource::Entries(entries))
+                .await?,
+        )
     }
 
     fn is_server_running(&self) -> bool {
@@ -874,7 +913,10 @@ mod tests {
     fn assert_endpoint_portmapper(transport: &IrohTransport, expected: PortmapperConfig) {
         let config = format!("{:?}", transport.endpoint_builder());
         assert!(config.contains(&format!("portmapper_config: {expected:?}")));
-        assert!(config.contains(&format!("alpn_protocols: {:?}", vec![SYNC_ALPN.to_vec()])));
+        assert!(config.contains(&format!(
+            "alpn_protocols: {:?}",
+            vec![SYNC_ALPN.to_vec(), LEGACY_ALPN.to_vec()]
+        )));
     }
 
     #[tokio::test]
@@ -1039,5 +1081,154 @@ mod tests {
             endpoint_addr.ip_addrs().collect::<Vec<_>>(),
             round_tripped.ip_addrs().collect::<Vec<_>>()
         );
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn peer_paging_iroh_mixed_versions_refuse_without_legacy_ingestion() {
+        let (instance, _) = crate::Instance::create_backend(
+            Box::new(crate::backend::database::InMemory::new()),
+            crate::NewAccount::passwordless("compatibility"),
+        )
+        .await
+        .unwrap();
+        instance.enable_sync().await.unwrap();
+        let handler = Arc::new(crate::sync::handler::SyncHandlerImpl::new(
+            instance.clone(),
+            instance.sync().unwrap().sync_tree_root_id().clone(),
+        ));
+        let builder = IrohTransport::builder()
+            .relay_mode(RelayMode::Disabled)
+            .portmapper_config(PortmapperConfig::Disabled)
+            .mdns(false)
+            .n0_dns(false);
+        let server = builder.clone().build().unwrap();
+        let client = builder.build().unwrap();
+        server.start_server(handler).await.unwrap();
+        let address = Address::iroh(server.get_server_address().unwrap());
+        let ticket = <EndpointTicket as Ticket>::decode_string(&address.address).unwrap();
+        let endpoint = client.ensure_endpoint().await.unwrap();
+        let conn = endpoint
+            .connect(ticket.endpoint_addr().clone(), LEGACY_ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        let entry = crate::Entry::root_builder()
+            .set_metadata(b"never ingested v0".to_vec())
+            .build()
+            .unwrap();
+        let id = entry.id();
+        send.write_all(&serde_json::to_vec(&SyncRequest::SendEntries(vec![entry])).unwrap())
+            .await
+            .unwrap();
+        send.finish().unwrap();
+        let bytes = timeout(REQUEST_TIMEOUT, recv.read_to_end(framing::MAX_FRAME_BYTES))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(JsonHandler::deserialize_response(&bytes).unwrap(), SyncResponse::Error(error) if error.contains("Unsupported peer protocol v0"))
+        );
+        assert!(instance.backend().get(&id).await.is_err());
+        // Make the listener v0-only. The v1 client must not retry a legacy
+        // history exchange or mistake a positive ALPN refusal for a timeout.
+        server
+            .ensure_endpoint()
+            .await
+            .unwrap()
+            .set_alpns(vec![LEGACY_ALPN.to_vec()]);
+        let error = client
+            .send_request(&address, &SyncRequest::SendEntries(vec![]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, crate::Error::Sync(error) if matches!(**error, SyncError::PeerProtocolUnsupported)),
+            "{error:?}"
+        );
+        server.stop_server().await.unwrap();
+        endpoint.close().await;
+    }
+    #[tokio::test]
+    async fn peer_paging_iroh_partial_upload_and_oversized_root_are_not_ingested() {
+        let (instance, _) = crate::Instance::create_backend(
+            Box::new(crate::backend::database::InMemory::new()),
+            crate::NewAccount::passwordless("partial-upload"),
+        )
+        .await
+        .unwrap();
+        instance.enable_sync().await.unwrap();
+        let handler = Arc::new(crate::sync::handler::SyncHandlerImpl::new(
+            instance.clone(),
+            instance.sync().unwrap().sync_tree_root_id().clone(),
+        ));
+        let builder = IrohTransport::builder()
+            .relay_mode(RelayMode::Disabled)
+            .portmapper_config(PortmapperConfig::Disabled)
+            .mdns(false)
+            .n0_dns(false);
+        let server = builder.clone().build().unwrap();
+        let client = builder.build().unwrap();
+        server.start_server(handler).await.unwrap();
+        let address = Address::iroh(server.get_server_address().unwrap());
+        let entry = crate::Entry::root_builder()
+            .set_metadata(b"incomplete upload must stay absent".to_vec())
+            .build()
+            .unwrap();
+        let id = entry.id();
+        let mut bytes = Vec::new();
+        framing::write_request(&mut bytes, &SyncRequest::SendEntries(vec![entry]))
+            .await
+            .unwrap();
+        let mut input = bytes.as_slice();
+        let mut decoder = framing::Decoder::default();
+        let mut end_bytes = 0;
+        while !input.is_empty() {
+            if let Some(frame) = decoder.next(&mut input).unwrap()
+                && matches!(frame, framing::Frame::UploadEnd { .. })
+            {
+                end_bytes = framing::encode(&frame).unwrap().len();
+            }
+        }
+        assert!(end_bytes > 0);
+        bytes.truncate(bytes.len() - end_bytes);
+        let ticket = <EndpointTicket as Ticket>::decode_string(&address.address).unwrap();
+        let endpoint = client.ensure_endpoint().await.unwrap();
+        let connection = endpoint
+            .connect(ticket.endpoint_addr().clone(), SYNC_ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
+        send.write_all(&bytes).await.unwrap();
+        send.finish().unwrap();
+        let response = timeout(
+            std::time::Duration::from_secs(5),
+            recv.read_to_end(framing::MAX_FRAME_BYTES),
+        )
+        .await
+        .expect("incomplete request must terminate promptly");
+        assert!(
+            response.is_err() || response.unwrap().is_empty(),
+            "incomplete upload cannot receive a success receipt"
+        );
+        assert!(
+            !instance.has_entry(&id).await,
+            "transport ingested an upload without End"
+        );
+        let huge = crate::Entry::root_builder()
+            .set_subtree_data("large", vec![255u8; framing::MAX_FRAME_BYTES])
+            .build()
+            .unwrap();
+        let huge_id = huge.id();
+        let error = client.send_entries(&address, &[huge]).await.unwrap_err();
+        assert!(
+            matches!(error, crate::Error::Sync(e) if matches!(*e, SyncError::EntryTooLarge { .. }))
+        );
+        assert!(!instance.has_entry(&huge_id).await);
+        server.stop_server().await.unwrap();
+        endpoint.close().await;
     }
 }

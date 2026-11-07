@@ -522,8 +522,26 @@ pub(crate) fn store_history_page(
     let mut workspace = Workspace::new();
     let mut top = TopK::new(query, limits, &mut workspace)?;
     let mut visits = crate::backend::history_page::Visits::<&ID>::new();
-    let member = |entry: &Entry| entry.in_tree(tree) && entry.in_subtree(store);
+    let member =
+        |entry: &Entry| entry.in_tree(tree) && (query.is_database() || entry.in_subtree(store));
     for tip in query.tips {
+        query.check_deadline()?;
+        if query.stops_at(tip) {
+            continue;
+        }
+        if query.is_database() {
+            let entry = inner
+                .entries
+                .get(tip)
+                .ok_or_else(|| BackendError::EntryNotFound { id: tip.clone() })?;
+            if !member(entry) {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: tip.clone(),
+                    tree_id: tree.clone(),
+                }
+                .into());
+            }
+        }
         if let Some((id, entry)) = inner.entries.get_key_value(tip)
             && member(entry)
         {
@@ -531,9 +549,44 @@ pub(crate) fn store_history_page(
         }
     }
     while let Some(id) = visits.queue.pop_front() {
+        query.check_deadline()?;
         let entry = &inner.entries[id];
-        top.offer(entry.subtree_height(store).unwrap_or(0), id);
-        for parent in entry.subtree_parents_ref(store) {
+        top.offer(query.height(entry), id);
+        let parents = if query.is_database() {
+            entry.parents_ref()
+        } else {
+            entry.subtree_parents_ref(store)
+        };
+        if query.is_database() && !entry.is_root() && parents.is_empty() {
+            return Err(BackendError::StateInconsistency {
+                reason: "Incomplete Database ancestry".into(),
+            }
+            .into());
+        }
+        for parent in parents {
+            query.check_deadline()?;
+            if query.stops_at(parent) {
+                continue;
+            }
+            if query.is_database() {
+                let data = inner
+                    .entries
+                    .get(parent)
+                    .ok_or_else(|| BackendError::EntryNotFound { id: parent.clone() })?;
+                if !data.in_tree(tree) {
+                    return Err(BackendError::EntryNotInTree {
+                        entry_id: parent.clone(),
+                        tree_id: tree.clone(),
+                    }
+                    .into());
+                }
+                if data.height() >= entry.height() {
+                    return Err(BackendError::StateInconsistency {
+                        reason: "Database edge violates forward height order".into(),
+                    }
+                    .into());
+                }
+            }
             if let Some((id, parent)) = inner.entries.get_key_value(parent)
                 && member(parent)
             {
@@ -544,6 +597,7 @@ pub(crate) fn store_history_page(
 
     let (selected, more) = top.finish()?;
     for (index, (height, id)) in selected.iter().enumerate() {
+        query.check_deadline()?;
         if page.is_full() {
             break;
         }
@@ -555,6 +609,7 @@ pub(crate) fn store_history_page(
             break;
         }
     }
+    query.check_deadline()?;
     Ok(page.finish())
 }
 

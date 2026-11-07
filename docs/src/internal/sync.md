@@ -20,12 +20,14 @@ sequenceDiagram
 
 This is **stateless** and **self-correcting** - no tracking of previously synced entries.
 
-These tips describe raw DAG possession, not Verified membership. New received
-Entries are stored Unverified; neither peer authentication nor transfer completion
-asserts local acceptance. Default Database reads use the retained Verified frontier,
-which can lag raw tips until local validation succeeds. Write-event cursors also
-remain raw boundaries. See the canonical [verification contract](../design/verification.md)
-for promotion, partial-history reads and retry limits.
+Pull requests advertise the local Verified frontier as known; response targets
+describe the source's frozen DAG frontier, not proof of receiver verification.
+New received Entries enter local verification after the complete transfer.
+Neither peer authentication nor framing asserts local acceptance. Default
+Database reads use the retained Verified frontier, which can lag raw tips until
+local validation succeeds. Write-event cursors remain raw boundaries. See the
+canonical [verification contract](../design/verification.md) for promotion,
+partial-history reads and retry limits.
 
 ## Bootstrap vs Incremental
 
@@ -77,15 +79,66 @@ See [Bootstrap System](bootstrap.md) for the key exchange flow when joining a da
 
 Native [history deltas](service.md#forward-store-snapshot-deltas-v2) define a
 Store-scoped fixed target, known ancestor closure, canonical forward prefix,
-target-local covered Snapshot and explicit completion. A future bounded P2P
-adapter can map `our_tips` to known and capture the server frontier as target,
-but needs a separate covered progress field. `their_tips` currently advertises
-the whole server frontier; it is not a delivered-prefix acknowledgement.
+target-local covered Snapshot and explicit completion. P2P Database pages use
+main parents/heights, not one Store's parents. They freeze the source target and
+stop at exact advertised known IDs, preserving the peer selection contract
+rather than treating arbitrary peer tips as a strict forward Store delta.
+`their_tips` advertises the whole server frontier, not a prefix acknowledgement.
 
-Current P2P `collect_ancestors_to_send` stops at literal known tips, collects
-Entry bodies in a HashMap and returns unordered Entries. It does not implement
-exact target-minus-known subtraction or native v2 bounds. Pull, bootstrap and
-outbound SendEntries remain unbounded here. Their wire, authentication and
-orchestration are unchanged; protocol migration, sparse-replica reconciliation
-and reverse traversal are deferred. In particular, child-first traversal cannot
-advance a forward possession Snapshot until its ancestors are covered.
+## Bounded peer frames (v1)
+
+HTTP `/api/v1` and Iroh `eidetica/v1` share a length-prefixed compact-JSON codec.
+Each complete envelope, including its four-byte network-order length, fits the
+unchanged 1 MiB peer cap. Bootstrap and incremental pull producers request native
+Database pages with complete wrapper overhead reserved before fetching bodies.
+A single Entry that cannot fit is refused explicitly; it is never omitted,
+truncated, split or admitted as an oversized singleton.
+
+One original authenticated request covers Start, ordered Pages and End within
+one exchange. The request nonce is consumed once; current Read/sync-enabled
+policy is rechecked before subsequent pages. Metadata/cursors bind the frozen
+scope and target but grant no authority. Receivers check scope, order, exact
+continuations, parent closure, delivered counts and terminal coverage, and wait
+for End **and clean EOF** before returning any entries to normal ingestion.
+Errors, trailing operations, truncation and cancellation discard the collector.
+Entries still require the existing local signature/causal-auth verification;
+framing and `Ack`/`Count` are not Verified proofs.
+
+Input-list uploads use one descriptor and exclusive offsets per Database in
+sorted Database order, retaining input order and idempotent duplicates within
+that Database. History-backed reverse sends use native Database pages and a
+frozen target/known boundary, without collecting an ancestor-body vector first.
+Their descriptor omits the advance entry count; a contiguous terminal page and
+an exact End count are still required. Queued pushes retain IDs and fetch one
+bounded body at a time; retries retain those IDs rather than cloning bodies.
+Direct caller-owned entries remain owned across retries, even if never stored
+locally. An incomplete submission is not ingested. Both transports keep a
+30-second absolute exchange deadline; successful reads/pages do not extend it.
+HTTP retains its connect/read-stall bounds. Its response body owns an
+abort-on-drop producer task with a capacity-one frame channel: at most one
+encoded frame is queued and one is being produced or sent (each at most 1 MiB).
+The same absolute deadline covers production and channel sends independently
+of body polling, releasing the producer/admission permit even for a non-reading
+socket. Driver timeout or failure is not clean EOF. Dropping a body or the
+caller's response receiver cancels production. Inbound operations and outbound collectors
+have separate eight-operation admission ceilings, with native per-page permits
+released before network backpressure. Legacy `/api/v0` and `eidetica/v0` only
+return bounded unsupported-protocol errors; no legacy history fallback occurs.
+This is a wire version change, not a mixed-fleet deployment procedure.
+
+Foreground, background and ticket response paths require every supplied Entry
+to become locally Verified before reporting completion or sending reverse data.
+Pulls advertise only the retained Verified prefix as known, not raw tips left by
+a failed local verification attempt. Missing delegated history remains
+Unverified and is not implicitly exported; it needs its own authorized transfer.
+Discovery counts also reuse bounded Database pages rather than an independent
+unbounded body walk.
+
+Remaining limits: logical response consumers and incoming upload collectors
+still retain O(total entries) vectors. Input-list framing retains indices and
+one page; HTTP additionally uses one bounded 1 MiB upload bridge. Caller-owned
+input vectors, the existing ID queue/retry inventory, root-ID inventory and
+local authorization/settings materialization are not total-memory bounded by
+this codec. Native SQL reads retain a separate 64 MiB raw-body guard before
+decoding, but that never permits an oversized wire singleton. Sparse-replica
+reconciliation and public consumer streaming are not implemented here.

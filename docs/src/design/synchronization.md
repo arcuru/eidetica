@@ -251,7 +251,7 @@ pub struct HttpTransport {
 **Implementation:**
 
 - Axum server with handler state injection
-- JSON serialization at `/api/v0` endpoint
+- Bounded length-prefixed JSON frames at `/api/v1` (legacy `/api/v0` rejects sync)
 - Handler processes requests with database access
 
 **Use cases:**

@@ -21,6 +21,7 @@ use crate::{
     },
 };
 
+pub mod framing;
 pub mod http;
 pub mod iroh;
 pub mod shared;
@@ -156,6 +157,16 @@ pub trait SyncTransport: Send + Sync {
     /// # Returns
     /// The response from the peer, or an error if the request failed.
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse>;
+
+    /// Send a native history or queued-ID source without materializing its
+    /// bodies. Custom transports must opt in; there is no whole-Vec fallback.
+    async fn send_upload(
+        &self,
+        _address: &Address,
+        _source: &framing::UploadSource<'_>,
+    ) -> Result<SyncResponse> {
+        Err(SyncError::PeerProtocolUnsupported.into())
+    }
 
     /// Send entries to a sync peer and ensure they are acknowledged.
     ///
