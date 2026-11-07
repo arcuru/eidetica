@@ -20,12 +20,14 @@ sequenceDiagram
 
 This is **stateless** and **self-correcting** - no tracking of previously synced entries.
 
-These tips describe raw DAG possession, not Verified membership. New received
-Entries are stored Unverified; neither peer authentication nor transfer completion
-asserts local acceptance. Default Database reads use the retained Verified frontier,
-which can lag raw tips until local validation succeeds. Write-event cursors also
-remain raw boundaries. See the canonical [verification contract](../design/verification.md)
-for promotion, partial-history reads and retry limits.
+Pull requests advertise the local Verified frontier as known; response targets
+describe the source's frozen DAG frontier, not proof of receiver verification.
+New received Entries enter local verification after the complete transfer.
+Neither peer authentication nor framing asserts local acceptance. Default
+Database reads use the retained Verified frontier, which can lag raw tips until
+local validation succeeds. Write-event cursors remain raw boundaries. See the
+canonical [verification contract](../design/verification.md) for promotion,
+partial-history reads and retry limits.
 
 ## Bootstrap vs Incremental
 
