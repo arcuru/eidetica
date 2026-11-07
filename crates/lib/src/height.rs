@@ -27,7 +27,9 @@ pub enum HeightStrategy {
     /// Incremental height: `height = max(parent_heights) + 1`
     ///
     /// Root entries have height 0. Each subsequent entry has height
-    /// equal to the maximum height of its parents plus one.
+    /// equal to the maximum relevant parent height plus one. Main-tree
+    /// calculation includes the effective parents of touched inheriting Stores,
+    /// so returning from an independent override can introduce a gap.
     ///
     /// This is the default strategy and provides optimal behavior for
     /// offline-first scenarios where entries may be created without

@@ -20,8 +20,25 @@ Stores offer several advantages:
 - **Type Safety**: Each store implementation provides appropriate methods for its data type
 - **Isolation**: Changes to different stores can be tracked separately
 - **Composition**: Multiple data structures can exist within a single Database
-- **Efficiency**: Only relevant stores need to be loaded or synchronized
+- **Efficiency**: Only relevant Store state needs to be loaded; sync still transfers whole Entries
 - **Atomic Operations**: Changes across multiple stores can be committed atomically
+
+## Store History and Tips
+
+Main Entry links define causal ancestry; ordinary Store links independently
+select consumed contributions. In main `A(X) -> B(X) -> C(X)` with B.X and C.X
+both parenting A.X, X's frontier is `{B.X, C.X}`, not just C.X. Reads merge both
+contributions under X's CRDT rules. A later write parenting both tips explicitly
+joins them. Ordinary empty, nonmaximal or redundant parents are allowed, provided
+named parents have the same Store/database, lie in main ancestry, and have lower
+effective Store heights.
+
+Transactions normally discover all unconsumed Store tips at their fixed main
+snapshot. `_settings` is stricter: both its write parents and every Entry's
+signed pre-write settings pin must match the complete causal settings frontier.
+The status remains whole-Entry; independent Store branches do not implement
+sparse verification or hide other payloads in that Entry. See the
+[verification contract](../../design/verification.md#store-parent-frontiers).
 
 ## Available Store Types
 

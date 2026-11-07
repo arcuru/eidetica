@@ -473,8 +473,9 @@ impl EntryBuilder {
     /// main data model and is not merged between entries. It's used primarily for
     /// improving efficiency of operations and for experimentation.
     ///
-    /// For example, metadata can contain references to the current tips of the settings
-    /// subtree, allowing for efficient verification in sparse checkout scenarios.
+    /// Transactions use metadata to sign the causal pre-write `_settings` pin.
+    /// Its correctness is independently checked against complete main ancestry;
+    /// this does not implement sparse verification.
     ///
     /// # Arguments
     /// * `metadata` - Opaque metadata bytes for the main tree node.

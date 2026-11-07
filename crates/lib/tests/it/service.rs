@@ -2533,3 +2533,167 @@ async fn live_delegation_service_rechecks_retained_session_identity() {
         "a direct grant does not repair the removed delegated path"
     );
 }
+/// A valid session/signature does not authorize malformed Store edges. The
+/// daemon retains submitted bytes but owns their acceptance decision.
+#[tokio::test]
+async fn test_submit_signed_entry_validates_store_membership_and_height() {
+    let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket_path, "store-writer").await;
+    let user = server.login_account("store-writer", None).await.unwrap();
+    let signing_key = user
+        .get_signing_key(&user.get_default_key().unwrap())
+        .unwrap();
+    let db = eidetica::Database::open(&server, &root)
+        .await
+        .unwrap()
+        .with_key(signing_key.clone());
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("k", "v")
+        .await
+        .unwrap();
+    let parent_id = tx.commit().await.unwrap();
+    let parent = db.get_entry(&parent_id).await.unwrap();
+    for (parents, height, expected) in [
+        (vec![], None, VerificationStatus::Verified),
+        (
+            vec![parent_id.clone()],
+            Some(parent.subtree_height("data").unwrap()),
+            VerificationStatus::Failed,
+        ),
+        (
+            vec![parent_id.clone()],
+            Some(100),
+            VerificationStatus::Verified,
+        ),
+    ] {
+        let entry = Entry::builder(root.clone())
+            .set_parents(vec![parent_id.clone()])
+            .set_height(parent.height() + 1)
+            .set_metadata(parent.metadata().unwrap().to_vec())
+            .set_subtree_parents("data", parents)
+            .set_subtree_height("data", height)
+            .set_subtree_data("data", b"{}")
+            .build()
+            .unwrap()
+            .with_auth(|auth| auth.key = identity.clone());
+        let signature = sign_entry(&entry, &signing_key).unwrap();
+        let entry = entry.with_auth(|auth| auth.signature = Some(signature));
+        let id = entry.id();
+        remote_conn(&client)
+            .submit_signed_entry(root.clone(), identity.clone(), entry.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            server.backend().get_verification_status(&id).await.unwrap(),
+            expected
+        );
+        assert_eq!(server.backend().get(&id).await.unwrap(), entry);
+        assert_eq!(
+            db.snapshot().await.unwrap().contains(&id),
+            expected == VerificationStatus::Verified
+        );
+    }
+}
+
+/// The real SubmitSignedEntry and remote read paths preserve the Store fork
+/// even when its two tips are a main ancestor and descendant.
+#[tokio::test]
+async fn test_service_store_main_descendant_keeps_unconsumed_tip() {
+    use eidetica::{Database, Snapshot};
+
+    let (socket, _shutdown, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket, "branch-writer").await;
+    let user = server.login_account("branch-writer", None).await.unwrap();
+    let key = user
+        .get_signing_key(&user.get_default_key().unwrap())
+        .unwrap();
+    let db = Database::open(&server, &root)
+        .await
+        .unwrap()
+        .with_key(key.clone());
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("a", "a")
+        .await
+        .unwrap();
+    let a = tx.commit().await.unwrap();
+    let first = db.get_entry(&a).await.unwrap();
+    let conn = remote_conn(&client);
+    let mut main_parent = a.clone();
+    let mut tips = Vec::new();
+    for (offset, name) in [(1, "b"), (2, "c")] {
+        let mut data = Doc::new();
+        data.set(name, name);
+        let entry = Entry::builder(root.clone())
+            .set_parents(vec![main_parent])
+            .set_height(first.height() + offset)
+            .set_metadata(first.metadata().unwrap().to_vec())
+            .set_subtree_parents("data", vec![a.clone()])
+            .set_subtree_data("data", serde_json::to_vec(&data).unwrap())
+            .build()
+            .unwrap()
+            .with_auth(|auth| auth.key = identity.clone());
+        let signature = sign_entry(&entry, &key).unwrap();
+        let entry = entry.with_auth(|auth| auth.signature = Some(signature));
+        let id = entry.id();
+        conn.submit_signed_entry(root.clone(), identity.clone(), entry)
+            .await
+            .unwrap();
+        assert_eq!(
+            server.backend().get_verification_status(&id).await.unwrap(),
+            VerificationStatus::Verified
+        );
+        main_parent = id.clone();
+        tips.push(id);
+    }
+    let remote = Database::open_remote(&client, conn.clone(), &root, identity.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        remote.snapshot().await.unwrap(),
+        Snapshot::from([main_parent.clone()])
+    );
+    assert_eq!(
+        conn.store_snapshot_at(
+            root.clone(),
+            identity.clone(),
+            "data".into(),
+            vec![main_parent]
+        )
+        .await
+        .unwrap(),
+        Snapshot::from(tips.clone())
+    );
+    let context = conn
+        .begin_transaction(
+            root.clone(),
+            identity.clone(),
+            vec!["data".into()],
+            ReadScope::Verified,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        Snapshot::from(
+            context.subtree_parents["data"]
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        ),
+        Snapshot::from(tips)
+    );
+    for _ in 0..2 {
+        let view = remote.get_store_viewer::<DocStore>("data").await.unwrap();
+        for name in ["a", "b", "c"] {
+            assert_eq!(
+                view.get(name).await.unwrap(),
+                eidetica::crdt::doc::Value::Text(name.into())
+            );
+        }
+    }
+}

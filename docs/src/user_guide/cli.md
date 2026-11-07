@@ -201,8 +201,8 @@ eidetica daemon --socket "$XDG_RUNTIME_DIR/eidetica/service.sock"
 
 ### `db reset-local-verification` (offline trust reset)
 
-**Before upgrading an existing instance to new delegated-authorization verification
-rules**, stop the daemon/server and all writers and readers, back up the database,
+**Before adopting changed Store-parent, height or authorization verification
+rules on retained history**, stop the daemon/server and all writers and readers, back up the database,
 then run the reset with the same backend configuration as the instance:
 
 ```bash
@@ -212,7 +212,9 @@ eidetica db reset-local-verification --backend sqlite --data-dir /var/lib/eideti
 ```
 
 The command does not run during startup or schema migration. **Skipping it can
-leave old `Verified` labels trusted under the new rules.** It resets _all_
+leave old `Verified` labels trusted under the new rules, or retain `Failed`
+labels from a superseded ordinary-Store exact-frontier rule.** The reset is
+explicit and operator-managed, not an automatic trust-policy change. It resets _all_
 local statuses (`Verified` and `Failed` included) to `Unverified`, clears the
 retained Verified frontier in the same step, discards
 derived and incomplete Store-state namespaces, and keeps every immutable Entry

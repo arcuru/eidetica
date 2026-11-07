@@ -97,7 +97,7 @@ Eidetica extends the Merkle-CRDT concept with Stores, which partition data withi
 This enables:
 
 - Type-safe, structure-specific APIs for data access
-- Efficient partial synchronization (only needed stores)
+- Store-specific state loading (sync and verification still use whole Entries)
 - Modular features through pluggable stores
 - Atomic operations across different data structures
 
@@ -117,11 +117,19 @@ All changes in Eidetica happen through atomic Transactions:
 
 This model ensures data consistency while allowing complex operations across multiple stores.
 
+Main links record which Entries a write causally observes. Ordinary Store links
+record which contributions it consumes. For main `A(X) -> B(X) -> C(X)`, if B.X
+and C.X both parent A.X, all three can verify and X still has tips `{B.X, C.X}`.
+Reads retain both contributions until a later Store write explicitly joins them.
+Store links must stay within the same database, Store and main ancestry, with
+strictly increasing effective Store heights. Empty or nonmaximal ordinary Store
+parent sets are not inherently invalid.
+
 ## Settings as Stores
 
 In Eidetica, even configuration is stored as a store:
 
-- A Database's settings are stored in a special "settings" Store internally that is hidden from regular usage
+- A Database's settings are stored in the special `_settings` Store
 - This approach unifies the data model and allows settings to participate in history tracking
 
 ## CRDT Properties and Eventual Consistency
@@ -154,9 +162,13 @@ This design allows for future capabilities like:
 
 ## Entry Verification and the Verified Frontier
 
-Every entry carries a **verification status** that records whether _this
-node_ has cryptographically validated it against the authentication settings
-it was signed under:
+This node stores one **verification status** for each whole Entry, not one per
+Store contribution. It records local validation of parent membership/heights
+and historical signature/permission/delegation evidence against the independently
+derived causal pre-write `_settings` frontier. Every signed `settings_tips` pin
+must match that frontier; a settings write must consume it exactly, unlike an
+ordinary Store branch. Signing arbitrary pin bytes does not make them correct.
+Sparse verification and Store-only sync are not implemented:
 
 - **Verified** — the entry's signature and permissions were checked and
   accepted by a local validation pass.
@@ -165,8 +177,8 @@ it was signed under:
   state the storage layer will store on `put`: a peer can never assert "this
   entry is verified" — verification is always a local decision.
 - **Failed** — the entry was checked and definitively rejected (bad
-  signature, unauthorized key). Failed entries are dropped from reads
-  everywhere.
+  signature, unauthorized key). Default reads exclude them, but low-level
+  storage retains their bytes; status is not payload confidentiality.
 
 Entries you create locally are validated as part of the commit and become
 Verified immediately. Entries received from a peer start Unverified;
@@ -184,7 +196,11 @@ by default: the largest ancestor-closed prefix of the DAG in which every
 entry is Verified. Anything reachable only through a still-Unverified entry
 is hidden, so a default read never reflects state this node could not
 authenticate. Call `.allow_unverified()` on the handle to opt into the looser
-view that also includes Unverified entries (Failed is always dropped).
+view selecting raw tips with Failed tips dropped. That diagnostic view does
+not recursively sanitize arbitrary ancestry. Missing or Unverified proof stays
+pending; conclusive invalid proof produces Failed. Older retained labels are
+not automatically rechecked after rule changes; follow the explicit
+[offline trust-reset procedure](cli.md#db-reset-local-verification-offline-trust-reset).
 
 ## Current Status and Roadmap
 

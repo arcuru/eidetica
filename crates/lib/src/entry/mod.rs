@@ -375,7 +375,8 @@ impl Entry {
         Ok(self.tree.parents.clone())
     }
 
-    /// Get the IDs of the parent entries specific to a named subtree's history.
+    /// Get the IDs of contributions consumed in a named Store's history.
+    /// Main ancestry may observe other contributions without consuming them.
     /// The parent IDs are returned in CID order (`ID`'s `Ord`, not lexicographic string order).
     pub fn subtree_parents(&self, subtree_name: impl AsRef<str>) -> Result<Vec<ID>> {
         self.subtrees
@@ -470,10 +471,12 @@ impl Entry {
     /// This strict enforcement prevents orphaned entries that cause sync failures.
     ///
     /// ## Subtree Parent Relationships
-    /// - For root entries: Subtrees may have empty parents (they establish the subtree roots)
-    /// - For non-root entries: Empty subtree parents require deeper validation:
-    ///   - Could be legitimate (first entry in a new subtree)
-    ///   - Could indicate broken relationships (needs DAG traversal to verify)
+    /// - Empty ordinary Store parents start an independent Store branch, even
+    ///   when main ancestry contains earlier contributions to that Store.
+    /// - Named Store parents require same-Store/database membership, main-only
+    ///   containment and strict effective-height growth during local/received validation.
+    /// - `_settings` write parents and the signed settings pin instead require
+    ///   the exact causal pre-write settings frontier.
     ///
     /// ## Multi-Layer Validation System
     /// Complex validation happens at multiple layers:
@@ -484,8 +487,8 @@ impl Entry {
     ///
     /// # Special Cases
     /// - The "_root" marker subtree has special handling and skips validation
-    /// - The "_settings" subtree follows standard validation rules
-    /// - Empty subtree parents are logged but deferred to transaction layer
+    /// - Settings authority and ancestry checks require backend evidence and
+    ///   run outside this structural validator.
     ///
     /// # Returns
     ///
@@ -520,7 +523,7 @@ impl Entry {
     }
 
     pub fn validate(&self) -> Result<()> {
-        use crate::constants::{ROOT, SETTINGS};
+        use crate::constants::ROOT;
         use crate::instance::errors::InstanceError;
 
         // CRITICAL VALIDATION: Root entries (with _root marker) cannot have parents
@@ -563,34 +566,6 @@ impl Entry {
             // Skip validation for the special "_root" marker subtree
             if subtree_name == ROOT {
                 continue;
-            }
-
-            // For non-root entries with empty subtree parents, this is only valid if:
-            // 1. The entry has no main parents (making it a legitimate subtree root), OR
-            // 2. The subtree is genuinely being established for the first time within the tree
-            //
-            // Note: We can't perform deep validation here without access to the backend,
-            // so we defer complex validation to transaction/backend layers where full
-            // DAG traversal is possible. This basic validation catches obvious structural errors.
-            if !is_root_entry && subtree_parents.is_empty() {
-                // This is a lightweight structural check - more comprehensive validation
-                // happens in transaction/backend layers with full DAG access
-                tracing::debug!(
-                    entry_id = %self.id(),
-                    subtree = subtree_name,
-                    "Entry has empty subtree parents - will be validated in transaction layer"
-                );
-            }
-
-            // Special validation for the critical "_settings" subtree
-            // Note: Settings subtree follows the same rules as other subtrees - empty parents
-            // are valid for the first entry in the subtree. Comprehensive validation happens
-            // in transaction/backend layers with full DAG access.
-            if subtree_name == SETTINGS && !is_root_entry && subtree_parents.is_empty() {
-                tracing::debug!(
-                    entry_id = %self.id(),
-                    "Settings subtree has empty parents - will be validated in transaction layer"
-                );
             }
 
             // Validate that subtree parents are not empty strings and have valid format

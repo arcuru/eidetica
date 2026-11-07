@@ -3,7 +3,7 @@
 The architecture provides several performance characteristics:
 
 - **Content-addressable storage**: Enables efficient deduplication through BLAKE3 content hashing.
-- **Database structure (DAG)**: Supports partial replication and sparse checkouts. Tip calculation complexity depends on parent relationships.
+- **Database structure (DAG)**: Main and Store DAGs have separate tip sets. Ordinary Store tips follow explicit consumption edges; only `_settings` needs exact causal-frontier validation. Verification still requires whole Entries and complete main ancestry, not sparse checkouts. Tip calculation complexity depends on parent relationships.
 - **SQLite Backend**: Provides excellent performance with automatic persistence. Supports both file-based and in-memory modes.
 - **Lock-based concurrency**: May create bottlenecks in high-concurrency write scenarios.
 - **Height calculation**: Uses BFS-based topological sorting with O(V + E) complexity.

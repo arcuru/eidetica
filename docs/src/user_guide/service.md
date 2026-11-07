@@ -256,8 +256,13 @@ verification pass — `update_verification_status` and the verification-status
 queries are not exposed over the socket. The daemon's Instance stores synced
 entries as `Unverified`, runs `Database::verify()`, and serves reads from the
 resulting **Verified frontier**. Every connected client therefore sees the
-same verified view; there is no per-client `allow_unverified()` toggle over
-the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
+same default verified view. Operations carrying `ReadScope` can request a
+diagnostic raw boundary; `GetVerifiedTips` always returns the server's Verified
+main frontier. Store reads derive their own unconsumed tips within that cut,
+not just Store data at main tips. Client-signed ordinary writes may branch
+without consuming observed tips, but `_settings` pins and write parents retain
+exact causal validation. No per-Store status or sparse verification is added.
+See [Core Concepts](core_concepts.md) and [service read scope](../internal/service.md#read-scope).
 
 ## Configuration Reference
 

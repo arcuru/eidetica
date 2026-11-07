@@ -2,6 +2,11 @@
 
 Historical current-state reads use derived record sets in the Store-state cache.
 Immutable Store tips identify the source, and the format descriptor identifies the representation.
+These are tips of the explicit Store DAG, not main tips filtered by Store name.
+At main `A(X) -> B(X) -> C(X)` with both B.X and C.X parenting A.X,
+the source Snapshot is `{B.X, C.X}`. Both histories must be folded on a cold
+read and represented by the same multi-tip cache key on a warm read; C's main
+ancestry must not hide B's unconsumed contribution.
 
 The default opaque builder folds Store deltas in canonical historical order, serializes the Store's CRDT type, and publishes one record at the reserved opaque key.
 A cold read builds and publishes the record set; a warm read resolves the published record set and reads that record.

@@ -677,8 +677,11 @@ pub trait BackendImpl: Send + Sync + Any {
 
     /// Returns the store snapshot as of a specific main-tree snapshot.
     ///
-    /// Finds all store entries reachable from the boundary's tips, then filters
-    /// to the ones that are tips within the store.
+    /// Finds Store contributions in the boundary's main ancestry, then removes
+    /// those consumed by explicit Store-parent edges in that cut. A main
+    /// descendant alone must not hide an unconsumed Store tip.
+    /// This raw traversal does not certify verification status; default
+    /// transactions supply an accepted main boundary.
     ///
     /// # Arguments
     /// * `tree` - The root ID of the parent tree.

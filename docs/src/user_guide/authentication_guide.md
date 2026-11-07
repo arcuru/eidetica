@@ -645,6 +645,18 @@ This allows:
 - Readable key names for human-friendly lookups
 - Fine-grained access control based on how the key is referenced
 
+### Causal settings pins and ordinary Store branches
+
+Every Entry's signed `settings_tips` identifies its complete causal pre-write
+`_settings` frontier. Validation derives that frontier independently; a signed
+stale, omitted or forged pin is not authority. Settings writes must also consume
+that exact frontier, with a genesis-only bootstrap exception. This is stricter
+than ordinary Stores, whose omitted observed tips remain readable as independent
+branches. Both still require named parents in the same Store/database and main
+ancestry, and strictly increasing effective Store heights. The status is for
+the whole Entry, not separate contributions or sparse verification. See the
+[verification contract](../design/verification.md#store-parent-frontiers).
+
 ### Upgrade prerequisite
 
 Before trusting an existing database under these rules, follow the

@@ -31,7 +31,7 @@ This document outlines the design principles, architecture decisions, and implem
 **Solution:** Eidetica's bootstrap-first sync protocol enables **zero-state joining**:
 
 - **Single API call** handles both bootstrap and incremental sync
-- **Automatic detection** determines whether full or partial sync is needed
+- **Automatic detection** determines whether full bootstrap or incremental whole-Entry transfer is needed
 - **No setup required** - new devices can immediately join existing databases
 - **Bidirectional capability** - any peer can bootstrap from any other peer
 
@@ -576,7 +576,20 @@ peer. The storage layer stores every new received entry as `Unverified`
 sync protocol carries no way for a peer to assert a verification status, so a
 malicious-but-authenticated peer cannot inject "pre-verified" data.
 
-Promotion to `Verified` is a purely local decision:
+Promotion to `Verified` is a purely local, whole-Entry decision. Main links
+establish causality; ordinary Store links establish consumption. A valid Entry
+can omit an observed ordinary Store tip without invalidating it or hiding that
+tip from reads. Store snapshots derive unconsumed contributions from accepted
+Store edges within the main cut, not by filtering main tips. `_settings` pins
+and writes retain exact causal-frontier validation; ordinary branching does not
+relax historical signature, permission or delegation checks. See the
+[A/B/C and explicit-join example](verification.md#store-parent-frontiers).
+
+Store-only sparse sync/verification and contribution-local status are not
+implemented. A partial transfer is an incomplete set of whole Entries, not a
+partially accepted Entry or a payload-confidentiality mechanism.
+
+Promotion also obeys these boundaries:
 
 - `Database::verify()` walks the received entries and validates each against
   the `_settings` it pins in its signed metadata.
