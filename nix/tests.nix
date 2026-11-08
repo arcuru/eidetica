@@ -493,37 +493,103 @@ in {
         # Load the image (this triggers podman socket activation)
         machine.succeed("podman load < ${eidetica-image}")
 
-        # Create data directory with correct ownership for container user (1000:1000)
-        # Use /var/lib instead of /tmp to avoid tmpfs issues with SQLite WAL mode
-        machine.succeed("mkdir -p /var/lib/eidetica-data")
-        machine.succeed("chown 1000:1000 /var/lib/eidetica-data")
-        # Opt in to the passwordless-admin bootstrap explicitly; the
-        # entrypoint now fails closed without a credential source.
+        import json
+
+        entrypoint = json.loads(machine.succeed("podman image inspect eidetica:dev"))[0]["Config"]["Cmd"][0]
+
+        def data(name):
+            path = "/var/lib/" + name
+            machine.succeed(f"mkdir -p {path}; chown 1000:1000 {path}")
+            return f"-v {path}:/config"
+
+        def uninitialised(mounts):
+            status, output = machine.execute(f"podman run --rm {mounts} eidetica:dev /bin/eidetica info 2>&1")
+            assert status == 1 and "not initialised" in output, "storage must remain uninitialised"
+
+        def refused(name, mounts, options, diagnostic):
+            status, output = machine.execute(
+                f"podman run --name {name} {mounts} {options} eidetica:dev {entrypoint} info 2>&1"
+            )
+            assert status == 1, f"{name}: expected refusal exit 1, got {status}"
+            assert diagnostic in output, f"{name}: missing refusal diagnostic"
+            uninitialised(mounts)
+            machine.succeed(f"podman rm {name}")
+
+        # Generate synthetic credentials without printing their values or cookies.
         machine.succeed(
-          "podman run -d --name eidetica-test -p 5942:5942 "
-          "-e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 "
-          "-v /var/lib/eidetica-data:/data eidetica:dev"
+            "umask 077; head -c 24 /dev/urandom | base64 | tr -d '\\n' >/var/lib/admin-password; "
+            "head -c 24 /dev/urandom | base64 | tr -d '\\n' >/var/lib/wrong-password; "
+            "chown 1000:1000 /var/lib/admin-password"
+        )
+        secret = "-v /var/lib/admin-password:/run/secrets/admin_password:ro"
+        mounts = data("secret-data")
+        # A file takes priority over both other configured credential sources.
+        machine.succeed(
+            f"podman run -d --name eidetica-test -p 5942:5942 {mounts} {secret} "
+            "-e EIDETICA_ADMIN_PASSWORD=unused-fallback -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 eidetica:dev"
+        )
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+
+        def login(password_file=None, passwordless=False):
+            password = f"--data-urlencode password@{password_file}" if password_file else "--data 'password='"
+            if passwordless:
+                password = ""
+            return machine.succeed(
+                "curl -sS -o /dev/null -w '%{http_code}' -H 'Origin: http://localhost:5942' "
+                f"--data username=admin {password} http://localhost:5942/login"
+            ).strip()
+
+        correct, empty, wrong = login("/var/lib/admin-password"), login(), login("/var/lib/wrong-password")
+        machine.log(f"Secret-file login status: correct={correct}, empty={empty}, wrong={wrong}")
+        assert correct == "303", "secret-file password must authenticate"
+        assert empty == "200", "empty password must not authenticate"
+        assert wrong == "200", "wrong password must not authenticate"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+        # Restart without any credential source: skip bootstrap and preserve admin.
+        machine.succeed(f"podman run -d --name eidetica-test -p 5942:5942 {mounts} eidetica:dev")
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login("/var/lib/admin-password") == "303"
+        assert login() == "200"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+
+        refused("missing", data("missing-data"), "", "refusing to bootstrap admin user without credentials")
+        # cat on a directory fails after the source has been selected. Neither
+        # environment credentials nor passwordless opt-in may mask that failure.
+        machine.succeed("mkdir /var/lib/broken-secret")
+        refused(
+            "read-error", data("read-error-data"),
+            "-v /var/lib/broken-secret:/run/secrets/admin_password:ro "
+            "-e EIDETICA_ADMIN_PASSWORD=unused-fallback -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1",
+            "failed to read admin password file",
         )
 
-        # Wait for container to start
-        import time
-        time.sleep(3)
+        # An existing but unreadable file is not an absent credential source.
+        machine.succeed("touch /var/lib/unreadable-secret; chmod 000 /var/lib/unreadable-secret")
+        refused(
+            "unreadable", data("unreadable-data"),
+            "-v /var/lib/unreadable-secret:/run/secrets/admin_password:ro "
+            "-e EIDETICA_ADMIN_PASSWORD=unused-fallback -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1",
+            "failed to read admin password file",
+        )
 
-        # Check container is running
-        machine.succeed("podman ps | grep eidetica-test")
+        mounts = data("env-data")
+        machine.succeed(
+            f"podman run -d --name eidetica-test -p 5942:5942 {mounts} "
+            '-e EIDETICA_ADMIN_PASSWORD="$(cat /var/lib/admin-password)" eidetica:dev'
+        )
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login("/var/lib/admin-password") == "303"
+        assert login() == "200"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
 
-        # Verify the service responds (follow redirects since / redirects to /login)
-        machine.wait_until_succeeds("curl -fL http://localhost:5942/", timeout=30)
-
-        # Check container logs
-        logs = machine.succeed("podman logs eidetica-test")
-        machine.log(f"Container logs: {logs}")
-
-        # Stop and cleanup
-        machine.succeed("podman stop eidetica-test")
-        machine.succeed("podman rm eidetica-test")
-
-        machine.log("OCI container integration test passed!")
+        machine.succeed(
+            "podman run -d --name eidetica-test -p 5942:5942 " + data("passwordless-data") +
+            " -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 eidetica:dev"
+        )
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login(passwordless=True) == "303"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+        machine.log("OCI container integration test passed: secret authentication, refusal, environment, passwordless and restart")
       '';
     };
   };
