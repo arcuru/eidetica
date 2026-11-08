@@ -52,8 +52,14 @@
           exec ${eidetica-bin}/bin/eidetica "$@"
         fi
 
-        if [ -r /run/secrets/admin_password ]; then
-          EIDETICA_ADMIN_PASSWORD="$(cat /run/secrets/admin_password)" \
+        if [ -e /run/secrets/admin_password ] || [ -L /run/secrets/admin_password ]; then
+          # Check acquisition separately: a failed substitution in an inline
+          # environment assignment would otherwise be masked by successful init.
+          if ! admin_password="$(${pkgs.coreutils}/bin/cat /run/secrets/admin_password 2>/dev/null)"; then
+            echo "ERROR: failed to read admin password file; refusing to initialise." >&2
+            exit 1
+          fi
+          EIDETICA_ADMIN_PASSWORD="$admin_password" \
             ${eidetica-bin}/bin/eidetica daemon init --username admin
         elif [ -n "''${EIDETICA_ADMIN_PASSWORD:-}" ]; then
           ${eidetica-bin}/bin/eidetica daemon init --username admin
@@ -62,7 +68,7 @@
           echo "         Anyone who can reach this service can act as admin." >&2
           ${eidetica-bin}/bin/eidetica daemon init --username admin --passwordless
         else
-          cat >&2 <<'EOF'
+          ${pkgs.coreutils}/bin/cat >&2 <<'EOF'
     ERROR: refusing to bootstrap admin user without credentials.
 
     The eidetica container needs to initialise an admin user on first start.
