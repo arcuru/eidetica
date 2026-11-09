@@ -435,3 +435,42 @@ async fn test_complete_native_bundle_survives_sqlite_restart() {
     )
     .unwrap();
 }
+
+#[tokio::test]
+async fn test_empty_password_login_uses_encrypted_complete_bundle() {
+    use eidetica::{Instance, NewAccount, account::KeyStorage, backend::database::InMemory};
+    for initial in [NewAccount::passwordless("local"), NewAccount::with_password("local", "")] {
+        let (instance, mut session) = Instance::create_backend(Box::new(InMemory::new()), initial)
+            .await.unwrap();
+        let root = session.get_default_key().unwrap();
+        let backend = instance.backend().local_engine().unwrap();
+        let login = backend.local_account_record("login:local").await.unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&login).unwrap();
+        let storage: KeyStorage = serde_json::from_value(value["info"]["credentials"]["bundle"].clone()).unwrap();
+        let KeyStorage::Encrypted { bundle } = storage else { panic!("empty-password root stored plaintext") };
+        let unlocked = bundle.unlock_for(session.account().id(), "").unwrap();
+        assert_eq!(unlocked.key_ids(), [root.clone()]);
+        let added = session.add_private_key(Some("generated")).await.unwrap();
+        let (imported, imported_id) = generate_keypair();
+        session.import_private_key(imported, Some("imported")).await.unwrap();
+        let state = backend.local_account_record(&format!("account-state:{}", session.login_id())).await.unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&state).unwrap();
+        let storage: KeyStorage = serde_json::from_value(value["credentials"].clone()).unwrap();
+        let KeyStorage::Encrypted { bundle } = storage else { panic!("added keys stored plaintext") };
+        let unlocked = bundle.unlock_for(session.account().id(), "").unwrap();
+        assert_eq!(unlocked.key_ids().len(), 3);
+        assert!(bundle.unlock("not empty").is_err());
+        for id in [&root, &added, &imported_id] {
+            let secret = unlocked.signer(id).unwrap().to_prefixed_string();
+            for bytes in [&login, &state] {
+                assert!(!std::str::from_utf8(bytes).unwrap().contains(secret.as_str()));
+            }
+        }
+        session.logout().unwrap();
+        assert!(instance.login_account("local", Some("wrong")).await.is_err());
+        let returning = instance.login_account("local", Some("")).await.unwrap();
+        for id in [&root, &added, &imported_id] {
+            id.verify(b"empty relogin", &returning.get_signing_key(id).unwrap().sign(b"empty relogin")).unwrap();
+        }
+    }
+}
