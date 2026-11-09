@@ -386,3 +386,16 @@ async fn dashboard_unavailable_entry_reads_are_not_zero_or_empty() {
     assert!(!html.contains("<span class=\"value\">0</span>"));
     service_task.abort();
 }
+
+#[tokio::test]
+async fn blank_password_form_logs_in_and_opens_dashboard() {
+    let (instance, _) = instance("alice").await;
+    let web = Web::start(&instance).await;
+    let response = web.post("/login", None, &[("username", "alice"), ("password", "")]).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()["location"], "/dashboard");
+    let cookie = response.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();
+    let dashboard = web.get("/dashboard", Some(cookie)).await;
+    assert_eq!(dashboard.status(), StatusCode::OK);
+    assert!(dashboard.text().await.unwrap().contains("alice"));
+}
