@@ -370,7 +370,7 @@ async fn test_complete_native_bundle_survives_sqlite_restart() {
         use eidetica::{Instance, NewAccount, backend::database::Sqlite, crdt::Doc};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credentials.db");
-        let (account_id, added, target_id) = {
+        let (account_id, added, imported_id, target_id) = {
             let (_instance, mut session) = Instance::create_backend(
                 Box::new(Sqlite::open(&path).await.unwrap()),
                 NewAccount::with_password("local", password),
@@ -378,6 +378,11 @@ async fn test_complete_native_bundle_survives_sqlite_restart() {
             .await
             .unwrap();
             let added = session.add_private_key(Some("persisted")).await.unwrap();
+            let (imported, imported_id) = generate_keypair();
+            session
+                .import_private_key(imported, Some("imported"))
+                .await
+                .unwrap();
             let target = session.create_database(Doc::new(), &added).await.unwrap();
             session
                 .set_reference("app", "target", target.root_id())
@@ -386,6 +391,7 @@ async fn test_complete_native_bundle_survives_sqlite_restart() {
             (
                 session.account().id().clone(),
                 added,
+                imported_id,
                 target.root_id().clone(),
             )
         };
@@ -395,6 +401,16 @@ async fn test_complete_native_bundle_survives_sqlite_restart() {
         let returning = instance.login_account("local", password).await.unwrap();
         assert_eq!(returning.account().id(), &account_id);
         assert_eq!(returning.key_display_name(&added), Some("persisted"));
+        assert_eq!(returning.key_display_name(&imported_id), Some("imported"));
+        imported_id
+            .verify(
+                b"imported after reopen",
+                &returning
+                    .get_signing_key(&imported_id)
+                    .unwrap()
+                    .sign(b"imported after reopen"),
+            )
+            .unwrap();
         let target = returning
             .open_reference("app", "target")
             .await
