@@ -525,20 +525,58 @@ async fn blob_daemon_provider_failure_outcomes_are_not_absence() {
     failure_outcomes(true).await;
 }
 
+struct CountingBlobHandler {
+    inner: SyncHandlerImpl,
+    hits: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl SyncHandler for CountingBlobHandler {
+    async fn handle_request(
+        &self,
+        request: &SyncRequest,
+        context: &RequestContext,
+    ) -> SyncResponse {
+        self.inner.handle_request(request, context).await
+    }
+    async fn serve_blob_range(&self, cid: &ID, range: Range<u64>) -> Result<Option<Vec<u8>>> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        self.inner.serve_blob_range(cid, range).await
+    }
+    async fn blob_availability(&self, cids: &[ID]) -> Result<Vec<bool>> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        self.inner.blob_availability(cids).await
+    }
+}
+
 async fn named_only(transport: Transport) {
     let mut holder = Node::new("holder", transport).await;
     let asker = Node::new("asker", transport).await;
     let db = holder.database().await;
-    let upstream = fake_peer(StatusCode::OK, Vec::new()).await;
+    let upstream = Node::new("upstream", transport).await;
+    let bytes = b"held only upstream".to_vec();
+    let elsewhere = upstream.instance.put_blob(bytes.clone()).await.unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counted = transport.build();
+    counted
+        .start_server(Arc::new(CountingBlobHandler {
+            inner: SyncHandlerImpl::new(
+                upstream.instance.clone(),
+                upstream.sync.sync_tree_root_id().clone(),
+            ),
+            hits: hits.clone(),
+        }))
+        .await
+        .unwrap();
+    let upstream_address = transport.address(counted.get_server_address().unwrap());
     link(
         &holder.sync,
         &generate_keypair().1,
-        upstream.address.clone(),
+        upstream_address,
         Some(db.root_id()),
     )
     .await;
     let held = holder.instance.put_blob(b"held".to_vec()).await.unwrap();
-    let elsewhere = ID::from_bytes(b"upstream only");
     assert_eq!(
         asker
             .sync
@@ -555,10 +593,21 @@ async fn named_only(transport: Transport) {
             .unwrap()
             .is_none()
     );
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "serving must not recurse");
+    // Positive control over the same transport: this provider really can deliver
+    // the missing CID, and the counter observes a Database-associated fetch.
     assert_eq!(
-        upstream.hits.load(Ordering::SeqCst),
-        0,
-        "serving must not recurse"
+        db.get_blob_range(&elsewhere, 0..u64::MAX).await.unwrap(),
+        Some(bytes)
+    );
+    assert!(hits.load(Ordering::SeqCst) > 0);
+    assert!(
+        holder
+            .instance
+            .get_blob(&elsewhere)
+            .await
+            .unwrap()
+            .is_none()
     );
     assert_eq!(
         asker
@@ -614,6 +663,8 @@ async fn named_only(transport: Transport) {
                 .is_err()
         );
     }
+    counted.stop_server().await.unwrap();
+    upstream.sync.stop_server().await.unwrap();
     holder.sync.stop_server().await.unwrap();
     asker.sync.stop_server().await.unwrap();
 }
