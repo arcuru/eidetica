@@ -33,6 +33,7 @@ use crate::helpers::LocalBackendTestExt;
 
 mod compatibility;
 mod notifications;
+mod retirement;
 
 /// Read the next server frame and unwrap it as a `ServiceResponse`. Tests
 /// that drive the server at the raw protocol layer don't subscribe to

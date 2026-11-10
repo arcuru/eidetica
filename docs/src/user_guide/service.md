@@ -259,6 +259,27 @@ resulting **Verified frontier**. Every connected client therefore sees the
 same verified view; there is no per-client `allow_unverified()` toggle over
 the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
 
+## Retiring a failed connection
+
+Call `instance.remote_connection().unwrap().retire()` to permanently close a
+connected Instance's transport, including every clone and Database sharing it.
+The synchronous, idempotent call shuts down both socket directions without
+waiting for a writer lock, another response, or other handles to drop.
+Pending response waits fail with `ConnectionAborted`; blocked frame writes
+surface native I/O errors, and queued requests cannot reuse the stream.
+
+Retirement does not roll back server work or prove that a write did not commit.
+Keep ownership of started writes, await their results, and reconcile uncertain
+outcomes before retrying; the library does not replay them. A response already
+delivered may still succeed. Already-running callbacks and server operations
+are not cancelled or joined by retirement.
+
+To reconnect, call `Instance::connect` with the socket URL again, log in, and
+reopen the required handles. The old Instance and its handles remain retired;
+retiring them again does not affect the fresh connection. Local Instances have
+no remote connection, so callers supporting both modes should handle `None`
+instead of unwrapping.
+
 ## Configuration Reference
 
 | Option / Env Var                               | Description                                                                              | Default                                         |

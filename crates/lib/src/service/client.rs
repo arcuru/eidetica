@@ -199,6 +199,9 @@ enum SubRole {
 
 /// Internal state for a remote connection, wrapped in Arc for Clone.
 struct RemoteConnectionInner {
+    /// An owned duplicate of the socket, used only for synchronous shutdown.
+    /// It closes both directions even while a frame write holds `writer`.
+    shutdown_socket: std::os::unix::net::UnixStream,
     /// Owns the write half of the socket. `tokio::sync::Mutex` because
     /// `write_frame` is async (held across awaits). Only ever held for the
     /// duration of one frame's write plus the FIFO push into [`Self::pending`];
@@ -322,9 +325,10 @@ struct RemoteConnectionInner {
     /// request landing *after* the clear would push a new sender into
     /// the now-orphan queue.
     ///
-    /// Ordering: the reader task sets this with `Release` ordering before
-    /// clearing `pending`, so any `Acquire` load that observes `true` is
-    /// guaranteed to also observe the empty queue.
+    /// Teardown publishes this with `Release` ordering before draining
+    /// `pending`. Requests check with `Acquire` both before locking the writer
+    /// and after enqueueing, so a racing slot either joins the drain or fails
+    /// the closed check instead of waiting for a response.
     closed: AtomicBool,
     /// Per-tree dispatch lanes. The reader routes each incoming
     /// `Notification::DatabaseWrite` by `root_id` into the matching
@@ -422,17 +426,22 @@ impl RemoteConnectionInner {
     /// 1. Mark `closed` with `Release` ordering so future `request()`
     ///    calls short-circuit before pushing senders into an orphan
     ///    queue.
-    /// 2. Drain `pending` — every awaiting caller sees `RecvError`
+    /// 2. Shut down both socket directions without acquiring `writer`, waking
+    ///    blocked frame writes even while user-facing clones remain alive.
+    /// 3. Drain `pending` — every awaiting caller sees `RecvError`
     ///    and surfaces `ConnectionAborted`.
-    /// 3. Drop every per-tree worker sender so workers exit cleanly.
-    /// 4. Abort the reader task. On the reader's *own* exit path this is a
+    /// 4. Drop every per-tree worker sender so workers exit cleanly.
+    /// 5. Abort the reader task. On the reader's *own* exit path this is a
     ///    no-op (the task is already returning). When the sweep calls this on a
     ///    wedged daemon it forces the reader out of its blocking `read_frame`,
     ///    dropping the reader's `Arc<inner>` clone so `inner` can finally drop,
-    ///    and stopping it from re-spawning the workers step 3 just cleared.
-    ///    The handle is `take`n so a later `mark_dead` is a no-op.
+    ///    and stopping it from re-spawning the workers step 4 just cleared.
+    ///    The handle is `take`n so later calls do not abort it again.
     fn mark_dead(&self) {
         self.closed.store(true, Ordering::Release);
+        // Already-disconnected sockets may report NotConnected. The fence and
+        // waiter cleanup still apply on every call, including repeated retirement.
+        let _ = self.shutdown_socket.shutdown(std::net::Shutdown::Both);
         self.pending_lock().clear();
         self.tree_workers
             .lock()
@@ -462,10 +471,11 @@ impl RemoteConnectionInner {
 /// stream can drop on its own: the reader parks in `read_frame` until the
 /// daemon EOFs, and the daemon only EOFs once our socket closes. The
 /// `live` token breaks that cycle — when the last user-facing handle drops
-/// it calls `RemoteConnectionInner::mark_dead`, aborting the reader so
-/// its `Arc` is released, `inner` drops, and the `WriteHalf` closes. The
-/// daemon then sees EOF and scrubs the connection's subscriptions via its
-/// `ConnectionGuard`.
+/// it calls `RemoteConnectionInner::mark_dead`, shutting down both socket
+/// directions and aborting the reader. [`Self::retire`] performs the same
+/// teardown without waiting for other handles or pending calls to drop.
+/// The daemon sees EOF when it next reads and scrubs the connection's
+/// subscriptions via its `ConnectionGuard`.
 #[derive(Clone)]
 pub struct RemoteConnection {
     inner: Arc<RemoteConnectionInner>,
@@ -524,6 +534,8 @@ impl RemoteConnection {
     /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
         let stream = UnixStream::connect(path.as_ref()).await?;
+        let shutdown_socket = stream.into_std()?;
+        let stream = UnixStream::from_std(shutdown_socket.try_clone()?)?;
         let (mut reader, mut writer) = stream.into_split();
 
         // Send handshake
@@ -551,6 +563,7 @@ impl RemoteConnection {
         }
 
         let inner = Arc::new(RemoteConnectionInner {
+            shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),
@@ -596,6 +609,28 @@ impl RemoteConnection {
     pub(crate) fn with_signer(mut self, signer: PrivateKey) -> Self {
         self.signer = Some(signer);
         self
+    }
+
+    /// Permanently retire this connection and every clone of it.
+    ///
+    /// Shuts down both socket directions, fences new requests and releases
+    /// pending response waiters. Blocked frame writes wake with native I/O
+    /// errors; queued requests fail instead of writing to the retired stream.
+    /// This is synchronous and idempotent: it does not acquire the async writer
+    /// mutex, send an RPC, wait for a response or require other handles to drop.
+    ///
+    /// Retirement is not rollback or proof that a started write did not commit.
+    /// A response already delivered before retirement may still succeed. Keep
+    /// ownership of started operations and await their results; reconcile any
+    /// uncertain outcome before retrying. Nothing is automatically replayed.
+    /// Already-running callbacks and server-side operations are not joined or
+    /// cancelled by this method.
+    ///
+    /// To reconnect, construct a fresh [`RemoteConnection::connect`] or
+    /// [`crate::Instance::connect`] and authenticate again. Existing Instances,
+    /// Databases and clones remain attached to this retired connection.
+    pub fn retire(&self) {
+        self.inner.mark_dead();
     }
 
     /// Attach an `Instance` to this connection so the reader task can
@@ -1711,6 +1746,11 @@ fn route_notification(inner: &Arc<RemoteConnectionInner>, notif: Notification) {
     };
     let tx = {
         let mut workers = inner.tree_workers.lock().unwrap_or_else(|p| p.into_inner());
+        // Serialize with mark_dead's clear so an in-flight notification cannot
+        // recreate a dispatch lane after retirement.
+        if inner.closed.load(Ordering::Acquire) {
+            return;
+        }
         workers
             .entry(tree_id)
             .or_insert_with(|| {
@@ -1856,6 +1896,10 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
             return;
         };
 
+        if inner.closed.load(Ordering::Acquire) {
+            return;
+        }
+
         // Cheap snapshot: collect tree IDs that *appear* to be Idle
         // past grace. The per-tree fence below re-checks under the
         // std mutex so a re-registration that lands between snapshot
@@ -1959,6 +2003,8 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
 
 #[cfg(test)]
 mod compatibility_tests;
+#[cfg(test)]
+mod retirement_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2010,8 +2056,11 @@ mod tests {
     /// caller keeps the socket open for the duration of the test.
     pub(super) fn test_conn() -> (RemoteConnection, tokio::net::UnixStream) {
         let (client_side, peer) = tokio::net::UnixStream::pair().unwrap();
+        let shutdown_socket = client_side.into_std().unwrap();
+        let client_side = UnixStream::from_std(shutdown_socket.try_clone().unwrap()).unwrap();
         let (_reader, writer) = client_side.into_split();
         let inner = Arc::new(RemoteConnectionInner {
+            shutdown_socket,
             writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),
