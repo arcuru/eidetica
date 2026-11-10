@@ -2533,3 +2533,288 @@ async fn live_delegation_service_rechecks_retained_session_identity() {
         "a direct grant does not repair the removed delegated path"
     );
 }
+
+// === Content-addressed blob storage over the service wire ===
+
+#[tokio::test]
+async fn test_blob_round_trip_over_service() {
+    // put_blob on a remote (daemon-backed) instance submits over the wire;
+    // get_blob fetches it back. Routing through the backend seam makes the
+    // blob API work transparently on a connected instance.
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (client, _root, _identity) = setup_db(&server, &socket_path, "blobuser").await;
+
+    let data = b"blob bytes over the wire".to_vec();
+    let cid = client.put_blob(data.clone()).await.unwrap();
+
+    let got = client.get_blob(&cid).await.unwrap();
+    assert_eq!(got.as_deref(), Some(data.as_slice()));
+
+    // The store is global/unscoped: the daemon holds it under the same CID.
+    let server_side = server.get_blob_local(&cid).await.unwrap();
+    assert_eq!(server_side.as_deref(), Some(data.as_slice()));
+
+    // Known-CID reads also work for bytes put directly on the daemon.
+    let local_data = b"stored on the daemon first".to_vec();
+    let local_cid = server.put_blob(local_data.clone()).await.unwrap();
+    assert_eq!(client.get_blob(&local_cid).await.unwrap(), Some(local_data));
+}
+
+#[tokio::test]
+async fn test_blob_ops_require_authentication() {
+    // Blob ops are gated by an authenticated connection (no per-tree gate, but
+    // not anonymous). An un-logged-in connection is rejected.
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let client = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+
+    let put_err = client
+        .put_blob(b"x".to_vec())
+        .await
+        .expect_err("unauthenticated put_blob must be rejected");
+    assert!(
+        put_err
+            .to_string()
+            .contains("requires an authenticated connection"),
+        "expected an auth error, got: {put_err}"
+    );
+
+    let missing = eidetica::entry::ID::from_bytes(b"x");
+    let get_err = client
+        .get_blob(&missing)
+        .await
+        .expect_err("unauthenticated get_blob must be rejected");
+    assert!(
+        get_err
+            .to_string()
+            .contains("requires an authenticated connection"),
+        "expected an auth error, got: {get_err}"
+    );
+    let range_err = client.get_blob_range(&missing, 0..1).await.unwrap_err();
+    assert!(
+        range_err
+            .to_string()
+            .contains("requires an authenticated connection")
+    );
+}
+
+#[tokio::test]
+async fn test_blob_range_over_service() {
+    // A connected client gets a true windowed read: the daemon serves only the
+    // requested range (`GetBlobRange`), never the whole blob, and the bytes
+    // match what an embedded instance reads from its own engine.
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (client, _root, _identity) = setup_db(&server, &socket_path, "blobuser").await;
+
+    // Larger than the inline threshold so the range is a genuine window.
+    let data: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+    let cid = client.put_blob(data.clone()).await.unwrap();
+
+    let range = 10_000u64..25_000u64;
+    let got = client.get_blob_range(&cid, range.clone()).await.unwrap();
+    assert_eq!(
+        got.as_deref(),
+        Some(&data[range.start as usize..range.end as usize]),
+        "client range read must equal the blob slice"
+    );
+
+    // Parity: the embedded (server-side) instance reads the identical window.
+    let server_side = server.get_blob_range(&cid, range).await.unwrap();
+    assert_eq!(got, server_side, "remote range read must match embedded");
+
+    // An over-long `end` clamps to the blob tail, same as a local read.
+    let tail = client
+        .get_blob_range(&cid, 39_000..1_000_000)
+        .await
+        .unwrap();
+    assert_eq!(tail.as_deref(), Some(&data[39_000..]));
+
+    // Missing blob → None (not an error).
+    let missing = eidetica::entry::ID::from_bytes(b"never stored");
+    assert!(
+        client
+            .get_blob_range(&missing, 0..10)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn test_blob_gc_requires_authentication() {
+    // GC over the wire is gated by an authenticated connection, like
+    // GetBlob/PutBlob.
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let client = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+
+    let gc_err = client
+        .gc_blobs(eidetica::GcOptions {
+            max_total_bytes: None,
+            min_age_ms: 0,
+        })
+        .await
+        .expect_err("unauthenticated gc_blobs must be rejected");
+    assert!(
+        gc_err
+            .to_string()
+            .contains("requires an authenticated connection"),
+        "expected an auth error, got: {gc_err}"
+    );
+}
+
+#[tokio::test]
+async fn test_blob_too_large_for_one_frame_is_refused_not_hung() {
+    // A stored blob under the size cap can still encode past one service frame
+    // (JSON spends up to four bytes per blob byte). The daemon must refuse it
+    // with an error instead of dropping the connection, and the blob stays
+    // readable in windows.
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (client, _root, _identity) = setup_db(&server, &socket_path, "blobuser").await;
+
+    let data = vec![200u8; 20 * 1024 * 1024];
+    let cid = server.put_blob(data.clone()).await.unwrap();
+
+    let err = tokio::time::timeout(Duration::from_secs(30), client.get_blob(&cid))
+        .await
+        .expect("an oversized blob response must not hang the client")
+        .expect_err("an oversized blob response must be refused");
+    assert!(
+        matches!(
+            err,
+            eidetica::Error::Backend(ref e)
+                if matches!(**e, eidetica::backend::BackendError::BlobResponseTooLarge { .. })
+        ),
+        "expected BlobResponseTooLarge, got: {err}"
+    );
+
+    let whole_range = tokio::time::timeout(
+        Duration::from_secs(30),
+        client.get_blob_range(&cid, 0..u64::MAX),
+    )
+    .await
+    .expect("an oversized range response must not hang the client");
+    assert!(whole_range.is_err(), "an oversized range must be refused");
+
+    // The connection survives, and a window of the same blob is readable.
+    let window = client
+        .get_blob_range(&cid, 1_000..2_000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(window, data[1_000..2_000]);
+}
+
+/// Both embedded and connected reads verify stored content, including a
+/// windowed range whose persisted Bao outboard no longer matches the file.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn test_blob_corrupted_disk_refused_locally_and_over_service() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket_path = dir.path().join("test.sock");
+    let backend = eidetica::backend::database::Sqlite::open(dir.path().join("test.db"))
+        .await
+        .unwrap();
+    let (instance, _admin) =
+        Instance::create_backend(Box::new(backend), NewAccount::passwordless("admin"))
+            .await
+            .unwrap();
+    let (_tx, rx) = watch::channel(());
+    let server = ServiceServer::bind(instance.clone(), socket_path.clone())
+        .await
+        .unwrap();
+    tokio::spawn(server.run(rx));
+    let (client, _root, _identity) = setup_db(&instance, &socket_path, "blobuser").await;
+
+    let mut data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let cid = instance.put_blob(data.clone()).await.unwrap();
+    // Prove a positive window before changing the file behind the backend.
+    assert_eq!(
+        client.get_blob_range(&cid, 40_000..40_123).await.unwrap(),
+        Some(data[40_000..40_123].to_vec())
+    );
+    data[40_000] ^= 0xff;
+    std::fs::write(
+        dir.path().join("test.db.blobs").join(cid.to_string()),
+        &data,
+    )
+    .unwrap();
+
+    for (reader, remote) in [(&instance, false), (&client, true)] {
+        let err = reader
+            .get_blob(&cid)
+            .await
+            .expect_err("corrupt whole read must fail");
+        if remote {
+            // The service's generic error envelope preserves module/kind in
+            // the message for variants without typed client reconstruction.
+            assert!(
+                matches!(err, eidetica::Error::Io(ref io)
+                    if io.to_string().starts_with("[backend::BlobHashMismatch]")),
+                "{err:?}"
+            );
+        } else {
+            assert!(
+                matches!(err, eidetica::Error::Backend(ref b)
+                if matches!(**b, eidetica::backend::BackendError::BlobHashMismatch { .. })),
+                "{err:?}"
+            );
+        }
+        let err = reader
+            .get_blob_range(&cid, 40_000..40_123)
+            .await
+            .expect_err("corrupt window must fail");
+        if remote {
+            assert!(
+                matches!(err, eidetica::Error::Io(ref io)
+                    if io.to_string().starts_with("[backend::BlobStreamInvalid]")),
+                "{err:?}"
+            );
+        } else {
+            assert!(
+                matches!(err, eidetica::Error::Backend(ref b)
+                if matches!(**b, eidetica::backend::BackendError::BlobStreamInvalid { .. })),
+                "{err:?}"
+            );
+        }
+        // A different, intact window remains readable without whole-loading.
+        assert_eq!(
+            reader.get_blob_range(&cid, 70_000..70_123).await.unwrap(),
+            Some(data[70_000..70_123].to_vec())
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_blob_gc_unowned_over_service() {
+    let (socket, _tx, server, _dir) = start_test_server().await;
+    let (client, _, _) = setup_db(&server, &socket, "blobuser").await;
+    let cid = client.put_blob(b"cache bytes".to_vec()).await.unwrap();
+    server.backend().clear_derived_store_state().await.unwrap();
+    assert_eq!(
+        client
+            .gc_blobs(eidetica::GcOptions::default())
+            .await
+            .unwrap()
+            .evicted_count,
+        0
+    );
+    assert_eq!(
+        client.get_blob(&cid).await.unwrap(),
+        Some(b"cache bytes".to_vec())
+    );
+    let report = client
+        .gc_blobs(eidetica::GcOptions {
+            min_age_ms: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.evicted_count, 1);
+    assert_eq!(report.reclaimed_bytes, 11);
+    assert!(client.get_blob(&cid).await.unwrap().is_none());
+    assert!(server.get_blob(&cid).await.unwrap().is_none());
+}

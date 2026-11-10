@@ -9,6 +9,7 @@
 - [Core Concepts](user_guide/core_concepts.md)
   - [Entries & Databases](user_guide/concepts/entries_databases.md)
   - [Database Storage](user_guide/concepts/backends.md)
+  - [Blob Storage](user_guide/concepts/blobs.md)
   - [Stores](user_guide/concepts/stores.md)
   - [Transactions](user_guide/transactions.md)
 - [Authentication Guide](user_guide/authentication_guide.md)

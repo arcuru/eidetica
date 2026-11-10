@@ -311,3 +311,10 @@ Retry explicitly to repair or inspect the recorded state.
 The network wait does not hold the per-session lock, and bookkeeping preserves a
 tracked preference/key selection changed while that request was waiting.
 This observed-state check is not distributed compare-and-set or background completion.
+
+## Local blobs
+
+Connected clients use the same local `Instance` blob put/get/range/GC methods as embedded callers; the daemon owns the bytes and evaluates access times.
+These calls never fetch from sync peers.
+Use `--blob-dir` / `EIDETICA_BLOB_DIR` to override the SQL disk tier's default `<data-dir>/blobs`; InMemory does not use a disk tier.
+See [Blob Storage](concepts/blobs.md) for cache lifetime, verification and the separate byte/frame limits.

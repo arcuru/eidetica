@@ -1261,3 +1261,107 @@ async fn malformed_negative_cache_counters_refuse_open() {
     assert_eq!(db.content().await, before);
     db.cleanup().await;
 }
+
+/// Existing v3 files have no blob tables. Add them without a trust repair or
+/// changing any Entry, Account, Store-state or retained verification bytes.
+#[tokio::test]
+async fn blob_tables_upgrade_existing_v3_and_persist_on_reopen() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.populate(&backend).await;
+    db.close_backend(backend).await;
+    db.pool.execute("DROP TABLE blob_pins").await.unwrap();
+    db.pool.execute("DROP TABLE blobs").await.unwrap();
+    db.pool
+        .execute("UPDATE schema_version SET version = 3")
+        .await
+        .unwrap();
+    let before = db.content().await;
+    let backend = db.open().await.unwrap();
+    assert_eq!(db.content().await, before);
+    assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
+    let data = b"new bytes after supported reopen".to_vec();
+    let cid = crate::ID::from_bytes(&data);
+    backend.put_blob(&cid, data.clone()).await.unwrap();
+    backend.pin_blob("local-owner", "db", &cid).await.unwrap();
+    backend.touch_blob_accessed(&cid, 1234).await.unwrap();
+    db.close_backend(backend).await;
+    let backend = db.open().await.unwrap();
+    assert_eq!(backend.get_blob(&cid).await.unwrap(), Some(data));
+    assert!(backend.pinned_cids().await.unwrap().contains(&cid));
+    assert_eq!(
+        backend.all_blob_meta().await.unwrap()[0].last_accessed,
+        1234
+    );
+    assert_eq!(db.content().await, before);
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn blob_current_missing_table_refuses_without_recreating_content() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.close_backend(backend).await;
+    db.pool.execute("DROP TABLE blobs").await.unwrap();
+    let before = db.catalog().await;
+    assert!(db.open().await.is_err());
+    assert_eq!(db.catalog().await, before);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn blob_corrupt_range_metadata_returns_error() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    let (instance, admin) = crate::Instance::create_backend(
+        Box::new(backend),
+        crate::NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let bytes = vec![7u8; 100_000];
+    let cid = instance.put_blob(bytes.clone()).await.unwrap();
+    assert_eq!(
+        instance.get_blob_range(&cid, 40_000..40_123).await.unwrap(),
+        Some(bytes[40_000..40_123].to_vec())
+    );
+    sqlx::query("UPDATE blobs SET outboard = $1 WHERE cid = $2")
+        .bind(vec![0u8])
+        .bind(cid.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        matches!(instance.get_blob_range(&cid, 40_000..40_123).await,
+        Err(crate::Error::Backend(e)) if matches!(*e, BackendError::BlobStreamInvalid { .. }))
+    );
+
+    // Invalid persisted sizes are rejected before they select a byte window.
+    // Point at an unavailable disk tier so an attempted read cannot hide this
+    // guard behind the encoder's later size check.
+    sqlx::query("UPDATE blobs SET size = $1, location = 1 WHERE cid = $2")
+        .bind(crate::backend::DEFAULT_MAX_BLOB_BYTES as i64 + 1)
+        .bind(cid.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(instance.get_blob_range(&cid, 0..u64::MAX).await,
+        Err(crate::Error::Backend(e)) if matches!(*e, BackendError::BlobTooLarge { .. })));
+    sqlx::query("UPDATE blobs SET size = -1 WHERE cid = $1")
+        .bind(cid.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(instance.get_blob_range(&cid, 0..1).await,
+        Err(crate::Error::Backend(e)) if matches!(*e, BackendError::StateInconsistency { .. })));
+    drop(admin);
+    drop(instance);
+    db.cleanup().await;
+}

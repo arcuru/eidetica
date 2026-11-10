@@ -8,7 +8,11 @@
 //!
 //! Instance wraps BackendImpl in a `Backend` struct that provides a layer for future development.
 
-use std::{any::Any, collections::BTreeMap};
+use std::{
+    any::Any,
+    collections::{BTreeMap, HashSet},
+    ops::Range,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -366,6 +370,60 @@ impl VerificationStatus {
     }
 }
 
+/// Default maximum size, in bytes, for a single blob.
+///
+/// Whole-blob puts and gets buffer the blob in memory, and the service socket
+/// carries a whole blob in one frame, so an unbounded payload is a memory-DoS
+/// vector (a content address does not bound the size of its bytes). Puts above
+/// this size are rejected, a [`BlobRef`](crate::blob::BlobRef) declaring more is
+/// refused before any read.
+/// Treated as an internal default rather than a stable limit.
+pub const DEFAULT_MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
+
+/// Metadata for one locally-held blob — the per-blob input to GC's LRU sweep
+///. Carries no bytes; `size`/`last_accessed` are the cached columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobMeta {
+    /// The blob's content address (raw-codec `0x55` CID).
+    pub cid: ID,
+    /// Byte length of the blob.
+    pub size: u64,
+    /// Last access time (epoch ms): stamped on put and on every local read hit.
+    pub last_accessed: i64,
+}
+
+/// Validate the complete raw BLAKE3-256 CIDv1 envelope, including absent blobs.
+pub(crate) fn validate_blob_cid(cid: &ID) -> Result<()> {
+    if !cid.as_cid().is_some_and(|c| {
+        c.version() == cid::Version::V1
+            && cid.is_raw()
+            && c.hash().code() == u64::from(multihash_codetable::Code::Blake3_256)
+            && c.hash().digest().len() == 32
+    }) {
+        return Err(BackendError::BlobInvalidCodec { cid: cid.clone() }.into());
+    }
+    Ok(())
+}
+
+/// Enforce the self-verifying blob invariant: `data` must hash to `cid`.
+///
+/// Backends call this on writes and whole reads, so corruption after a put
+/// cannot escape as bytes claimed to match the requested CID. Because
+/// [`ID::from_bytes`] always yields a raw-codec (`0x55`) CID, a non-raw `cid`
+/// (e.g. a DAG-CBOR `0x71` entry/manifest address) can never match and is
+/// reported as a mismatch.
+pub(crate) fn verify_blob_cid(cid: &ID, data: &[u8]) -> Result<()> {
+    let computed = ID::from_bytes(data);
+    if &computed != cid {
+        return Err(crate::backend::errors::BackendError::BlobHashMismatch {
+            claimed: cid.clone(),
+            computed,
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// BackendImpl trait abstracting the underlying storage mechanism for Eidetica entries.
 ///
 /// This trait defines the essential operations required for storing, retrieving,
@@ -391,6 +449,12 @@ impl VerificationStatus {
 /// boundary enforces same-tree Verified parents and atomically maintains the
 /// Verified frontier; the local Database/Transaction validator owns the remaining
 /// signature, causal-settings and delegation checks.
+///
+/// ## Blob storage
+///
+/// Beyond entries, the backend is a content-addressed store for opaque blobs
+/// (raw-codec `0x55` CIDs) that live out-of-band from the entry DAG; see the
+/// `put_blob`/`get_blob`/`has_blob` methods and [`DEFAULT_MAX_BLOB_BYTES`].
 #[async_trait]
 pub trait BackendImpl: Send + Sync + Any {
     /// Look up the published cached state for an exact request. Private
@@ -935,6 +999,98 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `store` - The name of the store to retrieve.
     /// * `snapshot` - The store snapshot defining the state to read from.
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>>;
+
+    // === Blob Storage Methods ===
+    //
+    // Content-addressed storage for opaque binary blobs that live *out-of-band*
+    // from the entry DAG. A blob is addressed by the raw-codec (`0x55`) BLAKE3
+    // CID of its bytes ([`ID::from_bytes`]); an entry references a blob simply
+    // by embedding that CID string in ordinary store data — no new store type.
+    //
+    // Blobs are whole, immutable and deduped (the content-addressed key gives
+    // dedup for free). They cannot be regenerated from the DAG, so they are
+    // removed only by an explicit GC pass, and never while pinned (below).
+    //
+    // These methods are deliberately codec-blind at the trait level — callers
+    // pass a `0x55` CID — but the *semantics* are raw bytes only; structured
+    // (`0x71`) objects are entries and use `get`/`put`. See `ID::codec`.
+
+    /// Store an opaque blob under its content address (the raw-codec CID of
+    /// `data`).
+    ///
+    /// Idempotent: storing the same bytes twice is a no-op (content-addressed
+    /// dedup keyed on `cid`). Implementations MUST reject bytes whose hash does
+    /// not match `cid` ([`BackendError::BlobHashMismatch`]) so the
+    /// self-verifying guarantee of [`get_blob`](Self::get_blob) holds.
+    ///
+    /// # Arguments
+    /// * `cid` - The content address; must equal `ID::from_bytes(&data)`.
+    /// * `data` - The opaque blob bytes.
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()>;
+
+    /// Fetch a blob by content address from local storage.
+    ///
+    /// Returns `Ok(None)` if the blob is not held locally. Bytes returned are
+    /// guaranteed to hash to `cid`; reads reject corruption after a verified put.
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>>;
+
+    /// Read a byte range of a blob's data without materializing the whole blob.
+    ///
+    /// `range` is clamped to the blob's length (an over-long `end` yields the
+    /// available tail; an empty or past-the-end range yields empty bytes).
+    /// Returns `Ok(None)` only when the blob is not held. The bytes are raw blob
+    /// content, not bao-encoded — the trusted local read path and the verified
+    /// serve path both slice through here so a range read of a large blob never
+    /// whole-loads it.
+    async fn get_blob_range(&self, cid: &ID, range: Range<u64>) -> Result<Option<Vec<u8>>>;
+
+    /// Fetch a blob's `(size, pre-order bao outboard)` for verified range
+    /// serving, without materializing its data. Returns `Ok(None)` if absent.
+    /// The outboard lets a range serve encode a verified window after reading
+    /// only that window via [`get_blob_range`](Self::get_blob_range) — no
+    /// whole-blob re-hash.
+    async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>>;
+
+    /// Cheap existence check for a blob, without materializing its bytes.
+    async fn has_blob(&self, cid: &ID) -> Result<bool>;
+
+    // === Blob pinning / GC ===
+    //
+    // All local-engine concerns: pins are instance-LOCAL retention assertions
+    // (they do not replicate), and GC runs against this engine's own store.
+    // Retention records and sweep inputs stay below the `Backend` seam. A
+    // remote client may request GC, but its daemon performs the sweep. No
+    // Instance or wire API enumerates blobs or exposes application pinning.
+
+    /// Stamp a blob's last-access time to `now_ms` (epoch ms). No-op if absent.
+    /// Called on every put and every local read hit to drive LRU eviction.
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> Result<()>;
+
+    /// Delete a blob outright (complete-only deletion). Returns whether it
+    /// existed. Used by GC eviction; does not touch pins.
+    async fn delete_blob(&self, cid: &ID) -> Result<bool>;
+
+    /// Enumerate `(cid, size, last_accessed)` for every locally-held blob — the
+    /// GC sweep input. Engine-internal; not exposed over the wire.
+    async fn all_blob_meta(&self) -> Result<Vec<BlobMeta>>;
+
+    /// Pin a blob for `(user_id, database_id)`. Idempotent. `database_id` is the
+    /// empty string for a pin not tied to a specific database. A pinned blob is
+    /// never GC'd.
+    async fn pin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<()>;
+
+    /// Remove a `(user_id, database_id, blob)` pin. Returns whether it existed.
+    async fn unpin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<bool>;
+
+    /// The GC root set: every distinct blob CID with at least one live pin.
+    async fn pinned_cids(&self) -> Result<HashSet<ID>>;
+
+    /// Every `(user_id, database_id, blob_cid)` trusted engine retention record; never exposed
+    /// over the wire as an inventory.
+    async fn all_blob_pins(&self) -> Result<Vec<(String, String, ID)>>;
+
+    /// Total bytes of the distinct blobs pinned by `user_id` (provenance/quota).
+    async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64>;
 
     /// Get the store parent IDs for a specific entry and store, sorted by height then ID.
     ///

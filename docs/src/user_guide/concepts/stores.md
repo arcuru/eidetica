@@ -635,3 +635,8 @@ Eidetica's architecture allows for adding new Store implementations. Potential f
 These are **not yet implemented**. Development is currently focused on the core API and the existing `DocStore` and `Table` types.
 
 <!-- TODO: Update this list if/when new store types become available or development starts -->
+
+## Binary Attachments
+
+Store a CID or an optional `BlobRef` in an ordinary Store value and keep the bytes outside the Entry DAG.
+See [Blob Storage](blobs.md) for local reads, persistence and explicit cache collection.

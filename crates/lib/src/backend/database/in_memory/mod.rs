@@ -74,6 +74,18 @@ pub(crate) struct InMemoryInner {
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
     /// Retained verified frontier per tree, maintained under this same lock.
     pub(crate) verified: HashMap<ID, VerifiedState>,
+    /// Content-addressed blob storage, keyed by raw-codec (`0x55`) BLAKE3 CID.
+    ///
+    /// Stored outside the Entry DAG and persisted by snapshots. Only explicit
+    /// GC removes unpinned bytes; derived-cache clearing leaves them intact.
+    pub(crate) blobs: HashMap<ID, Vec<u8>>,
+    /// Last-access time (epoch ms) per blob CID — drives LRU eviction.
+    /// Stamped on put and on every local read hit.
+    pub(crate) blob_accessed: HashMap<ID, i64>,
+    /// Trusted engine retention roots, keyed by `(owner, database, blob_cid)`.
+    /// The database string may be empty. Any root keeps its CID alive in GC;
+    /// these records are not an application ownership API.
+    pub(crate) blob_pins: HashSet<(String, String, ID)>,
 }
 
 #[derive(Debug)]
@@ -197,6 +209,9 @@ impl InMemory {
                 instance_secrets: None,
                 tips: HashMap::new(),
                 verified: HashMap::new(),
+                blobs: HashMap::new(),
+                blob_accessed: HashMap::new(),
+                blob_pins: HashSet::new(),
             }),
             store_state_point_reads: AtomicUsize::new(0),
             store_state_scan_reads: AtomicUsize::new(0),
@@ -910,6 +925,88 @@ impl BackendImpl for InMemory {
         let mut inner = self.inner.write().unwrap();
         inner.instance_secrets = Some(secrets.clone());
         Ok(())
+    }
+
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        crate::backend::verify_blob_cid(cid, &data)?;
+        let mut inner = self.inner.write().unwrap();
+        storage::put_blob(&mut inner, cid, data);
+        Ok(())
+    }
+
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        let inner = self.inner.read().unwrap();
+        let blob = storage::get_blob(&inner, cid);
+        if let Some(bytes) = &blob {
+            crate::backend::verify_blob_cid(cid, bytes)?;
+        }
+        Ok(blob)
+    }
+
+    async fn get_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::get_blob_range(&inner, cid, range))
+    }
+
+    async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::get_blob_header(&inner, cid))
+    }
+
+    async fn has_blob(&self, cid: &ID) -> Result<bool> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::has_blob(&inner, cid))
+    }
+
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        storage::touch_blob_accessed(&mut inner, cid, now_ms);
+        Ok(())
+    }
+
+    async fn delete_blob(&self, cid: &ID) -> Result<bool> {
+        let mut inner = self.inner.write().unwrap();
+        Ok(storage::delete_blob(&mut inner, cid))
+    }
+
+    async fn all_blob_meta(&self) -> Result<Vec<crate::backend::BlobMeta>> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::all_blob_meta(&inner))
+    }
+
+    async fn pin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        storage::pin_blob(&mut inner, user_id, database_id, blob_cid);
+        Ok(())
+    }
+
+    async fn unpin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<bool> {
+        let mut inner = self.inner.write().unwrap();
+        Ok(storage::unpin_blob(
+            &mut inner,
+            user_id,
+            database_id,
+            blob_cid,
+        ))
+    }
+
+    async fn pinned_cids(&self) -> Result<HashSet<ID>> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::pinned_cids(&inner))
+    }
+
+    async fn all_blob_pins(&self) -> Result<Vec<(String, String, ID)>> {
+        let inner = self.inner.read().unwrap();
+        Ok(inner.blob_pins.iter().cloned().collect())
+    }
+
+    async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::pinned_size_by_user(&inner, user_id))
     }
 
     async fn get_sorted_store_parents(

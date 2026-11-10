@@ -1,0 +1,123 @@
+//! Crash-durable content-addressed files for the SQL blob tier.
+//!
+//! SQL holds the size, Bao outboard, recency and location; large blob bytes live
+//! in files named by CID. Writes sync a same-directory temporary file, rename
+//! atomically, then sync the containing directory. Range reads seek to a window.
+
+use std::path::{Path, PathBuf};
+
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+
+use crate::Result;
+use crate::backend::errors::BackendError;
+use crate::entry::ID;
+
+/// Map an I/O failure to a backend error, preserving the source.
+fn io_err(source: std::io::Error) -> crate::Error {
+    BackendError::FileIo { source }.into()
+}
+
+/// The on-disk path for a blob: `<dir>/<cid>`. The CID is base32lower, so it is
+/// already a safe single-segment file name (no separators, no traversal).
+fn blob_path(dir: &Path, cid: &ID) -> PathBuf {
+    dir.join(cid.to_string())
+}
+
+/// Write a blob's bytes to its content-addressed file atomically.
+///
+/// Always publish the verified bytes, even if the final path already exists:
+/// an earlier write may have been cancelled before syncing its rename, or the
+/// existing file may be corrupt. A same-directory temporary file keeps the
+/// rename on one device.
+pub async fn write_atomic(dir: &Path, cid: &ID, data: &[u8]) -> Result<()> {
+    let final_path = blob_path(dir, cid);
+    tokio::fs::create_dir_all(dir).await.map_err(io_err)?;
+
+    // Unique temp name so concurrent writers of the same (or different) blobs
+    // never collide on the staging file. Same directory => same device => the
+    // final rename is atomic.
+    let tmp_path = dir.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
+
+    // Scope the file handle so it is closed before the rename.
+    {
+        let mut file = tokio::fs::File::create(&tmp_path).await.map_err(io_err)?;
+        file.write_all(data).await.map_err(io_err)?;
+        // Durably flush the bytes before the rename so a crash can't leave a
+        // renamed-but-empty file under the CID.
+        file.sync_all().await.map_err(io_err)?;
+    }
+
+    // Atomic publish. If a concurrent writer beat us to it, the rename still
+    // yields the correct content (identical bytes), so we don't treat an
+    // already-present final path as an error.
+    if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
+        // Best-effort cleanup of our temp file; ignore failure.
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(io_err(e));
+    }
+
+    // Durably persist the rename itself: POSIX does not guarantee a rename (or
+    // create) survives a crash until the *containing directory* is fsync'd.
+    // Without this, `sync_all` above makes the bytes durable but the publish can
+    // still be lost on power failure, leaving a `location = 1` row pointing at a
+    // file that never appeared. fsync the directory so the row and the file stay
+    // consistent across a crash.
+    // Also persist newly-created directory entries, not only the blob rename.
+    // `create_dir_all` can have created more than one level for a configured tier.
+    let absolute_dir = std::path::absolute(dir).map_err(io_err)?;
+    for directory in absolute_dir.ancestors() {
+        let handle = tokio::fs::File::open(directory).await.map_err(io_err)?;
+        handle.sync_all().await.map_err(io_err)?;
+    }
+    Ok(())
+}
+
+/// Read a blob's whole bytes from disk, or `None` if the file is absent.
+pub async fn read_whole(dir: &Path, cid: &ID) -> Result<Option<Vec<u8>>> {
+    match tokio::fs::read(blob_path(dir, cid)).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io_err(e)),
+    }
+}
+
+/// Read a byte range of an on-disk blob via `pread` (seek + read), reading only
+/// the requested window — never the whole file. `range` is clamped to the file
+/// length: an over-long `end` yields the available tail and an empty/past-end
+/// range yields empty bytes. Returns `None` if the file is absent.
+pub async fn read_range(
+    dir: &Path,
+    cid: &ID,
+    range: std::ops::Range<u64>,
+) -> Result<Option<Vec<u8>>> {
+    let mut file = match tokio::fs::File::open(blob_path(dir, cid)).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(e)),
+    };
+
+    let len = file.metadata().await.map_err(io_err)?.len();
+    let start = range.start.min(len);
+    let end = range.end.clamp(start, len);
+    let n = (end - start) as usize;
+    if n == 0 {
+        return Ok(Some(Vec::new()));
+    }
+
+    file.seek(std::io::SeekFrom::Start(start))
+        .await
+        .map_err(io_err)?;
+    let mut buf = vec![0u8; n];
+    // `n` is bounded by the file length, so the window is fully readable.
+    file.read_exact(&mut buf).await.map_err(io_err)?;
+    Ok(Some(buf))
+}
+
+/// Delete a blob's on-disk file. Absent is success (the goal state is reached).
+pub async fn delete(dir: &Path, cid: &ID) -> Result<()> {
+    match tokio::fs::remove_file(blob_path(dir, cid)).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_err(e)),
+    }
+}

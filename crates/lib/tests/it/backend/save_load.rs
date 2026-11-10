@@ -3,7 +3,7 @@ use std::{fs, io::Write, path::Path, sync::Arc};
 use tempfile::TempDir;
 
 use eidetica::{
-    Entry, Result,
+    Entry, ID, Result,
     backend::{BackendImpl, database::InMemory},
 };
 
@@ -188,7 +188,7 @@ async fn test_load_wrong_version_fails() {
         .await
         .unwrap();
     let mut value = serde_json::to_value(&backend).unwrap();
-    for version in [1, 3, 99] {
+    for version in [1, 4, 99] {
         value["_v"] = version.into();
         let original = serde_json::to_vec(&value).unwrap();
         fs::write(&path, &original).unwrap();
@@ -293,7 +293,7 @@ async fn test_v0_migration_preserves_entries_and_instance_state_across_save() {
         }
         save_backend(&loaded, &path).unwrap();
         let current: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(current["_v"], 2);
+        assert_eq!(current["_v"], 3);
         for field in ["entries", "instance_metadata", "instance_secrets"] {
             assert_eq!(current[field], legacy[field], "preserve {field}");
         }
@@ -416,4 +416,69 @@ async fn failed_persisted_reset_write_leaves_old_snapshot_retryable() {
         VerificationStatus::Unverified
     );
     assert_eq!(reopened.get(&id).await.unwrap(), entry);
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
+async fn test_in_memory_blobs_survive_save_and_load() {
+    use eidetica::entry::ID;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test_backend_blobs.json");
+
+    let data = b"durable blob bytes that must persist".to_vec();
+    let cid = ID::from_bytes(&data);
+
+    // Store a blob, then snapshot the backend to disk.
+    {
+        let backend = Arc::new(InMemory::new());
+        backend.put_blob(&cid, data.clone()).await.unwrap();
+        save_backend(&backend, &file_path).unwrap();
+    }
+
+    // Reload: blobs are durable owned content, so they must round-trip
+    // (unlike the recomputable CRDT cache, which is intentionally dropped).
+    let loaded = load_backend(&file_path).await.unwrap();
+    assert!(loaded.has_blob(&cid).await.unwrap(), "blob should persist");
+    assert_eq!(
+        loaded.get_blob(&cid).await.unwrap(),
+        Some(data),
+        "persisted blob bytes should match"
+    );
+}
+
+#[tokio::test]
+async fn test_blob_supported_v2_snapshot_reopen() {
+    let backend = InMemory::new();
+    let entry = Entry::root_builder().build().unwrap();
+    backend.put_verified(entry.clone()).await.unwrap();
+    let mut old = serde_json::to_value(&backend).unwrap();
+    old["_v"] = 2.into();
+    for field in ["blobs", "blob_accessed", "blob_pins"] {
+        old.as_object_mut().unwrap().remove(field);
+    }
+    let restored: InMemory = serde_json::from_value(old).unwrap();
+    assert_eq!(
+        restored
+            .verified_snapshot(&entry.id())
+            .await
+            .unwrap()
+            .tips(),
+        &[entry.id()]
+    );
+    let bytes = b"new snapshot blob".to_vec();
+    let cid = ID::from_bytes(&bytes);
+    restored.put_blob(&cid, bytes.clone()).await.unwrap();
+    let current = serde_json::to_value(&restored).unwrap();
+    assert_eq!(current["_v"], 3);
+    let reopened: InMemory = serde_json::from_value(current).unwrap();
+    assert_eq!(reopened.get_blob(&cid).await.unwrap(), Some(bytes));
+    assert_eq!(
+        reopened
+            .verified_snapshot(&entry.id())
+            .await
+            .unwrap()
+            .tips(),
+        &[entry.id()]
+    );
 }

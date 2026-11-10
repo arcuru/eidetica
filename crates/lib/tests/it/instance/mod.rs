@@ -10,3 +10,6 @@ mod database_operations;
 mod helpers;
 mod settings_operations;
 mod sync_integration;
+
+mod blob_gc;
+mod blob_storage;
