@@ -88,8 +88,18 @@ async fn run_cli(daemon: &Daemon, args: &[&str]) -> std::process::Output {
 }
 
 async fn run_cli_with_stdin(daemon: &Daemon, args: &[&str], stdin: &[u8]) -> std::process::Output {
-    run_cli_at_socket(&daemon.socket, args, stdin).await
+    // Correctness tests must not enforce the shell's capture latency budget.
+    #[cfg(feature = "testing")]
+    let args = [
+        vec!["--test-capture-deadline-ms", TEST_CAPTURE_DEADLINE_MS],
+        args.to_vec(),
+    ]
+    .concat();
+    run_cli_at_socket(&daemon.socket, &args, stdin).await
 }
+
+#[cfg(feature = "testing")]
+const TEST_CAPTURE_DEADLINE_MS: &str = "30000";
 
 async fn run_cli_at_socket(
     socket: &std::path::Path,
@@ -1905,6 +1915,46 @@ async fn cli_queries_pin_host_and_history_reads_once() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn cli_capture_deadlines_are_enforced() {
+    use tokio::net::UnixListener;
+
+    let cases = [(None, "1")];
+    #[cfg(feature = "testing")]
+    let cases = [cases.as_slice(), &[(Some("25"), "0.025")]].concat();
+    for (deadline_ms, seconds) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("stalled.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            // An ignored 25ms override must encounter EOF, not time out at 1s.
+            let stall = if deadline_ms.is_some() {
+                Duration::from_millis(250)
+            } else {
+                Duration::from_secs(10)
+            };
+            tokio::time::sleep(stall).await;
+        });
+        let host = Uuid::new_v4().to_string();
+        let mut args = capture_args("alice", &host, START);
+        if let Some(ms) = deadline_ms {
+            args.splice(0..0, ["--test-capture-deadline-ms", ms]);
+        }
+        let output = run_cli_at_socket(&socket, &args, b"true").await;
+        server.abort();
+        let _ = server.await;
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&format!(
+                "daemon request exceeded the {seconds} second capture deadline"
+            )),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn remembered_capture_opens_no_unrelated_databases_as_they_grow() -> Result<()> {
     let daemon = Daemon::start("alice").await;
     let admin = daemon.instance.login_account("alice", None).await?;
@@ -1925,17 +1975,19 @@ async fn remembered_capture_opens_no_unrelated_databases_as_they_grow() -> Resul
     let bin_start = |user: &'static str, host: String, history: ID| {
         let daemon = &daemon;
         async move {
-            let trace = traced_cli(
-                daemon,
-                bin,
-                &capture_args(user, &host, START),
-                b"true",
-                &history,
-            )
-            .await;
+            let args = capture_args(user, &host, START);
+            // This test checks which databases are opened, not capture latency.
+            // Keep the shell's one-second budget out of the structural assertions.
+            #[cfg(feature = "testing")]
+            let args = [
+                vec!["--test-capture-deadline-ms", TEST_CAPTURE_DEADLINE_MS],
+                args,
+            ]
+            .concat();
+            let trace = traced_cli(daemon, bin, &args, b"true", &history).await;
             assert!(
                 trace.output.status.success(),
-                "{}",
+                "capture for {user}: {}",
                 String::from_utf8_lossy(&trace.output.stderr)
             );
             assert!(
