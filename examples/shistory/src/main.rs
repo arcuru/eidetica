@@ -30,6 +30,13 @@ struct Cli {
     #[arg(long, env = "SHISTORY_HOST_ID")]
     host_id: Option<Uuid>,
 
+    /// Override capture timing for structural integration tests, not shell hooks.
+    #[cfg(feature = "testing")]
+    #[arg(long, hide = true,
+        default_value_t = CAPTURE_DEADLINE.as_millis() as u64,
+        value_parser = clap::value_parser!(u64).range(1..))]
+    test_capture_deadline_ms: u64,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -122,6 +129,11 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    #[cfg(feature = "testing")]
+    let capture_deadline = Duration::from_millis(cli.test_capture_deadline_ms);
+    #[cfg(not(feature = "testing"))]
+    let capture_deadline = CAPTURE_DEADLINE;
+
     match cli.command {
         Command::Setup {
             ticket,
@@ -158,7 +170,7 @@ async fn run(cli: Cli) -> Result<()> {
             if command.starts_with(' ') {
                 return Ok(());
             }
-            let id = capture_with_deadline(async {
+            let id = capture_with_deadline(capture_deadline, async {
                 let (_instance, user) = connect(&cli.user).await?;
                 start(
                     &open_capture_database(&user, host_id).await?,
@@ -181,7 +193,7 @@ async fn run(cli: Cli) -> Result<()> {
             exit_status,
         } => {
             let host_id = required_host_id(cli.host_id)?;
-            capture_with_deadline(async {
+            capture_with_deadline(capture_deadline, async {
                 let (_instance, user) = connect(&cli.user).await?;
                 finish(
                     &open_capture_database(&user, host_id).await?,
@@ -239,14 +251,20 @@ fn read_command() -> Result<String> {
     Ok(command)
 }
 
-async fn capture_with_deadline<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
-    tokio::time::timeout(CAPTURE_DEADLINE, future)
+async fn capture_with_deadline<T>(
+    deadline: Duration,
+    future: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(deadline, future)
         .await
         .map_err(|_| -> eidetica::Error {
             eidetica::store::StoreError::InvalidOperation {
                 store: "shistory".to_owned(),
                 operation: "capture".to_owned(),
-                reason: "daemon request exceeded the 1 second capture deadline".to_owned(),
+                reason: format!(
+                    "daemon request exceeded the {} second capture deadline",
+                    deadline.as_secs_f64()
+                ),
             }
             .into()
         })?
