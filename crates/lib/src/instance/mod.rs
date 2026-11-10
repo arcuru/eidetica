@@ -1176,7 +1176,10 @@ impl Instance {
     ///
     /// Useful for constructing a [`Database`](crate::Database) that routes
     /// reads through the Database-level wire API while sharing the same
-    /// connection and session as the instance's write path.
+    /// connection and session as the instance's write path. Calling
+    /// [`RemoteConnection::retire`](crate::service::RemoteConnection::retire)
+    /// on the returned handle also retires this Instance and all handles sharing
+    /// its connection; reconnect by constructing a fresh Instance.
     #[cfg(all(unix, feature = "service"))]
     pub fn remote_connection(&self) -> Option<RemoteConnection> {
         self.inner.backend.remote_connection()

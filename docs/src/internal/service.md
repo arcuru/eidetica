@@ -95,6 +95,25 @@ sequenceDiagram
 4. **Authenticated request loop**: every storage operation travels inside `ServiceRequest::AuthenticatedDb`. The server handles requests in connection order. `RemoteConnection` serializes frame writes, not response waits; its background reader associates responses with pending callers in FIFO order and dispatches notifications separately.
 5. **Termination**: client closes its write half (EOF); the server detects EOF and cleans up.
 
+### Explicit connection retirement
+
+`RemoteConnection::retire(&self)` exposes the same connection-local teardown used
+on transport failure and last-handle Drop. It first fences requests, then uses
+an owned duplicate Unix socket descriptor to synchronously shut down **both**
+directions, drains pending response slots, closes notification dispatch lanes,
+and aborts the reader task. It never acquires the async writer mutex or sends an
+RPC. A blocked frame write wakes with a native I/O error; queued calls fail the
+closed check before writing. Retained clones cannot keep the failed transport
+usable. Repeated retirement is harmless, including after peer EOF.
+
+This is not a protocol operation, rollback, callback/task join, or server-side
+cancellation guarantee. Started writes can have committed without an observed
+acknowledgement, and responses already delivered can still succeed. The caller
+keeps ownership of started operations through their native results and reconciles
+uncertain outcomes; there is no automatic replay. A fresh `Instance::connect`
+(or `RemoteConnection::connect`) constructs a separate connection that must be
+authenticated again. Old Instances, Databases and clones are not rebound.
+
 ### Cancellation and frame integrity
 
 The pending response slot is enqueued under the writer lock before sending the
@@ -331,7 +350,7 @@ The actual write travels as `DatabaseOp::SubmitSignedEntry` (verification-gated,
 
 A connected client subscribes lazily: the first `Database::on_write` registration for a tree on a given connection spawns a task that sends `DatabaseOp::SubscribeWrites`. Further registrations on the same tree reuse the subscription. `RemoteConnection`'s background reader task demuxes inbound `ServerFrame`s — `Response` frames pop the next pending oneshot in FIFO order; `Notification` frames upgrade a `WeakInstance` and route into `Instance::fire_write_callbacks`, the same dispatch local instances use. The result: connected clients observe writes in daemon-canonical order with full `previous_tips`, including their own commits; subscriptions are torn down implicitly when the connection drops (a `ConnectionGuard` Drop in `handle_connection` scrubs the registry).
 
-Teardown is refcounted with hysteresis rather than immediate. Dropping the last local callback for a tree moves its wire subscription to `Idle` without any round-trip; a sweep task sends `DatabaseOp::UnsubscribeWrites` once the idle grace window elapses, and a re-registration before that transitions straight back to `Subscribed`. Both the sweep and `subscribe_writes` hold a per-tree fence across their wire round-trips so an Unsubscribe and a racing Subscribe can't reorder. Client-side teardown hangs off the last user-facing `RemoteConnection` handle: it carries a drop token that marks the connection dead, aborting the reader task so the socket's `WriteHalf` can close and the daemon sees EOF.
+Teardown is refcounted with hysteresis rather than immediate. Dropping the last local callback for a tree moves its wire subscription to `Idle` without any round-trip; a sweep task sends `DatabaseOp::UnsubscribeWrites` once the idle grace window elapses, and a re-registration before that transitions straight back to `Subscribed`. Both the sweep and `subscribe_writes` hold a per-tree fence across their wire round-trips so an Unsubscribe and a racing Subscribe can't reorder. Client-side teardown happens on explicit `RemoteConnection::retire` or the last user-facing handle's drop token. Both shut down the socket and abort the reader without waiting for retained write owners; the daemon sees EOF when it next reads.
 
 ## Store state
 
