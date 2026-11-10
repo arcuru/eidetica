@@ -209,9 +209,9 @@ For persistent sync relationships:
 #     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_account("admin", None).await?;
+# let admin = instance.login_account("admin", "").await?;
 # admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-# let mut user = instance.login_account("alice", None).await?;
+# let mut user = instance.login_account("alice", "").await?;
 # let default_key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &default_key).await?;
 # let tree_id = db.root_id().clone();
@@ -252,9 +252,9 @@ Configure per-database sync behavior:
 #     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_account("admin", None).await?;
+# let admin = instance.login_account("admin", "").await?;
 # admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-# let mut user = instance.login_account("alice", None).await?;
+# let mut user = instance.login_account("alice", "").await?;
 # let key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &key).await?;
 # let db_id = db.root_id().clone();

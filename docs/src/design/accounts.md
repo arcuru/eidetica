@@ -24,8 +24,9 @@ The ordinary login/key/preference writers also use native local records; Account
 
 Fresh Account histories contain public Auth and portable application references, not private-key/unlock records or installation activation preferences.
 Native `login:<name>` and `account-state:<UUID>` records hold convenience credentials and local bookkeeping; `_users` retains instance-admin Auth only.
-Password-protected convenience logins use the authenticated `CredentialBundle` format: the Account locator and explicit keys are one payload under the established Account Argon2id/AES-GCM primitives.
-Passwordless logins retain plaintext local storage.
+All convenience logins use the authenticated `CredentialBundle` format: the Account locator and explicit keys are one payload under the established Account Argon2id/AES-GCM primitives.
+Passwords are required string values; every string, including empty, uses the same encrypted format.
+Empty-string wrapping provides no meaningful confidentiality against a bundle holder.
 `AccountSession::from_credentials` consumes caller-unlocked credentials and an explicit Account key; `from_signer` accepts a signer plus Account locator and optional explicit Identity context.
 Both check Account Auth without a daemon login lookup and keep their own tracking/key hints in session memory.
 They do not enable daemon background synchronization or install a credential-store backend.

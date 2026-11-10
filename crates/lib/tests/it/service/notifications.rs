@@ -50,7 +50,7 @@ async fn test_on_write_fires_for_local_commit_on_connected_instance() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", "").await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -102,7 +102,7 @@ async fn test_on_write_fires_across_clients_on_same_daemon() {
     create_user_via_admin(&server, "alice").await;
 
     // Set up a database server-side so both clients have the same root_id.
-    let mut server_user = server.login_account("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", "").await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "cross_client_test");
     let server_key = server_user.get_default_key().unwrap();
@@ -116,7 +116,7 @@ async fn test_on_write_fires_across_clients_on_same_daemon() {
     let observer = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let observer_user = observer.login_account("alice", None).await.unwrap();
+    let observer_user = observer.login_account("alice", "").await.unwrap();
     let observer_db = observer_user.open_database(&root_id).await.unwrap();
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
@@ -135,7 +135,7 @@ async fn test_on_write_fires_across_clients_on_same_daemon() {
     let writer = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let writer_user = writer.login_account("alice", None).await.unwrap();
+    let writer_user = writer.login_account("alice", "").await.unwrap();
     let writer_db = writer_user.open_database(&root_id).await.unwrap();
     writer_db
         .with_transaction(|tx| async move {
@@ -162,7 +162,7 @@ async fn test_on_write_previous_tips_populated_on_connected_instance() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", "").await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -228,7 +228,7 @@ async fn test_on_write_dropped_handle_stops_callback() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", "").await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -290,7 +290,7 @@ async fn test_on_write_only_fires_for_subscribed_tree() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", "").await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings_a = eidetica::crdt::Doc::new();
@@ -357,7 +357,7 @@ async fn test_on_write_concurrent_registrations_both_observe_commit() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", "").await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -459,7 +459,7 @@ async fn test_lazy_unsubscribe_after_grace_window() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", "").await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -556,7 +556,7 @@ async fn test_on_write_per_tree_concurrent_dispatch() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", "").await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings_a = eidetica::crdt::Doc::new();
@@ -650,7 +650,7 @@ async fn test_on_write_preserves_daemon_canonical_order_under_burst() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
+    let mut user = instance.login_account("alice", "").await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -751,7 +751,7 @@ async fn test_on_write_canonical_order_under_concurrent_writers() {
     let writer1 = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mut user1 = writer1.login_account("alice", None).await.unwrap();
+    let mut user1 = writer1.login_account("alice", "").await.unwrap();
     let pubkey = user1.get_default_key().unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "concurrent_writers");
@@ -761,7 +761,7 @@ async fn test_on_write_canonical_order_under_concurrent_writers() {
     let writer2 = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user2 = writer2.login_account("alice", None).await.unwrap();
+    let user2 = writer2.login_account("alice", "").await.unwrap();
     let db2 = user2.open_database(&root_id).await.unwrap();
 
     // Subscriber records each event's post_tips in fire order.
@@ -869,7 +869,7 @@ async fn test_request_after_reader_exit_returns_connection_aborted() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _user = instance.login_account("alice", None).await.unwrap();
+    let _user = instance.login_account("alice", "").await.unwrap();
     let conn = remote_conn(&instance);
 
     // Shut the daemon down and wait for the reader task to actually observe
@@ -914,7 +914,7 @@ async fn test_client_drop_releases_daemon_subscription() {
         let instance = Instance::connect(format!("unix://{}", socket_path.display()))
             .await
             .unwrap();
-        let mut user = instance.login_account("alice", None).await.unwrap();
+        let mut user = instance.login_account("alice", "").await.unwrap();
         let pubkey = user.get_default_key().unwrap();
 
         let mut settings = eidetica::crdt::Doc::new();

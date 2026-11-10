@@ -58,7 +58,7 @@ async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, Acco
             session
         }
         None => {
-            let u = instance.login_account(username, None).await?;
+            let u = instance.login_account(username, "").await?;
             println!("✓ Logged in as passwordless user: {username}");
             u
         }

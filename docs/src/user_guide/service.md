@@ -68,7 +68,7 @@ the daemon's web session memory; do not enable the dashboard if the daemon
 must never hold plaintext keys. Every web form POST requires an `Origin` that
 matches the request's `Host`; requests without one are rejected.
 
-A passwordless account can be logged into by **anyone who can reach the
+A passwordless account uses the ordinary encrypted bundle with an empty-string password; this provides no meaningful confidentiality against a bundle holder. It can be logged into by **anyone who can reach the
 dashboard**: other local users, other hosts if the bind allows it, and web
 pages open in a local browser through DNS rebinding. Use passwords for any
 account a dashboard can reach. The separately launched `serve` command remains
@@ -116,7 +116,7 @@ Only an already tracked database whose recorded key/mapping still authorizes rea
 can be updated; this form cannot create a tracking record or repair access.
 
 These are preferences, not global daemon switches or a report of network health.
-The ordinary signed write and daemon reconciliation combine the enabled accounts'
+Native local persistence and daemon reconciliation combine the enabled accounts'
 preferences: sync-on-commit uses OR and explicit intervals use the minimum.
 Another account can therefore keep requesting sync after you disable it.
 Disabling neither cancels in-flight work nor revokes access.
@@ -124,14 +124,14 @@ The current background scheduler uses a shared timer, so this is not an exact
 per-database deadline.
 
 Requests from one browser session hold its write lock through the complete
-read/modify/commit; reads in that session take the corresponding read lock.
-Separate logins, socket clients and replicas do not share that browser lock.
-They use normal snapshot transactions and the Table's row-level LWW merge,
-not distributed compare-and-swap or stale-form detection.
+read/modify/persist; reads in that session take the corresponding read lock.
+Separate logins and socket clients do not share that browser lock.
+Native observed-value compare/exchange preserves unrelated local changes;
+preferences do not replicate to other installations. This is not distributed
+compare-and-swap or stale-form detection.
 Saving submits all three displayed preferences, so an older form can replace a
-newer edit; concurrent updates to the same row need not preserve each other's fields.
-Reload before editing to see current values.
-A commit error or lost response is not proof of rollback: the error page links to
+newer edit to those fields. Reload before editing to see current values.
+A persistence error or lost response is not proof of rollback: the error page links to
 reload the actual preferences before retrying.
 
 ### Default Socket Path
@@ -182,9 +182,9 @@ let instance = Instance::connect(eidetica::service::default_socket_url()).await?
 // an initial admin user via `eidetica daemon init --username ops`
 // (see the CLI reference); log in as that user, then create application
 // users via the admin path.
-let admin = instance.login_account("ops", None).await?;
+let admin = instance.login_account("ops", "").await?;
 admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-let mut user = instance.login_account("alice", None).await?;
+let mut user = instance.login_account("alice", "").await?;
 
 let default_key = user.get_default_key()?;
 let db = user.create_database(eidetica::crdt::Doc::new(), &default_key).await?;
@@ -241,12 +241,12 @@ Multiple clients can connect to the same daemon simultaneously. Each client main
 ```rust,ignore
 // Client 1: an admin session creates the new user via the InstanceAdmin path.
 let instance1 = Instance::connect(eidetica::service::default_socket_url()).await?;
-let admin = instance1.login_account("ops", None).await?;
+let admin = instance1.login_account("ops", "").await?;
 admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
 
 // Client 2 (separate process or task): log in as the user that was just created.
 let instance2 = Instance::connect(eidetica::service::default_socket_url()).await?;
-let user = instance2.login_account("alice", None).await?;
+let user = instance2.login_account("alice", "").await?;
 ```
 
 All clients share the same underlying storage through the daemon's backend.

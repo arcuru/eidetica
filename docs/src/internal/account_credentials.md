@@ -3,7 +3,7 @@
 Login records, private keys, signer mappings, access timestamps and activation preferences use native installation-local records.
 Fresh Account histories contain portable references and public Auth, not key or unlock records.
 Existing histories are not rewritten or scrubbed.
-Protected convenience and caller-held credentials use the same authenticated `CredentialBundle` format.
+All convenience and caller-held credentials use the same authenticated `CredentialBundle` format.
 Full AccountSession values can also be constructed from caller-unlocked credentials or an explicit signer/Account locator without daemon login storage.
 
 ## Storage boundaries
@@ -49,14 +49,17 @@ Mapping and preference edits are one atomic replacement, so concurrent sessions 
 After a lost acknowledgement, mapping caches are refreshed from persisted local state before the original error is reported.
 This is not a transaction with peer approval, database creation or login registration; those earlier effects can survive later bookkeeping failure.
 
-For password-protected convenience logins, `KeyStorage::Encrypted` contains a `CredentialBundle` as described below.
+For all convenience logins, `KeyStorage::Encrypted` contains a `CredentialBundle` as described below.
 Adding a key unlocks the observed complete bundle with the session wrapping key, explicitly adds the generated key and reseals with a fresh nonce in the same native compare/exchange as the metadata update.
 A stale session therefore preserves independent key additions rather than writing its old list over them.
 A changed salt/password, tampered ciphertext or foreign Account locator fails closed.
 There is no separate password hash.
-Passwordless logins deliberately retain unencrypted local keys; they require filesystem-trusted processes and are not encrypted storage.
-The passwordless `KeyStorage::Unencrypted` variant holds the locator and explicit key list directly; it makes no cryptographic integrity claim.
-No live old-format record or historical key is imported automatically; old installations require a separately approved operational plan.
+Password is a required string, with no length/complexity restrictions or insecure-use acknowledgement.
+`NewAccount::passwordless(name)` delegates to `with_password(name, "")`; there is no plaintext credential variant or optional-password login path.
+Empty and nonempty passwords use the same authenticated envelope and KDF parameters.
+Empty-string wrapping provides no meaningful confidentiality against a bundle holder, who already knows the password.
+It does not protect against a malicious bundle holder resealing altered data.
+No old plaintext credential record or historical key is imported or converted.
 
 `_users` remains the public Auth boundary for instance-admin capabilities, not a credential directory.
 `_sync` retains the daemon's installation-local bootstrap request lifecycle and derived combined settings; it is not the shared Account inventory.
@@ -189,6 +192,7 @@ No stronger live revocation, private-key recovery or isolation guarantee follows
 - Service native-state test: pre-auth/foreign-login reads and writes denied, non-admin registration/listing denied, own-state reads and compare/exchange conflicts exercised.
 
 `AccountSession::from_credentials` consumes an unlocked bundle; `from_signer` accepts one actual signer with explicit Account locator and Auth identity.
+Caller-held bookkeeping contains public metadata only; actual keys stay in the in-memory key manager, not a plaintext storage variant.
 Both validate Account access, retain independent immutable acting handles and use a session-owned local-state map rather than native daemon records.
 Their local-login getters are empty and `account_info()` is `None`.
 They do not configure background sync, and a returned Database has no registered-login sharing preference binding.

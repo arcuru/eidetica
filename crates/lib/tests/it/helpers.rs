@@ -150,7 +150,7 @@ pub async fn test_instance() -> Instance {
 ///
 /// Bootstraps a passwordless `admin` user as the initial admin — matches
 /// the historic test convention so existing `users.contains("admin")` style
-/// assertions and `login_account("admin", None)` calls keep working. Tests
+/// assertions and `login_account("admin", "")` calls keep working. Tests
 /// that need a specific bootstrap identity should use
 /// [`test_local_instance_with_user`] instead.
 pub async fn test_local_instance() -> Instance {
@@ -170,11 +170,11 @@ pub async fn test_local_instance() -> Instance {
 /// regardless of `TEST_BACKEND`. See [`test_local_instance`].
 pub async fn test_local_instance_with_user(username: &str) -> (Instance, AccountSession) {
     let instance = test_local_instance().await;
-    create_account(&instance, username, None)
+    create_account(&instance, username, "")
         .await
         .expect("Failed to create user");
     let user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
     (instance, user)
@@ -188,11 +188,11 @@ pub async fn test_local_instance_with_user_and_key(
     key_display_name: Option<&str>,
 ) -> (Instance, AccountSession, PublicKey) {
     let instance = test_local_instance().await;
-    create_account(&instance, username, None)
+    create_account(&instance, username, "")
         .await
         .expect("Failed to create user");
     let mut user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
     let key_id = user
@@ -213,13 +213,10 @@ pub async fn test_local_instance_with_user_and_key(
 pub async fn create_account(
     instance: &Instance,
     username: &str,
-    password: Option<&str>,
+    password: &str,
 ) -> eidetica::Result<String> {
-    let admin = instance.login_account("admin", None).await?;
-    let new_account = match password {
-        Some(pw) => NewAccount::with_password(username, pw),
-        None => NewAccount::passwordless(username),
-    };
+    let admin = instance.login_account("admin", "").await?;
+    let new_account = NewAccount::with_password(username, password);
     admin.admin().await?.create_account(new_account).await
 }
 
@@ -228,7 +225,7 @@ pub async fn create_account(
 /// Replaces the removed `Instance::list_accounts` — listing users reads `_users`
 /// and is an admin operation reached through [`AccountSession::admin`].
 pub async fn list_accounts(instance: &Instance) -> eidetica::Result<Vec<String>> {
-    let admin = instance.login_account("admin", None).await?;
+    let admin = instance.login_account("admin", "").await?;
     admin.admin().await?.list_accounts().await
 }
 
@@ -265,7 +262,7 @@ async fn test_remote_instance() -> Instance {
         .await
         .expect("Failed to connect to test daemon");
     instance
-        .login_account("admin", None)
+        .login_account("admin", "")
         .await
         .expect("Failed to login as bootstrapped admin");
 
@@ -283,11 +280,11 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, AccountSessio
         }
     }
     let instance = test_instance().await;
-    create_account(&instance, username, None)
+    create_account(&instance, username, "")
         .await
         .expect("Failed to create user");
     let user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
     (instance, user)
@@ -312,7 +309,7 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, AccountSes
     tokio::spawn(service.run(rx));
 
     // create_account is not available over the wire — create user server-side.
-    create_account(&server, username, None)
+    create_account(&server, username, "")
         .await
         .expect("Failed to create user server-side");
 
@@ -320,7 +317,7 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, AccountSes
         .await
         .expect("Failed to connect to test daemon");
     let user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
 
@@ -347,11 +344,11 @@ pub async fn test_instance_with_user_and_key(
         }
     }
     let instance = test_instance().await;
-    create_account(&instance, username, None)
+    create_account(&instance, username, "")
         .await
         .expect("Failed to create user");
     let mut user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
 
@@ -385,11 +382,11 @@ async fn test_remote_instance_with_user_and_key(
     tokio::spawn(service.run(rx));
 
     // Create user and add key server-side.
-    create_account(&server, username, None)
+    create_account(&server, username, "")
         .await
         .expect("Failed to create user server-side");
     let mut server_user = server
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user server-side");
     server_user
@@ -402,7 +399,7 @@ async fn test_remote_instance_with_user_and_key(
         .await
         .expect("Failed to connect to test daemon");
     let user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
 

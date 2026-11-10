@@ -47,7 +47,7 @@ impl LocalPeer {
     }
 
     async fn shared_tree(&self) -> Result<Database> {
-        let mut owner = self.instance.login_account("owner", None).await?;
+        let mut owner = self.instance.login_account("owner", "").await?;
         let key = owner.get_default_key()?;
         let database = owner.create_database(Doc::new(), &key).await?;
         let tx = database.new_transaction().await?;

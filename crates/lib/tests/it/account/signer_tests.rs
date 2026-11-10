@@ -250,7 +250,7 @@ async fn test_account_signers_work_without_bundle_login_connected() {
     // Signer authentication must not register any personal or app secrets.
     assert_eq!(
         instance
-            .login_account("admin", None)
+            .login_account("admin", "")
             .await
             .unwrap()
             .admin()
@@ -476,6 +476,20 @@ async fn caller_held_sessions(server: &Instance, url: Option<&str>) {
         reopened.open_reference("app", "target").await.is_err(),
         "references must not activate local mappings"
     );
+    // A raw explicit signer needs neither a wrapping password nor a stored
+    // bundle, including when adding session-only keys.
+    let mut raw = AccountSession::from_signer(&instance, retained)
+        .await
+        .unwrap();
+    let (extra, extra_id) = generate_keypair();
+    raw.import_private_key(extra, None).await.unwrap();
+    extra_id
+        .verify(
+            b"raw signer",
+            &raw.get_signing_key(&extra_id).unwrap().sign(b"raw signer"),
+        )
+        .unwrap();
+    raw.logout().unwrap();
     assert_eq!(
         local_records(server).await,
         records_before,

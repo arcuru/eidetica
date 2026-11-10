@@ -300,7 +300,7 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
 
     let user = match status_with_deadline(
         "passwordless user login",
-        instance.login_account(username, None),
+        instance.login_account(username, ""),
     )
     .await
     {

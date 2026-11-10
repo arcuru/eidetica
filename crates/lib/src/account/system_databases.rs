@@ -163,7 +163,7 @@ pub async fn create_databases_tracking(
 /// * `users_db` - The _users system database
 /// * `instance` - The Instance handle
 /// * `username` - Unique username for login
-/// * `password` - Optional password. If None, creates passwordless account (instant login, no encryption)
+/// * `password` - Password string, including empty; all logins use encrypted bundles.
 ///
 /// # Returns
 /// A tuple of `(login_id, AccountInfo, root_private_key)`. The private key is
@@ -176,7 +176,7 @@ pub async fn create_account(
     users_db: &Database,
     instance: &Instance,
     username: impl AsRef<str>,
-    password: Option<&str>,
+    password: &str,
 ) -> Result<(String, AccountInfo, crate::auth::crypto::PrivateKey)> {
     let username = username.as_ref();
     // Names are unique within this installation. The native insertion below
@@ -194,9 +194,7 @@ pub async fn create_account(
 
     // 1. Generate default keypair for this account
     let (user_private_key, user_public_key) = generate_keypair();
-    // Keep a clone for the caller — the passwordless branch below moves
-    // `user_private_key` into `KeyStorage::Unencrypted`, so we hand back a
-    // detached copy. Ed25519 keys are 32 bytes; the clone is negligible.
+    // Return an independent signer clone; persisted credentials are encrypted.
     let returned_private_key = user_private_key.clone();
 
     // 2. Create account database with the account's key as owner (Admin(0))
@@ -250,9 +248,9 @@ pub async fn create_account(
 ///
 /// This function:
 /// 1. Finds the installation-local login record by name
-/// 2. Verifies password (if provided and required)
+/// 2. Unlocks the authenticated credential bundle with the password
 /// 3. Opens account's private database
-/// 4. Loads and decrypts account keys (or loads unencrypted for passwordless accounts)
+/// 4. Loads and decrypts the complete account credential bundle
 /// 5. Creates AccountKeyManager with keys
 /// 6. Returns AccountSession object
 ///
@@ -260,7 +258,7 @@ pub async fn create_account(
 /// * `users_db` - The _users system database
 /// * `instance` - The Instance handle
 /// * `username` - Username for login
-/// * `password` - Optional password. None for passwordless accounts.
+/// * `password` - Password string; use an empty string for passwordless accounts.
 ///
 /// # Returns
 /// An AccountSession object with keys loaded
@@ -268,7 +266,7 @@ pub async fn login_account(
     _users_db: &Database,
     instance: &Instance,
     username: impl AsRef<str>,
-    password: Option<&str>,
+    password: &str,
 ) -> Result<super::AccountSession> {
     let username = username.as_ref();
 
@@ -561,7 +559,7 @@ mod tests {
 
         // Create an account with password
         let (login_id, account_info, _) =
-            create_account(&users_db, &instance, "alice", Some("password123"))
+            create_account(&users_db, &instance, "alice", "password123")
                 .await
                 .unwrap();
 
@@ -591,7 +589,7 @@ mod tests {
             .unwrap();
 
         // Create a passwordless account
-        let (login_id, account_info, _) = create_account(&users_db, &instance, "bob", None)
+        let (login_id, account_info, _) = create_account(&users_db, &instance, "bob", "")
             .await
             .unwrap();
 
@@ -601,7 +599,7 @@ mod tests {
 
         assert!(matches!(
             account_info.credentials.bundle,
-            KeyStorage::Unencrypted { .. }
+            KeyStorage::Encrypted { .. }
         ));
         assert!(!login_id.is_empty());
 
@@ -622,12 +620,12 @@ mod tests {
             .unwrap();
 
         // Create first account
-        create_account(&users_db, &instance, "alice", Some("password123"))
+        create_account(&users_db, &instance, "alice", "password123")
             .await
             .unwrap();
 
         // Try to create duplicate
-        let result = create_account(&users_db, &instance, "alice", Some("password456")).await;
+        let result = create_account(&users_db, &instance, "alice", "password456").await;
         assert!(result.is_err());
     }
 
@@ -640,12 +638,12 @@ mod tests {
             .unwrap();
 
         // Create an account with password
-        create_account(&users_db, &instance, "bob", Some("bobpassword"))
+        create_account(&users_db, &instance, "bob", "bobpassword")
             .await
             .unwrap();
 
         // Login account
-        let user = login_account(&users_db, &instance, "bob", Some("bobpassword"))
+        let user = login_account(&users_db, &instance, "bob", "bobpassword")
             .await
             .unwrap();
 
@@ -669,12 +667,12 @@ mod tests {
             .unwrap();
 
         // Create a passwordless account
-        create_account(&users_db, &instance, "charlie", None)
+        create_account(&users_db, &instance, "charlie", "")
             .await
             .unwrap();
 
-        // Login account without password
-        let user = login_account(&users_db, &instance, "charlie", None)
+        // Login account with its empty password
+        let user = login_account(&users_db, &instance, "charlie", "")
             .await
             .unwrap();
 
@@ -699,12 +697,12 @@ mod tests {
             .unwrap();
 
         // Create an account
-        create_account(&users_db, &instance, "dave", Some("correct_password"))
+        create_account(&users_db, &instance, "dave", "correct_password")
             .await
             .unwrap();
 
         // Try to login with wrong password
-        let result = login_account(&users_db, &instance, "dave", Some("wrong_password")).await;
+        let result = login_account(&users_db, &instance, "dave", "wrong_password").await;
         assert!(result.is_err());
     }
 
@@ -717,21 +715,21 @@ mod tests {
             .unwrap();
 
         // Create a passwordless account
-        create_account(&users_db, &instance, "eve", None)
+        create_account(&users_db, &instance, "eve", "")
             .await
             .unwrap();
 
         // Try to login with password (should fail)
-        let result = login_account(&users_db, &instance, "eve", Some("password")).await;
+        let result = login_account(&users_db, &instance, "eve", "password").await;
         assert!(result.is_err());
 
         // Create a password-protected account
-        create_account(&users_db, &instance, "frank", Some("password"))
+        create_account(&users_db, &instance, "frank", "password")
             .await
             .unwrap();
 
-        // Try to login without password (should fail)
-        let result = login_account(&users_db, &instance, "frank", None).await;
+        // Try to login with an empty password (should fail)
+        let result = login_account(&users_db, &instance, "frank", "").await;
         assert!(result.is_err());
     }
 
@@ -743,7 +741,7 @@ mod tests {
             .unwrap();
 
         // Try to login account that doesn't exist
-        let result = login_account(&users_db, &instance, "nonexistent", Some("password")).await;
+        let result = login_account(&users_db, &instance, "nonexistent", "password").await;
         assert!(result.is_err());
     }
 
@@ -760,13 +758,13 @@ mod tests {
         assert_eq!(users, ["admin"]);
 
         // Create some accounts (mix of password-protected and passwordless)
-        create_account(&users_db, &instance, "alice", Some("pass1"))
+        create_account(&users_db, &instance, "alice", "pass1")
             .await
             .unwrap();
-        create_account(&users_db, &instance, "bob", None)
+        create_account(&users_db, &instance, "bob", "")
             .await
             .unwrap();
-        create_account(&users_db, &instance, "charlie", Some("pass3"))
+        create_account(&users_db, &instance, "charlie", "pass3")
             .await
             .unwrap();
 
@@ -796,7 +794,7 @@ mod tests {
         let (instance, _device_key, _admin) = setup_instance().await;
 
         // Admin is already bootstrapped — login and verify
-        let admin_user = instance.login_account("admin", None).await.unwrap();
+        let admin_user = instance.login_account("admin", "").await.unwrap();
 
         let users_db = instance.users_db().await.unwrap();
         let databases_db = instance.databases_db().await.unwrap();
@@ -878,7 +876,7 @@ mod tests {
             .create_account(crate::NewAccount::passwordless("alice"))
             .await
             .unwrap();
-        let alice = instance.login_account("alice", None).await.unwrap();
+        let alice = instance.login_account("alice", "").await.unwrap();
         assert!(
             !alice.is_admin().await.unwrap(),
             "newly created user must report is_admin = false"
@@ -899,7 +897,7 @@ mod tests {
             .create_account(crate::NewAccount::passwordless("bob"))
             .await
             .unwrap();
-        let bob = instance.login_account("bob", None).await.unwrap();
+        let bob = instance.login_account("bob", "").await.unwrap();
         let bob_pubkey = bob.key_manager().get_default_key_id().unwrap();
 
         assert!(
@@ -951,8 +949,8 @@ mod tests {
             .create_account(crate::NewAccount::passwordless("charlie"))
             .await
             .unwrap();
-        let bob = instance.login_account("bob", None).await.unwrap();
-        let charlie = instance.login_account("charlie", None).await.unwrap();
+        let bob = instance.login_account("bob", "").await.unwrap();
+        let charlie = instance.login_account("charlie", "").await.unwrap();
         let charlie_pubkey = charlie.key_manager().get_default_key_id().unwrap();
 
         // A non-admin can't even obtain the admin view — the privilege
@@ -993,7 +991,7 @@ mod tests {
             .create_account(crate::NewAccount::passwordless("bob"))
             .await
             .unwrap();
-        let bob = instance.login_account("bob", None).await.unwrap();
+        let bob = instance.login_account("bob", "").await.unwrap();
         let bob_pubkey = bob.key_manager().get_default_key_id().unwrap();
 
         admin
@@ -1026,7 +1024,7 @@ mod tests {
             .create_account(crate::NewAccount::passwordless("charlie"))
             .await
             .unwrap();
-        let charlie = instance.login_account("charlie", None).await.unwrap();
+        let charlie = instance.login_account("charlie", "").await.unwrap();
         let charlie_pubkey = charlie.key_manager().get_default_key_id().unwrap();
 
         bob.admin()

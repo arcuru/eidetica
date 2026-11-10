@@ -51,7 +51,8 @@ struct AppState {
 #[derive(Deserialize)]
 struct LoginForm {
     username: String,
-    password: Option<String>,
+    #[serde(default)]
+    password: String,
 }
 
 /// Track database form data (bootstrap request)
@@ -331,7 +332,7 @@ async fn handle_login_submit(
     let username = form.username.clone();
     let password = form.password.clone();
 
-    let result = match instance.login_account(&username, password.as_deref()).await {
+    let result = match instance.login_account(&username, &password).await {
         Ok(user) => {
             // Enable background sync for this user's databases
             if let Some(sync) = instance.sync() {
@@ -677,8 +678,8 @@ async fn handle_sync_preferences(
         }
     };
 
-    // Serialize the complete read/modify/signed-write within this browser session.
-    // Other sessions/devices still use ordinary CRDT transaction semantics.
+    // Serialize preference edits within this browser session. Other sessions
+    // on this installation reconcile through the native record's compare/exchange.
     let mut user = user_lock.write().await;
     match user
         .set_sync_preferences(&database_id, form.enabled, form.sync_on_commit, interval)

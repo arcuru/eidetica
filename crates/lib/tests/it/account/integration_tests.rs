@@ -21,24 +21,21 @@ use eidetica::{
 
 #[tokio::test]
 async fn test_independent_users_coexist() {
-    let (instance, _) = setup_local_instance_with_users(&[
-        ("alice", None),
-        ("bob", Some("bob_pass")),
-        ("charlie", None),
-    ])
-    .await;
+    let (instance, _) =
+        setup_local_instance_with_users(&[("alice", ""), ("bob", "bob_pass"), ("charlie", "")])
+            .await;
 
     // All users login and create databases
     let mut alice = instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Alice login");
     let mut bob = instance
-        .login_account("bob", Some("bob_pass"))
+        .login_account("bob", "bob_pass")
         .await
         .expect("Bob login");
     let mut charlie = instance
-        .login_account("charlie", None)
+        .login_account("charlie", "")
         .await
         .expect("Charlie login");
 
@@ -96,11 +93,11 @@ async fn test_independent_users_coexist() {
 
 #[tokio::test]
 async fn test_multi_device_key_management_and_database_access() {
-    let (instance, username) = setup_local_instance_with_user("alice", None).await;
+    let (instance, username) = setup_local_instance_with_user("alice", "").await;
 
     // Session 1: Desktop - Create user's first database with default key
     let mut user1 = instance
-        .login_account(&username, None)
+        .login_account(&username, "")
         .await
         .expect("Desktop login");
     let default_key = user1.get_default_key().expect("Get default key");
@@ -120,7 +117,7 @@ async fn test_multi_device_key_management_and_database_access() {
 
     // Session 2: Laptop - AccountSession adds laptop key and creates another database
     let mut user2 = instance
-        .login_account(&username, None)
+        .login_account(&username, "")
         .await
         .expect("Laptop login");
     let laptop_key = add_user_key(&mut user2, Some("Laptop")).await;
@@ -154,7 +151,7 @@ async fn test_multi_device_key_management_and_database_access() {
 
     // Session 3: Phone - AccountSession adds phone key and verifies access to both databases
     let mut user3 = instance
-        .login_account(&username, None)
+        .login_account(&username, "")
         .await
         .expect("Phone login");
     let _phone_key = add_user_key(&mut user3, Some("Phone")).await;
@@ -181,19 +178,16 @@ async fn test_multi_device_key_management_and_database_access() {
 #[tokio::test]
 async fn test_team_scenario_multiple_users_own_databases() {
     let (instance, _) =
-        setup_local_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
+        setup_local_instance_with_users(&[("alice", ""), ("bob", ""), ("charlie", "")]).await;
 
     // Each team member creates their own project database
     let mut alice = instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Alice login");
-    let mut bob = instance
-        .login_account("bob", None)
-        .await
-        .expect("Bob login");
+    let mut bob = instance.login_account("bob", "").await.expect("Bob login");
     let mut charlie = instance
-        .login_account("charlie", None)
+        .login_account("charlie", "")
         .await
         .expect("Charlie login");
 
@@ -270,11 +264,10 @@ async fn test_collaborative_database_with_global_permissions() {
     // Setup two users on the same instance
     let alice_name = "alice";
     let bob_name = "bob";
-    let (instance, _) =
-        setup_local_instance_with_users(&[(alice_name, None), (bob_name, None)]).await;
+    let (instance, _) = setup_local_instance_with_users(&[(alice_name, ""), (bob_name, "")]).await;
 
     // Alice logs in and creates a database with global Write(10) permission
-    let mut alice = login_account(&instance, alice_name, None).await;
+    let mut alice = login_account(&instance, alice_name, "").await;
     let alice_key = alice.get_default_key().expect("Alice get default key");
 
     let mut alice_db_settings = Doc::new();
@@ -309,7 +302,7 @@ async fn test_collaborative_database_with_global_permissions() {
     alice.logout().expect("Alice logout");
 
     // Bob logs in and discovers he can access the database
-    let mut bob = login_account(&instance, bob_name, None).await;
+    let mut bob = login_account(&instance, bob_name, "").await;
     let bob_key = bob.get_default_key().expect("Bob get default key");
 
     // Bob discovers available SigKeys for his public key
@@ -381,7 +374,7 @@ async fn test_collaborative_database_with_global_permissions() {
     bob.logout().expect("Bob logout");
 
     // Alice logs back in and sees Bob's changes
-    let alice2 = login_account(&instance, alice_name, None).await;
+    let alice2 = login_account(&instance, alice_name, "").await;
     let alice_db2 = alice2
         .open_database(&db_id)
         .await
@@ -428,11 +421,11 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         .expect("Failed to enable sync for Alice");
 
     // Create Alice's user account
-    crate::helpers::create_account(&alice_instance, "alice", None)
+    crate::helpers::create_account(&alice_instance, "alice", "")
         .await
         .expect("Failed to create Alice");
     let mut alice = alice_instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Failed to login Alice");
     let alice_key = alice.get_default_key().expect("Alice get default key");
@@ -512,11 +505,11 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         .expect("Failed to enable sync for Bob");
 
     // Create Bob's user account
-    crate::helpers::create_account(&bob_instance, "bob", None)
+    crate::helpers::create_account(&bob_instance, "bob", "")
         .await
         .expect("Failed to create Bob");
     let mut bob = bob_instance
-        .login_account("bob", None)
+        .login_account("bob", "")
         .await
         .expect("Failed to login Bob");
     let bob_key = bob.get_default_key().expect("Bob get default key");
@@ -619,7 +612,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     // === ALICE VERIFIES BOB'S CHANGES ===
     println!("\n🔍 Alice logging back in to verify Bob's changes...");
     let alice2 = alice_instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Alice re-login");
     let alice_db2 = alice2
@@ -680,11 +673,11 @@ async fn test_share_with_attached_sync_includes_server_addresses() {
         .await
         .expect("Failed to start sync server");
 
-    crate::helpers::create_account(&instance, "alice", None)
+    crate::helpers::create_account(&instance, "alice", "")
         .await
         .expect("Failed to create alice");
     let mut alice = instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Failed to login alice");
     let alice_key = alice.get_default_key().expect("Get default key");

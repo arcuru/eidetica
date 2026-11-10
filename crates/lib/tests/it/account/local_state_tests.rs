@@ -4,8 +4,8 @@ use super::helpers::{login_account, setup_instance_with_user};
 
 #[tokio::test]
 async fn account_local_keys_and_activation_never_write_account_entries() {
-    let (instance, name) = setup_instance_with_user("local-state", Some("password")).await;
-    let mut user = login_account(&instance, &name, Some("password")).await;
+    let (instance, name) = setup_instance_with_user("local-state", "password").await;
+    let mut user = login_account(&instance, &name, "password").await;
     let root_key = user.get_default_key().unwrap();
     let account = Database::open(&instance, user.account().id())
         .await
@@ -61,7 +61,7 @@ async fn account_local_keys_and_activation_never_write_account_entries() {
     let id = database.root_id().clone();
     let actual = user.get_signing_key(&key).unwrap().public_key();
     user.logout().unwrap();
-    let user = login_account(&instance, &name, Some("password")).await;
+    let user = login_account(&instance, &name, "password").await;
     assert_eq!(user.get_signing_key(&key).unwrap().public_key(), actual);
     assert!(!user.database(&id).await.unwrap().sync_settings.sync_enabled);
     assert_eq!(user.reference("app", "root").await.unwrap(), Some(id));
@@ -83,17 +83,14 @@ async fn account_login_directory_has_no_replicated_unlock_history() {
         .create_account(NewAccount::with_password("app", "app-password"))
         .await
         .unwrap();
-    let app = instance
-        .login_account("app", Some("app-password"))
-        .await
-        .unwrap();
+    let app = instance.login_account("app", "app-password").await.unwrap();
     assert_ne!(
         app.get_default_key().unwrap(),
         admin.get_default_key().unwrap()
     );
     assert!(
         instance
-            .login_account("app", Some("personal-password"))
+            .login_account("app", "personal-password")
             .await
             .is_err()
     );

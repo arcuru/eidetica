@@ -223,12 +223,6 @@ pub async fn run_init(
         if pw != confirm {
             return Err("Passwords did not match.".into());
         }
-        if pw.is_empty() {
-            return Err(
-                "Empty password rejected. Pass `--passwordless` to opt in to no-password mode."
-                    .into(),
-            );
-        }
         NewAccount::with_password(&args.username, pw)
     };
 

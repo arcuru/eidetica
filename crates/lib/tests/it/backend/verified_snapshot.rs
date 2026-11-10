@@ -839,8 +839,8 @@ async fn settled_snapshot_reads_are_scan_free() {
     )
     .await
     .unwrap();
-    create_account(&instance, "reader", None).await.unwrap();
-    let mut user = instance.login_account("reader", None).await.unwrap();
+    create_account(&instance, "reader", "").await.unwrap();
+    let mut user = instance.login_account("reader", "").await.unwrap();
     let key = user.get_default_key().expect("default key");
 
     let mut settings = Doc::new();

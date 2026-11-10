@@ -123,7 +123,7 @@ mod tests {
         )
         .await?;
         let mut first = first_server
-            .login_account("device-one", Some("first-password"))
+            .login_account("device-one", "first-password")
             .await?;
         let a = first.get_default_key()?;
         let (b_secret, b) = generate_keypair();
@@ -170,7 +170,7 @@ mod tests {
             account_id: account.root_id().clone(),
             credentials: AccountCredentials {
                 root_key_id: b.clone(),
-                bundle: KeyStorage::seal(account.root_id(), &[b_secret], Some("second-password"))?,
+                bundle: KeyStorage::seal(account.root_id(), &[b_secret], "second-password")?,
             },
             created_at: second_server.clock().now_secs(),
             status: AccountStatus::Active,
@@ -199,10 +199,10 @@ mod tests {
             }
         }
         let mut first = first_client
-            .login_account("device-one", Some("first-password"))
+            .login_account("device-one", "first-password")
             .await?;
         let mut second = second_client
-            .login_account("device-two", Some("second-password"))
+            .login_account("device-two", "second-password")
             .await?;
         assert_eq!(first.account().id(), second.account().id());
         assert_eq!(first.list_keys()?, vec![a.clone()]);
@@ -238,10 +238,10 @@ mod tests {
         first.logout()?;
         second.logout()?;
         let first = first_client
-            .login_account("device-one", Some("first-password"))
+            .login_account("device-one", "first-password")
             .await?;
         let second = second_client
-            .login_account("device-two", Some("second-password"))
+            .login_account("device-two", "second-password")
             .await?;
         assert!(first.is_sync_enabled(target.root_id()).await?);
         assert!(!second.is_sync_enabled(target.root_id()).await?);

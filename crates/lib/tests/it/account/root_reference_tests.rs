@@ -23,8 +23,8 @@ async fn create_target(session: &mut AccountSession, name: &str) -> Database {
 #[tokio::test]
 async fn test_account_root_reference_roundtrip_and_rename() {
     // This helper uses a genuine connected client under TEST_BACKEND=service.
-    let (instance, _) = setup_instance_with_user("application", None).await;
-    let mut session = instance.login_account("application", None).await.unwrap();
+    let (instance, _) = setup_instance_with_user("application", "").await;
+    let mut session = instance.login_account("application", "").await.unwrap();
     let root = session.account().id().clone();
     let login = session.login_id().to_string();
     assert_eq!(&root, &session.account_info().unwrap().account_id);
@@ -42,7 +42,7 @@ async fn test_account_root_reference_roundtrip_and_rename() {
         .unwrap();
     tx.commit().await.unwrap();
     session.logout().unwrap();
-    let session = instance.login_account("application", None).await.unwrap();
+    let session = instance.login_account("application", "").await.unwrap();
     assert_eq!(session.account().id(), &root);
     assert_eq!(session.login_id(), login);
     let reopened = session.open_reference(APP, "group").await.unwrap().unwrap();
@@ -70,8 +70,8 @@ async fn test_account_root_reference_roundtrip_and_rename() {
 
 #[tokio::test]
 async fn test_account_root_reference_absence_is_not_failure_or_creation() {
-    let (instance, _) = setup_instance_with_user("application", None).await;
-    let mut session = instance.login_account("application", None).await.unwrap();
+    let (instance, _) = setup_instance_with_user("application", "").await;
+    let mut session = instance.login_account("application", "").await.unwrap();
     let target = create_target(&mut session, "target").await;
     session
         .set_reference(APP, "target", target.root_id())
@@ -138,8 +138,8 @@ async fn test_account_root_reference_absence_is_not_failure_or_creation() {
 
 #[tokio::test]
 async fn test_account_root_reference_rejects_path_names_without_mutation() {
-    let (instance, _) = setup_instance_with_user("application", None).await;
-    let session = instance.login_account("application", None).await.unwrap();
+    let (instance, _) = setup_instance_with_user("application", "").await;
+    let session = instance.login_account("application", "").await.unwrap();
     let original = ID::from_bytes("original");
     let replacement = ID::from_bytes("replacement");
     session
@@ -179,8 +179,8 @@ async fn test_account_root_reference_rejects_path_names_without_mutation() {
 
 #[tokio::test]
 async fn test_account_root_reference_rejects_nontext_metadata() {
-    let (instance, _) = setup_instance_with_user("application", None).await;
-    let session = instance.login_account("application", None).await.unwrap();
+    let (instance, _) = setup_instance_with_user("application", "").await;
+    let session = instance.login_account("application", "").await.unwrap();
     let target = ID::from_bytes("target");
     for value in [Value::Int(42), Value::Bool(true), Value::Doc(Doc::new())] {
         // Warm the typed projection first: malformed data must not leave a stale ID.
@@ -228,17 +228,17 @@ async fn test_account_root_reference_rejects_nontext_metadata() {
 #[tokio::test]
 async fn test_account_root_reference_does_not_grant_authority() {
     let instance = crate::helpers::test_instance().await;
-    crate::helpers::create_account(&instance, "owner", None)
+    crate::helpers::create_account(&instance, "owner", "")
         .await
         .unwrap();
-    crate::helpers::create_account(&instance, "reader", None)
+    crate::helpers::create_account(&instance, "reader", "")
         .await
         .unwrap();
-    let mut owner = instance.login_account("owner", None).await.unwrap();
+    let mut owner = instance.login_account("owner", "").await.unwrap();
     let target = create_target(&mut owner, "private").await;
     let target_id = target.root_id().clone();
     owner.logout().unwrap();
-    let reader = instance.login_account("reader", None).await.unwrap();
+    let reader = instance.login_account("reader", "").await.unwrap();
     reader
         .set_reference(APP, "foreign", &target_id)
         .await
@@ -294,8 +294,8 @@ async fn test_account_root_reference_lookup_reads_are_constant() {
 
 #[tokio::test]
 async fn test_account_reference_namespaces_are_separate_from_account_stores() {
-    let (instance, _) = setup_instance_with_user("application", None).await;
-    let mut session = instance.login_account("application", None).await.unwrap();
+    let (instance, _) = setup_instance_with_user("application", "").await;
+    let mut session = instance.login_account("application", "").await.unwrap();
     let first = create_target(&mut session, "first").await;
     let second = create_target(&mut session, "second").await;
     let tracked = session.databases().await.unwrap();
@@ -313,7 +313,7 @@ async fn test_account_reference_namespaces_are_separate_from_account_stores() {
         .unwrap();
     session.logout().unwrap();
 
-    let session = instance.login_account("application", None).await.unwrap();
+    let session = instance.login_account("application", "").await.unwrap();
     assert_eq!(session.databases().await.unwrap(), tracked);
     session.get_default_key().unwrap();
     assert_eq!(

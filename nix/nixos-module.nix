@@ -113,8 +113,10 @@ in {
       type = types.bool;
       default = false;
       description = ''
-        Opt in to bootstrapping the initial admin user **without a
-        password**. A passwordless admin means anyone who can reach the
+        Bootstrap the initial admin user with an **empty password**, using
+        the ordinary encrypted credential bundle format. Empty-string wrapping
+        provides no meaningful confidentiality against a bundle holder.
+        A passwordless admin means anyone who can reach the
         service can act as admin, so only set this for trusted/LAN
         deployments or local development. Use `initialPasswordFile`
         instead for any deployment where others can reach the web

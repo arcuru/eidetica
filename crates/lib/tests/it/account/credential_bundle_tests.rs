@@ -137,24 +137,19 @@ async fn test_native_login_bundle_authenticates_account_locator() {
             .unwrap()
     );
     assert!(
-        instance
-            .login_account("local", Some("password"))
-            .await
-            .is_err(),
+        instance.login_account("local", "password").await.is_err(),
         "an unauthenticated directory locator rebound an unlocked login"
     );
 }
 
-async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica::Instance) {
+async fn native_bundle_lifecycle(
+    server: &eidetica::Instance,
+    client: &eidetica::Instance,
+    password: &str,
+) {
     use eidetica::account::KeyStorage;
-    let mut first = client
-        .login_account("local", Some("password"))
-        .await
-        .unwrap();
-    let mut stale = client
-        .login_account("local", Some("password"))
-        .await
-        .unwrap();
+    let mut first = client.login_account("local", password).await.unwrap();
+    let mut stale = client.login_account("local", password).await.unwrap();
     let root = first.get_default_key().unwrap();
     let a = first.add_private_key(Some("first")).await.unwrap();
     let retained = first
@@ -181,11 +176,8 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
     let bytes = backend.local_account_record(&name).await.unwrap().unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let KeyStorage::Encrypted { bundle } =
-        serde_json::from_value(value["credentials"].clone()).unwrap()
-    else {
-        panic!("protected login wrote plaintext")
-    };
-    let unlocked = bundle.unlock_for(first.account().id(), "password").unwrap();
+        serde_json::from_value(value["credentials"].clone()).unwrap();
+    let unlocked = bundle.unlock_for(first.account().id(), password).unwrap();
     let ids = unlocked.key_ids();
     assert_eq!(
         ids.len(),
@@ -218,12 +210,11 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
     );
     first.logout().unwrap();
     stale.logout().unwrap();
-    assert!(client.login_account("local", Some("wrong")).await.is_err());
-    assert!(client.login_account("local", None).await.is_err());
-    let returned = client
-        .login_account("local", Some("password"))
-        .await
-        .unwrap();
+    assert!(client.login_account("local", "wrong").await.is_err());
+    if !password.is_empty() {
+        assert!(client.login_account("local", "").await.is_err());
+    }
+    let returned = client.login_account("local", password).await.unwrap();
     assert_eq!(returned.list_keys().unwrap().len(), 3);
     for id in [&root, &a, &b] {
         let key = returned.get_signing_key(id).unwrap();
@@ -241,15 +232,12 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
     let entry = tx.commit().await.unwrap();
     eidetica::auth::crypto::verify_entry_signature(&retained.get_entry(entry).await.unwrap(), &a)
         .unwrap();
-    let (login, read) = tokio::join!(
-        client.login_account("local", Some("password")),
-        retained.snapshot(),
-    );
+    let (login, read) = tokio::join!(client.login_account("local", password), retained.snapshot(),);
     login.unwrap();
     read.unwrap();
     returned.logout().unwrap();
     server
-        .login_account("local", Some("password"))
+        .login_account("local", password)
         .await
         .unwrap()
         .admin()
@@ -258,7 +246,7 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
         .create_account(eidetica::NewAccount::passwordless("other"))
         .await
         .unwrap();
-    let other = client.login_account("other", None).await.unwrap();
+    let other = client.login_account("other", "").await.unwrap();
     assert!(
         other.get_signing_key(&a).is_err(),
         "another login inherited a private key"
@@ -286,7 +274,7 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
     let foreign = CredentialBundle::seal(
         &ID::from_bytes("foreign-account"),
         &[generate_keypair().0],
-        "password",
+        password,
     )
     .unwrap();
     let mut swapped = current.clone();
@@ -303,12 +291,7 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
             .await
             .unwrap()
     );
-    assert!(
-        client
-            .login_account("local", Some("password"))
-            .await
-            .is_err()
-    );
+    assert!(client.login_account("local", password).await.is_err());
     assert_eq!(
         backend.local_account_record(&name).await.unwrap().unwrap(),
         serde_json::to_vec(&swapped).unwrap(),
@@ -332,12 +315,7 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
             .await
             .unwrap()
     );
-    assert!(
-        client
-            .login_account("local", Some("password"))
-            .await
-            .is_err()
-    );
+    assert!(client.login_account("local", password).await.is_err());
     assert_eq!(
         backend.local_account_record(&name).await.unwrap().unwrap(),
         serde_json::to_vec(&corrupted).unwrap()
@@ -346,131 +324,170 @@ async fn native_bundle_lifecycle(server: &eidetica::Instance, client: &eidetica:
 
 #[tokio::test]
 async fn test_native_bundle_lifecycle_embedded() {
-    let (instance, _) = eidetica::Instance::create_backend(
-        Box::new(eidetica::backend::database::InMemory::new()),
-        eidetica::NewAccount::with_password("local", "password"),
-    )
-    .await
-    .unwrap();
-    native_bundle_lifecycle(&instance, &instance).await;
+    for password in ["password", ""] {
+        let (instance, _) = eidetica::Instance::create_backend(
+            Box::new(eidetica::backend::database::InMemory::new()),
+            eidetica::NewAccount::with_password("local", password),
+        )
+        .await
+        .unwrap();
+        native_bundle_lifecycle(&instance, &instance, password).await;
+    }
 }
 
 #[tokio::test]
 #[cfg(all(unix, feature = "service"))]
 async fn test_native_bundle_lifecycle_connected() {
-    use eidetica::{Instance, NewAccount, backend::database::InMemory, service::ServiceServer};
-    use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let path = dir.path().join("bundle.sock");
-    let (instance, _) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        NewAccount::with_password("local", "password"),
-    )
-    .await
-    .unwrap();
-    let service = ServiceServer::bind(instance.clone(), &path).await.unwrap();
-    let (shutdown, rx) = tokio::sync::watch::channel(());
-    let task = tokio::spawn(service.run(rx));
-    let client = Instance::connect(format!("unix://{}", path.display()))
+    for password in ["password", ""] {
+        use eidetica::{Instance, NewAccount, backend::database::InMemory, service::ServiceServer};
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.path().join("bundle.sock");
+        let (instance, _) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            NewAccount::with_password("local", password),
+        )
         .await
         .unwrap();
-    native_bundle_lifecycle(&instance, &client).await;
-    drop(client);
-    drop(shutdown);
-    task.await.unwrap().unwrap();
+        let service = ServiceServer::bind(instance.clone(), &path).await.unwrap();
+        let (shutdown, rx) = tokio::sync::watch::channel(());
+        let task = tokio::spawn(service.run(rx));
+        let client = Instance::connect(format!("unix://{}", path.display()))
+            .await
+            .unwrap();
+        native_bundle_lifecycle(&instance, &client, password).await;
+        drop(client);
+        drop(shutdown);
+        task.await.unwrap().unwrap();
+    }
 }
 
 #[tokio::test]
 #[cfg(feature = "sqlite")]
 async fn test_complete_native_bundle_survives_sqlite_restart() {
-    use eidetica::{Instance, NewAccount, backend::database::Sqlite, crdt::Doc};
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("credentials.db");
-    let (account_id, added, target_id) = {
-        let (_instance, mut session) = Instance::create_backend(
-            Box::new(Sqlite::open(&path).await.unwrap()),
-            NewAccount::with_password("local", "password"),
-        )
-        .await
-        .unwrap();
-        let added = session.add_private_key(Some("persisted")).await.unwrap();
-        let target = session.create_database(Doc::new(), &added).await.unwrap();
-        session
-            .set_reference("app", "target", target.root_id())
+    for password in ["password", ""] {
+        use eidetica::{Instance, NewAccount, backend::database::Sqlite, crdt::Doc};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.db");
+        let (account_id, added, target_id) = {
+            let (_instance, mut session) = Instance::create_backend(
+                Box::new(Sqlite::open(&path).await.unwrap()),
+                NewAccount::with_password("local", password),
+            )
             .await
             .unwrap();
-        (
-            session.account().id().clone(),
-            added,
-            target.root_id().clone(),
+            let added = session.add_private_key(Some("persisted")).await.unwrap();
+            let target = session.create_database(Doc::new(), &added).await.unwrap();
+            session
+                .set_reference("app", "target", target.root_id())
+                .await
+                .unwrap();
+            (
+                session.account().id().clone(),
+                added,
+                target.root_id().clone(),
+            )
+        };
+        let instance = Instance::open_backend(Box::new(Sqlite::open(&path).await.unwrap()))
+            .await
+            .unwrap();
+        let returning = instance.login_account("local", password).await.unwrap();
+        assert_eq!(returning.account().id(), &account_id);
+        assert_eq!(returning.key_display_name(&added), Some("persisted"));
+        let target = returning
+            .open_reference("app", "target")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.root_id(), &target_id);
+        let tx = target.new_transaction().await.unwrap();
+        tx.get_store::<eidetica::store::DocStore>("data")
+            .await
+            .unwrap()
+            .set("after-restart", "written")
+            .await
+            .unwrap();
+        let entry_id = tx.commit().await.unwrap();
+        eidetica::auth::crypto::verify_entry_signature(
+            &target.get_entry(entry_id).await.unwrap(),
+            &added,
         )
-    };
-    let instance = Instance::open_backend(Box::new(Sqlite::open(&path).await.unwrap()))
-        .await
         .unwrap();
-    let returning = instance
-        .login_account("local", Some("password"))
-        .await
-        .unwrap();
-    assert_eq!(returning.account().id(), &account_id);
-    assert_eq!(returning.key_display_name(&added), Some("persisted"));
-    let target = returning
-        .open_reference("app", "target")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(target.root_id(), &target_id);
-    let tx = target.new_transaction().await.unwrap();
-    tx.get_store::<eidetica::store::DocStore>("data")
-        .await
-        .unwrap()
-        .set("after-restart", "written")
-        .await
-        .unwrap();
-    let entry_id = tx.commit().await.unwrap();
-    eidetica::auth::crypto::verify_entry_signature(
-        &target.get_entry(entry_id).await.unwrap(),
-        &added,
-    )
-    .unwrap();
+    }
 }
 
 #[tokio::test]
 async fn test_empty_password_login_uses_encrypted_complete_bundle() {
     use eidetica::{Instance, NewAccount, account::KeyStorage, backend::database::InMemory};
-    for initial in [NewAccount::passwordless("local"), NewAccount::with_password("local", "")] {
+    for initial in [
+        NewAccount::passwordless("local"),
+        NewAccount::with_password("local", ""),
+    ] {
         let (instance, mut session) = Instance::create_backend(Box::new(InMemory::new()), initial)
-            .await.unwrap();
+            .await
+            .unwrap();
         let root = session.get_default_key().unwrap();
         let backend = instance.backend().local_engine().unwrap();
-        let login = backend.local_account_record("login:local").await.unwrap().unwrap();
+        let login = backend
+            .local_account_record("login:local")
+            .await
+            .unwrap()
+            .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&login).unwrap();
-        let storage: KeyStorage = serde_json::from_value(value["info"]["credentials"]["bundle"].clone()).unwrap();
-        let KeyStorage::Encrypted { bundle } = storage else { panic!("empty-password root stored plaintext") };
+        let storage: KeyStorage =
+            serde_json::from_value(value["info"]["credentials"]["bundle"].clone()).unwrap();
+        let KeyStorage::Encrypted { bundle } = storage;
         let unlocked = bundle.unlock_for(session.account().id(), "").unwrap();
-        assert_eq!(unlocked.key_ids(), [root.clone()]);
+        assert_eq!(unlocked.key_ids(), std::slice::from_ref(&root));
         let added = session.add_private_key(Some("generated")).await.unwrap();
         let (imported, imported_id) = generate_keypair();
-        session.import_private_key(imported, Some("imported")).await.unwrap();
-        let state = backend.local_account_record(&format!("account-state:{}", session.login_id())).await.unwrap().unwrap();
+        session
+            .import_private_key(imported, Some("imported"))
+            .await
+            .unwrap();
+        let state = backend
+            .local_account_record(&format!("account-state:{}", session.login_id()))
+            .await
+            .unwrap()
+            .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&state).unwrap();
         let storage: KeyStorage = serde_json::from_value(value["credentials"].clone()).unwrap();
-        let KeyStorage::Encrypted { bundle } = storage else { panic!("added keys stored plaintext") };
+        let KeyStorage::Encrypted { bundle } = storage;
         let unlocked = bundle.unlock_for(session.account().id(), "").unwrap();
         assert_eq!(unlocked.key_ids().len(), 3);
         assert!(bundle.unlock("not empty").is_err());
         for id in [&root, &added, &imported_id] {
             let secret = unlocked.signer(id).unwrap().to_prefixed_string();
             for bytes in [&login, &state] {
-                assert!(!std::str::from_utf8(bytes).unwrap().contains(secret.as_str()));
+                assert!(
+                    !std::str::from_utf8(bytes)
+                        .unwrap()
+                        .contains(secret.as_str())
+                );
             }
         }
         session.logout().unwrap();
-        assert!(instance.login_account("local", Some("wrong")).await.is_err());
-        let returning = instance.login_account("local", Some("")).await.unwrap();
+        assert!(instance.login_account("local", "wrong").await.is_err());
+        let returning = instance.login_account("local", "").await.unwrap();
         for id in [&root, &added, &imported_id] {
-            id.verify(b"empty relogin", &returning.get_signing_key(id).unwrap().sign(b"empty relogin")).unwrap();
+            id.verify(
+                b"empty relogin",
+                &returning
+                    .get_signing_key(id)
+                    .unwrap()
+                    .sign(b"empty relogin"),
+            )
+            .unwrap();
         }
     }
+}
+
+#[test]
+fn test_plaintext_login_storage_is_rejected() {
+    let (key, _) = generate_keypair();
+    let plaintext = serde_json::json!({
+        "type": "unencrypted", "account_id": ID::from_bytes("account"), "keys": [key]
+    });
+    assert!(serde_json::from_value::<eidetica::account::KeyStorage>(plaintext).is_err());
 }

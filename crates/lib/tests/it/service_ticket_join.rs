@@ -175,7 +175,7 @@ async fn connected_join_opens_database_and_wildcard_authorizes_daemon_sync() {
 
     let daemon = Daemon::start().await;
     let service = daemon.connect().await;
-    let mut user = service.login_account("alice", None).await.unwrap();
+    let mut user = service.login_account("alice", "").await.unwrap();
     // A key other than the login key must be proven to the daemon first.
     let key = user.add_private_key(Some("joiner")).await.unwrap();
 
@@ -248,7 +248,7 @@ async fn connected_join_pending_then_approved_retry_opens_database() {
 
     let daemon = Daemon::start().await;
     let service = daemon.connect().await;
-    let mut user = service.login_account("alice", None).await.unwrap();
+    let mut user = service.login_account("alice", "").await.unwrap();
     let key = user.get_default_key().unwrap();
     let mut metadata = Doc::new();
     metadata.set("device", "laptop");
@@ -348,7 +348,7 @@ async fn connected_join_reports_rejection() {
 
     let daemon = Daemon::start().await;
     let service = daemon.connect().await;
-    let mut user = service.login_account("alice", None).await.unwrap();
+    let mut user = service.login_account("alice", "").await.unwrap();
     let key = user.get_default_key().unwrap();
 
     let error = user
@@ -390,7 +390,7 @@ async fn connected_join_reports_rejection() {
 async fn connected_join_with_unreachable_ticket_records_nothing() {
     let daemon = Daemon::start().await;
     let service = daemon.connect().await;
-    let mut user = service.login_account("alice", None).await.unwrap();
+    let mut user = service.login_account("alice", "").await.unwrap();
     let key = user.get_default_key().unwrap();
     // Bind and drop a listener so the port is closed.
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -440,7 +440,7 @@ async fn daemon_refuses_unproven_keys_and_mismatched_proofs() {
     let (tree, ticket) = (peer.tree(), peer.ticket.clone());
 
     let daemon = Daemon::start().await;
-    let alice = daemon.instance.login_account("alice", None).await.unwrap();
+    let alice = daemon.instance.login_account("alice", "").await.unwrap();
     let login_key = alice
         .get_signing_key(&alice.get_default_key().unwrap())
         .unwrap();
@@ -730,7 +730,7 @@ async fn disconnected_join_requires_explicit_retry_after_peer_approval() {
     let peer = Peer::start(false).await;
     let (tree, ticket) = (peer.tree(), peer.ticket.clone());
     let daemon = Daemon::start().await;
-    let alice = daemon.instance.login_account("alice", None).await.unwrap();
+    let alice = daemon.instance.login_account("alice", "").await.unwrap();
     let key = alice.get_default_key().unwrap();
     let signing_key = alice.get_signing_key(&key).unwrap();
     drop(alice);
@@ -828,7 +828,7 @@ async fn disconnected_join_requires_explicit_retry_after_peer_approval() {
         .unwrap();
 
     let service = daemon.connect().await;
-    let mut user = service.login_account("alice", None).await.unwrap();
+    let mut user = service.login_account("alice", "").await.unwrap();
     assert!(service.sync().is_none());
     assert!(user.database(&tree).await.is_err());
     assert!(
@@ -921,7 +921,7 @@ async fn pending_join_does_not_publish_peer_tree_relationship() {
     let peer = Peer::start(false).await;
     let daemon = Daemon::start().await;
     let service = daemon.connect().await;
-    let mut user = service.login_account("alice", None).await.unwrap();
+    let mut user = service.login_account("alice", "").await.unwrap();
     let key = user.get_default_key().unwrap();
     assert!(is_pending(
         &user
@@ -961,7 +961,7 @@ async fn identical_completed_join_preserves_user_and_routing_history() {
     let peer = Peer::start(true).await;
     let daemon = Daemon::start().await;
     let service = daemon.connect().await;
-    let mut user = service.login_account("alice", None).await.unwrap();
+    let mut user = service.login_account("alice", "").await.unwrap();
     let key = user.get_default_key().unwrap();
     user.join(
         &peer.ticket,
@@ -1042,7 +1042,7 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
     let server = ServiceServer::bind(daemon.clone(), &socket).await?;
     let running = tokio::spawn(server.run(rx));
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
-    let mut user = service.login_account("alice", None).await?;
+    let mut user = service.login_account("alice", "").await?;
     let key = user.get_default_key()?;
     let before = user.account().database().snapshot().await?;
     assert!(is_pending(
@@ -1081,7 +1081,7 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
     let server = ServiceServer::bind(daemon.clone(), &socket).await?;
     let running = tokio::spawn(server.run(rx));
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
-    let mut user = service.login_account("alice", None).await?;
+    let mut user = service.login_account("alice", "").await?;
     assert_eq!(before, user.account().database().snapshot().await?);
     assert_eq!(user.key_mapping(&key, &peer.tree())?, None);
     assert!(is_pending(

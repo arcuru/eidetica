@@ -796,10 +796,10 @@ impl RemoteConnection {
     /// Flow: send `TrustedLoginAccount` → receive challenge + the user's full
     /// `AccountInfo` (encrypted credentials, user-database id, status) → derive
     /// the password-encryption key locally (Argon2id) and decrypt the root
-    /// signing key in-process (or take it raw for passwordless users) → sign
+    /// signing key in-process (including for empty passwords) → sign
     /// the challenge → send `TrustedLoginProve` → expect `TrustedLoginOk`.
     ///
-    /// For password-protected logins the daemon never sees the password or plaintext signing key; the
+    /// The daemon never receives the password or plaintext signing key in this handshake; the
     /// trust model for shipping the encrypted blob over the socket is captured
     /// in the Service Architecture doc § Trusted login threat model.
     ///
@@ -812,7 +812,7 @@ impl RemoteConnection {
     pub(crate) async fn trusted_login(
         &self,
         username: &str,
-        password: Option<&str>,
+        password: &str,
     ) -> crate::Result<(String, AccountInfo, crate::account::UnlockedCredentials)> {
         let _guard = self.inner.authentication.lock().await;
         // A failed/abandoned attempt also invalidates the server keyset.

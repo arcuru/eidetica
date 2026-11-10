@@ -172,8 +172,9 @@ pub struct DaemonInitArgs {
     #[arg(long, env = "EIDETICA_ADMIN_PASSWORD", conflicts_with = "passwordless")]
     pub password: Option<String>,
 
-    /// Create the initial admin user without a password. Suitable for
-    /// embedded / single-user development; not recommended for production.
+    /// Use an empty password with the ordinary encrypted bundle format.
+    /// Equivalent to `--password ""`; provides no meaningful confidentiality
+    /// against a bundle holder. Not recommended for production.
     #[arg(long, conflicts_with = "password")]
     pub passwordless: bool,
 }

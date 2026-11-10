@@ -48,6 +48,11 @@ impl AccountKeyManager {
         Ok(())
     }
 
+    pub(crate) fn import_key(&mut self, key: PrivateKey, metadata: AccountKey) -> Result<()> {
+        self.credentials.add_key(key)?;
+        self.add_key(metadata)
+    }
+
     pub(crate) fn unlock_storage(&self, storage: &KeyStorage) -> Result<UnlockedCredentials> {
         self.credentials.unlock_storage(storage)
     }

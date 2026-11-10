@@ -577,9 +577,9 @@ pub enum ServiceResponse {
     /// already returned — no second wire read of `_users` is required.
     ///
     /// `account_info.credentials` carries the public login key ID and a
-    /// `KeyStorage` bundle. Protected logins authenticate the Account locator
-    /// and explicit keys in the versioned `CredentialBundle` envelope;
-    /// passwordless logins deliberately carry a plaintext locator/key list. The non-credential fields (account_id,
+    /// `KeyStorage` bundle. All logins authenticate the Account locator and
+    /// explicit keys in the versioned `CredentialBundle` envelope, including
+    /// empty passwords. The non-credential fields (account_id,
     /// status, timestamps) are what `AccountSession::new` consumes after the proof
     /// step succeeds. See § Trusted login threat model in the Service
     /// Architecture doc for why this is safe to ship to anyone who can

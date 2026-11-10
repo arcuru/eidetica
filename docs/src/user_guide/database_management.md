@@ -69,11 +69,12 @@ contains this account's preferences, including `row.sync_settings.sync_enabled`;
 `Ok(None)` means the row is absent. Authorization, storage read and decoding
 failures remain errors, not an absent row or a disabled preference.
 
-This read works in embedded and service mode through the session's existing
-Account access. It does not enumerate tracked databases, change keys or settings,
-or grant access to the target database. A cold read may populate disposable
-Store-state caches. As with other service reads, daemon authorization failures
-use the existing service error representation.
+This read uses native installation-local login state in embedded and service
+mode, or session-local state for caller-held credentials. It decodes the local
+record, never a replicated tracking Table or Store-state cache. It does not
+change keys or settings or grant access to the target database. Connected reads
+require the exact authenticated login scope; failures use the existing service
+error representation.
 
 ```rust
 # use eidetica::{AccountSession, ID};

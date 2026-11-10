@@ -70,13 +70,13 @@ Initialises a fresh Eidetica instance on the chosen backend with an initial admi
 eidetica daemon [BACKEND OPTIONS] init --username <NAME> [--password <PASS> | --passwordless]
 ```
 
-| Option           | Default | Env Var                   | Description                                           |
-| ---------------- | ------- | ------------------------- | ----------------------------------------------------- |
-| `--username`     | —       | —                         | **Required.** Initial admin username. No default.     |
-| `--password`     | —       | `EIDETICA_ADMIN_PASSWORD` | Optional. Prompted twice on stdin if not provided.    |
-| `--passwordless` | off     | —                         | Skip the password (mutually exclusive with the flag). |
+| Option           | Default | Env Var                   | Description                                                        |
+| ---------------- | ------- | ------------------------- | ------------------------------------------------------------------ |
+| `--username`     | —       | —                         | **Required.** Initial admin username. No default.                  |
+| `--password`     | —       | `EIDETICA_ADMIN_PASSWORD` | Optional. Prompted twice on stdin if not provided.                 |
+| `--passwordless` | off     | —                         | Use an empty password (same encrypted storage as `--password ""`). |
 
-`--username` has no default: operators must spell it out so no static credential ships by accident. `--passwordless` is intentionally a separate opt-in (rather than just leaving `--password` unset) — pick it only for embedded or single-user development; production deployments should set a password.
+`--username` has no default: operators must spell it out so no static credential ships by accident. `--passwordless` is shorthand for `--password ""`, not a different storage mode or a required insecure-use acknowledgement. The explicit flag, password environment variable and interactive prompt all accept an empty string; leaving the option unset prompts rather than silently choosing a password. Empty and nonempty strings use the same encrypted bundle and KDF, but empty-string wrapping provides no meaningful confidentiality against a bundle holder.
 
 Examples:
 

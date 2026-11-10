@@ -67,7 +67,7 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     let peer_addr = Address::http(peer_sync.get_server_address_for("http").await?);
 
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
-    let mut client = service.login_account("alice", None).await?;
+    let mut client = service.login_account("alice", "").await?;
     let key = client.get_default_key()?;
     let mut settings = Doc::new();
     settings.set("name", "created-by-service-client");
@@ -142,7 +142,7 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     let (service_shutdown, service_handle) = start_service(restarted.clone(), &socket).await;
 
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
-    let client = service.login_account("alice", None).await?;
+    let client = service.login_account("alice", "").await?;
     let client_db = client.open_database(&tree).await?;
     let (fired_tx, mut fired_rx) = tokio::sync::mpsc::unbounded_channel();
     let _callback = client_db

@@ -33,7 +33,7 @@ impl Sync {
     /// # Example
     /// ```rust,ignore
     /// // After creating or logging in a user
-    /// let user = instance.login_account("alice", Some("password"))?;
+    /// let user = instance.login_account("alice", "password")?;
     /// sync.sync_account(user.login_id(), user.account().id())?;
     /// ```
     pub async fn sync_account(
@@ -213,7 +213,7 @@ mod tests {
             .await?
             .create_account(NewAccount::passwordless("second"))
             .await?;
-        let mut second = instance.login_account("second", None).await?;
+        let mut second = instance.login_account("second", "").await?;
         let first_key = first.get_default_key()?;
         let second_key = second.get_default_key()?;
         let target = first.create_database(Doc::new(), &first_key).await?;
