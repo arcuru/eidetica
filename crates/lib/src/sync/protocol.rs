@@ -271,6 +271,53 @@ pub enum SyncResponse {
     Error(String),
 }
 
+/// Request body for the binary blob-range endpoint (`POST /api/v0/blob`).
+///
+/// Blob range transfer does **not** go through [`SyncRequest`]/[`SyncResponse`]
+/// (those are JSON): the response is a raw bao stream, so it rides a dedicated
+/// binary endpoint. This small JSON struct carries only the control fields.
+/// Blob reads are global and deliberately unauthorized.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct BlobRangeRequest {
+    /// Content address of the blob.
+    pub cid: ID,
+    /// Inclusive start byte offset.
+    pub start: u64,
+    /// Exclusive end byte offset (clamped to the blob's real size by the peer).
+    pub end: u64,
+}
+
+/// Request body for a blind, bounded blob availability query.
+///
+/// Names explicit CIDs only; the answer covers exactly these CIDs, in order.
+/// There is no list, prefix or summary form, so a peer learns nothing about
+/// blobs it did not name.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct BlobAvailabilityRequest {
+    /// Content addresses to check, at most
+    /// [`MAX_BLOB_AVAILABILITY_BATCH`](crate::blob::MAX_BLOB_AVAILABILITY_BATCH).
+    pub cids: Vec<ID>,
+}
+
+/// Answer to a [`BlobAvailabilityRequest`]: one entry per requested CID.
+///
+/// `true` means the peer records a locally complete blob, initially verified
+/// on put. This is advisory: later reads may fail or detect storage corruption.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct BlobAvailabilityResponse {
+    /// Availability of each requested CID, in request order.
+    pub available: Vec<bool>,
+}
+
+/// A request on the binary blob protocol used by stream transports.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum BlobWireRequest {
+    /// Check which of the named blobs the peer holds.
+    Availability(BlobAvailabilityRequest),
+    /// Stream a verified byte range of one blob.
+    Range(BlobRangeRequest),
+}
+
 /// Current protocol version - 0 indicates unstable.
 ///
 /// `#[non_exhaustive]` does not protect wire compatibility: a peer on an older

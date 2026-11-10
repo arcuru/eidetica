@@ -181,6 +181,39 @@ pub trait SyncTransport: Send + Sync {
         }
     }
 
+    /// Fetch a verified byte range of a blob from a peer.
+    ///
+    /// Receives a bounded bao encoding of `range` for blob `cid` from `address`,
+    /// verifies it against `cid`, and returns the requested bytes — or `None`
+    /// if the peer does not hold the blob. The
+    /// default is unsupported; transports that carry binary streams override it.
+    async fn fetch_blob_range(
+        &self,
+        _address: &Address,
+        _cid: &crate::entry::ID,
+        _range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        Err(SyncError::UnsupportedTransport {
+            transport_type: self.transport_type().to_string(),
+        }
+        .into())
+    }
+
+    /// Ask a peer which of the named blobs it holds (blind, bounded query).
+    ///
+    /// Returns one entry per requested CID, in order. The default is
+    /// unsupported; it never fabricates an answer.
+    async fn query_blobs(
+        &self,
+        _address: &Address,
+        _cids: &[crate::entry::ID],
+    ) -> Result<Vec<bool>> {
+        Err(SyncError::UnsupportedTransport {
+            transport_type: self.transport_type().to_string(),
+        }
+        .into())
+    }
+
     /// Check if the server is currently running.
     ///
     /// # Returns

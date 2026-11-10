@@ -68,6 +68,14 @@ pub enum SyncError {
     #[error("Network error: {0}")]
     Network(String),
 
+    /// No queried provider delivered a blob, and not every provider said it
+    /// was absent, so its absence is unknown rather than established.
+    #[error("Blob {cid} could not be fetched from the database's peers: {attempt:?}")]
+    BlobUnavailable {
+        cid: ID,
+        attempt: crate::blob::BlobFetchAttempt,
+    },
+
     /// Command channel send error.
     #[error("Failed to send command to background sync: {0}")]
     CommandSendError(String),

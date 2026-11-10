@@ -31,6 +31,7 @@ use tokio::sync::watch;
 
 use crate::helpers::LocalBackendTestExt;
 
+mod blob_transfer;
 mod compatibility;
 mod notifications;
 

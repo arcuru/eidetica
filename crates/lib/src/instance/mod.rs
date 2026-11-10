@@ -1468,6 +1468,44 @@ impl Instance {
         Ok(Some(encoded))
     }
 
+    /// Whether local storage records a complete blob for `cid`.
+    /// Advisory: never consults peers or verifies the bytes again.
+    pub(crate) async fn has_blob_local(&self, cid: &ID) -> Result<bool> {
+        crate::backend::validate_blob_cid(cid)?;
+        let engine = self.local_blob_engine()?;
+        engine.has_blob(cid).await
+    }
+
+    /// Receive `range` of a blob for a Database: local storage first, then
+    /// that Database's peers. The bytes are returned, not stored.
+    ///
+    /// `Ok(None)` only when the blob is not local and every provider asked
+    /// answered that it lacks it. Any other failure — no providers, or some
+    /// unreachable, stalled, unsupported or invalid — is
+    /// [`SyncError::BlobUnavailable`](crate::sync::SyncError::BlobUnavailable).
+    pub(crate) async fn fetch_blob_range_for_database(
+        &self,
+        database: &ID,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        if let Some(bytes) = self.get_blob_range_local(cid, range.clone()).await? {
+            return Ok(Some(bytes));
+        }
+        let sync = self.sync().ok_or(crate::sync::SyncError::SyncNotEnabled)?;
+        let providers = sync.blob_providers(database).await?;
+        let (bytes, attempt) = sync.fetch_blob_from_providers(&providers, cid, range).await;
+        match bytes {
+            Some(bytes) => Ok(Some(bytes)),
+            None if attempt.absent_from_all_queried() => Ok(None),
+            None => Err(crate::sync::SyncError::BlobUnavailable {
+                cid: cid.clone(),
+                attempt,
+            }
+            .into()),
+        }
+    }
+
     // === Local blob garbage collection ===
 
     /// Storage for local range verification and GC. Connected clients route

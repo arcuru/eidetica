@@ -1546,6 +1546,34 @@ impl RemoteConnection {
         }
     }
 
+    /// Receive a verified blob range through the daemon from a Database's peers.
+    pub(crate) async fn fetch_blob_range_remote(
+        &self,
+        database: ID,
+        identity: SigKey,
+        cid: ID,
+        range: std::ops::Range<u64>,
+    ) -> crate::Result<Option<Vec<u8>>> {
+        match self
+            .db_request(
+                database,
+                identity,
+                DatabaseOp::FetchBlobRange {
+                    cid,
+                    start: range.start,
+                    end: range.end,
+                },
+            )
+            .await?
+        {
+            ServiceResponse::Blob(blob) => Ok(blob),
+            ServiceResponse::BlobUnavailable { cid, attempt } => {
+                Err(crate::sync::SyncError::BlobUnavailable { cid, attempt }.into())
+            }
+            other => Err(unexpected_response("Blob", &other)),
+        }
+    }
+
     /// Run a blob GC pass on the daemon (`GcBlobs`).
     pub(crate) async fn gc_blobs_remote(
         &self,
