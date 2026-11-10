@@ -19,9 +19,6 @@ pub enum AccountError {
     )]
     DuplicateAccountsDetected { username: String, count: usize },
 
-    #[error("Invalid password")]
-    InvalidPassword,
-
     #[error("Key not found: {key_id}")]
     KeyNotFound { key_id: String },
 
@@ -77,9 +74,6 @@ pub enum AccountError {
          (the bootstrap request may be awaiting approval, or the database has not synced)"
     )]
     DatabaseAccessPending { database_id: ID },
-
-    #[error("Password required for operation: {operation}")]
-    PasswordRequired { operation: String },
 
     #[error("Invalid key format: {reason}")]
     InvalidKeyFormat { reason: String },

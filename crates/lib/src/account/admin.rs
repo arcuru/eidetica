@@ -17,7 +17,7 @@
 //!
 //! Promotion signs system Auth with the account's session key. Native login
 //! registration/listing use instance-admin-gated RPC on connected instances;
-//! passwords and password-protected plaintext keys remain client-side.
+//! passwords and plaintext signing keys remain client-side.
 
 use super::{session::AccountSession, system_databases};
 use crate::{Database, NewAccount, Result, auth::crypto::PublicKey, entry::ID};
@@ -45,7 +45,7 @@ impl<'a> InstanceAdmin<'a> {
     ///
     /// Authors the Account database with its new key and registers its wrapped
     /// credentials in native local storage. Connected registration is gated by
-    /// the admin's session key; passwords and protected plaintext keys are not
+    /// the admin's session key; passwords and plaintext keys are not
     /// sent to the daemon. First login retains the existing device-Read grant.
     ///
     /// Returns the new instance-local login ID (see
@@ -56,7 +56,7 @@ impl<'a> InstanceAdmin<'a> {
     /// session gate (correctly) rejects the admin as a non-member.
     ///
     /// # Arguments
-    /// * `new_account` - Username and optional password for the account to create.
+    /// * `new_account` - Username and password string (including empty) for the account to create.
     ///   See [`NewAccount`].
     ///
     /// [`Instance::login_account`]: crate::Instance::login_account
@@ -68,7 +68,7 @@ impl<'a> InstanceAdmin<'a> {
             &users_db,
             instance,
             &new_account.username,
-            new_account.password.as_deref(),
+            &new_account.password,
         )
         .await?;
         Ok(login_id)

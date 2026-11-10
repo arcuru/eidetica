@@ -82,9 +82,9 @@ Declare sync intent with automatic background synchronization:
 #     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_account("admin", None).await?;
+# let admin = instance.login_account("admin", "").await?;
 # admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-# let mut user = instance.login_account("alice", None).await?;
+# let mut user = instance.login_account("alice", "").await?;
 # let default_key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &default_key).await?;
 # let tree_id = db.root_id().clone();
@@ -260,9 +260,9 @@ db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 # let sync = instance.sync().expect("Sync enabled");
 # sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 # sync.accept_connections().await?;
-# let admin = instance.login_account("admin", None).await?;
+# let admin = instance.login_account("admin", "").await?;
 # admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-# let mut user = instance.login_account("alice", None).await?;
+# let mut user = instance.login_account("alice", "").await?;
 // Create a database to share
 let mut settings = Doc::new();
 settings.set("name", "My Chat Room");

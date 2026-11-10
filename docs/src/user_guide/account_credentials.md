@@ -17,7 +17,7 @@ These records are not Entries and do not replicate with AccountDB.
 Adding an Account reference neither imports credentials nor activates its target.
 Existing Account histories are not made secret-free by removing current fields; this change does not delete or migrate live data.
 
-Protected convenience logins use the same authenticated `CredentialBundle` format as explicit caller-held credentials.
+All convenience logins use the same authenticated `CredentialBundle` format as explicit caller-held credentials.
 `AccountSession::from_credentials` consumes an unlocked bundle and an explicit Account key selection; `from_signer` accepts one `AccountSigner`, including an explicit delegated identity.
 Neither constructor needs a registered daemon login.
 There is no pluggable client-owned credential-store backend, device-enrollment workflow or recovery/export feature in this API.
@@ -26,7 +26,11 @@ There is no pluggable client-owned credential-store backend, device-enrollment w
 
 One local password unlocks the explicitly stored keys for that login.
 Do not register an owner's personal credentials as an app login: provision an independently authorized app key instead.
-Passwordless creation retains plaintext local credentials and is only for trusted environments.
+Passwords are required strings; any string is allowed, including empty, without length/complexity restrictions or an insecure-use acknowledgement.
+`NewAccount::passwordless(name)` is just `NewAccount::with_password(name, "")`; use `login_account(name, "")` to return.
+All persisted login and added-key credentials use authenticated encryption with the same KDF, salt and nonce handling.
+Empty-string wrapping provides no meaningful confidentiality against a bundle holder, who can also unlock and reseal it.
+Signing uses already unlocked keys and does not prompt for a password on each operation.
 
 ```rust
 # use eidetica::{Instance, NewAccount, backend::database::InMemory};
@@ -38,8 +42,8 @@ let (instance, mut session) = Instance::create_backend(
 let key_id = session.add_private_key(Some("this installation")).await?;
 let retained = session.acting_as(&key_id, None)?;
 session.logout()?;
-assert!(instance.login_account("local", Some("wrong password")).await.is_err());
-let returning = instance.login_account("local", Some("local password")).await?;
+assert!(instance.login_account("local", "wrong password").await.is_err());
+let returning = instance.login_account("local", "local password").await?;
 assert_eq!(returning.get_signing_key(&key_id)?.public_key(), retained.key_id());
 # Ok(())
 # }

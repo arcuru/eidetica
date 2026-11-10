@@ -1907,7 +1907,7 @@ async fn cli_queries_pin_host_and_history_reads_once() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn remembered_capture_opens_no_unrelated_databases_as_they_grow() -> Result<()> {
     let daemon = Daemon::start("alice").await;
-    let admin = daemon.instance.login_account("alice", None).await?;
+    let admin = daemon.instance.login_account("alice", "").await?;
     admin
         .admin()
         .await?

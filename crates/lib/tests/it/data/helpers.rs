@@ -22,8 +22,8 @@ type Node = Doc;
 /// Create a database with a test key and return both Instance and tree
 pub async fn setup_db_and_tree() -> Result<(Instance, Database)> {
     let instance = test_instance().await;
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = instance.login_account("test_user", None).await?;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = instance.login_account("test_user", "").await?;
     let default_key = user.get_default_key()?;
 
     let mut settings = Doc::new();

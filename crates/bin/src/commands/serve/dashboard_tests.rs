@@ -2,9 +2,7 @@
 use super::test_helpers::{Web, instance};
 use super::*;
 use crate::templates::{DatabaseInfo, dashboard_page, database_detail_page};
-use eidetica::{
-    Database, NewAccount, account::TrackedDatabase, crdt::Doc, service::ServiceServer, store::Table,
-};
+use eidetica::{NewAccount, account::TrackedDatabase, crdt::Doc, service::ServiceServer};
 
 #[tokio::test]
 async fn dashboard_identifies_account_login_and_public_keys() {
@@ -155,12 +153,7 @@ async fn registration_is_only_a_notice_and_preserves_origin_protection() {
         assert!(html.contains("administrator"));
         assert!(!html.contains("action=\"/register\""));
     }
-    assert!(
-        instance
-            .login_account("attacker", Some("secret"))
-            .await
-            .is_err()
-    );
+    assert!(instance.login_account("attacker", "secret").await.is_err());
     assert_eq!(web.state.sessions.session_count().await, 0);
     for origin in [None, Some("http://elsewhere")] {
         let mut request = web.client.post(format!("{}/register", web.url));
@@ -184,7 +177,7 @@ async fn dashboard_and_detail_show_only_the_logged_in_accounts_databases() {
         .create_account(NewAccount::passwordless("bob"))
         .await
         .unwrap();
-    let mut bob = instance.login_account("bob", None).await.unwrap();
+    let mut bob = instance.login_account("bob", "").await.unwrap();
     let mut databases = Vec::new();
     for (user, name) in [(&mut alice, "alice<db>"), (&mut bob, "bob<db>")] {
         let key = user.get_default_key().unwrap();
@@ -243,24 +236,23 @@ async fn dashboard_list_read_failure_does_not_look_empty() {
     let (instance, alice) = instance("alice").await;
     let web = Web::start(&instance).await;
     let cookie = web.login("alice").await;
-    // Corrupt a fixture row, not production Account discovery: the typed read must fail.
-    let account = Database::open(&instance, alice.account().id())
-        .await
-        .unwrap()
-        .with_key(
-            alice
-                .get_signing_key(&alice.get_default_key().unwrap())
-                .unwrap(),
-        );
-    account
-        .with_transaction(|tx| async move {
-            tx.get_store::<Table<String>>("databases")
-                .await?
-                .set("broken", "not a tracked row".into())
-                .await
-        })
-        .await
-        .unwrap();
+    // Fault only this fixture's native tracking record: typed reads must fail,
+    // not turn a persistence/decode error into an empty dashboard.
+    let native = instance.backend().local_engine().unwrap();
+    let name = format!("account-state:{}", alice.login_id());
+    let bytes = native.local_account_record(&name).await.unwrap().unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    state["databases"]["broken"] = serde_json::json!("not a tracked row");
+    assert!(
+        native
+            .compare_exchange_local_account_record(
+                &name,
+                Some(&bytes),
+                &serde_json::to_vec(&state).unwrap()
+            )
+            .await
+            .unwrap()
+    );
     assert!(alice.databases().await.is_err());
     let response = web.get("/dashboard", Some(&cookie)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -312,19 +304,21 @@ async fn dashboard_retains_name_and_open_failures_per_row() {
         database_id: missing_id.clone(),
         ..tracked
     };
-    let account = Database::open(&instance, alice.account().id())
-        .await
-        .unwrap()
-        .with_key(alice.get_signing_key(&key).unwrap());
-    account
-        .with_transaction(|tx| async move {
-            tx.get_store::<Table<TrackedDatabase>>("databases")
-                .await?
-                .set(orphan.database_id.to_string(), orphan)
-                .await
-        })
-        .await
-        .unwrap();
+    let native = instance.backend().local_engine().unwrap();
+    let name = format!("account-state:{}", alice.login_id());
+    let bytes = native.local_account_record(&name).await.unwrap().unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    state["databases"][orphan.database_id.to_string()] = serde_json::to_value(&orphan).unwrap();
+    assert!(
+        native
+            .compare_exchange_local_account_record(
+                &name,
+                Some(&bytes),
+                &serde_json::to_vec(&state).unwrap()
+            )
+            .await
+            .unwrap()
+    );
     assert!(alice.open_database(&missing_id).await.is_err());
     let cookie = web.login("alice").await;
     let html = web
@@ -358,7 +352,7 @@ async fn dashboard_unavailable_entry_reads_are_not_zero_or_empty() {
     let remote = Instance::connect(format!("unix://{}", socket.display()))
         .await
         .unwrap();
-    let remote_alice = remote.login_account("alice", None).await.unwrap();
+    let remote_alice = remote.login_account("alice", "").await.unwrap();
     let remote_db = remote_alice.open_database(db.root_id()).await.unwrap();
     // Raw Entry enumeration is local-only; exercise that genuine unavailable read.
     assert!(remote_db.get_all_entries().await.is_err());
@@ -391,10 +385,17 @@ async fn dashboard_unavailable_entry_reads_are_not_zero_or_empty() {
 async fn blank_password_form_logs_in_and_opens_dashboard() {
     let (instance, _) = instance("alice").await;
     let web = Web::start(&instance).await;
-    let response = web.post("/login", None, &[("username", "alice"), ("password", "")]).await;
+    let response = web
+        .post("/login", None, &[("username", "alice"), ("password", "")])
+        .await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(response.headers()["location"], "/dashboard");
-    let cookie = response.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();
+    let cookie = response.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
     let dashboard = web.get("/dashboard", Some(cookie)).await;
     assert_eq!(dashboard.status(), StatusCode::OK);
     assert!(dashboard.text().await.unwrap().contains("alice"));

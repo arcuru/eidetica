@@ -22,9 +22,9 @@ Every Eidetica database requires authentication. Here's the minimal setup:
 #
 // Create and login a passwordless user via the bootstrapped admin
 // (the new user gets an Ed25519 keypair automatically)
-let admin = instance.login_account("admin", None).await?;
+let admin = instance.login_account("admin", "").await?;
 admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-let mut user = instance.login_account("alice", None).await?;
+let mut user = instance.login_account("alice", "").await?;
 
 // Create a database using the user's default key
 let mut settings = Doc::new();
@@ -56,7 +56,12 @@ txn.commit().await?;  // Automatically signed
 - **Read**: Can only read data
 
 **Key Storage**: Public keys belong in database Auth settings; private-key custody is separate.
-The login convenience path stores private credentials in native installation-local records, not replicated Account Entries.
+The login convenience path stores authenticated encrypted credential bundles in native installation-local records, not replicated Account Entries.
+Passwords are required string values; every string is accepted, including empty, without length/complexity restrictions or an insecure-use acknowledgement.
+`NewAccount::passwordless(name)` is sugar for `NewAccount::with_password(name, "")`; login uses `login_account(name, "")`.
+Empty-string wrapping uses the same Argon2id/AES-256-GCM format, but provides no meaningful confidentiality against a bundle holder.
+Unlocked signers remain usable without re-entering the password; rewrapping a password is not signing-key revocation.
+There is no automatic migration or old plaintext-format import.
 For explicit caller-held keys and daemon-independent signing, see [credential bundles and signers](account_credentials.md).
 
 ## Common Tasks
@@ -187,7 +192,7 @@ use eidetica::{Instance, backend::database::Sqlite};
 let instance = Instance::open_backend(Box::new(Sqlite::in_memory().await?)).await?;
 
 // Log in as an existing user
-let mut user = instance.login_account("bob", None).await?;
+let mut user = instance.login_account("bob", "").await?;
 
 let database_root_id = /* ID from existing collaborative database */;
 

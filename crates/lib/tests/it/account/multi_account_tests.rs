@@ -15,11 +15,11 @@ use super::helpers::*;
 async fn test_many_users_create_databases() {
     let user_count = 5;
     let (instance, _) = setup_local_instance_with_users(&[
-        ("user1", None),
-        ("user2", None),
-        ("user3", None),
-        ("user4", None),
-        ("user5", None),
+        ("user1", ""),
+        ("user2", ""),
+        ("user3", ""),
+        ("user4", ""),
+        ("user5", ""),
     ])
     .await;
 
@@ -27,7 +27,7 @@ async fn test_many_users_create_databases() {
 
     for i in 1..=user_count {
         let username = format!("user{i}");
-        let mut user = login_account(&instance, &username, None).await;
+        let mut user = login_account(&instance, &username, "").await;
         let db = create_named_database(&mut user, &format!("Database {i}")).await;
         databases.push(db);
     }
@@ -113,13 +113,13 @@ async fn test_database_created_by_one_user() {
 
 #[tokio::test]
 async fn test_multiple_simultaneous_logins() {
-    let (instance, _) = setup_local_instance_with_users(&[("alice", None), ("bob", None)]).await;
+    let (instance, _) = setup_local_instance_with_users(&[("alice", ""), ("bob", "")]).await;
 
     // Simulate simultaneous logins
-    let alice1 = login_account(&instance, "alice", None).await;
-    let bob1 = login_account(&instance, "bob", None).await;
-    let alice2 = login_account(&instance, "alice", None).await;
-    let bob2 = login_account(&instance, "bob", None).await;
+    let alice1 = login_account(&instance, "alice", "").await;
+    let bob1 = login_account(&instance, "bob", "").await;
+    let alice2 = login_account(&instance, "alice", "").await;
+    let bob2 = login_account(&instance, "bob", "").await;
 
     // All should have valid keys
     assert_user_key_count(&alice1, 1);
@@ -133,7 +133,7 @@ async fn test_multiple_simultaneous_logins() {
 #[tokio::test]
 async fn test_list_users() {
     let (instance, _) =
-        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
+        setup_instance_with_users(&[("alice", ""), ("bob", ""), ("charlie", "")]).await;
 
     // List all users
     let users = crate::helpers::list_accounts(&instance)

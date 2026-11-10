@@ -25,7 +25,7 @@ impl AccountCredentials {
     pub(crate) fn unlock(
         &self,
         account_id: &ID,
-        password: Option<&str>,
+        password: &str,
     ) -> crate::Result<super::UnlockedCredentials> {
         let unlocked = self.bundle.unlock(account_id, password)?;
         unlocked.signer(&self.root_key_id)?;
@@ -37,7 +37,7 @@ impl AccountCredentials {
 ///
 /// The Table UUID and `username` identify a login on this instance, not the
 /// Account itself. `account_id` identifies the ordinary private root database.
-/// Credentials use the authenticated CredentialBundle format for protected logins.
+/// Every login uses the authenticated CredentialBundle format, including empty passwords.
 /// This is not a portable export or recovery backup.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountInfo {
@@ -92,58 +92,32 @@ pub struct AccountPreferences {
     pub properties: HashMap<String, String>,
 }
 
-/// Installation-local storage of one complete logical credential bundle.
-/// Protected logins use the same authenticated format as caller-held bundles.
-/// Passwordless storage is an explicit existing plaintext-local exception.
+/// Installation-local storage of one authenticated encrypted credential bundle.
+/// Every password string, including empty, uses the same format and KDF.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum KeyStorage {
-    Encrypted {
-        bundle: super::CredentialBundle,
-    },
-    Unencrypted {
-        account_id: ID,
-        keys: Vec<PrivateKey>,
-    },
+    Encrypted { bundle: super::CredentialBundle },
 }
 
 impl KeyStorage {
     pub(crate) fn seal(
         account_id: &ID,
         keys: &[PrivateKey],
-        password: Option<&str>,
+        password: &str,
     ) -> crate::Result<Self> {
-        match password {
-            Some(password) => Ok(Self::Encrypted {
-                bundle: super::CredentialBundle::seal(account_id, keys, password)?,
-            }),
-            None => super::UnlockedCredentials::passwordless(account_id.clone(), keys.to_vec())?
-                .storage(),
-        }
+        Ok(Self::Encrypted {
+            bundle: super::CredentialBundle::seal(account_id, keys, password)?,
+        })
     }
 
     pub(crate) fn unlock(
         &self,
         account_id: &ID,
-        password: Option<&str>,
+        password: &str,
     ) -> crate::Result<super::UnlockedCredentials> {
-        match (self, password) {
-            (Self::Encrypted { bundle }, Some(password)) => bundle.unlock_for(account_id, password),
-            (Self::Encrypted { .. }, None) => Err(super::AccountError::PasswordRequired {
-                operation: "unlock credential bundle".to_owned(),
-            }
-            .into()),
-            (
-                Self::Unencrypted {
-                    account_id: stored,
-                    keys,
-                },
-                None,
-            ) if stored == account_id => {
-                super::UnlockedCredentials::passwordless(stored.clone(), keys.clone())
-            }
-            _ => Err(super::AccountError::InvalidPassword.into()),
-        }
+        let Self::Encrypted { bundle } = self;
+        bundle.unlock_for(account_id, password)
     }
 }
 

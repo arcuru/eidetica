@@ -16,7 +16,7 @@ use crate::helpers::test_instance;
 
 /// Create a user via the bootstrapped admin session (works on both local
 /// and remote Instances). Thin alias over [`crate::helpers::create_account`].
-async fn admin_create_user(instance: &Instance, username: &str, password: Option<&str>) {
+async fn admin_create_user(instance: &Instance, username: &str, password: &str) {
     crate::helpers::create_account(instance, username, password)
         .await
         .expect("Failed to create user");
@@ -42,10 +42,7 @@ pub async fn setup_instance() -> Instance {
 /// [`setup_local_instance_with_user`] instead, since the wire connection
 /// model is one-identity-per-connection and a second `login_account` would
 /// clobber the first session's `session_pubkey`.
-pub async fn setup_instance_with_user(
-    username: &str,
-    password: Option<&str>,
-) -> (Instance, String) {
+pub async fn setup_instance_with_user(username: &str, password: &str) -> (Instance, String) {
     let instance = crate::helpers::test_instance().await;
     admin_create_user(&instance, username, password).await;
     (instance, username.to_string())
@@ -58,10 +55,7 @@ pub async fn setup_instance_with_user(
 /// connection (a second `login_account` against a connected Instance would
 /// clobber the first session's `session_pubkey`). Single-session tests
 /// should prefer [`setup_instance_with_user`] for wire coverage.
-pub async fn setup_local_instance_with_user(
-    username: &str,
-    password: Option<&str>,
-) -> (Instance, String) {
+pub async fn setup_local_instance_with_user(username: &str, password: &str) -> (Instance, String) {
     let instance = crate::helpers::test_local_instance().await;
     admin_create_user(&instance, username, password).await;
     (instance, username.to_string())
@@ -76,14 +70,12 @@ pub async fn setup_local_instance_with_user(
 /// the returned Instance is wire-safe. Tests that log in as more than one
 /// user (or the same user repeatedly) must use
 /// [`setup_local_instance_with_users`].
-pub async fn setup_instance_with_users(
-    user_configs: &[(&str, Option<&str>)],
-) -> (Instance, Vec<String>) {
+pub async fn setup_instance_with_users(user_configs: &[(&str, &str)]) -> (Instance, Vec<String>) {
     let instance = crate::helpers::test_instance().await;
     let mut usernames = Vec::new();
 
     for (username, password) in user_configs {
-        admin_create_user(&instance, username, *password).await;
+        admin_create_user(&instance, username, password).await;
         usernames.push(username.to_string());
     }
 
@@ -95,13 +87,13 @@ pub async fn setup_instance_with_users(
 /// multiple times) on the shared Instance. See
 /// [`setup_local_instance_with_user`] for the wire-model rationale.
 pub async fn setup_local_instance_with_users(
-    user_configs: &[(&str, Option<&str>)],
+    user_configs: &[(&str, &str)],
 ) -> (Instance, Vec<String>) {
     let instance = crate::helpers::test_local_instance().await;
     let mut usernames = Vec::new();
 
     for (username, password) in user_configs {
-        admin_create_user(&instance, username, *password).await;
+        admin_create_user(&instance, username, password).await;
         usernames.push(username.to_string());
     }
 
@@ -111,11 +103,7 @@ pub async fn setup_local_instance_with_users(
 // ===== USER LOGIN HELPERS =====
 
 /// Login a user and return AccountSession
-pub async fn login_account(
-    instance: &Instance,
-    username: &str,
-    password: Option<&str>,
-) -> AccountSession {
+pub async fn login_account(instance: &Instance, username: &str, password: &str) -> AccountSession {
     instance
         .login_account(username, password)
         .await
@@ -182,11 +170,11 @@ pub async fn setup_two_passwordless_users(
     username2: &str,
 ) -> (Instance, AccountSession, AccountSession, String, String) {
     let instance = crate::helpers::test_local_instance().await;
-    admin_create_user(&instance, username1, None).await;
-    admin_create_user(&instance, username2, None).await;
+    admin_create_user(&instance, username1, "").await;
+    admin_create_user(&instance, username2, "").await;
 
-    let user1 = login_account(&instance, username1, None).await;
-    let user2 = login_account(&instance, username2, None).await;
+    let user1 = login_account(&instance, username1, "").await;
+    let user2 = login_account(&instance, username2, "").await;
 
     (
         instance,
@@ -251,7 +239,7 @@ pub fn assert_user_can_access_database(user: &AccountSession, database_id: &ID) 
 /// Returns the final AccountSession and Database for verification
 pub async fn create_database_and_relogin(
     username: &str,
-    password: Option<&str>,
+    password: &str,
     db_name: &str,
 ) -> (Instance, AccountSession, Database) {
     // Setup and create user

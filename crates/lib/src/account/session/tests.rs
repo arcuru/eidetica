@@ -77,7 +77,7 @@ async fn local_mapping_edit_without_exchange_does_not_publish_cache() -> Result<
         user.key_mapping(&key, &tree)?,
         Some(SigKey::from_pubkey(&key))
     );
-    let reloaded = instance.login_account("client", None).await?;
+    let reloaded = instance.login_account("client", "").await?;
     assert_eq!(
         reloaded.key_mapping(&key, &tree)?,
         user.key_mapping(&key, &tree)?
@@ -95,7 +95,7 @@ async fn join_bookkeeping_preserves_settings_changed_during_network_wait() -> Re
     let key = user.get_default_key()?;
     let db = user.create_database(Doc::new(), &key).await?;
     let original = user.tracked_database(db.root_id()).await?;
-    let mut another = instance.login_account("client", None).await?;
+    let mut another = instance.login_account("client", "").await?;
     another
         .track_database(
             db.root_id(),
@@ -228,7 +228,7 @@ async fn join_concurrent_local_bookkeeping_preserves_state_without_account_entry
     )
     .await?;
     let key = first.get_default_key()?;
-    let mut second = instance.login_account("client", None).await?;
+    let mut second = instance.login_account("client", "").await?;
     let db = Database::create(
         &instance,
         crate::auth::crypto::generate_keypair().0,

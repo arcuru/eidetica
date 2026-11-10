@@ -535,7 +535,7 @@ impl Instance {
     ///
     /// // Later: strict connect against the persisted snapshot.
     /// let instance = Instance::connect(&url).await?;
-    /// let _user = instance.login_account("alice", None).await?;
+    /// let _user = instance.login_account("alice", "").await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -571,7 +571,7 @@ impl Instance {
     /// ).await?;
     /// let mut user = match maybe_user {
     ///     Some(u) => u,
-    ///     None => instance.login_account("alice", None).await?,
+    ///     None => instance.login_account("alice", "").await?,
     /// };
     /// # let _ = user.get_default_key()?;
     /// # Ok(())
@@ -1129,7 +1129,7 @@ impl Instance {
             &users_db,
             &instance,
             &initial.username,
-            initial.password.as_deref(),
+            &initial.password,
         )
         .await?;
 
@@ -1141,7 +1141,7 @@ impl Instance {
             &account_info,
             account_info
                 .credentials
-                .unlock(&account_info.account_id, initial.password.as_deref())?,
+                .unlock(&account_info.account_id, &initial.password)?,
         )
         .await?;
 
@@ -1339,22 +1339,19 @@ impl Instance {
 
     // === Account Management ===
 
-    /// Login a user with flexible password handling.
+    /// Login an account with its password string.
     ///
     /// Returns an AccountSession object that provides access to user operations.
-    /// For password-protected users, provide the password. For passwordless users, pass None.
+    /// Provide the password string, including empty for passwordless accounts.
+    /// Unlocking uses the same encrypted bundle format for every password.
     ///
     /// # Arguments
     /// * `user_id` - AccountSession identifier (username)
-    /// * `password` - Optional password. None for passwordless users.
+    /// * `password` - Password string; use an empty string for passwordless users.
     ///
     /// # Returns
     /// A Result containing the AccountSession
-    pub async fn login_account(
-        &self,
-        user_id: &str,
-        password: Option<&str>,
-    ) -> Result<AccountSession> {
+    pub async fn login_account(&self, user_id: &str, password: &str) -> Result<AccountSession> {
         // On a remote instance, the `TrustedLogin*` handshake authenticates the
         // socket connection AND ships back the user's full `AccountInfo` plus the
         // decrypted root signing key. Build the `AccountSession` session from those —

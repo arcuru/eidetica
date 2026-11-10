@@ -64,8 +64,8 @@ async fn test_auto_sync_between_instances() -> Result<()> {
         .await?;
 
     // Create user on instance1
-    crate::helpers::create_account(&instance1, "alice", None).await?;
-    let mut user1 = instance1.login_account("alice", None).await?;
+    crate::helpers::create_account(&instance1, "alice", "").await?;
+    let mut user1 = instance1.login_account("alice", "").await?;
 
     // Create a database
     let mut db_settings = Doc::new();
@@ -179,11 +179,11 @@ async fn test_bidirectional_auto_sync() -> Result<()> {
     sync2.add_peer_address(&peer1_pubkey, address1).await?;
 
     // Create users on both instances
-    crate::helpers::create_account(&instance1, "alice", None).await?;
-    let mut user1 = instance1.login_account("alice", None).await?;
+    crate::helpers::create_account(&instance1, "alice", "").await?;
+    let mut user1 = instance1.login_account("alice", "").await?;
 
-    crate::helpers::create_account(&instance2, "bob", None).await?;
-    let mut user2 = instance2.login_account("bob", None).await?;
+    crate::helpers::create_account(&instance2, "bob", "").await?;
+    let mut user2 = instance2.login_account("bob", "").await?;
 
     // Create database on instance1
     let mut db_settings = Doc::new();
@@ -271,8 +271,8 @@ async fn test_enable_sync_after_user_setup() -> Result<()> {
     let instance2 = test_instance().await;
 
     // Create user and add database preferences BEFORE enabling sync
-    crate::helpers::create_account(&instance1, "alice", None).await?;
-    let mut user1 = instance1.login_account("alice", None).await?;
+    crate::helpers::create_account(&instance1, "alice", "").await?;
+    let mut user1 = instance1.login_account("alice", "").await?;
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "notes");
@@ -394,8 +394,8 @@ async fn test_auto_sync_after_restart() -> Result<()> {
         .await?;
 
     // Create user and configure database preferences
-    crate::helpers::create_account(&instance1, "alice", None).await?;
-    let mut user1 = instance1.login_account("alice", None).await?;
+    crate::helpers::create_account(&instance1, "alice", "").await?;
+    let mut user1 = instance1.login_account("alice", "").await?;
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "persistent_notes");
@@ -436,7 +436,7 @@ async fn test_auto_sync_after_restart() -> Result<()> {
 
     // Phase 2: Simulate restart - login again WITHOUT calling add_database
     // This tests that login-time registration and settings update work
-    let user1_relogin = instance1.login_account("alice", None).await?;
+    let user1_relogin = instance1.login_account("alice", "").await?;
 
     println!("✅ AccountSession logged in after 'restart'");
 

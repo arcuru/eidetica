@@ -148,7 +148,7 @@ async fn access_http_approval_is_scoped_and_grants_only_requested_access() {
         .create_account(NewAccount::passwordless("outsider"))
         .await
         .unwrap();
-    let outsider_user = peer.instance.login_account("outsider", None).await.unwrap();
+    let outsider_user = peer.instance.login_account("outsider", "").await.unwrap();
     peer.owner
         .admin()
         .await
@@ -219,7 +219,7 @@ async fn access_http_approval_is_scoped_and_grants_only_requested_access() {
         StatusCode::SEE_OTHER
     );
     // A valid but unrelated database owned by this session cannot substitute for the target.
-    let mut owner = peer.instance.login_account("owner", None).await.unwrap();
+    let mut owner = peer.instance.login_account("owner", "").await.unwrap();
     let other = owner.create_database(Doc::new(), &peer.key).await.unwrap();
     let cookie = peer.web.login("owner").await;
     assert_eq!(

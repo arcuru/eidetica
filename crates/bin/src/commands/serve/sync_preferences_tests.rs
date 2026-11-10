@@ -2,7 +2,7 @@
 use super::*;
 use eidetica::{
     Database, NewAccount,
-    account::{AccountKey, AccountSession},
+    account::AccountSession,
     auth::{AuthKey, SigKey},
     backend::{
         BackendImpl,
@@ -11,7 +11,7 @@ use eidetica::{
     crdt::Doc,
     path,
     service::ServiceServer,
-    store::{DocStore, Table},
+    store::DocStore,
 };
 use reqwest::{Client, redirect::Policy};
 use tokio::{sync::watch, task::JoinHandle};
@@ -73,7 +73,7 @@ impl TestApp {
             } else {
                 (instance.clone(), None)
             };
-        let mut user = client_instance.login_account("alice", None).await.unwrap();
+        let mut user = client_instance.login_account("alice", "").await.unwrap();
         let key = user.get_default_key().unwrap();
         let database = user.create_database(Doc::new(), &key).await.unwrap();
         let mut settings = SyncSettings::disabled();
@@ -115,6 +115,13 @@ impl TestApp {
 
     async fn account(&self) -> Database {
         open_account(&self.client_instance, &self.user).await
+    }
+
+    async fn local_state(&self) -> serde_json::Value {
+        let native = self.instance.backend().local_engine().unwrap();
+        let name = format!("account-state:{}", self.user.login_id());
+        let bytes = native.local_account_record(&name).await.unwrap().unwrap();
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     fn values(&self, enabled: &str, on_commit: &str, interval: &str) -> Vec<(&str, String)> {
@@ -242,13 +249,10 @@ async fn sync_preferences_http_roundtrip_preserves_state_and_reconciles() {
     let mut app = TestApp::new().await;
     let id = app.database.root_id().clone();
     let before = app.user.database(&id).await.unwrap();
-    let keys = app
-        .account()
-        .await
-        .get_store_viewer::<Table<AccountKey>>("keys")
-        .await
-        .unwrap();
-    let keys_before = serde_json::to_value(keys.search(|_| true).await.unwrap()).unwrap();
+    let state_before = app.local_state().await;
+    let keys_before = &state_before["keys"];
+    assert!(!keys_before.as_object().unwrap().is_empty());
+    let account_before = app.account().await.snapshot().await.unwrap();
     assert_form(&app.reload().await, false, false, "");
     for (enabled, on_commit, interval) in [
         (true, false, Some(41)),
@@ -270,10 +274,10 @@ async fn sync_preferences_http_roundtrip_preserves_state_and_reconciles() {
             response.headers()["location"],
             format!("/dashboard/database?id={id}")
         );
-        // A fresh session over the selected backend reads the persisted signed state.
+        // A fresh session over the selected backend reads persisted native state.
         let reloaded = app
             .client_instance
-            .login_account("alice", None)
+            .login_account("alice", "")
             .await
             .unwrap();
         let tracked = reloaded.database(&id).await.unwrap();
@@ -294,14 +298,12 @@ async fn sync_preferences_http_roundtrip_preserves_state_and_reconciles() {
             reloaded.reference("example", "keep").await.unwrap(),
             Some(id.clone())
         );
-        let keys = open_account(&app.client_instance, &reloaded)
-            .await
-            .get_store_viewer::<Table<AccountKey>>("keys")
-            .await
-            .unwrap();
+        let state = app.local_state().await;
+        assert_eq!(&state["keys"], keys_before);
+        assert_eq!(state["credentials"], state_before["credentials"]);
         assert_eq!(
-            serde_json::to_value(keys.search(|_| true).await.unwrap()).unwrap(),
-            keys_before
+            app.account().await.snapshot().await.unwrap(),
+            account_before
         );
         assert_form(&app.reload().await, enabled, on_commit, &interval_text);
         app.wait_combined(if enabled {
@@ -311,7 +313,7 @@ async fn sync_preferences_http_roundtrip_preserves_state_and_reconciles() {
         })
         .await;
     }
-    // The same preference-only operation also travels as a signed service-client write.
+    // The same preference-only operation also uses the scoped native service path.
     app.user
         .set_sync_preferences(&id, true, true, Some(23))
         .await
@@ -351,7 +353,7 @@ async fn sync_preferences_http_accounts_are_independent() {
     } else {
         app.instance.clone()
     };
-    let mut bob = bob_instance.login_account("bob", None).await.unwrap();
+    let mut bob = bob_instance.login_account("bob", "").await.unwrap();
     app.database
         .with_transaction(|tx| async move {
             tx.get_settings()?
@@ -411,6 +413,7 @@ async fn sync_preferences_http_accounts_are_independent() {
 async fn sync_preferences_http_rejects_invalid_input_sessions_and_origins() {
     let app = TestApp::new().await;
     let before = app.account().await.snapshot().await.unwrap();
+    let local_before = app.local_state().await;
     let values = app.values("true", "true", "19");
     for (field, bad) in [
         ("id", "not-an-id"),
@@ -472,6 +475,7 @@ async fn sync_preferences_http_rejects_invalid_input_sessions_and_origins() {
         assert_eq!(response.headers()["location"], "/login");
     }
     assert_eq!(app.account().await.snapshot().await.unwrap(), before);
+    assert_eq!(app.local_state().await, local_before);
 }
 
 #[tokio::test]
@@ -487,6 +491,7 @@ async fn sync_preferences_http_never_repairs_an_unauthorized_mapping() {
     // Web sessions cache mappings at login, so load this exact recorded identity.
     app.cookie = login(&app.http, &app.origin, "alice").await;
     let before = app.account().await.snapshot().await.unwrap();
+    let local_before = app.local_state().await;
     let response = app.post(&app.values("true", "true", "31")).await;
     assert!(response.status().is_server_error());
     assert!(
@@ -497,6 +502,7 @@ async fn sync_preferences_http_never_repairs_an_unauthorized_mapping() {
             .contains("Could not confirm sync preferences")
     );
     assert_eq!(app.account().await.snapshot().await.unwrap(), before);
+    assert_eq!(app.local_state().await, local_before);
     assert_eq!(
         app.user.key_mapping(&key, app.database.root_id()).unwrap(),
         Some(SigKey::global(&key))
@@ -504,25 +510,36 @@ async fn sync_preferences_http_never_repairs_an_unauthorized_mapping() {
 }
 
 #[tokio::test]
-async fn sync_preferences_http_failed_signed_write_is_visible_and_does_not_save() {
+async fn sync_preferences_http_failed_native_state_is_visible_and_does_not_save() {
     let app = TestApp::new().await;
-    let key = app.user.get_default_key().unwrap();
     let account = app.account().await;
-    account
-        .with_transaction(|tx| async move {
-            tx.get_settings()?
-                .set_auth_key(&key, AuthKey::active(None, Permission::Read))
-                .await
-        })
-        .await
-        .unwrap();
     let before = account.snapshot().await.unwrap();
+    let native = app.instance.backend().local_engine().unwrap();
+    let name = format!("account-state:{}", app.user.login_id());
+    let original = native.local_account_record(&name).await.unwrap().unwrap();
+    let unavailable = b"injected unavailable native state";
+    assert!(
+        native
+            .compare_exchange_local_account_record(&name, Some(&original), unavailable)
+            .await
+            .unwrap()
+    );
     let response = app.post(&app.values("true", "true", "29")).await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let error = response.text().await.unwrap();
     assert!(error.contains("Could not confirm sync preferences"));
     assert!(error.contains("Reload the current preferences before retrying"));
     assert_eq!(account.snapshot().await.unwrap(), before);
+    assert_eq!(
+        native.local_account_record(&name).await.unwrap().as_deref(),
+        Some(unavailable.as_slice())
+    );
+    assert!(
+        native
+            .compare_exchange_local_account_record(&name, Some(unavailable), &original)
+            .await
+            .unwrap()
+    );
     assert!(
         !app.user
             .database(app.database.root_id())

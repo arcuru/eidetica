@@ -599,7 +599,7 @@ async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result
     use crate::account::SyncSettings;
     for op in [Fault::LocalState, Fault::AckLocalState] {
         let (instance, _sync, fault) = destination(Arc::new(InMemory::new())).await?;
-        let mut user = instance.login_account("client", None).await?;
+        let mut user = instance.login_account("client", "").await?;
         let key = user.get_default_key()?;
         let db = wildcard_database(&instance).await?;
         *fault.lock().unwrap() = Some((
@@ -639,7 +639,7 @@ async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result
             user.account().database().snapshot().await?,
             "identical retry appended Account history"
         );
-        let fresh = instance.login_account("client", None).await?;
+        let fresh = instance.login_account("client", "").await?;
         assert_eq!(
             fresh.key_mapping(&key, db.root_id())?,
             user.key_mapping(&key, db.root_id())?
@@ -664,7 +664,7 @@ async fn join_user_rediscovers_legacy_mapping_and_preserves_unrelated_intent() -
     user.map_key(&key, db.root_id(), crate::auth::SigKey::from_pubkey(&key))
         .await?;
     let other = wildcard_database(&instance).await?;
-    let mut another_session = instance.login_account("client", None).await?;
+    let mut another_session = instance.login_account("client", "").await?;
     another_session
         .track_database(
             other.root_id(),
@@ -723,7 +723,7 @@ async fn pending_request(
 async fn join_approval_reconciles_split_commit_without_regrant() -> Result<()> {
     for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
         let (instance, sync, fault) = destination(Arc::new(InMemory::new())).await?;
-        let mut owner = instance.login_account("client", None).await?;
+        let mut owner = instance.login_account("client", "").await?;
         let owner_key = owner.get_default_key()?;
         let db = owner.create_database(Doc::new(), &owner_key).await?;
         let (_, requester) = generate_keypair();
@@ -778,7 +778,7 @@ async fn join_requester_retry_completes_after_split_approval_commit() -> Result<
 
     for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
         let (instance, sync, fault) = destination(Arc::new(InMemory::new())).await?;
-        let mut owner = instance.login_account("client", None).await?;
+        let mut owner = instance.login_account("client", "").await?;
         let owner_key = owner.get_default_key()?;
         let db = owner.create_database(Doc::new(), &owner_key).await?;
         let tree = db.root_id().clone();
@@ -852,7 +852,7 @@ async fn join_requester_retry_completes_after_split_approval_commit() -> Result<
 async fn join_approval_retry_refuses_observed_reduction_and_revocation() -> Result<()> {
     for revoke in [false, true] {
         let (instance, sync, _) = destination(Arc::new(InMemory::new())).await?;
-        let mut owner = instance.login_account("client", None).await?;
+        let mut owner = instance.login_account("client", "").await?;
         let owner_key = owner.get_default_key()?;
         let db = owner.create_database(Doc::new(), &owner_key).await?;
         let (_, requester) = generate_keypair();
@@ -922,7 +922,7 @@ async fn join_transfer_checks_grant_and_rejects_incremental_send_back() -> Resul
         .is_err(),
         "peer's approved flag substituted for requested authority"
     );
-    let owner = source.login_account("owner", None).await?;
+    let owner = source.login_account("owner", "").await?;
     let db = owner.open_database(&tree).await?;
     db.with_transaction(|tx| {
         let requester = requester.clone();
@@ -972,7 +972,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
         let dir = tempfile::tempdir()?;
         let file = dir.path().join("join.sqlite");
         let (instance, sync, fault) = destination(Arc::new(Sqlite::open(&file).await?)).await?;
-        let mut user = instance.login_account("client", None).await?;
+        let mut user = instance.login_account("client", "").await?;
         let key = user.get_default_key()?;
         let target = wildcard_database(&instance).await?;
         let target_id = target.root_id().clone();
@@ -991,7 +991,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
         drop(instance);
         drop(fault);
         let instance = Instance::open_backend(Box::new(Sqlite::open(&file).await?)).await?;
-        let mut user = instance.login_account("client", None).await?;
+        let mut user = instance.login_account("client", "").await?;
         user.track_database(&target_id, &key, SyncSettings::disabled())
             .await?;
         let tips = user.account().database().snapshot().await?;
@@ -1009,7 +1009,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
             let dir = tempfile::tempdir()?;
             let file = dir.path().join("peer.sqlite");
             let (instance, sync, fault) = destination(Arc::new(Sqlite::open(&file).await?)).await?;
-            let mut owner = instance.login_account("client", None).await?;
+            let mut owner = instance.login_account("client", "").await?;
             let key = owner.get_default_key()?;
             let target = owner.create_database(Doc::new(), &key).await?;
             let tree = target.root_id().clone();
@@ -1038,7 +1038,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
             let instance = Instance::open_backend(Box::new(Sqlite::open(&file).await?)).await?;
             let sync = Sync::load(instance.clone(), &sync_id).await?;
             assert_eq!(sync.sync_tree.root_id(), &sync_id);
-            let owner = instance.login_account("client", None).await?;
+            let owner = instance.login_account("client", "").await?;
             owner
                 .approve_bootstrap_request(&sync, &request, &key)
                 .await?;
@@ -1063,7 +1063,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
 #[tokio::test]
 async fn join_approval_refuses_removed_key_and_rejection_is_idempotent() -> Result<()> {
     let (instance, sync, _) = destination(Arc::new(InMemory::new())).await?;
-    let mut owner = instance.login_account("client", None).await?;
+    let mut owner = instance.login_account("client", "").await?;
     let key = owner.get_default_key()?;
     let db = owner.create_database(Doc::new(), &key).await?;
     let (_, requester) = generate_keypair();
@@ -1285,7 +1285,7 @@ async fn join_transfer_missing_delegated_history_is_not_complete() -> Result<()>
 #[tokio::test]
 async fn join_concurrent_approval_and_routing_are_idempotent() -> Result<()> {
     let (instance, sync, _) = destination(Arc::new(InMemory::new())).await?;
-    let mut owner = instance.login_account("client", None).await?;
+    let mut owner = instance.login_account("client", "").await?;
     let key = owner.get_default_key()?;
     let db = owner.create_database(Doc::new(), &key).await?;
     let (_, requester) = generate_keypair();

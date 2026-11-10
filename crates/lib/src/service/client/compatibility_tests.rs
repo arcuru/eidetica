@@ -280,7 +280,7 @@ async fn v0_unsupported_login_does_not_establish_a_session() {
     ] {
         let (conn, mut peer) = connect_peer().await;
         let login_conn = conn.clone();
-        let login = tokio::spawn(async move { login_conn.trusted_login("alice", None).await });
+        let login = tokio::spawn(async move { login_conn.trusted_login("alice", "").await });
         read_request(&mut peer, "alice").await;
         send_raw(&mut peer, unsupported).await;
         let result = tokio::time::timeout(TIMEOUT, login).await.unwrap().unwrap();
@@ -307,10 +307,12 @@ fn passwordless_login_challenge(key: &PrivateKey) -> ServerFrame {
             account_id: ID::from_bytes("alice-db"),
             credentials: AccountCredentials {
                 root_key_id: key.public_key(),
-                bundle: KeyStorage::Unencrypted {
-                    account_id: ID::from_bytes("alice-db"),
-                    keys: vec![key.clone()],
-                },
+                bundle: KeyStorage::seal(
+                    &ID::from_bytes("alice-db"),
+                    std::slice::from_ref(key),
+                    "",
+                )
+                .unwrap(),
             },
             created_at: 1_700_000_000,
             status: AccountStatus::Active,
@@ -373,7 +375,7 @@ async fn v0_unsupported_login_proof_does_not_establish_a_session() {
         let login_conn = conn.clone();
         let login = tokio::spawn(async move {
             login_conn
-                .trusted_login("alice", None)
+                .trusted_login("alice", "")
                 .await
                 .map(|_| ServiceResponse::TrustedLoginOk)
         });
@@ -399,7 +401,7 @@ async fn v0_unsupported_key_registration_preserves_session_and_retries() {
             let (conn, mut peer) = connect_peer().await;
             let login_key = PrivateKey::generate();
             let login_conn = conn.clone();
-            let login = tokio::spawn(async move { login_conn.trusted_login("alice", None).await });
+            let login = tokio::spawn(async move { login_conn.trusted_login("alice", "").await });
             send_login_challenge_and_check_proof(&mut peer, &login_key).await;
             send_raw(&mut peer, r#"{"Response":"TrustedLoginOk"}"#).await;
             let (uuid, info, key) = tokio::time::timeout(TIMEOUT, login)
@@ -519,7 +521,7 @@ async fn v0_unknown_required_login_enums_retire_connection() {
         let login_conn = conn.clone();
         let login = tokio::spawn(async move {
             login_conn
-                .trusted_login("alice", None)
+                .trusted_login("alice", "")
                 .await
                 .map(|_| ServiceResponse::TrustedLoginOk)
         });

@@ -27,7 +27,7 @@ const AAD: &[u8] = b"eidetica:local-credential-bundle:v1";
 /// An encrypted local bundle, safe to persist outside the replicated DAG.
 ///
 /// This is a local storage format, not a portable Account schema or a recovery
-/// export. Protected convenience logins use this same format.
+/// export. All convenience logins use this same format, including empty passwords.
 /// Encrypted records may be served to filesystem-trusted socket clients;
 /// their passwords and decrypted keys need not be sent to a daemon.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,7 +92,9 @@ fn validate_keys(keys: &[PrivateKey]) -> Result<()> {
 impl CredentialBundle {
     /// Encrypt exactly these installation keys and this Account locator with
     /// one password. Keys must be nonempty and unique. No reference lookup,
-    /// membership enrollment, or database write occurs.
+    /// membership enrollment, or database write occurs. Every password string is
+    /// accepted, including empty. Empty-string wrapping provides no meaningful
+    /// confidentiality against anyone holding the bundle.
     ///
     /// ```
     /// use eidetica::{ID, account::{CredentialBundle, AccountSigner}, auth::crypto::generate_keypair};
@@ -193,7 +195,7 @@ impl CredentialBundle {
 }
 
 impl UnlockedCredentials {
-    pub(crate) fn passwordless(account_id: ID, keys: Vec<PrivateKey>) -> Result<Self> {
+    pub(crate) fn from_signer(account_id: ID, keys: Vec<PrivateKey>) -> Result<Self> {
         validate_keys(&keys)?;
         Ok(Self {
             account_id,
@@ -213,31 +215,20 @@ impl UnlockedCredentials {
     }
 
     pub(crate) fn storage(&self) -> Result<super::KeyStorage> {
-        match &self.wrapping_key {
-            Some(_) => Ok(super::KeyStorage::Encrypted {
-                bundle: self.seal()?,
-            }),
-            None => Ok(super::KeyStorage::Unencrypted {
-                account_id: self.account_id.clone(),
-                keys: self.keys.clone(),
-            }),
-        }
+        Ok(super::KeyStorage::Encrypted {
+            bundle: self.seal()?,
+        })
     }
 
     /// Refresh an observed bundle using this session's wrapping key. A changed
     /// password/format fails closed; stale sessions cannot overwrite a rewrap.
     pub(crate) fn unlock_storage(&self, storage: &super::KeyStorage) -> Result<Self> {
-        let unlocked = match (storage, &self.wrapping_key) {
-            (super::KeyStorage::Encrypted { bundle }, Some(key))
-                if Some(&bundle.salt) == self.salt.as_ref() =>
-            {
-                bundle.unlock_with_key(key.clone())?
-            }
-            (super::KeyStorage::Unencrypted { account_id, keys }, None) => {
-                Self::passwordless(account_id.clone(), keys.clone())?
-            }
-            _ => return Err(invalid_bundle()),
-        };
+        let super::KeyStorage::Encrypted { bundle } = storage;
+        if Some(&bundle.salt) != self.salt.as_ref() {
+            return Err(invalid_bundle());
+        }
+        let key = self.wrapping_key.as_ref().ok_or_else(invalid_bundle)?;
+        let unlocked = bundle.unlock_with_key(key.clone())?;
         if unlocked.account_id != self.account_id {
             return Err(invalid_bundle());
         }

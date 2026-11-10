@@ -12,12 +12,14 @@ A second installation must obtain independently authorized keys; syncing Account
 App credentials must be scoped separately from the owner's personal credentials.
 The library does not infer key custody from an Identity reference.
 
-Protected convenience logins and explicit caller-held credentials use one `CredentialBundle` format.
+All convenience logins and explicit caller-held credentials use one `CredentialBundle` format.
 It authenticates the Account locator and the complete explicit key list together under AES-GCM.
 `AccountCredentials` holds the login key ID and the initial bundle; the native account-state record holds the current complete bundle and separate non-key-bearing metadata.
 Additional-key updates merge into that observed bundle atomically with their metadata.
 One password unlocks all of its keys; no per-key encryption format is used.
-Passwordless logins deliberately retain plaintext local storage.
+`NewAccount::passwordless(name)` is sugar for `with_password(name, "")`.
+Every string, including empty, uses the same encrypted format and KDF without length/complexity restrictions or an insecure-use acknowledgement.
+Empty-string wrapping provides no meaningful confidentiality against a bundle holder.
 `AccountSession::from_credentials` and `from_signer` support full sessions without a daemon registration, keeping their bookkeeping in session memory rather than the convenience store.
 
 The format reuses the existing Account Argon2id derivation: version 0x13, 19456 KiB, two iterations, parallelism one and a 32-byte output.
@@ -30,7 +32,7 @@ There is no separate password-verification hash: decryption verifies the passwor
 No existing live records, private keys or historical Entries are migrated or deleted.
 An old Account history can still contain credentials even if current fields are removed.
 A binary rollback does not restore an earlier storage format.
-Operators need a separately approved rollout/migration plan for existing data.
+Old plaintext credential records are refused, not converted.
 
 ## Signer lookup and authority
 

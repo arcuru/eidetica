@@ -146,7 +146,7 @@ impl AccountSession {
     /// For a service, supply a connection authenticated by [`super::AccountSigner::connect`];
     /// this constructor never reauthenticates or rebinds an existing connection.
     pub async fn from_signer(instance: &Instance, signer: super::AccountSigner) -> Result<Self> {
-        let credentials = super::UnlockedCredentials::passwordless(
+        let credentials = super::UnlockedCredentials::from_signer(
             signer.account_id().clone(),
             vec![signer.signing_key().clone()],
         )?;
@@ -196,7 +196,6 @@ impl AccountSession {
             })
             .collect();
         let state = super::local_state::LocalAccountState {
-            credentials: Some(credentials.storage()?),
             keys: keys.clone(),
             ..Default::default()
         };
@@ -911,9 +910,9 @@ impl AccountSession {
 
     /// Add a new private key to this account's keyring.
     ///
-    /// Generates a new Ed25519 keypair, encrypts it (for password-protected accounts)
-    /// or stores it unencrypted (for passwordless accounts). Registered sessions
-    /// atomically update the native complete bundle and metadata. Caller-held
+    /// Generates a new Ed25519 keypair. Registered sessions encrypt it in the
+    /// native complete bundle and atomically update its metadata, including for
+    /// empty-password accounts. Caller-held
     /// sessions update only their in-memory bundle; persistence is explicit.
     ///
     /// # Arguments
@@ -944,6 +943,14 @@ impl AccountSession {
             is_default: false,
             database_sigkeys: HashMap::new(),
         };
+        // Caller-held keys remain in memory. No wrapping password or durable
+        // credential record is required for explicit signer sessions.
+        if let Some(state) = &self.caller_state {
+            let mut state = state.lock().await;
+            self.key_manager.import_key(private_key, metadata.clone())?;
+            state.keys.insert(public_key.to_string(), metadata);
+            return Ok(public_key);
+        }
         let state = self
             .update_local_state(|state| {
                 let storage = state
@@ -1466,33 +1473,17 @@ impl AccountSession {
 
     // === Tracked Databases ===
 
-    /// Read this account's tracked state for one database.
+    /// Read this account's local tracked state for one database.
     ///
     /// Returns `Ok(None)` only when the tracking row is absent. Authorization,
     /// storage read and decoding failures are returned unchanged, not treated as
     /// an untracked database or a disabled sync preference.
     ///
-    /// Reads only the selected row; does not open the target database, enumerate
-    /// tracked databases, track/join a database, or change keys or sync settings.
-    /// The returned sync settings are this account's local preference, not the
-    /// instance's combined sync state or proof of access to the target database.
+    /// Reads the native login record (or caller-held session state), never a
+    /// replicated Table. Does not open the target database, track/join it, or
+    /// change keys or sync settings. The returned settings are this account's
+    /// local preference, not combined sync state or proof of target access.
     pub async fn tracked_database(&self, database_id: &ID) -> Result<Option<TrackedDatabase>> {
-        let table = self
-            .account
-            .database()
-            .get_store_viewer::<Table<TrackedDatabase>>("databases")
-            .await?;
-        match table.get(&database_id.to_string()).await {
-            Ok(value) => Ok(Some(value)),
-            Err(Error::Store(e)) if matches!(*e, StoreError::KeyNotFound { .. }) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
-    async fn tracked_database_before_join(
-        &self,
-        database_id: &ID,
-    ) -> Result<Option<TrackedDatabase>> {
         Ok(self
             .read_local_state()
             .await?
@@ -1610,14 +1601,12 @@ impl AccountSession {
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the account's list
     pub async fn database(&self, database_id: &ID) -> Result<TrackedDatabase> {
-        self.tracked_database_before_join(database_id)
-            .await?
-            .ok_or_else(|| {
-                AccountError::DatabaseNotTracked {
-                    database_id: database_id.clone(),
-                }
-                .into()
-            })
+        self.tracked_database(database_id).await?.ok_or_else(|| {
+            AccountError::DatabaseNotTracked {
+                database_id: database_id.clone(),
+            }
+            .into()
+        })
     }
 
     /// Check whether this account has sync enabled for a tracked database.
@@ -1629,7 +1618,7 @@ impl AccountSession {
     /// Returns `Ok(false)` for databases not tracked by this account.
     pub async fn is_sync_enabled(&self, database_id: &ID) -> Result<bool> {
         Ok(self
-            .tracked_database_before_join(database_id)
+            .tracked_database(database_id)
             .await?
             .is_some_and(|tracked| tracked.sync_settings.sync_enabled))
     }
@@ -1638,11 +1627,10 @@ impl AccountSession {
     ///
     /// Requires the recorded key/mapping to still authorize reading the database.
     /// Does not discover or repair mappings, track a new database, or change
-    /// additional sync properties. The signed preference commit triggers the
-    /// instance's ordinary reconciliation; this is not global runtime control.
-    ///
-    /// The read/modify/write uses an ordinary transaction, not distributed CAS.
-    /// Concurrent sessions follow the database's normal CRDT merge semantics.
+    /// additional sync properties. Native local compare/exchange preserves other
+    /// sessions' edits and triggers ordinary sync reconciliation; this is not
+    /// global runtime control or distributed CAS. Caller-held sessions only
+    /// update their session-local state, without enabling background sync.
     /// A failed acknowledgement is not proof of rollback; reload before retrying.
     pub async fn set_sync_preferences(
         &mut self,
@@ -1651,39 +1639,32 @@ impl AccountSession {
         on_commit: bool,
         interval_seconds: Option<u64>,
     ) -> Result<()> {
-        let tx = self.account.database().new_transaction().await?;
-        let table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
-        let key = database_id.to_string();
-        let mut tracked = match table.get(&key).await {
-            Ok(tracked) => tracked,
-            Err(Error::Store(e)) if matches!(*e, StoreError::KeyNotFound { .. }) => {
-                return Err(AccountError::DatabaseNotTracked {
-                    database_id: database_id.clone(),
-                }
-                .into());
-            }
-            Err(e) => return Err(e),
-        };
+        let tracked = self.database(database_id).await?;
         let database = self
             .open_database_with_key(database_id, &tracked.key_id)
             .await?;
         if database.current_permission().await? < Permission::Read {
             return Err(AccountError::InsufficientPermissions.into());
         }
-        let settings = &mut tracked.sync_settings;
-        if (
-            settings.sync_enabled,
-            settings.sync_on_commit,
-            settings.interval_seconds,
-        ) == (enabled, on_commit, interval_seconds)
-        {
-            return Ok(());
-        }
-        settings.sync_enabled = enabled;
-        settings.sync_on_commit = on_commit;
-        settings.interval_seconds = interval_seconds;
-        table.set(&key, tracked).await?;
-        tx.commit().await?;
+        self.update_local_state(|state| {
+            let current = state
+                .databases
+                .get_mut(&database_id.to_string())
+                .ok_or_else(|| AccountError::DatabaseNotTracked {
+                    database_id: database_id.clone(),
+                })?;
+            // Do not apply a preference edit to a mapping replaced while the
+            // recorded key's live authority was being checked.
+            if current.key_id != tracked.key_id {
+                return Err(AccountError::InsufficientPermissions.into());
+            }
+            current.sync_settings.sync_enabled = enabled;
+            current.sync_settings.sync_on_commit = on_commit;
+            current.sync_settings.interval_seconds = interval_seconds;
+            Ok(())
+        })
+        .await?;
+        self.refresh_local_sync().await?;
         Ok(())
     }
 

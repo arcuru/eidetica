@@ -483,9 +483,9 @@ async fn main() -> eidetica::Result<()> {
 
     // Subsequent runs land on the load arm (`_maybe_user` is `None`); the
     // operator creates and logs in additional users through the admin path.
-    let admin = instance.login_account("admin", None).await?;
+    let admin = instance.login_account("admin", "").await?;
     admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-    let mut user = instance.login_account("alice", None).await?;
+    let mut user = instance.login_account("alice", "").await?;
     let mut settings = Doc::new();
     settings.set("name", "persistent_example");
     let default_key = user.get_default_key()?;
@@ -584,11 +584,11 @@ instance.enable_sync().await?;
 
 // Create passwordless user (or use existing) via the bootstrapped admin
 let username = "alice";
-let admin = instance.login_account("admin", None).await?;
-let _ = admin.admin().await?.create_account(username, None).await;
+let admin = instance.login_account("admin", "").await?;
+let _ = admin.admin().await?.create_account(NewAccount::passwordless(username)).await;
 
 // Login to get AccountSession (handles key management automatically)
-let user = instance.login_account(username, None).await?;
+let user = instance.login_account(username, "").await?;
 
 // AccountSession API automatically manages cryptographic keys for databases
 let default_key = user.get_default_key()?;

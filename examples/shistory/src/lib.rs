@@ -79,7 +79,7 @@ pub async fn connect_to(
                 operation: "connect".to_owned(),
                 reason: format!("Eidetica daemon at {socket_url} is unavailable: {error}"),
             })?;
-    let session = instance.login_account(username, None).await?;
+    let session = instance.login_account(username, "").await?;
     Ok((instance, session))
 }
 
