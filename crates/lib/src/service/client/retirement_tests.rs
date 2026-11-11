@@ -6,12 +6,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const TIMEOUT: Duration = Duration::from_secs(2);
 const STALL: Duration = Duration::from_millis(50);
 
-fn assert_aborted<T: std::fmt::Debug>(result: crate::Result<T>) {
+fn assert_aborted<T>(result: crate::Result<T>) {
     match result {
         Err(crate::Error::Io(error)) => {
             assert_eq!(error.kind(), std::io::ErrorKind::ConnectionAborted);
         }
-        other => panic!("expected ConnectionAborted, got {other:?}"),
+        Err(error) => panic!("expected ConnectionAborted, got {error}"),
+        Ok(_) => panic!("expected ConnectionAborted, got success"),
     }
 }
 
@@ -28,10 +29,10 @@ async fn retire_stalled_response_with_retained_clones() {
             assert!(matches!(request.unwrap().unwrap(), ServiceRequest::GetInstanceMetadata));
         }
     }
-    let mut auth = Box::pin(retained.trusted_login("retirement-test", None));
+    let mut auth = Box::pin(retained.trusted_login("retirement-test", ""));
     tokio::select! {
         biased;
-        result = &mut auth => panic!("auth completed without a reply: {result:?}"),
+        _ = &mut auth => panic!("auth completed without a reply"),
         request = read_frame::<_, ServiceRequest>(&mut peer) => {
             assert!(matches!(request.unwrap().unwrap(), ServiceRequest::TrustedLoginAccount { username } if username == "retirement-test"));
         }
@@ -103,7 +104,7 @@ async fn retire_blocked_writer_settles_queued_metadata_and_auth() {
     );
     assert!(conn.inner.writer.try_lock().is_err(), "write never blocked");
     let mut metadata = Box::pin(retained.get_instance_metadata());
-    let mut auth = Box::pin(retained.trusted_login("queued", None));
+    let mut auth = Box::pin(retained.trusted_login("queued", ""));
     assert!(
         tokio::time::timeout(STALL, async {
             tokio::join!(&mut writing, &mut metadata, &mut auth)

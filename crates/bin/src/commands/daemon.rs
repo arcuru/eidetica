@@ -280,6 +280,7 @@ mod tests {
             dashboard_host: "127.0.0.1".into(),
             dashboard_port: 5942,
             backend_config: BackendConfig {
+                cache_dir: None,
                 backend: Backend::Inmemory,
                 data_dir: Some(data_dir.to_path_buf()),
                 postgres_url: None,
@@ -299,6 +300,7 @@ mod tests {
             .await
             .unwrap();
         let backend = create_backend(&BackendConfig {
+            cache_dir: None,
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,
@@ -327,6 +329,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("service.sock");
         let backend = create_backend(&BackendConfig {
+            cache_dir: None,
             backend: Backend::Inmemory,
             data_dir: Some(dir.path().into()),
             postgres_url: None,
@@ -362,6 +365,7 @@ mod tests {
             .unwrap();
         let socket_path = socket_parent.join("daemon.sock");
         let backend = create_backend(&BackendConfig {
+            cache_dir: None,
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,

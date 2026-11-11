@@ -44,7 +44,8 @@ canonical Snapshots, within separate database, Store, lifecycle, projection and
 trust-scope namespaces. Frontier width does not enlarge the SQL unique key.
 Old full-frontier keys are disposable cold rows, not relabelled digests.
 Verification status is not a key: the same immutable Snapshot has the same
-materialization before or after a local status transition. A cached value is
+materialization before or after a local status transition. A verification change
+can select a different Snapshot and therefore a different key. A cached value is
 never an authorization or verification proof.
 
 The defaults are **1024 live derived namespaces**, with **268435456 bytes
@@ -95,3 +96,20 @@ streaming, or a whole-SDK memory bound. Existing service frame and single-record
 limits remain; old SDKs can surface quota refusal as an error rather than
 transparently bypassing it. No deployment/support-version promise follows from
 these local storage changes.
+
+## SQLite physical storage
+
+Only Derived namespaces/builds and their records use the separately owned cache
+pool. Authoritative namespaces/builds, Entries, metadata, secrets, local accounts
+and verification remain in history. Opaque namespace prefixes route handles to
+the correct pool; token lifecycle and destination must agree. Unknown prefix
+versions are rejected. Publication, admission, eviction and recency writes commit
+inside C, with no history witness or write-triggered invalidation.
+
+At startup SQLite validates the disposable format before history migration,
+reclaims old single-file Derived/staging rows and abandoned C builds, then applies
+cache bounds. Existing immutable Snapshot caches are retained. Offline trust reset
+clears C first, then resets H labels/frontiers together: failure can leave a cold
+cache, never a successful reset with old C state. This requires no live readers
+or writers. See [SQLite storage](../user_guide/concepts/backends.md#disposable-sqlite-cache)
+for directory/bootstrap, ownership, backup and supported offline recreation.

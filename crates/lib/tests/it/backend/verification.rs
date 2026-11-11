@@ -413,7 +413,7 @@ async fn explicit_reset_keeps_entries_and_forgets_both_terminal_statuses() {
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
-async fn sqlite_reset_failure_rolls_back_cache_and_status_then_retries() {
+async fn sqlite_reset_failure_preserves_status_with_disposable_cache_then_retries() {
     use eidetica::backend::{
         CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest, database::Sqlite,
     };
@@ -448,7 +448,7 @@ async fn sqlite_reset_failure_rolls_back_cache_and_status_then_retries() {
         .unwrap();
     backend.publish_store_state(token).await.unwrap();
 
-    // Simulate a write failure after cache deletion but before status update.
+    // A failed H reset preserves status; independently disposable C may already be cold.
     // The raw SQL connection is a test-only fault injector, not a second backend owner.
     sqlx::any::install_default_drivers();
     let url = format!("sqlite:{}?mode=rw", path.display());
@@ -465,7 +465,7 @@ async fn sqlite_reset_failure_rolls_back_cache_and_status_then_retries() {
             .resolve_store_state(&request)
             .await
             .unwrap()
-            .is_some()
+            .is_none()
     );
     sqlx::query("DROP TRIGGER refuse_reset")
         .execute(&pool)
@@ -484,7 +484,7 @@ async fn sqlite_reset_failure_rolls_back_cache_and_status_then_retries() {
             .resolve_store_state(&request)
             .await
             .unwrap()
-            .is_some()
+            .is_none()
     );
     reopened.reset_local_verification().await.unwrap();
     assert_eq!(

@@ -34,8 +34,8 @@ async fn test_retire_lost_write_ack_preserves_commit_without_replay() {
             let response: ServerFrame = read_frame(&mut upstream).await.unwrap().unwrap();
             if is_submit && gate.load(Ordering::Acquire) {
                 assert!(
-                    matches!(response, ServerFrame::Response(reply) if matches!(*reply, ServiceResponse::Ok)),
-                    "the real daemon did not acknowledge the commit"
+                    matches!(&response, ServerFrame::Response(reply) if matches!(**reply, ServiceResponse::Ok)),
+                    "the real daemon did not acknowledge the commit: {response:?}"
                 );
                 committed_tx.send(()).unwrap();
                 assert!(
@@ -55,7 +55,7 @@ async fn test_retire_lost_write_ack_preserves_commit_without_replay() {
     let conn = remote_conn(&instance);
     let retained = conn.clone();
     let user = instance
-        .login_account("retirement-writer", None)
+        .login_account("retirement-writer", "")
         .await
         .unwrap();
     let key = user.get_default_key().unwrap();
@@ -70,10 +70,32 @@ async fn test_retire_lost_write_ack_preserves_commit_without_replay() {
         .await
         .unwrap();
     let entry = Entry::builder(root.clone())
-        .set_parents(context.main_parents.into_iter().map(|(id, _)| id).collect())
+        .set_parents(
+            context
+                .main_parents
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect(),
+        )
+        .set_height(
+            context
+                .main_parents
+                .iter()
+                .map(|(_, height)| *height)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        )
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": context.settings_tips, "entropy": null,
+            }))
+            .unwrap(),
+        )
         .set_subtree_data("retired", b"{\"value\":1}")
         .build()
         .unwrap();
+    let entry = entry.with_auth(|auth| auth.key = identity.clone());
     let signature = sign_entry(&entry, &signing_key).unwrap();
     let entry = entry.with_auth(|auth| auth.signature = Some(signature));
     let id = entry.id();
@@ -104,7 +126,7 @@ async fn test_retire_lost_write_ack_preserves_commit_without_replay() {
     assert!(conn.get_instance_metadata().await.is_err());
     assert!(
         instance
-            .login_account("retirement-writer", None)
+            .login_account("retirement-writer", "")
             .await
             .is_err()
     );
@@ -118,10 +140,7 @@ async fn test_retire_lost_write_ack_preserves_commit_without_replay() {
     let fresh = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _fresh_user = fresh
-        .login_account("retirement-writer", None)
-        .await
-        .unwrap();
+    let _fresh_user = fresh.login_account("retirement-writer", "").await.unwrap();
     let fresh_conn = remote_conn(&fresh);
     assert_eq!(
         fresh_conn

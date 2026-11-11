@@ -92,7 +92,7 @@ eidetica daemon --data-dir ~/.local/share/eidetica init --username me --password
 ```
 
 Backend options (`--backend`, `--data-dir`, `--postgres-url`,
-`--cache-bytes`, `--cache-namespaces`) go before the `init` subcommand and are shared with `daemon` (see below).
+`--cache-dir`, `--cache-bytes`, `--cache-namespaces`) go before the `init` subcommand and are shared with `daemon` (see below).
 
 ### `daemon`
 
@@ -111,6 +111,16 @@ eidetica daemon [OPTIONS]
 | `--backend`        | `-b`  | `sqlite`      | `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
 | `--data-dir`       | `-d`  | current dir   | `EIDETICA_DATA_DIR`       | Data directory for storage files                                |
 | `--postgres-url`   |       | —             | `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL (required when backend is `postgres`) |
+
+SQLite commands also accept `--cache-dir` (`EIDETICA_CACHE_DIR`), an application
+directory rather than a SQLite filename. The default is the native platform
+cache location, with an `eidetica` subdirectory. Each initialized instance uses
+its existing device public key as a filesystem-safe filename. Initialization uses
+memory until complete metadata exists; the next open creates its disk cache.
+Use the same override for `daemon init`, `daemon`, `serve`, `info`, `db list`,
+reset and repair. Other backends do not use this SQLite-only option.
+See [SQLite cache storage](concepts/backends.md#disposable-sqlite-cache) for exact
+platform defaults, permissions, sensitive contents and offline cleanup.
 
 All commands opening a backend also accept `--cache-bytes`
 (`EIDETICA_CACHE_BYTES`) and `--cache-namespaces`
@@ -227,7 +237,10 @@ command; do not trust the old status labels. An in-memory persistence file
 must exist and parse successfully; a missing or corrupt file is never treated
 as an empty instance by this command.
 
-SQLite and PostgreSQL commit status and cache changes in one transaction.
+SQLite discards its separate disposable cache first, then commits status and
+retained-frontier changes together in H. A failure can leave a cold cache even
+when labels roll back; leave the service stopped and retry. PostgreSQL retains
+its single-transaction status/cache reset.
 The persisted in-memory backend writes a replacement JSON snapshot by atomic
 rename on POSIX; if writing fails before rename, the old file remains in
 place. Run the command with no other process or API user of the backend:
@@ -295,23 +308,24 @@ in-place version-1 conversion or automatic deletion is provided.
 
 #### Upgrading a verification-only version-2 database
 
-Existing tips-only version-2 SQL databases migrate atomically to **version 3**,
+Existing tips-only version-2 SQL databases migrate atomically to **version 4**,
 adding `size_bytes` and `last_access_tick` when absent. Record sizes are backfilled
 once; existing valid durable ticks are preserved. This migration preserves Entries,
 statuses, retained Verified tips and authoritative records without verification
-repair. Only the supported v0 transition repairs verification closure. Ordinary
-v3 open does not backfill or repair. InMemory version-2 files are unchanged;
+repair. Only the supported v0 transition repairs verification closure. Version 3 adds empty local-account storage on upgrade to 4 without verification
+repair; ordinary v4 open does not backfill or repair. InMemory version-2 files are unchanged;
 derived records and recency remain ephemeral.
 
 Stop all users of the backend and retain a consistent offline backup before
 upgrading. Snapshot digest keys miss old-key cache rows and rebuild from immutable
-Entries; old keys are never relabelled. Exclusive startup reclaims abandoned and
+Entries; old keys are never relabelled. SQLite moves only Derived storage to a
+separate disposable file and discards its legacy in-history cache rows. Exclusive startup reclaims abandoned and
 retired derived generations, seeds recency and enforces the configured budget
 before exposing storage. This does not require a trust reset.
 
-Pinned older version-2 constructors refuse the version-3 marker. Binary rollback
+Pinned older constructors refuse newer schema markers. Binary rollback
 requires restoring a compatible pre-upgrade backup in a separate location, not
-lowering the marker or opening the upgraded database with old software. Malformed,
+lowering the marker or opening an unsupported layout with old software. Malformed,
 newer and unsupported version-1/prefix layouts are refused. No rollout or deployed
 client/server compatibility inventory is implied by these migration checks.
 

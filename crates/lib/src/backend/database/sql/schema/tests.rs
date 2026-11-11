@@ -107,6 +107,9 @@ impl TestDatabase {
             release_failed_postgres_claim(backend.pool.take(), _connection.into_inner()).await;
             return;
         }
+        if let Some(pool) = backend.derived_pool.take() {
+            pool.close().await;
+        }
         backend.pool.take().unwrap().close().await;
     }
 
@@ -120,6 +123,22 @@ impl TestDatabase {
                 .unwrap();
         }
         self.pool.close().await;
+    }
+
+    async fn cache_pool(&self) -> AnyPool {
+        #[cfg(feature = "sqlite")]
+        if self.url.starts_with("sqlite:") {
+            use std::str::FromStr;
+            let options = sqlx::sqlite::SqliteConnectOptions::from_str(&self.url).unwrap();
+            let mut path = options.get_filename().as_os_str().to_owned();
+            path.push(".cache");
+            return AnyPoolOptions::new()
+                .max_connections(1)
+                .connect(&super::super::sqlite_path_url(std::path::Path::new(&path)).unwrap())
+                .await
+                .unwrap();
+        }
+        self.pool.clone()
     }
 
     async fn marker(&self, version: Option<i64>) {
@@ -540,7 +559,7 @@ async fn mainline_migration_repairs_statuses_and_retains_only_tips() {
 }
 
 /// Real v0 data survives migration and reopen; only the inconsistent child label
-/// changes. Both derived and authoritative Store state retain their original keys.
+/// changes. PostgreSQL retains both lifecycles; SQLite v4 discards Derived state only.
 #[tokio::test]
 async fn mainline_migration_preserves_data_metadata_and_store_state() {
     let Some(db) = TestDatabase::new().await else {
@@ -656,6 +675,14 @@ async fn mainline_migration_preserves_data_metadata_and_store_state() {
         .find(|row| row.0 == child.id().to_string())
         .unwrap()
         .3 = crate::backend::VerificationStatus::Unverified.as_db_int();
+    if db.url.starts_with("sqlite:") {
+        expected
+            .namespaces
+            .retain(|row| row.3 == StoreStateLifecycle::Authoritative.as_db_int());
+        expected
+            .records
+            .retain(|row| row.0 == "authoritative-mainline");
+    }
     for _ in 0..2 {
         let backend = db.open().await.unwrap();
         assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
@@ -663,19 +690,32 @@ async fn mainline_migration_preserves_data_metadata_and_store_state() {
             backend.verified_snapshot(&root.id()).await.unwrap().tips(),
             &[root.id()]
         );
-        let view = backend
-            .resolve_store_state(&request)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(view.namespace_id, "warm-mainline");
-        assert_eq!(
-            backend
-                .store_state_record_get(&view, b"value")
+        let view = backend.resolve_store_state(&request).await.unwrap();
+        if db.url.starts_with("sqlite:") {
+            assert!(view.is_none(), "SQLite migration starts Derived state cold");
+            let mut authority = request.clone();
+            authority.lifecycle = StoreStateLifecycle::Authoritative;
+            let view = backend
+                .resolve_store_state(&authority)
                 .await
-                .unwrap(),
-            Some(b"unchanged mainline materialization".to_vec())
-        );
+                .unwrap()
+                .unwrap();
+            assert_eq!(view.namespace_id, "authoritative-mainline");
+            assert_eq!(
+                backend.store_state_record_get(&view, b"key").await.unwrap(),
+                Some(b"authoritative mainline record".to_vec())
+            );
+        } else {
+            let view = view.unwrap();
+            assert_eq!(view.namespace_id, "warm-mainline");
+            assert_eq!(
+                backend
+                    .store_state_record_get(&view, b"value")
+                    .await
+                    .unwrap(),
+                Some(b"unchanged mainline materialization".to_vec())
+            );
+        }
         assert_eq!(db.content().await, expected);
         db.close_backend(backend).await;
     }
@@ -885,6 +925,12 @@ async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
     // Exclusive startup reclaims old derived reader generations, never authority.
     before.namespaces.retain(|row| row.0 != "unlinked-parent");
     before.records.retain(|row| row.0 != "unlinked-parent");
+    if db.url.starts_with("sqlite:") {
+        before
+            .namespaces
+            .retain(|row| row.3 == StoreStateLifecycle::Authoritative.as_db_int());
+        before.records.retain(|row| row.0 == "authority-parent");
+    }
     let tips: Vec<(String, String)> =
         sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2")
             .fetch_all(&db.pool)
@@ -922,7 +968,10 @@ async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
         );
         let sizes: Vec<(String, i64, i64)> = sqlx::query_as("SELECT namespace_id, size_bytes, last_access_tick FROM store_state_namespaces ORDER BY 1")
             .fetch_all(&db.pool).await.unwrap();
-        assert_eq!(sizes.len(), 2);
+        assert_eq!(
+            sizes.len(),
+            if db.url.starts_with("sqlite:") { 1 } else { 2 }
+        );
         for (_, size, tick) in sizes {
             assert_eq!(size, 1 + 12, "backfill includes key and value bytes");
             assert_eq!(
@@ -930,16 +979,17 @@ async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
                 "legacy recency starts cold; reads do not persist each hit"
             );
         }
-        let view = backend
-            .resolve_store_state(&request)
-            .await
-            .unwrap()
-            .expect("old-key record remains warm");
-        assert_eq!(view.namespace_id, "warm-parent");
-        assert_eq!(
-            backend.store_state_record_get(&view, b"v").await.unwrap(),
-            Some(b"parent bytes".to_vec())
-        );
+        let view = backend.resolve_store_state(&request).await.unwrap();
+        if db.url.starts_with("sqlite:") {
+            assert!(view.is_none(), "SQLite v4 migration discards Derived rows");
+        } else {
+            let view = view.expect("PostgreSQL old-key record remains warm");
+            assert_eq!(view.namespace_id, "warm-parent");
+            assert_eq!(
+                backend.store_state_record_get(&view, b"v").await.unwrap(),
+                Some(b"parent bytes".to_vec())
+            );
+        }
         // New Snapshot keys miss normally; the upgrade did not delete old data.
         let mut new_request = request.clone();
         new_request.source_key =
@@ -1020,13 +1070,23 @@ async fn v2_existing_accounting_preserves_ticks_and_v3_never_backfills() {
     for _ in 0..2 {
         let backend = db.open().await.unwrap();
         assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
-        assert_eq!(backend.cache_recency.lock().unwrap().now(), 9000);
+        assert_eq!(
+            backend.cache_recency.lock().unwrap().now(),
+            if backend.is_sqlite() { 0 } else { 9000 }
+        );
         let ticks: Vec<(i64,)> =
             sqlx::query_as("SELECT last_access_tick FROM store_state_namespaces")
                 .fetch_all(&db.pool)
                 .await
                 .unwrap();
-        assert_eq!(ticks, vec![(9000,), (9000,)]);
+        assert_eq!(
+            ticks,
+            if backend.is_sqlite() {
+                vec![(9000,)]
+            } else {
+                vec![(9000,), (9000,)]
+            }
+        );
         db.close_backend(backend).await;
     }
     // A valid empty cached namespace makes the old recurring size=0 backfill
@@ -1043,11 +1103,11 @@ async fn v2_existing_accounting_preserves_ticks_and_v3_never_backfills() {
         "SELECT last_access_tick FROM store_state_namespaces WHERE namespace_id = $1",
     )
     .bind(&view.namespace_id)
-    .fetch_one(&db.pool)
+    .fetch_one(backend.cache_pool())
     .await
     .unwrap();
     assert!(
-        tick > 9000,
+        tick > if backend.is_sqlite() { 0 } else { 9000 },
         "reopen clock must advance beyond persisted hits"
     );
     db.close_backend(backend).await;
@@ -1116,13 +1176,13 @@ async fn startup_reclaims_abandoned_generations_and_enforces_lowered_budget() {
     let rows: Vec<(String, i64, i64)> = sqlx::query_as(
         "SELECT store_name, status, size_bytes FROM store_state_namespaces WHERE lifecycle = 0",
     )
-    .fetch_all(&db.pool)
+    .fetch_all(backend.cache_pool())
     .await
     .unwrap();
     assert_eq!(rows, vec![("hot".into(), 1, 2)]);
     let (staging,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM store_state_namespaces WHERE lifecycle = 2")
-            .fetch_one(&db.pool)
+            .fetch_one(backend.cache_pool())
             .await
             .unwrap();
     assert_eq!(staging, 0);
@@ -1150,7 +1210,7 @@ async fn startup_reclaims_abandoned_generations_and_enforces_lowered_budget() {
         .unwrap();
     let (derived,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM store_state_namespaces WHERE lifecycle = 0")
-            .fetch_one(&db.pool)
+            .fetch_one(backend.cache_pool())
             .await
             .unwrap();
     assert_eq!(derived, 0);
@@ -1164,14 +1224,17 @@ async fn startup_trim_failure_refuses_open_instead_of_exposing_over_budget() {
     let Some(db) = TestDatabase::new().await else {
         return;
     };
-    parent_v2_fixture(&db).await;
+    let request = parent_v2_fixture(&db).await;
     let backend = db.open().await.unwrap();
+    let token = backend.begin_store_state_staging(request).await.unwrap();
+    backend.publish_store_state(token).await.unwrap();
     db.close_backend(backend).await;
+    let cache = db.cache_pool().await;
     if db.url.starts_with("sqlite:") {
-        db.pool.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'startup trim failure'); END").await.unwrap();
+        cache.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'startup trim failure'); END").await.unwrap();
     } else {
-        db.pool.execute("CREATE FUNCTION fail_trim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'startup trim failure'; END $$").await.unwrap();
-        db.pool.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_trim()").await.unwrap();
+        cache.execute("CREATE FUNCTION fail_trim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'startup trim failure'; END $$").await.unwrap();
+        cache.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_trim()").await.unwrap();
     }
     let before = db.content().await;
     let error = match db
@@ -1190,6 +1253,9 @@ async fn startup_trim_failure_refuses_open_instead_of_exposing_over_budget() {
         "{error}"
     );
     assert_eq!(db.content().await, before);
+    if db.url.starts_with("sqlite:") {
+        cache.close().await;
+    }
     db.cleanup().await;
 }
 

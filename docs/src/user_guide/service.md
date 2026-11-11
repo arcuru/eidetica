@@ -20,6 +20,9 @@ For single-process applications, `Instance::open_backend()` with a local backend
 The `eidetica daemon` command starts a service server:
 
 ```bash
+# Initialize with an explicit administrator (prompts for a password)
+eidetica daemon init --username ops
+
 # Start with default socket path and SQLite backend
 eidetica daemon
 
@@ -29,6 +32,26 @@ eidetica daemon --socket /tmp/my-eidetica.sock
 # Use a specific backend
 eidetica daemon --backend postgres --postgres-url "postgresql://user:pass@host/db"
 ```
+
+For a custom layout, use the same settings for every direct command:
+
+```bash
+export EIDETICA_DATA_DIR="$HOME/.local/share/eidetica"
+export EIDETICA_CACHE_DIR="$HOME/.cache/eidetica"
+eidetica daemon init --username ops
+eidetica daemon
+# After stopping the daemon:
+eidetica info
+eidetica db list
+```
+
+History/credentials remain in `eidetica.db` under the data directory; only Derived
+state uses the cache directory. Native platform defaults apply when no cache
+override is set. The NixOS module provisions `/var/cache/eidetica` using systemd
+`CacheDirectory`; existing administrator directory permissions are not changed by
+the application. See [SQLite cache storage](concepts/backends.md#disposable-sqlite-cache)
+and [Docker](docker.md) for directory layout, separate mounts and offline cleanup.
+Do not run direct commands against a live service's owned files; use socket clients.
 
 The daemon prints its socket path on startup and runs until interrupted (SIGINT/SIGTERM).
 

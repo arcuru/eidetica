@@ -104,6 +104,14 @@
       pathsToLink = ["/bin" "/etc" "/"];
     };
 
+    # Image-owned defaults are writable by the packaged UID/GID. Bind mounts
+    # retain their administrator-provisioned permissions; startup never changes them.
+    runAsRoot = ''
+      #!${pkgs.runtimeShell}
+      mkdir -p /config /cache
+      chown 1000:1000 /config /cache
+    '';
+
     config = {
       Cmd = ["${entrypoint}/bin/eidetica-entrypoint"];
       User = "1000:1000";
@@ -113,6 +121,7 @@
       };
       Env = [
         "EIDETICA_DATA_DIR=/config"
+        "EIDETICA_CACHE_DIR=/cache"
         "EIDETICA_HOST=0.0.0.0"
         "HOME=/tmp" # should be unused, set to /tmp for safety
       ];

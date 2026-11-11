@@ -59,6 +59,11 @@ pub struct BackendConfig {
     #[arg(short, long, env = "EIDETICA_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
+    /// Disposable SQLite cache directory (default: platform cache location/eidetica).
+    /// Must be writable; existing directory ownership and permissions are preserved.
+    #[arg(long, env = "EIDETICA_CACHE_DIR")]
+    pub cache_dir: Option<PathBuf>,
+
     /// PostgreSQL connection URL (required when backend=postgres)
     #[arg(long, env = "EIDETICA_POSTGRES_URL")]
     pub postgres_url: Option<String>,

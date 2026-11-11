@@ -193,6 +193,7 @@ in {
           EIDETICA_HOST = cfg.host;
           EIDETICA_BACKEND = cfg.backend;
           EIDETICA_DATA_DIR = cfg.dataDir;
+          XDG_CACHE_HOME = "/var/cache";
           EIDETICA_SOCKET = "${cfg.dataDir}/service.sock";
         }
         // optionalAttrs (cfg.postgresUrl != null) {
@@ -252,6 +253,7 @@ in {
           ProtectHome = true;
           PrivateTmp = true;
           ReadWritePaths = [cfg.dataDir];
+          CacheDirectory = "eidetica";
         }
         // optionalAttrs (cfg.initialPasswordFile != null) {
           # systemd reads the file as root and exposes it to the service at
