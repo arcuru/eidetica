@@ -121,9 +121,8 @@ described below; `--cache-backend inmemory` keeps Derived state in process memor
 for `sqlite` or `postgres`. A split primary retains no Derived state of its own.
 PostgreSQL reclaims Derived rows from an earlier configuration on open; a SQLite
 primary leaves its earlier cache file untouched, so remove it offline if unwanted.
-`--backend inmemory
---cache-backend sqlite` is refused: a persistent cache must not outlive an
-in-memory primary. Use the same selection for every command opening the backend.
+`--backend inmemory --cache-backend sqlite` is refused: a persistent cache must
+not outlive an in-memory primary. Use the same selection for every command opening the backend.
 See [Separate cache engine](concepts/backends.md#separate-cache-engine).
 
 SQLite commands also accept `--cache-dir` (`EIDETICA_CACHE_DIR`), an application
