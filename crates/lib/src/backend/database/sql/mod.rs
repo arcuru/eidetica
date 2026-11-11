@@ -588,11 +588,26 @@ pub(crate) async fn fire_store_state_stage_pause(namespace_id: &str) {
     }
 }
 
+/// Filesystem-safe encoding of the existing device public key, not a
+/// separately persisted storage identifier.
+#[cfg(feature = "sqlite")]
+fn instance_cache_file(metadata: &InstanceMetadata) -> String {
+    format!(
+        "{}.sqlite",
+        hex::encode(metadata.id.to_prefixed_string().as_bytes())
+    )
+}
+
 #[cfg(feature = "sqlite")]
 #[derive(Clone, Copy)]
 enum SqliteCacheLocation<'a> {
     File(&'a Path),
     Directory(&'a Path),
+    /// Keep C in memory, even for persistent history.
+    Memory,
+    /// Persistent C at this path with an empty, private in-memory H. Only
+    /// [`SqliteCache`] uses this; it never exposes the H surface.
+    Standalone(&'a Path),
 }
 
 #[cfg(feature = "sqlite")]
@@ -723,7 +738,12 @@ impl SqlxBackend {
         let is_in_memory = storage.is_none();
         let normalized_url = normalize_sqlite_url(url);
 
-        if is_in_memory && cache_location.is_some() {
+        if is_in_memory
+            && matches!(
+                cache_location,
+                Some(SqliteCacheLocation::File(_) | SqliteCacheLocation::Directory(_))
+            )
+        {
             return Err(BackendError::StateInconsistency {
                 reason: "a SQLite cache location requires persistent history".into(),
             }
@@ -734,6 +754,8 @@ impl SqlxBackend {
             Some(SqliteCacheLocation::File(path)) => {
                 Some(checked_cache_url(&normalized_url, path)?)
             }
+            // H is private memory, so no history image or sidecar can collide.
+            Some(SqliteCacheLocation::Standalone(path)) => Some(sqlite_path_url(path)?),
             None if !is_in_memory => {
                 let options = SqliteConnectOptions::from_str(&normalized_url)
                     .sql_context("Failed to parse SQLite history path")?;
@@ -791,10 +813,8 @@ impl SqlxBackend {
                 backend.get_instance_metadata().await?
             };
             if let Some(metadata) = metadata {
-                // Filesystem-safe encoding of the existing device public key,
-                // not a separately persisted storage identifier.
-                let name = hex::encode(metadata.id.to_prefixed_string().as_bytes());
-                let url = checked_cache_url(&normalized_url, &dir.join(format!("{name}.sqlite")))?;
+                let url =
+                    checked_cache_url(&normalized_url, &dir.join(instance_cache_file(&metadata)))?;
                 backend._cache_owner = prepare_sqlite(&url)?;
                 url
             } else {
@@ -856,6 +876,22 @@ impl SqlxBackend {
             &sqlite_path_url(path)?,
             Some(policy),
             Some(SqliteCacheLocation::Directory(directory)),
+        )
+        .await
+    }
+
+    /// Open persistent history whose own Derived cache stays in memory.
+    ///
+    /// Use this primary when [`crate::backend::SplitBackend`] routes Derived
+    /// state to a separately selected cache, so no unused cache file is created.
+    pub async fn open_sqlite_with_memory_cache(
+        path: &Path,
+        policy: DerivedCachePolicy,
+    ) -> Result<Self> {
+        Self::connect_sqlite_configured(
+            &sqlite_path_url(path)?,
+            Some(policy),
+            Some(SqliteCacheLocation::Memory),
         )
         .await
     }
@@ -1430,6 +1466,84 @@ impl BackendImpl for SqlxBackend {
     }
 }
 
+/// A SQLite database holding only disposable Derived Store state.
+///
+/// It is a [`DerivedCacheStorage`](crate::backend::DerivedCacheStorage) for
+/// [`SplitBackend`](crate::backend::SplitBackend), independent of the primary
+/// engine's dialect. Its format, startup validation/reclamation, publication,
+/// budget/eviction and ownership sidecar are the SQLite Derived cache's. It has
+/// no Entries, verification, metadata, credentials or Authoritative state.
+#[cfg(feature = "sqlite")]
+pub struct SqliteCache(SqlxBackend);
+
+/// SqliteCache's unexposed, empty H.
+#[cfg(feature = "sqlite")]
+fn private_history_url() -> String {
+    format!(
+        "sqlite:file:cache_history_{}?mode=memory&cache=shared",
+        uuid::Uuid::new_v4()
+    )
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteCache {
+    /// Open, validate or create a persistent cache file with explicit bounds.
+    /// Unrelated, corrupt or unsupported files are refused, never erased.
+    pub async fn open(path: &Path, policy: DerivedCachePolicy) -> Result<Self> {
+        Ok(Self(
+            SqlxBackend::connect_sqlite_configured(
+                &private_history_url(),
+                Some(policy),
+                Some(SqliteCacheLocation::Standalone(path)),
+            )
+            .await?,
+        ))
+    }
+
+    /// Create a cache that exists only for this handle's lifetime.
+    pub async fn in_memory(policy: DerivedCachePolicy) -> Result<Self> {
+        Ok(Self(
+            SqlxBackend::connect_sqlite_with_cache_policy(&private_history_url(), policy).await?,
+        ))
+    }
+
+    /// Select an instance's cache beneath an existing writable directory.
+    ///
+    /// Initialized instances use the same `<hex-prefixed-device-key>.sqlite`
+    /// name as [`SqlxBackend::open_sqlite_with_cache_dir`]. Without complete
+    /// metadata (first initialization) the cache stays in memory until reopened.
+    pub async fn open_for_instance(
+        directory: &Path,
+        metadata: Option<&InstanceMetadata>,
+        policy: DerivedCachePolicy,
+    ) -> Result<Self> {
+        let Some(metadata) = metadata else {
+            return Self::in_memory(policy).await;
+        };
+        if !directory.is_dir() {
+            return Err(BackendError::StateInconsistency {
+                reason: "SQLite cache directory must exist and be writable".into(),
+            }
+            .into());
+        }
+        Self::open(&directory.join(instance_cache_file(metadata)), policy).await
+    }
+
+    /// Whether this cache is held in memory rather than a file.
+    pub fn is_in_memory(&self) -> bool {
+        self.0._cache_owner.is_none()
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn testing_backend(&self) -> &SqlxBackend {
+        &self.0
+    }
+}
+
+#[cfg(feature = "sqlite")]
+crate::backend::derived_cache_storage_via!(SqliteCache, |cache| &cache.0);
+
 /// Namespace for SQLite database constructors.
 ///
 /// Provides ergonomic factory methods for creating SQLite-backed storage.
@@ -1472,6 +1586,15 @@ impl Sqlite {
         policy: DerivedCachePolicy,
     ) -> Result<SqlxBackend> {
         SqlxBackend::open_sqlite_with_cache_policy(path, policy).await
+    }
+
+    /// Open persistent history whose own Derived cache stays in memory, for use
+    /// as a [`SplitBackend`](crate::backend::SplitBackend) primary.
+    pub async fn open_with_memory_cache<P: AsRef<Path>>(
+        path: P,
+        policy: DerivedCachePolicy,
+    ) -> Result<SqlxBackend> {
+        SqlxBackend::open_sqlite_with_memory_cache(path.as_ref(), policy).await
     }
 
     /// Open persistent history with a custom disposable-cache file.

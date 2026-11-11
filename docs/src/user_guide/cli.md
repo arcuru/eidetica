@@ -91,7 +91,7 @@ EIDETICA_ADMIN_PASSWORD=… eidetica daemon --data-dir /var/lib/eidetica init --
 eidetica daemon --data-dir ~/.local/share/eidetica init --username me --passwordless
 ```
 
-Backend options (`--backend`, `--data-dir`, `--postgres-url`,
+Backend options (`--backend`, `--data-dir`, `--postgres-url`, `--cache-backend`,
 `--cache-dir`, `--cache-bytes`, `--cache-namespaces`) go before the `init` subcommand and are shared with `daemon` (see below).
 
 ### `daemon`
@@ -111,6 +111,18 @@ eidetica daemon [OPTIONS]
 | `--backend`        | `-b`  | `sqlite`      | `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
 | `--data-dir`       | `-d`  | current dir   | `EIDETICA_DATA_DIR`       | Data directory for storage files                                |
 | `--postgres-url`   |       | —             | `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL (required when backend is `postgres`) |
+| `--cache-backend`  |       | primary's own | `EIDETICA_CACHE_BACKEND`  | Derived-cache engine (`sqlite`, `inmemory`)                     |
+
+`--cache-backend` selects where disposable Derived state lives, independently of
+`--backend`. Omitted, each backend keeps its own cache: a SQLite file for `sqlite`,
+PostgreSQL tables for `postgres`, memory for `inmemory`. `--cache-backend sqlite`
+with `--backend postgres` uses the instance-key SQLite file in the cache directory
+described below; `--cache-backend inmemory` keeps Derived state in process memory
+for `sqlite` or `postgres`. A split primary retains no Derived state of its own and
+reclaims any left by an earlier configuration on open. `--backend inmemory
+--cache-backend sqlite` is refused: a persistent cache must not outlive an
+in-memory primary. Use the same selection for every command opening the backend.
+See [Separate cache engine](concepts/backends.md#separate-cache-engine).
 
 SQLite commands also accept `--cache-dir` (`EIDETICA_CACHE_DIR`), an application
 directory rather than a SQLite filename. The default is the native platform
@@ -118,14 +130,16 @@ cache location, with an `eidetica` subdirectory. Each initialized instance uses
 its existing device public key as a filesystem-safe filename. Initialization uses
 memory until complete metadata exists; the next open creates its disk cache.
 Use the same override for `daemon init`, `daemon`, `serve`, `info`, `db list`,
-reset and repair. Other backends do not use this SQLite-only option.
+reset and repair. It applies to a SQLite primary's own cache and to
+`--cache-backend sqlite`; other configurations do not use it.
 See [SQLite cache storage](concepts/backends.md#disposable-sqlite-cache) for exact
 platform defaults, permissions, sensitive contents and offline cleanup.
 
 All commands opening a backend also accept `--cache-bytes`
 (`EIDETICA_CACHE_BYTES`) and `--cache-namespaces`
-(`EIDETICA_CACHE_NAMESPACES`, default `1024`). The byte defaults are `268435456`
-for InMemory and `4294967296` for file-backed SQL. These count live derived
+(`EIDETICA_CACHE_NAMESPACES`, default `1024`). They bound the selected cache
+engine. The byte defaults are `268435456` for an in-memory cache and `4294967296`
+for a file-backed SQL cache. These count live derived
 record key/value payload, not total memory or physical disk use. Zero disables
 retention; oversized derived materializations use history instead. The daemon
 installs these bounds before startup trim; remote clients cannot override them.
@@ -240,7 +254,9 @@ as an empty instance by this command.
 SQLite discards its separate disposable cache first, then commits status and
 retained-frontier changes together in H. A failure can leave a cold cache even
 when labels roll back; leave the service stopped and retry. PostgreSQL retains
-its single-transaction status/cache reset.
+its single-transaction status/cache reset. With `--cache-backend`, the selected
+cache is discarded first, then the primary resets; the same cold-cache outcome
+applies on failure.
 The persisted in-memory backend writes a replacement JSON snapshot by atomic
 rename on POSIX; if writing fails before rename, the old file remains in
 place. Run the command with no other process or API user of the backend:

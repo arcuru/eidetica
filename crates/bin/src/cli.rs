@@ -15,6 +15,15 @@ pub enum Backend {
     Inmemory,
 }
 
+/// Disposable Derived-cache engine, selected independently of the primary backend
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CacheBackend {
+    /// SQLite file beneath the cache directory (requires a persistent primary)
+    Sqlite,
+    /// Process memory, discarded on exit
+    Inmemory,
+}
+
 /// Eidetica decentralized database server
 #[derive(Parser, Debug)]
 #[command(name = "eidetica")]
@@ -58,6 +67,11 @@ pub struct BackendConfig {
     /// For InMemory: stores eidetica.json
     #[arg(short, long, env = "EIDETICA_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
+
+    /// Derived-cache engine (default: the primary backend's own cache —
+    /// a SQLite file for sqlite, PostgreSQL tables for postgres, memory for inmemory).
+    #[arg(long, env = "EIDETICA_CACHE_BACKEND")]
+    pub cache_backend: Option<CacheBackend>,
 
     /// Disposable SQLite cache directory (default: platform cache location/eidetica).
     /// Must be writable; existing directory ownership and permissions are preserved.

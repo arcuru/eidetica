@@ -49,7 +49,10 @@ History/credentials remain in `eidetica.db` under the data directory; only Deriv
 state uses the cache directory. Native platform defaults apply when no cache
 override is set. The NixOS module provisions `/var/cache/eidetica` using systemd
 `CacheDirectory`; existing administrator directory permissions are not changed by
-the application. See [SQLite cache storage](concepts/backends.md#disposable-sqlite-cache)
+the application. Its `cacheBackend` option sets `EIDETICA_CACHE_BACKEND` for a
+[separate cache engine](concepts/backends.md#separate-cache-engine), such as a
+PostgreSQL backend with a SQLite cache there.
+See [SQLite cache storage](concepts/backends.md#disposable-sqlite-cache)
 and [Docker](docker.md) for directory layout, separate mounts and offline cleanup.
 Do not run direct commands against a live service's owned files; use socket clients.
 

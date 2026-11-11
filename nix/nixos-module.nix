@@ -47,6 +47,16 @@ in {
       description = "Storage backend to use.";
     };
 
+    cacheBackend = mkOption {
+      type = types.nullOr (types.enum ["sqlite" "inmemory"]);
+      default = null;
+      description = ''
+        Derived-cache engine, selected independently of `backend`. Null keeps
+        the backend's own cache. `sqlite` uses a file under /var/cache/eidetica
+        and requires a persistent backend.
+      '';
+    };
+
     dataDir = mkOption {
       type = types.path;
       default = "/var/lib/eidetica";
@@ -138,6 +148,10 @@ in {
         message = "services.eidetica.dashboard requires services.eidetica.daemon";
       }
       {
+        assertion = !(cfg.backend == "inmemory" && cfg.cacheBackend == "sqlite");
+        message = "services.eidetica.cacheBackend = \"sqlite\" requires a persistent backend";
+      }
+      {
         assertion = cfg.backend != "postgres" || cfg.postgresUrl != null;
         message = "services.eidetica.postgresUrl is required when backend is postgres";
       }
@@ -198,6 +212,9 @@ in {
         }
         // optionalAttrs (cfg.postgresUrl != null) {
           EIDETICA_POSTGRES_URL = cfg.postgresUrl;
+        }
+        // optionalAttrs (cfg.cacheBackend != null) {
+          EIDETICA_CACHE_BACKEND = cfg.cacheBackend;
         }
         // cfg.environment;
 

@@ -256,9 +256,12 @@ pub struct InstanceSecrets {
 // Category modules
 pub mod database;
 pub mod errors;
+mod split;
 
 // Re-export main types for easier access
 pub use errors::BackendError;
+pub(crate) use split::derived_cache_storage_via;
+pub use split::{DerivedCacheStorage, SplitBackend};
 
 /// Verdict of a bounded, tree-scoped reachability query
 /// ([`check_targets_reachable_from`](BackendImpl::check_targets_reachable_from)).
