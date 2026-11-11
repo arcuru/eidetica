@@ -46,8 +46,43 @@
   #   2. EIDETICA_ADMIN_PASSWORD environment variable.
   #   3. EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 — explicit opt-in to a
   #      passwordless admin (INSECURE; trusted/LAN or local dev only).
+  #
+  # Before any open, refuse a legacy store still mounted at /config unless the
+  # operator explicitly selects that directory: otherwise a credential could
+  # bootstrap a fresh /data instance that hides the existing history.
   entrypoint = pkgs.writeShellScriptBin "eidetica-entrypoint" ''
         set -eu
+        # Data-bearing files of the selected file backend; PostgreSQL has none.
+        has_store() {
+          case "''${EIDETICA_BACKEND:-sqlite}" in
+            sqlite) names="eidetica.db eidetica.db-wal eidetica.db-journal" ;;
+            inmemory) names="eidetica.json" ;;
+            *) return 1 ;;
+          esac
+          for name in $names; do
+            if [ -e "$1/$name" ] || [ -L "$1/$name" ]; then return 0; fi
+          done
+          return 1
+        }
+        data_dir="''${EIDETICA_DATA_DIR:-.}"
+        if ! [ /config -ef "$data_dir" ] && has_store /config; then
+          if has_store "$data_dir"; then
+            echo "ERROR: found Eidetica stores in both /config and $data_dir; refusing to choose." >&2
+            echo "Detach whichever mount is not this instance's store (do not merge or delete" >&2
+            echo "files), or select the legacy store explicitly with EIDETICA_DATA_DIR=/config." >&2
+            exit 1
+          fi
+          echo "ERROR: found an existing store in the legacy /config location, but primary" >&2
+          echo "storage is $data_dir, which has none. Refusing to start so that a fresh" >&2
+          echo "instance cannot hide the existing data. Choose ONE:" >&2
+          echo "  1) Mount the same volume/directory at /data instead of /config" >&2
+          echo "     (nothing moves; the database keeps its sidecars):" >&2
+          echo "       -v eidetica-data:/data" >&2
+          echo "  2) Keep the legacy layout explicitly:" >&2
+          echo "       -e EIDETICA_DATA_DIR=/config" >&2
+          exit 1
+        fi
+
         if ${eidetica-bin}/bin/eidetica info >/dev/null 2>&1; then
           exec ${eidetica-bin}/bin/eidetica "$@"
         fi
@@ -104,23 +139,25 @@
       pathsToLink = ["/bin" "/etc" "/"];
     };
 
-    # Image-owned defaults are writable by the packaged UID/GID. Bind mounts
-    # retain their administrator-provisioned permissions; startup never changes them.
+    # Image-owned defaults are writable by the packaged UID/GID: /config for
+    # configuration, /data for primary storage, /cache for disposable records.
+    # Bind mounts retain their administrator-provisioned permissions; startup
+    # never changes them.
     runAsRoot = ''
       #!${pkgs.runtimeShell}
-      mkdir -p /config /cache
-      chown 1000:1000 /config /cache
+      mkdir -p /config /data /cache
+      chown 1000:1000 /config /data /cache
     '';
 
     config = {
       Cmd = ["${entrypoint}/bin/eidetica-entrypoint"];
       User = "1000:1000";
-      WorkingDir = "/config";
+      WorkingDir = "/data";
       ExposedPorts = {
         "5942/tcp" = {};
       };
       Env = [
-        "EIDETICA_DATA_DIR=/config"
+        "EIDETICA_DATA_DIR=/data"
         "EIDETICA_CACHE_DIR=/cache"
         "EIDETICA_HOST=0.0.0.0"
         "HOME=/tmp" # should be unused, set to /tmp for safety

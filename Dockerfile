@@ -48,15 +48,15 @@ COPY --from=builder /build/target/release/eidetica /usr/local/bin/eidetica
 # Set ownership
 RUN chown eidetica:eidetica /usr/local/bin/eidetica
 
-# Create image-owned durable and disposable directories
-RUN mkdir -p /config /cache && chown eidetica:eidetica /config /cache
+# Create image-owned configuration, primary storage and disposable cache directories
+RUN mkdir -p /config /data /cache && chown eidetica:eidetica /config /data /cache
 
 # Switch to non-root user
 USER eidetica
-WORKDIR /config
+WORKDIR /data
 
 # Environment variables
-ENV EIDETICA_DATA_DIR=/config
+ENV EIDETICA_DATA_DIR=/data
 ENV EIDETICA_CACHE_DIR=/cache
 ENV EIDETICA_HOST=0.0.0.0
 
