@@ -168,8 +168,9 @@ builds use the cache, with the cache engine's own dialect, schema, startup
 validation, publication, bounds/eviction and ownership. Opaque record views and
 staging tokens carry their owner and are refused by the other storage. Cache
 bounds come from the cache; open a split primary with retention disabled (as
-above, or `Sqlite::open_with_memory_cache` for SQLite history), which also
-reclaims Derived state it kept under an earlier configuration. Offline trust
+above, or `Sqlite::open_with_memory_cache` for SQLite history). PostgreSQL then
+reclaims Derived rows from an earlier configuration on open; an earlier SQLite
+cache file is left untouched for offline removal. Offline trust
 reset discards the cache, then resets the primary; a failure can leave a cold
 cache, never a reset with old cached state. Other caches holding the same
 instance (for example on another host sharing a PostgreSQL primary) are not

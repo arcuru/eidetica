@@ -216,7 +216,7 @@ fn untag_token(token: &StagingToken) -> Result<(Owner, StagingToken)> {
 /// and are refused if presented to the wrong storage.
 ///
 /// The primary's own Derived storage is not used; open it with retention
-/// disabled to reclaim any leftover Derived state. Offline trust reset discards
+/// disabled (PostgreSQL then reclaims leftover Derived rows on open). Offline trust reset discards
 /// the cache before resetting the primary, so a failure can leave a cold cache
 /// but never a successful reset with old cached state.
 ///
