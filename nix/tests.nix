@@ -499,14 +499,17 @@ in {
 
         entrypoint = json.loads(machine.succeed("podman image inspect eidetica:dev"))[0]["Config"]["Cmd"][0]
 
-        def data(name, persistent_cache=True):
-            path = "/var/lib/" + name
+        def owned(path):
             machine.succeed(f"mkdir -p {path}; chown 1000:1000 {path}")
+            return path
+
+        # Distinct administrator-provisioned /config, /data and optional /cache.
+        def data(name, persistent_cache=True):
+            path = owned("/var/lib/" + name)
+            mounts = f"-v {owned(path + '-config')}:/config -v {path}:/data"
             if not persistent_cache:
-                return f"-v {path}:/config"
-            cache = path + "-cache"
-            machine.succeed(f"mkdir -p {cache}; chown 1000:1000 {cache}")
-            return f"-v {path}:/config -v {cache}:/cache"
+                return mounts
+            return mounts + f" -v {owned(path + '-cache')}:/cache"
 
         def uninitialised(mounts):
             status, output = machine.execute(f"podman run --rm {mounts} eidetica:dev /bin/eidetica info 2>&1")
@@ -558,6 +561,7 @@ in {
         assert len(cache_files) == 1, "instance-key cache file must be separate from /config"
         cache_path = cache_files[0]
         assert not machine.succeed("find /var/lib/secret-data -name '*.cache' -o -name '*.sqlite'").strip()
+        assert not machine.succeed("find /var/lib/secret-data-config -mindepth 1").strip(), "/config must not hold storage"
         old_names = set(machine.succeed(f"sqlite3 {cache_path} 'SELECT namespace_id FROM store_state_namespaces WHERE status = 1'").splitlines())
         assert old_names, "real login reads must populate Derived records in /cache"
         assert machine.succeed(f"sqlite3 {cache_path} \"SELECT count(*) FROM sqlite_master WHERE name IN ('entries','local_accounts','instance_secrets','verified_tips')\"").strip() == "0"
@@ -581,6 +585,53 @@ in {
         machine.succeed(f"podman run -d --name eidetica-test -p 5942:5942 {mounts} eidetica:dev")
         machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
         assert login("/var/lib/admin-password") == "303", "cache recreation must preserve native credentials"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+
+        # Legacy layout: an instance bootstrapped in /config by an older image,
+        # reproduced through the explicit compatibility override.
+        legacy = owned("/var/lib/legacy")
+        legacy_cache = owned("/var/lib/legacy-cache")
+        legacy_info = machine.succeed(
+            f"podman run --rm -v {legacy}:/config -v {legacy_cache}:/cache {secret} "
+            f"-e EIDETICA_DATA_DIR=/config eidetica:dev {entrypoint} info"
+        )
+        machine.succeed(f"test -s {legacy}/eidetica.db")
+        dump = "sqlite3 {}/eidetica.db .dump > /var/lib/{}.sql"
+        machine.succeed(dump.format(legacy, "legacy-before"))
+
+        def legacy_unchanged():
+            machine.succeed(dump.format(legacy, "legacy-after") + "; cmp /var/lib/legacy-before.sql /var/lib/legacy-after.sql")
+
+        # The new default refuses before any open, despite a usable credential
+        # that would otherwise bootstrap a fresh instance in the empty /data.
+        status, output = machine.execute(
+            f"podman run --rm -v {legacy}:/config -v {legacy_cache}:/cache {secret} eidetica:dev {entrypoint} info 2>&1"
+        )
+        assert status == 1 and "legacy /config location" in output, f"legacy store must be refused: {output}"
+        legacy_unchanged()
+
+        # Two stores are ambiguous: neither is selected, opened or changed.
+        other = data("other-data")
+        machine.succeed(f"podman run --rm {other} {secret} eidetica:dev {entrypoint} info")
+        machine.succeed(dump.format("/var/lib/other-data", "other-before"))
+        status, output = machine.execute(
+            f"podman run --rm -v {legacy}:/config -v /var/lib/other-data:/data eidetica:dev {entrypoint} info 2>&1"
+        )
+        assert status == 1 and "both /config and /data" in output, f"ambiguous stores must be refused: {output}"
+        legacy_unchanged()
+        machine.succeed(dump.format("/var/lib/other-data", "other-after") + "; cmp /var/lib/other-before.sql /var/lib/other-after.sql")
+
+        # Documented relocation: mount the same directory at /data. Nothing moves,
+        # and the instance identity, history and credentials are retained.
+        relocated = f"-v {owned('/var/lib/legacy-new-config')}:/config -v {legacy}:/data -v {legacy_cache}:/cache"
+        relocated_info = machine.succeed(f"podman run --rm {relocated} eidetica:dev {entrypoint} info")
+        device = lambda text: [line for line in text.splitlines() if line.startswith("Device ID:")]
+        assert device(legacy_info) and device(legacy_info) == device(relocated_info), "relocation must keep the instance"
+        legacy_unchanged()
+        machine.succeed(f"podman run -d --name eidetica-test -p 5942:5942 {relocated} eidetica:dev")
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login("/var/lib/admin-password") == "303", "relocation must preserve native credentials"
+        assert login() == "200"
         machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
 
         refused("missing", data("missing-data"), "", "refusing to bootstrap admin user without credentials")
@@ -621,7 +672,7 @@ in {
         machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
         assert login(passwordless=True) == "303"
         machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
-        machine.log("OCI container integration test passed: separate config/cache mounts, restart, offline cache recreation, credentials, refusal and disposable image cache")
+        machine.log("OCI container integration test passed: distinct config/data/cache mounts, restart, legacy refusal/relocation, offline cache recreation, credentials, refusal and disposable image cache")
       '';
     };
   };
