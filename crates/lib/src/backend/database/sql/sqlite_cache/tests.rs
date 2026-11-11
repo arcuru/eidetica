@@ -759,7 +759,7 @@ async fn directory_bootstrap_reuses_instance_key_without_premature_metadata() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o2770)).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o770)).unwrap();
     }
     let permissions = std::fs::metadata(&root).unwrap().permissions();
     let mut identities = Vec::new();

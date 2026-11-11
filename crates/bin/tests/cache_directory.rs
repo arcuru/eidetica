@@ -71,7 +71,7 @@ fn host_defaults_overrides_maintenance_and_offline_recreation_share_one_director
     assert_eq!(cache_files(&home.join(".cache/eidetica")).len(), 1);
     let custom = tmp.path().join("custom");
     fs::create_dir(&custom).unwrap();
-    fs::set_permissions(&custom, fs::Permissions::from_mode(0o2770)).unwrap();
+    fs::set_permissions(&custom, fs::Permissions::from_mode(0o770)).unwrap();
     succeeds(
         command(&home, &first)
             .args(["info", "--cache-dir"])
@@ -104,7 +104,7 @@ fn host_defaults_overrides_maintenance_and_offline_recreation_share_one_director
     assert_eq!(cache_files(&custom), [cache]);
     assert_eq!(
         fs::metadata(&custom).unwrap().permissions().mode() & 0o7777,
-        0o2770
+        0o770
     );
 
     let not_a_dir = tmp.path().join("not-a-directory");

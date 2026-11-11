@@ -572,9 +572,11 @@ in {
         # Supported offline recreation: remove only this instance's C image
         # and SQLite sidecars, not its stable ownership sidecar or shared root.
         machine.succeed(f"rm -f {cache_path} {cache_path}-wal {cache_path}-shm {cache_path}-journal")
-        machine.succeed("cp /var/lib/secret-data/eidetica.db /var/lib/history-before-recreate.db")
+        # A stopped process can leave WAL to checkpoint on the next open.
+        # Compare SQLite's complete logical image, not an uncheckpointed main file.
+        machine.succeed("sqlite3 /var/lib/secret-data/eidetica.db .dump > /var/lib/history-before-recreate.sql")
         machine.succeed(f"podman run --rm {mounts} eidetica:dev /bin/eidetica info")
-        machine.succeed("cmp /var/lib/secret-data/eidetica.db /var/lib/history-before-recreate.db")
+        machine.succeed("sqlite3 /var/lib/secret-data/eidetica.db .dump > /var/lib/history-after-recreate.sql; cmp /var/lib/history-before-recreate.sql /var/lib/history-after-recreate.sql")
         machine.succeed(f"test -s {cache_path}")
         machine.succeed(f"podman run -d --name eidetica-test -p 5942:5942 {mounts} eidetica:dev")
         machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
