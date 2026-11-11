@@ -120,3 +120,47 @@ fn host_defaults_overrides_maintenance_and_offline_recreation_share_one_director
     );
     assert_eq!(fs::read(not_a_dir).unwrap(), b"preserve");
 }
+
+#[test]
+fn separately_selected_cache_engines_and_refused_pairings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("cache");
+    let data = tmp.path().join("data");
+    let memory_cache = |cmd: &mut Command| {
+        cmd.env("EIDETICA_CACHE_DIR", &cache)
+            .env("EIDETICA_CACHE_BACKEND", "inmemory");
+    };
+    let mut init = command(&home, &data);
+    memory_cache(&mut init);
+    succeeds(init.args(["daemon", "init", "--username", "admin", "--passwordless"]));
+    for args in [
+        &["info"][..],
+        &["db", "list"],
+        &["db", "reset-local-verification", "--confirm"],
+    ] {
+        let mut cmd = command(&home, &data);
+        memory_cache(&mut cmd);
+        succeeds(cmd.args(args));
+    }
+    // SQLite history with an in-memory cache creates no cache file anywhere.
+    assert!(!cache.exists() || cache_files(&cache).is_empty());
+    assert!(!data.join("eidetica.db.cache").exists());
+
+    // A persistent cache cannot outlive an in-memory primary.
+    let ephemeral = tmp.path().join("ephemeral");
+    let output = command(&home, &ephemeral)
+        .env("EIDETICA_CACHE_DIR", &cache)
+        .env("EIDETICA_BACKEND", "inmemory")
+        .env("EIDETICA_CACHE_BACKEND", "sqlite")
+        .args(["daemon", "init", "--username", "admin", "--passwordless"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("persistent primary"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!cache.exists() || cache_files(&cache).is_empty());
+}

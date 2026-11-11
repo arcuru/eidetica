@@ -113,3 +113,18 @@ clears C first, then resets H labels/frontiers together: failure can leave a col
 cache, never a successful reset with old C state. This requires no live readers
 or writers. See [SQLite storage](../user_guide/concepts/backends.md#disposable-sqlite-cache)
 for directory/bootstrap, ownership, backup and supported offline recreation.
+
+## Separate cache engine
+
+`SplitBackend` routes Derived resolve/stage/publish/abort/read/scan/clear and
+budget/eviction to its `DerivedCacheStorage`; everything else, including
+Authoritative Store state, goes to the primary. It adds no cache logic: each
+engine's own publication atomicity, same-target adoption, admission, live-reader
+eviction and two-phase clear apply unchanged. View and token identifiers gain an
+owner prefix, so a handle is returned only to the storage that issued it, and a
+token's owner must match its target lifecycle. Unknown or mismatched owners are
+`InvalidStoreStateView` / `InvalidStoreStateStagingToken`.
+
+`SqliteCache` reuses the SQLite C format and startup path with a private empty
+in-memory H that is never exposed. Trust reset calls the cache's offline discard
+before the primary's reset, preserving cache-first ordering across engines.

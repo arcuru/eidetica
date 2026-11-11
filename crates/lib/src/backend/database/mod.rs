@@ -12,7 +12,7 @@ mod verification;
 pub use in_memory::InMemory;
 #[cfg(feature = "postgres")]
 pub use sql::Postgres;
-#[cfg(feature = "sqlite")]
-pub use sql::Sqlite;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub use sql::{DbKind, SqlxBackend};
+#[cfg(feature = "sqlite")]
+pub use sql::{Sqlite, SqliteCache};

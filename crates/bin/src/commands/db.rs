@@ -109,7 +109,19 @@ pub async fn repair_verification(args: &DbRepairArgs) -> Result<(), Box<dyn std:
 async fn open_existing(
     config: &BackendConfig,
 ) -> Result<(Box<dyn BackendImpl>, Option<std::path::PathBuf>), Box<dyn std::error::Error>> {
-    let policy = crate::backend::cache_policy(config);
+    let policy = crate::backend::primary_policy(config)?;
+    if let Some(cache) = crate::backend::separate_cache(config)? {
+        let (primary, save_path) = open_existing_primary(config, policy).await?;
+        let backend = crate::backend::attach_cache(config, cache, primary).await?;
+        return Ok((backend, save_path));
+    }
+    open_existing_primary(config, policy).await
+}
+
+async fn open_existing_primary(
+    config: &BackendConfig,
+    policy: eidetica::backend::DerivedCachePolicy,
+) -> Result<(Box<dyn BackendImpl>, Option<std::path::PathBuf>), Box<dyn std::error::Error>> {
     match config.backend {
         Backend::Inmemory => {
             let dir = config

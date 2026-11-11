@@ -72,7 +72,8 @@ let instance = Instance::open_backend(Box::new(backend)).await?;
 SQLite keeps immutable Entries, verification state, instance metadata/secrets,
 local account credentials and Authoritative Store state in the primary history
 file. Only reconstructible Derived records and their unpublished builds use a
-second SQLite database. PostgreSQL remains single-pool; its layout is unchanged.
+second SQLite database. PostgreSQL keeps its own cache in its tables unless a
+[separate cache engine](#separate-cache-engine) is selected.
 
 The CLI resolves `--cache-dir` / `EIDETICA_CACHE_DIR` to an application directory:
 
@@ -138,6 +139,51 @@ No extra H schema bump is required. The unreleased `history_identity` H layout
 and `cache_binding` C format from an earlier candidate are unsupported and refused,
 not silently converted. Preserve those files and use their matching candidate
 binary for recovery; this is not approval to migrate live candidate data.
+
+#### Separate cache engine
+
+The Derived cache can use a different engine from primary storage. `SplitBackend`
+composes any primary backend with any `DerivedCacheStorage`: `SqliteCache` (a
+file or in-memory SQLite database holding only Derived state) or `InMemory`.
+PostgreSQL, SQLite and InMemory primaries can therefore use a SQLite or
+in-memory cache, and a future engine needs only its own implementation of the
+one trait, not a pair-specific integration.
+
+```rust,ignore
+use eidetica::backend::{DerivedCachePolicy, SplitBackend};
+use eidetica::backend::database::{Postgres, SqliteCache};
+
+let off = DerivedCachePolicy { max_namespaces: 0, max_bytes: 0 };
+let primary = Postgres::connect_with_cache_policy(url, off).await?;
+let metadata = primary.get_instance_metadata().await?;
+let cache = SqliteCache::open_for_instance(cache_dir, metadata.as_ref(),
+    DerivedCachePolicy::persistent()).await?;
+let backend = SplitBackend::new(Box::new(primary), Box::new(cache));
+let instance = Instance::open_backend(Box::new(backend)).await?;
+```
+
+Entries, verification, instance metadata/secrets, local credentials and
+Authoritative Store state stay in the primary. Only Derived records and their
+builds use the cache, with the cache engine's own dialect, schema, startup
+validation, publication, bounds/eviction and ownership. Opaque record views and
+staging tokens carry their owner and are refused by the other storage. Cache
+bounds come from the cache; open a split primary with retention disabled (as
+above, or `Sqlite::open_with_memory_cache` for SQLite history), which also
+reclaims Derived state it kept under an earlier configuration. Offline trust
+reset discards the cache, then resets the primary; a failure can leave a cold
+cache, never a reset with old cached state. Other caches holding the same
+instance (for example on another host sharing a PostgreSQL primary) are not
+reached: stop and recreate them offline before trusting reads there.
+
+Instance isolation follows the SQLite cache rule above. `open_for_instance`
+names a file by the instance's existing device key and uses memory before first
+initialization completes; `SqliteCache::open` takes an explicit filename, which
+must belong to exactly one instance and is exclusively owned while open.
+A persistent cache requires a persistent primary: the host refuses
+`--backend inmemory --cache-backend sqlite`, and library callers must not pair
+a persistent cache with ephemeral primary storage. An ephemeral primary uses an
+in-memory cache. The engine shown by `as_any` (and the health endpoint) is the
+primary's.
 
 ### PostgreSQL
 
