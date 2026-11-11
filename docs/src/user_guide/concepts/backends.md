@@ -67,6 +67,78 @@ let backend = Sqlite::open("my_data.db").await?;
 let instance = Instance::open_backend(Box::new(backend)).await?;
 ```
 
+#### Disposable SQLite cache
+
+SQLite keeps immutable Entries, verification state, instance metadata/secrets,
+local account credentials and Authoritative Store state in the primary history
+file. Only reconstructible Derived records and their unpublished builds use a
+second SQLite database. PostgreSQL remains single-pool; its layout is unchanged.
+
+The CLI resolves `--cache-dir` / `EIDETICA_CACHE_DIR` to an application directory:
+
+| Platform           | Default directory                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| Linux / other Unix | `$XDG_CACHE_HOME/eidetica`, or `$HOME/.cache/eidetica` when XDG is unset or relative |
+| macOS              | `$HOME/Library/Caches/eidetica`                                                      |
+| Windows            | `%LOCALAPPDATA%/eidetica`                                                            |
+| Packaged container | `/cache` (explicit environment setting)                                              |
+
+Initialized instances use `<hex-encoded-prefixed-device-public-key>.sqlite`
+beneath that directory, with the normal SQLite sidecars and a stable
+`.eidetica-owner` sidecar. Independent instances have different existing device
+keys and therefore different files under a shared root. Copies retaining the
+same device key are the same instance for this purpose: use different cache
+roots if running such copies independently. No new storage identifier is saved.
+
+First initialization has no complete instance identity yet. It uses an in-memory
+Derived cache until the backend is reopened, then selects the file from complete
+persisted metadata. It never saves placeholder metadata to obtain a filename.
+The host creates the designated application directory as needed, but does not
+change existing ownership/group permissions. That directory and its files must
+be writable by the service account. Cache contents may be sensitive, including
+plaintext unencrypted Store values; provision access accordingly. No private
+permission mode or ownership changes are imposed by the backend.
+
+Library constructors do not inspect host environment variables. `Sqlite::open`
+and SQLite Instance URLs default to `<history-filename>.cache` adjacent to history.
+`Sqlite::open_with_cache_path` accepts an explicit low-level filename and policy;
+`SqlxBackend::open_sqlite_with_cache_dir` accepts an existing directory and policy
+with the instance-key/bootstrap behavior above. In-memory SQLite keeps both pools
+in memory and refuses a persistent cache location.
+
+The canonical Snapshot digest plus database, Store, projection/version and trust
+scope identifies a cache entry. Historical Snapshots remain reusable across
+unrelated writes and restarts; there is no global history freshness token.
+Verification can change the selected Snapshot, not the hash of an unchanged
+Snapshot. Cache storage errors propagate rather than silently becoming misses;
+an unrelated, corrupt or unsupported file is refused, never erased on open.
+
+##### Backup and offline recreation
+
+Back up durable history using SQLite's backup API, or stop every owner/reader
+and take a consistent primary image including any outstanding WAL. Cache files
+are optional backups. Restoring history alone can reuse matching immutable
+Snapshot caches; other keys remain separate and cannot stand in for the selected
+Snapshot. The cache is not an authorization or verification proof.
+
+To reclaim physical cache space, stop the service and every direct user first.
+Remove only the selected instance's `.sqlite` (or explicit low-level cache file)
+and its `-wal`, `-shm`, and `-journal` sidecars. Keep the stable ownership sidecar.
+Reopening recreates C and rebuilds values on demand without losing history,
+credentials or Authoritative state. Never unlink, replace or copy a live SQLite
+image, its sidecars or its ownership lock. Do not remove an entire shared XDG root.
+Online `clear_derived_store_state` instead preserves a generation for live readers;
+its byte limit is live payload, not a physical filesystem quota. WAL/NORMAL
+synchronous defaults are unchanged for both files.
+
+Mainline H remains schema **4**, including `local_accounts`. Supported v0/v2/v3
+upgrades retain their existing migration/verification rules; SQLite discards
+legacy single-file Derived rows on open while retaining Authoritative records.
+No extra H schema bump is required. The unreleased `history_identity` H layout
+and `cache_binding` C format from an earlier candidate are unsupported and refused,
+not silently converted. Preserve those files and use their matching candidate
+binary for recovery; this is not approval to migrate live candidate data.
+
 ### PostgreSQL
 
 PostgreSQL provides production-grade persistent storage for larger deployments. Enabled with the `postgres` feature.

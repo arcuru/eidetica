@@ -22,7 +22,7 @@ mod tests;
 /// with an explicit forward path from each supported stored format.
 pub const SCHEMA_VERSION: i64 = 4;
 
-const CREATE_STORE_STATE_TABLES: &[&str] = &[
+pub(super) const CREATE_STORE_STATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
         namespace_id TEXT PRIMARY KEY NOT NULL,
         database_id TEXT NOT NULL,
@@ -226,6 +226,20 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             source: None,
         }
         .into());
+    }
+
+    if backend.is_sqlite() {
+        let (identity_tables,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'history_identity'",
+        )
+        .fetch_one(pool)
+        .await
+        .sql_context("Failed to inspect unsupported SQLite candidate layout")?;
+        if identity_tables != 0 {
+            return Err(malformed(
+                "unsupported unreleased history_identity layout; preserve history and reopen with its matching candidate binary, not a mainline migration",
+            ));
+        }
     }
 
     validate_layout(backend, row.map(|(v,)| v)).await?;

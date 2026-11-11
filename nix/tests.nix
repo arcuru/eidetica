@@ -337,6 +337,7 @@ in {
       } ''
         SOCKET="$TMPDIR/test.sock"
         DATA="$TMPDIR/data"
+        export EIDETICA_CACHE_DIR="$TMPDIR/cache"
 
         # The daemon refuses to run an uninitialised backend, so initialise a
         # fresh sqlite instance first, then start the daemon against the same
@@ -484,6 +485,7 @@ in {
 
       nodes.machine = _: {
         virtualisation.podman.enable = true;
+        environment.systemPackages = [pkgs.sqlite];
       };
 
       testScript = ''
@@ -497,10 +499,14 @@ in {
 
         entrypoint = json.loads(machine.succeed("podman image inspect eidetica:dev"))[0]["Config"]["Cmd"][0]
 
-        def data(name):
+        def data(name, persistent_cache=True):
             path = "/var/lib/" + name
             machine.succeed(f"mkdir -p {path}; chown 1000:1000 {path}")
-            return f"-v {path}:/config"
+            if not persistent_cache:
+                return f"-v {path}:/config"
+            cache = path + "-cache"
+            machine.succeed(f"mkdir -p {cache}; chown 1000:1000 {cache}")
+            return f"-v {path}:/config -v {cache}:/cache"
 
         def uninitialised(mounts):
             status, output = machine.execute(f"podman run --rm {mounts} eidetica:dev /bin/eidetica info 2>&1")
@@ -545,11 +551,34 @@ in {
         assert empty == "200", "empty password must not authenticate"
         assert wrong == "200", "wrong password must not authenticate"
         machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+        # The packaged binary used distinct durable/cache mounts with no
+        # credential/history tables in C. Record both images while stopped.
+        machine.succeed("test -s /var/lib/secret-data/eidetica.db")
+        cache_files = machine.succeed("find /var/lib/secret-data-cache -name '*.sqlite'").splitlines()
+        assert len(cache_files) == 1, "instance-key cache file must be separate from /config"
+        cache_path = cache_files[0]
+        assert not machine.succeed("find /var/lib/secret-data -name '*.cache' -o -name '*.sqlite'").strip()
+        old_names = set(machine.succeed(f"sqlite3 {cache_path} 'SELECT namespace_id FROM store_state_namespaces WHERE status = 1'").splitlines())
+        assert old_names, "real login reads must populate Derived records in /cache"
+        assert machine.succeed(f"sqlite3 {cache_path} \"SELECT count(*) FROM sqlite_master WHERE name IN ('entries','local_accounts','instance_secrets','verified_tips')\"").strip() == "0"
         # Restart without any credential source: skip bootstrap and preserve admin.
         machine.succeed(f"podman run -d --name eidetica-test -p 5942:5942 {mounts} eidetica:dev")
         machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
         assert login("/var/lib/admin-password") == "303"
         assert login() == "200"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+        retained_names = set(machine.succeed(f"sqlite3 {cache_path} 'SELECT namespace_id FROM store_state_namespaces WHERE status = 1'").splitlines())
+        assert old_names & retained_names, "restart must reuse immutable Snapshot namespaces"
+        # Supported offline recreation: remove only this instance's C image
+        # and SQLite sidecars, not its stable ownership sidecar or shared root.
+        machine.succeed(f"rm -f {cache_path} {cache_path}-wal {cache_path}-shm {cache_path}-journal")
+        machine.succeed("cp /var/lib/secret-data/eidetica.db /var/lib/history-before-recreate.db")
+        machine.succeed(f"podman run --rm {mounts} eidetica:dev /bin/eidetica info")
+        machine.succeed("cmp /var/lib/secret-data/eidetica.db /var/lib/history-before-recreate.db")
+        machine.succeed(f"test -s {cache_path}")
+        machine.succeed(f"podman run -d --name eidetica-test -p 5942:5942 {mounts} eidetica:dev")
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login("/var/lib/admin-password") == "303", "cache recreation must preserve native credentials"
         machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
 
         refused("missing", data("missing-data"), "", "refusing to bootstrap admin user without credentials")
@@ -572,7 +601,8 @@ in {
             "failed to read admin password file",
         )
 
-        mounts = data("env-data")
+        # No /cache mount: the image-owned writable directory is disposable.
+        mounts = data("env-data", persistent_cache=False)
         machine.succeed(
             f"podman run -d --name eidetica-test -p 5942:5942 {mounts} "
             '-e EIDETICA_ADMIN_PASSWORD="$(cat /var/lib/admin-password)" eidetica:dev'
@@ -589,7 +619,7 @@ in {
         machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
         assert login(passwordless=True) == "303"
         machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
-        machine.log("OCI container integration test passed: secret authentication, refusal, environment, passwordless and restart")
+        machine.log("OCI container integration test passed: separate config/cache mounts, restart, offline cache recreation, credentials, refusal and disposable image cache")
       '';
     };
   };

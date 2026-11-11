@@ -315,6 +315,15 @@ Keep an offline backup and follow the
 rather than editing markers or dropping tables to bypass refusal. Downgrading a
 binary does not undo persisted migrations; restore a compatible backup instead.
 
+SQLite's physical Derived separation does not allocate another H schema version:
+H remains v4 with native local accounts. Old in-history Derived rows may be
+reclaimed; all Authoritative records and local credentials stay durable. The
+unreleased history-identity candidate layout is refused, not treated as mainline
+v4. For an offline reset, C is cleared before the H transaction resets labels and
+retained frontiers. Failure may discard reconstructible cache state without
+changing labels; successful reset cannot retain old C state. PostgreSQL keeps its
+single-transaction behavior. No global freshness/lineage token is introduced.
+
 ## Explicit trust reset on verification-rule upgrades
 
 Format migration is **not** authorization revalidation. When upgrading to new

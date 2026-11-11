@@ -132,10 +132,7 @@ async fn open_existing(
                 return Err("SQLite database file does not exist".into());
             }
             Ok((
-                Box::new(
-                    eidetica::backend::database::Sqlite::open_with_cache_policy(&path, policy)
-                        .await?,
-                ),
+                Box::new(crate::backend::open_sqlite(config, &path).await?),
                 None,
             ))
         }

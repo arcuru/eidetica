@@ -80,7 +80,7 @@ pub async fn resolve_store_state(
     .bind(&request.projection.name)
     .bind(i64::from(request.projection.version))
     .bind(&request.source_key)
-    .fetch_optional(backend.pool())
+    .fetch_optional(backend.state_pool(request.lifecycle)?)
     .await
     .sql_context("Failed to resolve Store-state namespace")?;
     let view = row.map(|(namespace_id,)| RecordView { namespace_id });
@@ -105,7 +105,14 @@ pub async fn begin_store_state_staging(
         }
         .into());
     }
+    let pool = backend.state_pool(request.lifecycle)?;
     let namespace_id = uuid::Uuid::new_v4().to_string();
+    #[cfg(feature = "sqlite")]
+    let namespace_id = if backend.is_sqlite() && request.lifecycle == StoreStateLifecycle::Derived {
+        format!("{}{namespace_id}", super::sqlite_cache::NAMESPACE_PREFIX)
+    } else {
+        namespace_id
+    };
     let staging_source = namespace_id.as_bytes();
     sqlx::query(
         "INSERT INTO store_state_namespaces
@@ -121,7 +128,7 @@ pub async fn begin_store_state_staging(
     .bind(&request.projection.name)
     .bind(i64::from(request.projection.version))
     .bind(staging_source)
-    .execute(backend.pool())
+    .execute(pool)
     .await
     .sql_context("Failed to begin Store-state staging")?;
     Ok(StagingToken {
@@ -136,7 +143,7 @@ pub async fn stage_store_state_records(
     records: RecordMutations,
 ) -> Result<()> {
     let mut tx = backend
-        .pool()
+        .token_pool(token)?
         .begin()
         .await
         .sql_context("Failed to stage Store-state records")?;
@@ -148,9 +155,16 @@ pub async fn stage_store_state_records(
     }
     lock_store_state_namespace(backend, &mut tx, &token.target, &token.namespace_id).await?;
     let staging: Option<(i64,)> = sqlx::query_as(
-        "SELECT lifecycle FROM store_state_namespaces WHERE namespace_id = $1 AND status = 0",
+        "SELECT lifecycle FROM store_state_namespaces WHERE namespace_id = $1 AND status = 0
+         AND database_id = $2 AND store_name = $3 AND scope_user_uuid = $4
+         AND projection_name = $5 AND projection_version = $6",
     )
     .bind(&token.namespace_id)
+    .bind(token.target.database.to_string())
+    .bind(&token.target.store)
+    .bind(store_state_scope(&token.target.scope))
+    .bind(&token.target.projection.name)
+    .bind(i64::from(token.target.projection.version))
     .fetch_optional(&mut *tx)
     .await
     .sql_context("Failed to validate Store-state staging token")?;
@@ -182,7 +196,7 @@ pub async fn stage_store_state_records(
 /// runs after commit, and arbitrary errors never turn into winner adoption.
 pub async fn publish_store_state(backend: &SqlxBackend, token: StagingToken) -> Result<RecordView> {
     let mut tx = backend
-        .pool()
+        .token_pool(&token)?
         .begin()
         .await
         .sql_context("Failed to publish Store-state")?;
@@ -215,6 +229,11 @@ pub async fn publish_store_state(backend: &SqlxBackend, token: StagingToken) -> 
                     .await
                     .sql_context("Store-state rollback outcome uncertain")?;
                 let _ = discard_staging_namespace(backend, &token.namespace_id).await;
+                // C I/O/corruption is not optional non-retention. Preserve
+                // PostgreSQL's existing admission classification unchanged.
+                if backend.is_sqlite() {
+                    return Err(error);
+                }
                 return Err(BackendError::StoreStateNotRetained {
                     reason: format!("admission rolled back: {error}"),
                 }
@@ -369,13 +388,14 @@ pub(super) async fn prepare_publication(
 async fn discard_staging_namespace(backend: &SqlxBackend, namespace_id: &str) -> Result<()> {
     sqlx::query("DELETE FROM store_state_namespaces WHERE namespace_id = $1 AND status = 0")
         .bind(namespace_id)
-        .execute(backend.pool())
+        .execute(backend.namespace_pool(namespace_id)?)
         .await
         .sql_context("Failed to discard Store-state staging namespace")?;
     Ok(())
 }
 
 pub async fn abort_store_state(backend: &SqlxBackend, token: StagingToken) -> Result<()> {
+    backend.token_pool(&token)?;
     discard_staging_namespace(backend, &token.namespace_id).await
 }
 
@@ -398,7 +418,7 @@ pub async fn store_state_record_get(
     )
     .bind(&view.namespace_id)
     .bind(key)
-    .fetch_optional(backend.pool())
+    .fetch_optional(backend.namespace_pool(&view.namespace_id)?)
     .await
     .sql_context("Failed to get Store-state record")?;
     let Some((status, lifecycle, value)) = row else {
@@ -424,7 +444,7 @@ pub async fn store_state_record_scan(
     limit: usize,
 ) -> Result<RecordPage> {
     let mut tx = backend
-        .pool()
+        .namespace_pool(&view.namespace_id)?
         .begin()
         .await
         .sql_context("Failed to scan Store-state records")?;
@@ -494,7 +514,7 @@ pub async fn store_state_record_scan(
 /// clear reclaims them. Authoritative namespaces are never selected.
 pub async fn clear_derived_store_state(backend: &SqlxBackend) -> Result<()> {
     let mut tx = backend
-        .pool()
+        .state_pool(StoreStateLifecycle::Derived)?
         .begin()
         .await
         .sql_context("Failed to begin derived Store-state clear")?;
@@ -520,10 +540,19 @@ pub async fn clear_derived_store_state(backend: &SqlxBackend) -> Result<()> {
         .sql_context("Failed to commit derived Store-state clear")
 }
 
-/// Offline trust reset: status, retained verified frontier and cache
-/// invalidation commit together.
+/// Offline trust reset: discard disposable state before atomically resetting
+/// status and retained verified frontier. A failure may leave a cold cache,
+/// never old cache state after a successful reset.
 /// Unlike the online two-generation derived clear, there must be no live readers.
 pub async fn reset_local_verification(backend: &SqlxBackend) -> Result<()> {
+    if backend.is_sqlite() {
+        // Offline-only, with no live readers/writers. Clear C before H's reset;
+        // interruption can lose a cache but cannot preserve pre-reset values.
+        sqlx::query("DELETE FROM store_state_namespaces")
+            .execute(backend.cache_pool())
+            .await
+            .sql_context("Failed to discard SQLite cache before trust reset")?;
+    }
     let mut tx = backend
         .pool()
         .begin()

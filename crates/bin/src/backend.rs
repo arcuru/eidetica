@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use eidetica::backend::{
     BackendImpl, DerivedCachePolicy,
-    database::{InMemory, Postgres, Sqlite},
+    database::{InMemory, Postgres, SqlxBackend},
 };
 
 use crate::cli::{Backend, BackendConfig};
@@ -39,6 +39,20 @@ pub fn cache_policy(config: &BackendConfig) -> DerivedCachePolicy {
     policy
 }
 
+/// Resolve environment only at the host boundary, never in the library.
+fn native_cache_dir(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let root = env("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let root = env("HOME").map(|home| PathBuf::from(home).join("Library/Caches"));
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let root = env("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| env("HOME").map(|home| PathBuf::from(home).join(".cache")));
+    root.map(|root| root.join("eidetica"))
+}
+
 /// Create the appropriate backend based on configuration
 pub async fn create_backend(
     config: &BackendConfig,
@@ -57,9 +71,7 @@ pub async fn create_backend(
         Backend::Sqlite => {
             let db_path = data_dir.join("eidetica.db");
             tracing::info!("Using SQLite backend at {}", db_path.display());
-            Ok(Box::new(
-                Sqlite::open_with_cache_policy(&db_path, policy).await?,
-            ))
+            Ok(Box::new(open_sqlite(config, &db_path).await?))
         }
         Backend::Postgres => {
             let url = config
@@ -100,6 +112,23 @@ pub async fn create_backend(
     }
 }
 
+/// Shared by ordinary opens and offline maintenance after its existing-file check.
+pub async fn open_sqlite(
+    config: &BackendConfig,
+    path: &std::path::Path,
+) -> Result<SqlxBackend, Box<dyn std::error::Error>> {
+    let cache_dir = config
+        .cache_dir
+        .clone()
+        .or_else(|| native_cache_dir(|name| std::env::var_os(name)))
+        .ok_or("No platform cache location; set --cache-dir or EIDETICA_CACHE_DIR")?;
+    // Create only the designated application directory. Never chmod/chown
+    // supplied directories or clean the shared platform cache root.
+    tokio::fs::create_dir_all(&cache_dir).await?;
+    tracing::info!("Using SQLite cache directory {}", cache_dir.display());
+    Ok(SqlxBackend::open_sqlite_with_cache_dir(path, &cache_dir, cache_policy(config)).await?)
+}
+
 /// Return a human-readable label for the backend type and its path/URL
 pub fn backend_label(config: &BackendConfig) -> String {
     let data_dir = config
@@ -137,6 +166,40 @@ mod cache_policy_tests {
             panic!("expected daemon");
         };
         daemon.backend_config
+    }
+
+    #[test]
+    fn cache_directory_override_and_platform_default() {
+        let config = parse(&["eidetica", "daemon", "--cache-dir", "/custom/cache"]);
+        assert_eq!(config.cache_dir, Some(PathBuf::from("/custom/cache")));
+        let env = |key: &str| match key {
+            "HOME" => Some("/home/test".into()),
+            "XDG_CACHE_HOME" => Some("/scratch/cache".into()),
+            "LOCALAPPDATA" => Some("C:/Users/test/AppData/Local".into()),
+            _ => None,
+        };
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            assert_eq!(
+                native_cache_dir(env),
+                Some("/scratch/cache/eidetica".into())
+            );
+            assert_eq!(
+                native_cache_dir(|key| (key == "HOME").then(|| "/home/test".into())),
+                Some("/home/test/.cache/eidetica".into())
+            );
+        }
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            native_cache_dir(env),
+            Some("/home/test/Library/Caches/eidetica".into())
+        );
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            native_cache_dir(env),
+            Some("C:/Users/test/AppData/Local/eidetica".into())
+        );
+        assert!(native_cache_dir(|_| None).is_none());
     }
 
     #[test]

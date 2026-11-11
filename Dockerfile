@@ -48,8 +48,8 @@ COPY --from=builder /build/target/release/eidetica /usr/local/bin/eidetica
 # Set ownership
 RUN chown eidetica:eidetica /usr/local/bin/eidetica
 
-# Create config directory
-RUN mkdir -p /config && chown eidetica:eidetica /config
+# Create image-owned durable and disposable directories
+RUN mkdir -p /config /cache && chown eidetica:eidetica /config /cache
 
 # Switch to non-root user
 USER eidetica
@@ -57,6 +57,7 @@ WORKDIR /config
 
 # Environment variables
 ENV EIDETICA_DATA_DIR=/config
+ENV EIDETICA_CACHE_DIR=/cache
 ENV EIDETICA_HOST=0.0.0.0
 
 # Expose default port

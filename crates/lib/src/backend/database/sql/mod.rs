@@ -22,6 +22,8 @@
 //! See [`schema`] module documentation for details on adding migrations.
 
 mod cache;
+#[cfg(feature = "sqlite")]
+mod sqlite_cache;
 mod storage;
 mod traversal;
 mod verified;
@@ -55,7 +57,8 @@ use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
     BackendImpl, DerivedCachePolicy, InstanceMetadata, InstanceSecrets, RecordMutations,
-    RecordPage, RecordRange, RecordView, StagingToken, StoreStateRequest, VerificationStatus,
+    RecordPage, RecordRange, RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest,
+    VerificationStatus,
 };
 use crate::entry::{Entry, ID};
 use crate::snapshot::Snapshot;
@@ -117,6 +120,8 @@ pub enum DbKind {
 /// ```
 pub struct SqlxBackend {
     pool: Option<AnyPool>,
+    derived_pool: Option<AnyPool>,
+    _cache_owner: Option<StorageOwner>,
     kind: DbKind,
     _owner: Option<StorageOwner>,
     #[cfg(all(feature = "postgres", feature = "testing"))]
@@ -140,6 +145,9 @@ impl Drop for SqlxBackend {
         // future performs the close transition; waiting is unnecessary for the fence.
         // Checked-out SQLx connections remain valid until returned, so PostgreSQL retains
         // their shared advisory locks until then.
+        if let Some(pool) = self.derived_pool.take() {
+            drop(pool.close());
+        }
         if let Some(pool) = self.pool.take() {
             drop(pool.close());
         }
@@ -213,6 +221,42 @@ fn sqlite_owner_lock_path(database_path: &Path) -> PathBuf {
     let mut path = database_path.as_os_str().to_owned();
     path.push(".eidetica-owner");
     PathBuf::from(path)
+}
+
+/// Each SQLite image owns its WAL/SHM/journal and stable ownership sidecar.
+/// A custom C path must not alias any part of H's image (or vice versa).
+#[cfg(feature = "sqlite")]
+fn sqlite_paths_overlap(history: &Path, cache: &Path) -> io::Result<bool> {
+    let paths = |database: &Path| -> io::Result<Vec<PathBuf>> {
+        ["", "-wal", "-shm", "-journal", ".eidetica-owner"]
+            .iter()
+            .map(|suffix| {
+                let mut path = database.as_os_str().to_owned();
+                path.push(suffix);
+                canonical_database_path(Path::new(&path))
+            })
+            .collect()
+    };
+    let history = paths(history)?;
+    let cache = paths(cache)?;
+    Ok(history.iter().any(|path| cache.contains(path)))
+}
+
+#[cfg(feature = "sqlite")]
+fn checked_cache_url(history_url: &str, cache: &Path) -> Result<String> {
+    let options = SqliteConnectOptions::from_str(history_url)
+        .sql_context("Failed to parse SQLite history path")?;
+    if sqlite_paths_overlap(options.get_filename(), cache).map_err(|error| {
+        BackendError::StateInconsistency {
+            reason: format!("Failed to resolve SQLite sidecar paths: {error}"),
+        }
+    })? {
+        return Err(BackendError::StateInconsistency {
+            reason: "SQLite history and cache paths or sidecars collide".into(),
+        }
+        .into());
+    }
+    sqlite_path_url(cache)
 }
 
 #[cfg(feature = "sqlite")]
@@ -297,6 +341,43 @@ impl SqlxBackend {
     /// Get a reference to the underlying pool for SQL backend modules.
     pub(crate) fn pool(&self) -> &AnyPool {
         self.pool.as_ref().expect("SQL pool must exist until drop")
+    }
+
+    /// Internal cache maintenance always uses C for SQLite and the existing
+    /// single pool for PostgreSQL.
+    pub(crate) fn cache_pool(&self) -> &AnyPool {
+        self.derived_pool.as_ref().unwrap_or_else(|| self.pool())
+    }
+
+    fn state_pool(&self, lifecycle: StoreStateLifecycle) -> Result<&AnyPool> {
+        match lifecycle {
+            StoreStateLifecycle::Derived => Ok(self.cache_pool()),
+            StoreStateLifecycle::Authoritative => Ok(self.pool()),
+            StoreStateLifecycle::Staging => Err(BackendError::InvalidStoreStateStagingToken.into()),
+        }
+    }
+
+    fn namespace_pool(&self, namespace_id: &str) -> Result<&AnyPool> {
+        #[cfg(feature = "sqlite")]
+        if self.is_sqlite() && namespace_id.starts_with("sqlite-cache-") {
+            let Some(id) = namespace_id.strip_prefix(sqlite_cache::NAMESPACE_PREFIX) else {
+                return Err(BackendError::InvalidStoreStateView.into());
+            };
+            uuid::Uuid::parse_str(id).map_err(|_| BackendError::InvalidStoreStateView)?;
+            return Ok(self.cache_pool());
+        }
+        Ok(self.pool())
+    }
+
+    fn token_pool(&self, token: &StagingToken) -> Result<&AnyPool> {
+        let pool = self.state_pool(token.target.lifecycle)?;
+        let routed = self
+            .namespace_pool(&token.namespace_id)
+            .map_err(|_| BackendError::InvalidStoreStateStagingToken)?;
+        if !std::ptr::eq(pool, routed) {
+            return Err(BackendError::InvalidStoreStateStagingToken.into());
+        }
+        Ok(pool)
     }
 
     #[cfg(all(feature = "postgres", feature = "testing"))]
@@ -507,6 +588,62 @@ pub(crate) async fn fire_store_state_stage_pause(namespace_id: &str) {
     }
 }
 
+#[cfg(feature = "sqlite")]
+#[derive(Clone, Copy)]
+enum SqliteCacheLocation<'a> {
+    File(&'a Path),
+    Directory(&'a Path),
+}
+
+#[cfg(feature = "sqlite")]
+async fn sqlite_pool(normalized_url: &str, is_in_memory: bool) -> Result<AnyPool> {
+    // For SQLite in-memory databases with shared cache, we must prevent
+    // all connections from being closed. When the last connection closes,
+    // the in-memory database is destroyed and all data is lost.
+    //
+    // IMPORTANT: SQLite pragmas like busy_timeout and synchronous are per-connection
+    // settings. We use after_connect to ensure every connection in the pool has
+    // these configured, not just one.
+    let pool = if is_in_memory {
+        AnyPoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    // In-memory databases don't need WAL mode (all in RAM)
+                    // but still need busy_timeout for lock contention
+                    conn.execute("PRAGMA busy_timeout = 5000;").await?;
+                    Ok(())
+                })
+            })
+            .connect(normalized_url)
+            .await
+            .sql_context("Failed to connect to SQLite")?
+    } else {
+        AnyPoolOptions::new()
+            .max_connections(5)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    // File-based SQLite per-connection settings:
+                    // - synchronous=NORMAL: Balanced durability (safe with WAL)
+                    // - busy_timeout=5000: Wait up to 5s for locks before failing
+                    //
+                    // Note: journal_mode=WAL is a database-level setting that persists,
+                    // so we only set it once after pool creation, not per-connection.
+                    conn.execute("PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;")
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(normalized_url)
+            .await
+            .sql_context("Failed to connect to SQLite")?
+    };
+    Ok(pool)
+}
+
 // SQLite-specific implementations
 #[cfg(feature = "sqlite")]
 impl SqlxBackend {
@@ -540,7 +677,7 @@ impl SqlxBackend {
     ///
     /// * `url` - SQLite connection URL (e.g., "sqlite:./my.db")
     pub async fn connect_sqlite(url: &str) -> Result<Self> {
-        Self::connect_sqlite_configured(url, None).await
+        Self::connect_sqlite_configured(url, None, None).await
     }
 
     /// Connect with explicit bounds, applied before startup reclamation/trim.
@@ -548,7 +685,7 @@ impl SqlxBackend {
         url: &str,
         policy: DerivedCachePolicy,
     ) -> Result<Self> {
-        Self::connect_sqlite_configured(url, Some(policy)).await
+        Self::connect_sqlite_configured(url, Some(policy), None).await
     }
 
     /// Open a file with explicit live derived-cache bounds.
@@ -559,9 +696,25 @@ impl SqlxBackend {
         Self::connect_sqlite_with_cache_policy(&sqlite_path_url(path.as_ref())?, policy).await
     }
 
+    /// Connect with a separately provisioned cache path and explicit bounds.
+    /// A persistent cache path is invalid for an in-memory history database.
+    pub async fn connect_sqlite_with_cache_path(
+        url: &str,
+        cache_path: &Path,
+        policy: DerivedCachePolicy,
+    ) -> Result<Self> {
+        Self::connect_sqlite_configured(
+            url,
+            Some(policy),
+            Some(SqliteCacheLocation::File(cache_path)),
+        )
+        .await
+    }
+
     async fn connect_sqlite_configured(
         url: &str,
         policy: Option<DerivedCachePolicy>,
+        cache_location: Option<SqliteCacheLocation<'_>>,
     ) -> Result<Self> {
         // Install any driver support
         sqlx::any::install_default_drivers();
@@ -570,61 +723,39 @@ impl SqlxBackend {
         let is_in_memory = storage.is_none();
         let normalized_url = normalize_sqlite_url(url);
 
-        // For SQLite in-memory databases with shared cache, we must prevent
-        // all connections from being closed. When the last connection closes,
-        // the in-memory database is destroyed and all data is lost.
-        //
-        // IMPORTANT: SQLite pragmas like busy_timeout and synchronous are per-connection
-        // settings. We use after_connect to ensure every connection in the pool has
-        // these configured, not just one.
-        let pool = if is_in_memory {
-            AnyPoolOptions::new()
-                .max_connections(1)
-                .min_connections(1)
-                .idle_timeout(None)
-                .max_lifetime(None)
-                .after_connect(|conn, _meta| {
-                    Box::pin(async move {
-                        // In-memory databases don't need WAL mode (all in RAM)
-                        // but still need busy_timeout for lock contention
-                        conn.execute("PRAGMA busy_timeout = 5000;").await?;
-                        Ok(())
-                    })
-                })
-                .connect(&normalized_url)
-                .await
-                .sql_context("Failed to connect to SQLite")?
-        } else {
-            AnyPoolOptions::new()
-                .max_connections(5)
-                .after_connect(|conn, _meta| {
-                    Box::pin(async move {
-                        // File-based SQLite per-connection settings:
-                        // - synchronous=NORMAL: Balanced durability (safe with WAL)
-                        // - busy_timeout=5000: Wait up to 5s for locks before failing
-                        //
-                        // Note: journal_mode=WAL is a database-level setting that persists,
-                        // so we only set it once after pool creation, not per-connection.
-                        conn.execute("PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;")
-                            .await?;
-                        Ok(())
-                    })
-                })
-                .connect(&normalized_url)
-                .await
-                .sql_context("Failed to connect to SQLite")?
-        };
-
-        // Set WAL mode once (database-level setting that persists in the file)
-        if !is_in_memory {
-            sqlx::query("PRAGMA journal_mode = WAL;")
-                .execute(&pool)
-                .await
-                .sql_context("Failed to set SQLite WAL mode")?;
+        if is_in_memory && cache_location.is_some() {
+            return Err(BackendError::StateInconsistency {
+                reason: "a SQLite cache location requires persistent history".into(),
+            }
+            .into());
         }
+        // Reject fixed-path/sidecar collisions before opening either image.
+        let fixed_cache_url = match cache_location {
+            Some(SqliteCacheLocation::File(path)) => {
+                Some(checked_cache_url(&normalized_url, path)?)
+            }
+            None if !is_in_memory => {
+                let options = SqliteConnectOptions::from_str(&normalized_url)
+                    .sql_context("Failed to parse SQLite history path")?;
+                let mut path = options.get_filename().as_os_str().to_owned();
+                path.push(".cache");
+                Some(checked_cache_url(&normalized_url, Path::new(&path))?)
+            }
+            _ => None,
+        };
+        let cache_owner = fixed_cache_url
+            .as_deref()
+            .map(prepare_sqlite)
+            .transpose()?
+            .flatten();
+        // Directory naming reads only complete metadata from history. Bootstrap
+        // never publishes incomplete metadata just to select a cache filename.
+        let pool = sqlite_pool(&normalized_url, is_in_memory).await?;
 
-        let backend = Self {
+        let mut backend = Self {
             pool: Some(pool),
+            derived_pool: None,
+            _cache_owner: cache_owner,
             kind: DbKind::Sqlite,
             _owner: storage,
             #[cfg(all(feature = "postgres", feature = "testing"))]
@@ -642,11 +773,91 @@ impl SqlxBackend {
             recency_flushes: std::sync::atomic::AtomicU64::new(0),
         };
 
-        // Initialize schema
+        let cache_url = if let Some(url) = fixed_cache_url {
+            url
+        } else if let Some(SqliteCacheLocation::Directory(dir)) = cache_location {
+            if !dir.is_dir() {
+                return Err(BackendError::StateInconsistency {
+                    reason: "SQLite cache directory must exist and be writable".into(),
+                }
+                .into());
+            }
+            let (exists,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'instance_metadata'",
+            ).fetch_one(backend.pool()).await.sql_context("Failed to inspect SQLite instance metadata")?;
+            let metadata = if exists == 0 {
+                None
+            } else {
+                backend.get_instance_metadata().await?
+            };
+            if let Some(metadata) = metadata {
+                // Filesystem-safe encoding of the existing device public key,
+                // not a separately persisted storage identifier.
+                let name = hex::encode(metadata.id.to_prefixed_string().as_bytes());
+                let url = checked_cache_url(&normalized_url, &dir.join(format!("{name}.sqlite")))?;
+                backend._cache_owner = prepare_sqlite(&url)?;
+                url
+            } else {
+                format!(
+                    "sqlite:file:cache_{}?mode=memory&cache=shared",
+                    uuid::Uuid::new_v4()
+                )
+            }
+        } else {
+            format!(
+                "sqlite:file:cache_{}?mode=memory&cache=shared",
+                uuid::Uuid::new_v4()
+            )
+        };
+        backend.derived_pool =
+            Some(sqlite_pool(&cache_url, sqlite_is_in_memory(&cache_url)).await?);
+        // Both cooperative claims and C validation precede authoritative schema
+        // changes; a wrong/owned cache cannot trigger H migration.
+        sqlite_cache::validate(&backend).await?;
         schema::initialize(&backend).await?;
+        sqlite_cache::initialize(&backend).await?;
+        for (pool, memory) in [
+            (backend.pool(), is_in_memory),
+            (backend.cache_pool(), sqlite_is_in_memory(&cache_url)),
+        ] {
+            if !memory {
+                sqlx::query("PRAGMA journal_mode = WAL;")
+                    .execute(pool)
+                    .await
+                    .sql_context("Failed to set SQLite WAL mode")?;
+            }
+        }
+        // Connections opened for preflight/DDL may still hold DELETE mode even
+        // after another connection persisted WAL. Reopen under the same claims
+        // so every file connection inherits WAL before exposing the backend.
+        if !is_in_memory {
+            backend.pool.take().unwrap().close().await;
+            backend.pool = Some(sqlite_pool(&normalized_url, false).await?);
+        }
+        if !sqlite_is_in_memory(&cache_url) {
+            backend.derived_pool.take().unwrap().close().await;
+            backend.derived_pool = Some(sqlite_pool(&cache_url, false).await?);
+        }
         cache::startup(&backend).await?;
 
         Ok(backend)
+    }
+
+    /// Open history with cache files beneath an explicit directory.
+    /// The directory must exist and be writable. Initialized instances use their
+    /// existing public key as the filename; uninitialized instances use memory
+    /// until reopened, without writing incomplete instance metadata.
+    pub async fn open_sqlite_with_cache_dir(
+        path: &Path,
+        directory: &Path,
+        policy: DerivedCachePolicy,
+    ) -> Result<Self> {
+        Self::connect_sqlite_configured(
+            &sqlite_path_url(path)?,
+            Some(policy),
+            Some(SqliteCacheLocation::Directory(directory)),
+        )
+        .await
     }
 
     /// Create an in-memory SQLite database (async).
@@ -822,6 +1033,8 @@ impl SqlxBackend {
 
         let mut backend = Self {
             pool: Some(pool),
+            derived_pool: None,
+            _cache_owner: None,
             kind: DbKind::Postgres,
             _owner: None,
             #[cfg(feature = "testing")]
@@ -1259,6 +1472,20 @@ impl Sqlite {
         policy: DerivedCachePolicy,
     ) -> Result<SqlxBackend> {
         SqlxBackend::open_sqlite_with_cache_policy(path, policy).await
+    }
+
+    /// Open persistent history with a custom disposable-cache file.
+    pub async fn open_with_cache_path<P: AsRef<Path>>(
+        path: P,
+        cache_path: &Path,
+        policy: DerivedCachePolicy,
+    ) -> Result<SqlxBackend> {
+        SqlxBackend::connect_sqlite_with_cache_path(
+            &sqlite_path_url(path.as_ref())?,
+            cache_path,
+            policy,
+        )
+        .await
     }
 
     pub async fn in_memory() -> Result<SqlxBackend> {
