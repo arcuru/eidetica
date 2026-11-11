@@ -171,7 +171,7 @@
 
     zizmor = mkSimpleLinter {
       name = "zizmor";
-      packages = [pkgs.zizmor];
+      packages = [(import ../zizmor.nix {inherit pkgs;})];
       src = sources.github-actions-security;
       # The build sandbox has no network; the daily "Deps: Actions Audit"
       # workflow runs the online audits that --offline skips here.

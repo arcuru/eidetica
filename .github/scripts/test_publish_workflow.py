@@ -75,7 +75,7 @@ class PublishWorkflow(unittest.TestCase):
         job = self.ci["jobs"]["publish"]
         self.assertEqual(job["needs"], ["main"])
         self.assertEqual(expression(job["if"]), TRUSTED_MAIN)
-        self.assertEqual(job["uses"], "./.github/workflows/publish.yml")
+        self.assertEqual(job["uses"], "$/.github/workflows/publish.yml")
         self.assertEqual(job["with"], {"dev": "true"})
         self.assertEqual(self.publish["jobs"]["manifest"]["needs"], "build")
         self.assertEqual(

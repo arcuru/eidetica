@@ -18,3 +18,14 @@ self-hosted-runner:
     # Persistent native ARM64 runner registered to this repository
     - zinc
     - nix
+
+# actionlint 1.7.12 lacks self-repository syntax support (rhysd/actionlint#711).
+# Ignore only format diagnostics for these exact targets, not other call errors.
+# Remove when the pinned actionlint supports $/ references.
+paths:
+  .github/workflows/*.yml:
+    ignore:
+      - '^specifying action "\$/\.github/actions/setup-nix" in invalid format because ref is missing\.'
+  .github/workflows/ci.yml:
+    ignore:
+      - '^reusable workflow call "\$/\.github/workflows/publish\.yml" at "uses" is not following the format '
