@@ -138,6 +138,14 @@ impl Backend for LocalBackend {
         _source: WriteSource,
     ) -> Result<()> {
         let entry_id = entry.id();
+        // Storage and status promotion are separate engine transactions. If
+        // promotion fails (or execution stops between them), a newly inserted
+        // entry remains stored Unverified; an error does not roll back `put`.
+        // Fresh local transaction tips can recover through Database::snapshot's
+        // best-effort verification once their ancestry and pinned settings are
+        // available. Default reads exclude them until verification succeeds.
+        // This is not atomic commit success or a guarantee of write callbacks,
+        // nor should arbitrary historical insertions rely on the tip-read hook.
         self.0.put(entry).await?;
         if verification != VerificationStatus::Unverified {
             self.0
