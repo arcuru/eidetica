@@ -3,15 +3,18 @@
 //! This module provides utilities for checking if resolved authentication
 //! has sufficient permissions for specific operations.
 
+use std::collections::BTreeSet;
+
 use crate::{
     Error, Result,
     auth::{
         crypto::PublicKey,
         errors::AuthError,
         settings::AuthSettings,
-        types::{Operation, Permission, ResolvedAuth, SigKey},
+        types::{AuthKey, DelegatedTreeRef, Operation, Permission, ResolvedAuth, SigKey},
         validation::delegation::DelegationResolver,
     },
+    crdt::{CRDT, Codec, Doc, doc::Value},
 };
 
 /// Resolve live access for a pubkey + identity against current accepted auth settings.
@@ -133,6 +136,81 @@ pub(crate) fn select_effective_permission(
         .filter(|ra| ra.public_key == *pubkey && ra.grants_access())
         .map(|ra| ra.effective_permission)
         .max()
+}
+
+/// Minimum signer permission needed for the `_settings.auth` changes in `delta`.
+///
+/// `pre_auth` is the entry's pre-write auth state. Every grant whose stored value
+/// differs after applying `delta` — added, removed, revoked, renamed or replaced,
+/// whether through one key path, a whole map or a tombstone — requires the signer
+/// to rank at least as high as both its old and its new permission. A weaker signer
+/// therefore cannot strip a stronger grant or manufacture one. Delegations count
+/// at their bounds, and the wildcard `global` grant at its permission. A changed
+/// grant left malformed requires the highest permission: its fragments could
+/// later merge with another write into any grant at all.
+///
+/// Returns `None` when no grant changes, and an error when `delta` is not a Doc.
+pub(crate) fn required_auth_change_permission(
+    pre_auth: &AuthSettings,
+    delta: &[u8],
+) -> Result<Option<Permission>> {
+    let delta = Doc::decode(delta)?;
+    let mut before = Doc::new();
+    before.set("auth", pre_auth.as_doc().clone());
+    let after = before.merge(&delta)?;
+    let empty = Doc::new();
+    let after_auth = match after.get("auth") {
+        Some(Value::Doc(auth)) => auth,
+        // Deleting or replacing the whole auth value drops every grant.
+        _ => &empty,
+    };
+    let before_auth = pre_auth.as_doc();
+
+    let mut required = None;
+    let mut require =
+        |old: Option<&Value>, new: Option<&Value>, grant: fn(&Doc) -> Option<Permission>| {
+            if old == new {
+                return;
+            }
+            if let Some(Value::Doc(doc)) = old {
+                required = required.max(grant(doc));
+            }
+            if let Some(new) = new {
+                let parsed = match new {
+                    Value::Doc(doc) => grant(doc),
+                    _ => None,
+                };
+                required = required.max(Some(parsed.unwrap_or(Permission::Admin(0))));
+            }
+        };
+    let key_grant = |doc: &Doc| AuthKey::try_from(doc).ok().map(|key| *key.permissions());
+    let delegation_grant = |doc: &Doc| {
+        DelegatedTreeRef::try_from(doc).ok().map(|delegation| {
+            let bounds = delegation.permission_bounds;
+            bounds.min.map_or(bounds.max, |min| min.max(bounds.max))
+        })
+    };
+
+    for (map, grant) in [
+        ("keys", key_grant as fn(&Doc) -> Option<Permission>),
+        ("delegations", delegation_grant),
+    ] {
+        let entries = |auth: &Doc| match auth.get(map) {
+            Some(Value::Doc(entries)) => entries.clone(),
+            _ => Doc::new(),
+        };
+        let (old, new) = (entries(before_auth), entries(after_auth));
+        let names: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+        for name in names {
+            require(old.get(name), new.get(name), grant);
+        }
+    }
+    require(
+        before_auth.get("global"),
+        after_auth.get("global"),
+        key_grant,
+    );
+    Ok(required)
 }
 
 /// Check if a resolved authentication has sufficient permissions for an operation

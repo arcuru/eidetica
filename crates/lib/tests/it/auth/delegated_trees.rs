@@ -849,6 +849,48 @@ async fn open_via_delegation(
         .with_key(db_key))
 }
 
+/// A delegated admin is bound by priority at its clamped permission: it may
+/// manage weaker grants but cannot touch the target's Admin(0) key or widen
+/// its own delegation.
+#[tokio::test]
+async fn test_delegated_admin_respects_priority() -> Result<()> {
+    let (instance, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
+    let pair = setup_delegation_pair(&instance, &mut user, Permission::Admin(20)).await?;
+    let user_signing_key = user.get_signing_key(&pair.user_key_id)?;
+    let delegated =
+        open_via_delegation(&instance, &pair, user_signing_key, &pair.user_key_id).await?;
+
+    let txn = delegated.new_transaction().await?;
+    txn.get_settings()?
+        .set_auth_key(
+            &PrivateKey::generate().public_key(),
+            AuthKey::active(None, Permission::Write(30)),
+        )
+        .await?;
+    txn.commit().await?;
+
+    let txn = delegated.new_transaction().await?;
+    txn.get_settings()?
+        .revoke_auth_key(&pair.admin_signing_key.public_key())
+        .await?;
+    assert!(
+        txn.commit().await.is_err(),
+        "delegated Admin(20) must not revoke the target's Admin(0) key"
+    );
+
+    let txn = delegated.new_transaction().await?;
+    txn.get_settings()?
+        .add_delegated_tree(
+            create_delegation_ref(&pair.identity_db, Permission::Admin(0), None).await?,
+        )
+        .await?;
+    assert!(
+        txn.commit().await.is_err(),
+        "delegated Admin(20) must not widen its own delegation to Admin(0)"
+    );
+    Ok(())
+}
+
 /// Test writing entries via delegation identity using the Database API directly
 #[tokio::test]
 async fn test_delegated_write_database_api() -> Result<()> {
