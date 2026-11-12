@@ -23,7 +23,6 @@
     extraEnv ? "",
     extraDeps ? [],
     preRun ? "",
-    postRun ? "",
   }:
     pkgs.writeShellApplication {
       inherit name;
@@ -46,7 +45,6 @@
           --workspace-remap "$NEXTEST_WORKSPACE" \
           ${nextestRunnerArgs} \
           "$@"
-        ${postRun}
       '';
     };
 
@@ -74,9 +72,20 @@
     extraDeps = [pkgs.postgresql];
     preRun = ''
       TMPDIR="''${TMPDIR:-/tmp}"
-      export PGDATA="$TMPDIR/pgdata-$$"
+      # Allocate our own directory so failed setup cannot stop an existing server.
+      PGDATA=$(mktemp -d "$TMPDIR/pgdata-XXXXXX")
+      export PGDATA
       export PGHOST="$TMPDIR"
       export PGDATABASE="eidetica_test"
+
+      # Install before setup: nextest and createdb can both fail after startup.
+      cleanup() {
+        pg_ctl -D "$PGDATA" stop > /dev/null 2>&1 || true
+      }
+      trap cleanup EXIT
+      trap 'exit 129' HUP
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
 
       # Suppress postgres output
       initdb --no-locale --encoding=UTF8 --auth=trust > /dev/null 2>&1
@@ -85,9 +94,6 @@
 
       TEST_POSTGRES_URL="postgres://$(whoami)@localhost/$PGDATABASE?host=$TMPDIR"
       export TEST_POSTGRES_URL
-    '';
-    postRun = ''
-      pg_ctl stop > /dev/null 2>&1 || true
     '';
   };
 
