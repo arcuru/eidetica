@@ -514,14 +514,31 @@ async fn test_database_verify_promotes_unverified_and_access_hook() {
         VerificationStatus::Verified
     );
 
-    // Access-time hook: force Unverified again, then a plain `snapshot()`
-    // must opportunistically verify it.
+    // Access-time hook: model the stored-but-not-promoted state left by an
+    // interrupted LocalBackend::write_entry. Demotion reuses the same persisted
+    // entry and pinned settings; no fault-injecting backend is needed here.
     backend
         .update_verification_status(&id, VerificationStatus::Unverified)
         .await
         .unwrap();
+    assert_eq!(backend.get(&id).await.unwrap().id(), id);
+    assert_eq!(
+        backend.snapshot(tree.root_id()).await.unwrap().tips(),
+        std::slice::from_ref(&id)
+    );
+    assert!(
+        !backend
+            .local_engine()
+            .unwrap()
+            .verified_snapshot(tree.root_id())
+            .await
+            .unwrap()
+            .tips()
+            .contains(&id),
+        "the stored entry must not already be visible as Verified"
+    );
     let tips = tree.snapshot().await.unwrap().into_tips();
-    assert!(!tips.is_empty(), "the verified tip must remain visible");
+    assert_eq!(tips, vec![id.clone()], "the exact pending tip must recover");
     assert_eq!(
         backend.get_verification_status(&id).await.unwrap(),
         VerificationStatus::Verified,
