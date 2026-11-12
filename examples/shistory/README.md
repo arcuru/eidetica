@@ -31,7 +31,7 @@ Use the same socket path for the daemon and its clients. A passwordless user's
 root key is unencrypted, so protect the daemon data directory and socket path;
 socket filesystem permissions are the local trust boundary.
 
-`eidetica serve` is a separate HTTP server and dashboard mode, normally on port 3000. It opens the backend directly, so do not run it against the same SQLite
+`eidetica serve` is a separate HTTP server and dashboard mode, normally on port 5942 (`--port`/`EIDETICA_PORT`). It opens the backend directly, so do not run it against the same SQLite
 data directory while `eidetica daemon` owns that directory.
 
 The daemon owns synchronization and advertises the addresses embedded in an
