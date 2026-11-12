@@ -34,6 +34,18 @@ On restart, keep `/config` and omit the bootstrap password. Do not run a second
 direct backend process while the server owns its files. The HTTP listener is
 plain HTTP: keep it on a trusted interface or put HTTPS in front of it.
 
+### Execution modes and command override
+
+The bootstrap script above is the image's default command, and the image sets no
+separate entrypoint. Any arguments after the image name replace that script
+entirely and are passed to the `eidetica` binary: no credential bootstrap runs.
+To run the socket-only `daemon` (or another subcommand) in this image, initialize
+`/config` first — e.g. start once with a credential as shown above, stop the
+container, then run `docker run ... image daemon --socket /config/eidetica.sock`
+against the same volumes. The image's built-in health check calls
+`eidetica health`, an HTTP probe of `serve`/dashboard listeners; a socket-only
+daemon has no HTTP listener, so that check does not apply to it.
+
 ## Durable and disposable directories
 
 | Location                       | Contents                                                                                          | Retention                           |

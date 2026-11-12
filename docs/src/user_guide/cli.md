@@ -24,7 +24,7 @@ eidetica serve [OPTIONS]
 
 ### `health`
 
-Checks the health of a running Eidetica server by querying its `/health` endpoint.
+Checks the health of a running Eidetica server by querying its `/health` endpoint. This is an HTTP check: it applies to `serve` and the optional web dashboard, not to the socket-only `daemon`, which has no HTTP listener (confirm that the daemon is up by its startup log line printing the socket path, or by connecting a socket client).
 
 ```bash
 eidetica health [URL] [OPTIONS]
