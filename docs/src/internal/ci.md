@@ -233,6 +233,10 @@ Only the protected main x86 job in CI and the jobs in the publish workflow (`pub
 
 On trusted main push/manual runs, the main x86 job waits for the ARM checks, then builds the x86 checks and integration tests with the project cache as a substituter. It then lists, without building or fetching anything, the realized flake check outputs and the reusable test artifacts (`legacyPackages.x86_64-linux.test.artifacts`): the nextest archive, plus the Cargo targets when that job compiled the tests rather than substituting them. This happens before any secret enters its environment. Only its final step receives credentials; `.github/scripts/publish-cache.sh` refuses any other repository, event or ref, validates the listed store paths, signs them with `nix store sign` and copies them with `nix copy`. It evaluates and builds nothing, and publishes nothing from pull requests or the ARM runner. Integration test results and ARM check outputs are not published.
 
+The workflow-security lint result retains its source-built zizmor backport in its output closure, so successful protected main publication also caches that exact auditor.
+Build-only dependencies are not automatically included when copying a check's output.
+This avoids recompiling the auditor after workflow edits once the cache is populated; it does not populate a cold cache before the first successful main check run or bypass any publication gate.
+
 CI calls the reusable publisher only after that job succeeds. That calling job grants `packages: write` and names only the publisher's required secrets. GitHub requires those names to be passed even for environment-scoped secrets; the protected callee environments supply their values and take precedence over caller-level values. The repo-level Bencher token is upload-only. The signing key stays in the protected publishing environment, not in CI check jobs. The publisher rebuilds from source rather than consuming PR artifacts.
 
 ### Release Build Integrity
