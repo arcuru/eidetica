@@ -171,16 +171,17 @@ async fn test_delegation_with_unicode_keys() -> Result<()> {
 /// Test AuthInfo with signature but missing key
 #[tokio::test]
 async fn test_sig_info_with_signature_no_key() {
-    let sig_info = AuthInfo::builder()
-        .key(SigKey::Direct {
+    let sig_info = AuthInfo {
+        signature: Some("fake_signature".to_string()),
+        // Empty key
+        key: SigKey::Direct {
             hint: KeyHint {
                 pubkey: None,
                 name: None,
                 is_global: false,
             },
-        }) // Empty key
-        .signature("fake_signature")
-        .build();
+        },
+    };
 
     // Should serialize/deserialize correctly
     let serialized = serde_json::to_string(&sig_info).unwrap();

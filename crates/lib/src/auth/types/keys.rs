@@ -500,10 +500,11 @@ impl AuthInfo {
 
 /// Builder for constructing AuthInfo instances
 ///
-/// This builder provides a fluent interface for creating AuthInfo objects.
+/// This builder provides a fluent interface for creating the key hint of an unsigned
+/// `AuthInfo`. It deliberately cannot attach a signature: sign an entry with
+/// [`Entry::sign`](crate::Entry::sign).
 #[derive(Debug, Clone, Default)]
 pub struct AuthInfoBuilder {
-    signature: Option<String>,
     key: Option<SigKey>,
 }
 
@@ -511,12 +512,6 @@ impl AuthInfoBuilder {
     /// Create a new empty AuthInfoBuilder
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Set the signature (base64-encoded signature bytes)
-    pub fn signature(mut self, signature: impl Into<String>) -> Self {
-        self.signature = Some(signature.into());
-        self
     }
 
     /// Set the authentication key reference
@@ -549,7 +544,7 @@ impl AuthInfoBuilder {
     /// Panics if key is not set, as it's a required field.
     pub fn build(self) -> AuthInfo {
         AuthInfo {
-            signature: self.signature,
+            signature: None,
             key: self.key.expect("key is required for AuthInfo"),
         }
     }
