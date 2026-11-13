@@ -169,14 +169,23 @@
       command = "python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'";
     };
 
-    zizmor = mkSimpleLinter {
-      name = "zizmor";
-      packages = [(import ../zizmor.nix {inherit pkgs;})];
-      src = sources.github-actions-security;
-      # The build sandbox has no network; the daily "Deps: Actions Audit"
-      # workflow runs the online audits that --offline skips here.
-      command = ''zizmor --offline --config .github/zizmor.yml .github/workflows .github/actions'';
-    };
+    zizmor = let
+      auditor = import ../zizmor.nix {inherit pkgs;};
+    in
+      mkSimpleLinter {
+        name = "zizmor";
+        packages = [auditor];
+        src = sources.github-actions-security;
+        # The build sandbox has no network; the daily "Deps: Actions Audit"
+        # workflow runs the online audits that --offline skips here.
+        command = ''
+          zizmor --offline --config .github/zizmor.yml .github/workflows .github/actions
+          # Keep the backport in the checked output's closure so protected main
+          # publication caches it, not just the otherwise empty lint result.
+          mkdir -p $out
+          ln -s ${auditor} $out/auditor
+        '';
+      };
 
     hadolint = mkSimpleLinter {
       name = "hadolint";
