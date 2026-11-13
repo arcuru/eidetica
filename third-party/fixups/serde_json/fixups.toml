@@ -1,0 +1,2 @@
+# build.rs selects fast_arithmetic limb width for the target (required type alias).
+buildscript.run = true

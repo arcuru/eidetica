@@ -1,0 +1,2 @@
+# build.rs expands cfg aliases; with_crypto_provider gates the N0 preset used by sync.
+buildscript.run = true

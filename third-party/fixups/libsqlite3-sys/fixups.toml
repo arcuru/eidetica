@@ -1,0 +1,10 @@
+# build.rs supplies the OUT_DIR binding and bundles SQLite C when the bundled feature is enabled.
+# Do not suppress it: the generated bindgen.rs alone cannot link a usable SQLite library.
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true
+
+[buildscript.run.env]
+OPT_LEVEL = "0"
+DEBUG = "false"
+PROFILE = "release"

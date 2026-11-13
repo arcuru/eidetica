@@ -199,11 +199,11 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint zi
                 ;;
             shellcheck)
                 echo "=== Running shellcheck ==="
-                find . -name "*.sh" -type f -exec shellcheck {} +
+                find . -path "./buck-out" -prune -o -name "*.sh" -type f -exec shellcheck {} +
                 ;;
             yamllint)
                 echo "=== Running yamllint ==="
-                find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
+                find . -path "./buck-out" -prune -o \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
                 ;;
             actionlint)
                 echo "=== Running actionlint ==="
@@ -219,7 +219,7 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint zi
                 ;;
             markdownlint)
                 echo "=== Running markdownlint ==="
-                find . -name "*.md" -not -path "./target/*" -type f -exec markdownlint --config .config/markdownlint.yaml {} +
+                find . -path "./buck-out" -prune -o -name "*.md" -not -path "./target/*" -type f -exec markdownlint --config .config/markdownlint.yaml {} +
                 ;;
             gitleaks)
                 echo "=== Running gitleaks ==="
@@ -531,6 +531,49 @@ nix action='check' target='':
             echo "Unknown action: $action"
             echo "Options: check, full, test [backend], lint [tool], doc [target], integration [target], eval [target], build, test-all, bench"
             exit 1
+            ;;
+    esac
+
+# =============================================================================
+# Buck2 (developer build, Linux x86_64)
+# =============================================================================
+
+# Buck2 commands: build [target], test [target], run [target]
+buck action='build' target='':
+    #!/usr/bin/env bash
+    set -e
+    action={{quote(action)}}
+    target={{quote(target)}}
+    if ! command -v buck2 >/dev/null 2>&1; then
+        echo "Buck2 is not on PATH; enter the x86_64-linux dev shell (direnv or nix develop)" >&2
+        exit 127
+    fi
+    case "$action" in
+        build)
+            if [ -n "$target" ]; then
+                buck2 build "$target"
+            else
+                buck2 build //crates/lib:eidetica //crates/bin:eidetica //examples/chat:chat //examples/todo:todo
+            fi
+            ;;
+        test)
+            if [ -n "$target" ]; then
+                buck2 test "$target"
+            else
+                buck2 test //crates/lib:unit //crates/lib:it '//crates/lib:eidetica_testing[doc]' //crates/bin:unit //crates/bin:reset '//crates/book-tests:book[doc]'
+            fi
+            ;;
+        run)
+            if [ -n "$target" ]; then
+                buck2 run "$target"
+            else
+                buck2 run //crates/bin:eidetica -- --help
+            fi
+            ;;
+        *)
+            echo "Unknown Buck2 action: $action" >&2
+            echo "Options: build [target], test [target], run [target]" >&2
+            exit 2
             ;;
     esac
 
