@@ -149,7 +149,8 @@ pub use registry::SubtreeSettings;
 mod password_store;
 pub use password_store::{
     DEFAULT_ARGON2_M_COST, DEFAULT_ARGON2_P_COST, DEFAULT_ARGON2_T_COST, EncryptedFragment,
-    EncryptionInfo, PasswordStore, PasswordStoreConfig,
+    EncryptionInfo, MAX_ARGON2_M_COST, MAX_ARGON2_P_COST, MAX_ARGON2_T_COST, PasswordStore,
+    PasswordStoreConfig,
 };
 
 #[cfg(feature = "y-crdt")]
