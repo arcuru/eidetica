@@ -485,9 +485,7 @@ async fn test_incorrect_parent_merging_would_fail() {
 
 #[tokio::test]
 async fn test_true_diamond_pattern() {
-    // This test creates a TRUE diamond pattern that would definitely fail with incorrect
-    // parent-state merging. We use the new Tree interface to manually control which tips
-    // each operation starts from.
+    // Control each fork's starting snapshot explicitly, then verify topology and state.
     //
     // Diamond pattern:
     //      A (shared ancestor)
@@ -601,63 +599,19 @@ async fn test_true_diamond_pattern() {
     let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
     let final_state = viewer.get_all().await.unwrap();
 
-    println!("True diamond pattern final state: {final_state:#?}");
-
-    // With the CORRECT merge-base algorithm:
-    // 1. get_full_state() will see tips [B, C] from the operation
-    // 2. compute_subtree_state_merge_base([B, C]) will be called
-    // 3. find_merge_base([B, C]) = A (common ancestor)
-    // 4. compute_single_entry_state_recursive(A) gets State(A)
-    // 5. Merge path A->B into State(A)
-    // 6. Merge path A->C into the result
-    // 7. Apply D's local data
-
-    // All fields from all branches should be present
-    assert!(
-        final_state.get("base").is_some(),
-        "base field from A should be present"
-    );
-    assert!(
-        final_state.get("b_specific").is_some(),
-        "b_specific field from B should be present"
-    );
-    assert!(
-        final_state.get("c_specific").is_some(),
-        "c_specific field from C should be present"
-    );
-    assert!(
-        final_state.get("merge_marker").is_some(),
-        "merge_marker from D should be present"
-    );
-    assert!(
-        final_state.get("final_data").is_some(),
-        "final_data from D should be present"
-    );
-
-    // Check specific values
-    match final_state.get("base").unwrap() {
-        Value::Text(v) => assert_eq!(v, "A", "base should be from A"),
-        _ => panic!("Expected string for base"),
-    }
-
-    match final_state.get("b_specific").unwrap() {
-        Value::Text(v) => assert_eq!(v, "B_data", "b_specific should be from B"),
-        _ => panic!("Expected string for b_specific"),
-    }
-
-    match final_state.get("c_specific").unwrap() {
-        Value::Text(v) => assert_eq!(v, "C_data", "c_specific should be from C"),
-        _ => panic!("Expected string for c_specific"),
-    }
-
-    match final_state.get("merge_marker").unwrap() {
-        Value::Text(v) => assert_eq!(v, "D_created", "merge_marker should be from D"),
-        _ => panic!("Expected string for merge_marker"),
-    }
-
-    match final_state.get("final_data").unwrap() {
-        Value::Text(v) => assert_eq!(v, "merged", "final_data should be from D"),
-        _ => panic!("Expected string for final_data"),
+    // Check every branch's non-conflicting data in the same materialized state.
+    for (key, expected) in [
+        ("base", "A"),
+        ("b_specific", "B_data"),
+        ("c_specific", "C_data"),
+        ("merge_marker", "D_created"),
+        ("final_data", "merged"),
+    ] {
+        assert!(final_state.get(key).is_some(), "{key} field missing");
+        match final_state.get(key).unwrap() {
+            Value::Text(value) => assert_eq!(value, expected, "Unexpected value for {key}"),
+            _ => panic!("Expected string for {key}"),
+        }
     }
 
     // For overlapping fields (shared, count), the result should be deterministic
@@ -671,14 +625,6 @@ async fn test_true_diamond_pattern() {
         "count field should be resolved"
     );
 
-    // With the INCORRECT parent-state merging approach, this test would fail because:
-    // 1. State(B) computed independently: {base:"A", shared:"from_B", count:"2", b_specific:"B_data"}
-    // 2. State(C) computed independently: {base:"A", shared:"from_C", count:"3", c_specific:"C_data"}
-    // 3. State(D) = merge(State(B), State(C), LocalData(D))
-    // 4. The merge of State(B) and State(C) might not work correctly because they were
-    //    computed with different algorithms or orderings
-    // 5. Field combinations might be incorrect or inconsistent
-
     // Verify deterministic behavior - the exact same read should always give same result
     for i in 0..3 {
         let viewer_check = tree.get_store_viewer::<DocStore>("data").await.unwrap();
@@ -688,11 +634,6 @@ async fn test_true_diamond_pattern() {
             "Diamond merge should be deterministic on read {i}"
         );
     }
-
-    println!("✓ TRUE diamond pattern test passed!");
-    println!("  Created real diamond DAG: A->B, A->C, [B,C]->D");
-    println!("  This test WOULD FAIL with incorrect parent-state merging approach");
-    println!("  LCA algorithm correctly handles complex ancestry with proper field merging");
 }
 
 /// Test helper functions for complex merge scenarios
