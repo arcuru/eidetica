@@ -16,8 +16,11 @@ use super::CRDT;
 ///
 /// Use [`Self::insert_delta`] to compose repeated updates to a key. The
 /// low-level [`Self::insert`] instead replaces the stored operation verbatim.
-/// Values need not implement `Default` or encoding traits. This type has no
-/// built-in [`super::Codec`] or Serde implementation.
+/// Values need not implement `Default` or encoding traits. Conditional Serde
+/// implementations expose a logical map, not the private backing fields. New
+/// structured persistence can use [`super::dag_cbor`], which requires unique text
+/// keys and applies DAG-CBOR wire ordering independently of this map's scan order.
+/// There is no built-in [`super::Codec`].
 ///
 /// ```
 /// use eidetica::crdt::{CRDT, Lww, Map};
@@ -34,7 +37,9 @@ use super::CRDT;
 /// assert_eq!(merged.len(), 1); // The tombstone is still present.
 /// # Ok::<(), eidetica::Error>(())
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+#[serde(bound(deserialize = "K: Ord + serde::Deserialize<'de>, V: serde::Deserialize<'de>"))]
 pub struct Map<K, V> {
     entries: BTreeMap<K, V>,
 }
