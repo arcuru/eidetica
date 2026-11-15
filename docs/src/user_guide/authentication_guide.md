@@ -694,7 +694,8 @@ Clearing only the derived cache is not a substitute.
 These checks run on signed entries at commit and remote verification, including raw settings writes.
 They use the entry's causal pre-write settings, not unrelated newer grants or revocations on another branch.
 Delegated signers use their clamped permission; changing a delegation is checked at its old and new bounds.
-Raw fragments that leave a changed grant malformed require `Admin(0)` because concurrent fragments could otherwise assemble stronger authority.
+Raw fragments that leave malformed grants or auth containers are rejected, even for `Admin(0)`.
+Partial updates remain allowed when the resulting grant is complete and valid.
 See the [priority rules and regression coverage](../design/authentication.md#priority-system).
 
 **Multi-device conflicts**: During bootstrap sync between devices:

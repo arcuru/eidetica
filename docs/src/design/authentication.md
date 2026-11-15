@@ -352,7 +352,7 @@ Entry validation enforces this for every `_settings` write, on both local commit
 The validator applies the entry's `_settings` delta to its causal pre-write auth state and compares the two.
 Each grant whose stored value changes — added, removed, revoked, renamed, replaced, or dropped by a whole-map or tombstone write — requires the signer's effective permission to be at least both the grant's old and new permission.
 Delegations count at their permission bounds and the global `*` grant at its permission.
-A changed grant left malformed (for example a lone `permissions` field) requires the highest permission, because its fragments could later merge with another write into any grant.
+Malformed resulting grants (for example a lone `permissions` field) and malformed auth containers are rejected, including writes signed by `Admin(0)`.
 A settings entry must inherit its main-tree height for `_settings`; settings replay orders by that height, so a different explicit height is rejected rather than allowed to replay the delta outside its causal position.
 So a signer can neither weaken or remove a stronger grant nor create one above its own level; delegated signers are judged at their clamped permission.
 Genesis is unchanged: it validates against its own settings, so it has no prior grants to compare.
