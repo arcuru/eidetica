@@ -40,6 +40,125 @@ txn.commit().await?;  // Automatically signed
 # }
 ```
 
+## Creating with explicit authority
+
+`Database::create` and `Database::create_with_init` accept initial `auth` settings and an actual unlocked signer.
+Supplying Auth preserves exactly those grants: there is no additional creator key or creator `Admin(0)` privilege.
+Without an `auth` field, the convenience default grants the supplied key `Admin(0)`.
+Explicit empty, deleted, malformed or unauthorized Auth is an error, not a request for that default.
+
+### Direct keys: no Identity required
+
+An app `Admin(20)` can sign genesis while preserving a stronger owner `Admin(0)`.
+That does not let the app revoke, replace or demote the owner afterward.
+The signer must have Admin permission for genesis, even when the initial application data needs only Write permission later.
+
+```rust
+use eidetica::{Database, Instance, backend::database::InMemory, crdt::Doc};
+use eidetica::auth::{AuthSettings, AuthKey, Permission, crypto::PrivateKey};
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
+let owner = PrivateKey::generate();
+let app = PrivateKey::generate();
+let mut auth = AuthSettings::new();
+auth.add_key(&owner.public_key(), AuthKey::active(None, Permission::Admin(0)))?;
+auth.add_key(&app.public_key(), AuthKey::active(None, Permission::Admin(20)))?;
+let mut initial = Doc::new();
+initial.set("name", "app data");
+initial.set("auth", auth.as_doc().clone());
+let db = Database::create(&instance, app, initial).await?;
+assert_eq!(db.current_permission().await?, Permission::Admin(20));
+let txn = db.new_transaction().await?;
+txn.get_settings()?.revoke_auth_key(&owner.public_key()).await?;
+assert!(txn.commit().await.is_err());
+# Ok(())
+# }
+```
+
+### Delegation-only and mixed Auth
+
+A delegation source is an existing database declaring membership; it can be an Identity database.
+Creating that Identity is separate, and a reference to one is not itself an Auth grant.
+Both its configured pointer and the signer's claimed snapshot need complete locally Verified history.
+In this self-contained example, normal creation/commits establish that history first.
+On another instance, acquire and verify the proof before creating the target; creation does not fetch it for you.
+
+```rust
+use eidetica::{Database, Instance, backend::database::InMemory, crdt::Doc, database::DatabaseKey};
+use eidetica::auth::{AuthSettings, AuthKey, Permission, crypto::PrivateKey};
+use eidetica::auth::types::{DelegatedTreeRef, DelegationStep, KeyHint, PermissionBounds, SigKey, TreeReference};
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
+let owner = PrivateKey::generate();
+let app = PrivateKey::generate();
+let identity = Database::create(&instance, owner, Doc::new()).await?;
+let txn = identity.new_transaction().await?;
+txn.get_settings()?.set_auth_key(&app.public_key(), AuthKey::active(None, Permission::Admin(20))).await?;
+txn.commit().await?;
+let tips = identity.snapshot().await?.into_tips();
+let delegation = DelegatedTreeRef {
+    tree: TreeReference { root: identity.root_id().clone(), tips: tips.clone() },
+    permission_bounds: PermissionBounds { max: Permission::Admin(0), min: None },
+};
+let mut auth = AuthSettings::new();
+auth.add_delegated_tree(delegation)?;
+let mut initial = Doc::new();
+initial.set("auth", auth.as_doc().clone());
+let identity_path = SigKey::Delegation {
+    path: vec![DelegationStep { tree: identity.root_id().clone(), tips }],
+    hint: KeyHint::from_pubkey(&app.public_key()),
+};
+let delegated = Database::create(&instance,
+    DatabaseKey::with_identity(app.clone(), identity_path), initial).await?;
+assert!(delegated.get_settings().await?.auth_snapshot().await?.get_all_keys()?.is_empty());
+let txn = delegated.new_transaction().await?;
+txn.get_store::<eidetica::store::DocStore>("data").await?.set("message", "signed by app").await?;
+txn.commit().await?;
+
+// Mixed Auth: owner administration through the same Identity, app directly.
+auth.add_key(&app.public_key(), AuthKey::active(None, Permission::Admin(20)))?;
+let mut initial = Doc::new();
+initial.set("auth", auth.as_doc().clone());
+let mixed = Database::create(&instance, app, initial).await?;
+assert_eq!(mixed.current_permission().await?, Permission::Admin(20));
+# Ok(())
+# }
+```
+
+`max: Admin(0), min: None` is a ceiling, not a promotion: the delegated app remains `Admin(20)` while the owner retains `Admin(0)`.
+The app can create permitted equal/lower-priority grants afterward but cannot alter the stronger owner-bearing delegation.
+`max: Write(20)` would instead clamp Admin to Write and cannot authorize genesis.
+No new minimum-bound or public-wildcard semantics are introduced.
+
+Pass a `DatabaseKey` for an exact name/global/delegation identity, or a `PrivateKey` for its direct identity.
+A name-only hint is pinned to that signer's public key; an invalid path never falls back to a separate direct grant or connection login key.
+The returned handle retains the signer and path for later reads and writes.
+`create_with_init` uses the same Auth rules and keeps ordinary store initialization in the single genesis entry; its callback cannot open system stores.
+
+Connected instances use the same API: the client signs and the daemon verifies before acknowledging a successful commit.
+The new handle proves possession of its signer and uses its selected identity rather than the connection's login identity.
+The existing delegated `current_permission` client-side introspection is not supported on connected instances; exercise actual operations instead.
+A connected historical `verify_entry_signature` query also needs its acting identity to pass Read gates on each proof database, independently of successful commit validation.
+See [credential and service boundaries](account_credentials.md#embedded-and-service-use).
+
+### Failure and compatibility limits
+
+- Unknown, revoked or wrong signing keys, insufficient permissions and invalid paths cannot create an authorized root.
+- Missing or present-but-Unverified delegated history is unresolved: local creation returns an error; raw ingest retains the target as Unverified for a later retry.
+  An empty snapshot, foreign-tree proof, failed proof or invalid signature is rejected.
+  A connected submission that is not Verified returns an error, never a successful creation acknowledgement.
+- A later entry cannot use newly staged Auth to authorize itself, even if it is the first Auth write in that history.
+- This is causal authorization, not globally latest revocation or unseen-root trust enrollment.
+  Existing live data and verification labels are not migrated, rewritten or deleted.
+  Older validators that do not recognize delegation-only Auth must be upgraded before receiving new delegation-only histories.
+- These are native database primitives, not a new Account provisioning, enrollment or recovery workflow.
+  See [Account design](../design/accounts.md#explicit-genesis-authority) for the integration boundary.
+
+The native/raw and connected regressions are in `crates/lib/tests/it/auth/genesis.rs`; subsequent priority cases remain in `auth/priority_enforcement.rs`.
+The [internal flow](../internal/authentication.md#explicit-genesis-flow) and [design invariants](../design/authentication.md#explicit-genesis-authority) explain the shared enforcement.
+
 ## Key Concepts
 
 **Mandatory Authentication**: Every entry must be signed - no exceptions.

@@ -11,6 +11,8 @@ Its scope comes from database Auth, not a bundle label.
 `CredentialBundle` encrypts exactly the supplied locator and keys with one password.
 `AccountSigner` binds a locator, an actual signing key and an explicit Auth identity immutably.
 These interfaces work without registering a daemon login; they do not discover, enroll or import keys from Account references.
+Use the [explicit-authority creation API](authentication_guide.md#creating-with-explicit-authority) to initialize a database with direct or delegated Auth and a selected `DatabaseKey` signer, without an implicit creator grant.
+Creating or referencing an Identity remains a separate operation.
 
 The ordinary `Instance::login_account` convenience path stores login credentials, additional keys, signer hints and sync preferences in native installation-local records.
 These records are not Entries and do not replicate with AccountDB.
