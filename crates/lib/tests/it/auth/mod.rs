@@ -1,6 +1,7 @@
 pub mod crypto;
 pub mod delegated_trees;
 pub mod error_handling_tests;
+pub mod genesis;
 pub mod helpers;
 pub mod integration;
 pub mod live_authority;
