@@ -398,7 +398,7 @@ async fn raw_settings_deltas_cannot_remove_higher_admin() {
 }
 
 #[tokio::test]
-async fn malformed_grant_fragments_require_top_priority() {
+async fn malformed_auth_state_is_rejected_even_for_top_admin() {
     let fx = Fixture::new().await;
     // A lone `permissions` field is not a key, but a concurrent `status`
     // fragment could merge with it into an Admin(0) key.
@@ -428,8 +428,41 @@ async fn malformed_grant_fragments_require_top_priority() {
         .await,
         "self-promotion hidden behind a malformed status",
     );
-    // The top admin may still write raw fragments.
-    fx.commit_raw(&fx.super_admin, async |s| s.set(&path, "Active").await)
+    // No privilege bypass: malformed resulting grants and containers fail for
+    // the top admin through both local commits and remote verification.
+    for path in [
+        format!("auth.keys.{}", newcomer.public_key()),
+        "auth".to_string(),
+        "auth.keys".to_string(),
+        "auth.delegations".to_string(),
+        "auth.global".to_string(),
+        format!("auth.keys.{}.status", newcomer.public_key()),
+        format!("auth.keys.{}.permissions", fx.low_admin.public_key()),
+        format!("auth.delegations.{}", fx.root),
+    ] {
+        let result = fx
+            .commit_raw(&fx.super_admin, async |s| s.set(&path, "bogus").await)
+            .await;
+        assert!(
+            matches!(&result, Err(eidetica::Error::Transaction(e)) if matches!(
+                **e,
+                eidetica::transaction::TransactionError::EntryValidationFailed
+                    | eidetica::transaction::TransactionError::CorruptedAuthConfiguration
+            )),
+            "top admin writing malformed {path} must be rejected, got {result:?}"
+        );
+        let mut delta = Doc::new();
+        delta.set(&path, "bogus");
+        let entry = fx.craft_settings_entry(&fx.super_admin, &delta).await;
+        assert_eq!(
+            fx.remote_verdict(entry).await,
+            VerificationStatus::Failed,
+            "top admin writing malformed {path} remotely"
+        );
+    }
+    // A partial delta is fine when it leaves a complete valid grant.
+    let path = format!("auth.keys.{}.name", fx.low_admin.public_key());
+    fx.commit_raw(&fx.super_admin, async |s| s.set(&path, "renamed").await)
         .await
         .unwrap();
 }
