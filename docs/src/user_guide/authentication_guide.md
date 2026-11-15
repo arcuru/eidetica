@@ -58,7 +58,9 @@ use eidetica::{Database, Instance, backend::database::InMemory, crdt::Doc};
 use eidetica::auth::{AuthSettings, AuthKey, Permission, crypto::PrivateKey};
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
+let (instance, _) = Instance::create_backend(
+    Box::new(InMemory::new()), eidetica::NewAccount::passwordless("example"),
+).await?;
 let owner = PrivateKey::generate();
 let app = PrivateKey::generate();
 let mut auth = AuthSettings::new();
@@ -90,7 +92,9 @@ use eidetica::auth::{AuthSettings, AuthKey, Permission, crypto::PrivateKey};
 use eidetica::auth::types::{DelegatedTreeRef, DelegationStep, KeyHint, PermissionBounds, SigKey, TreeReference};
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
+let (instance, _) = Instance::create_backend(
+    Box::new(InMemory::new()), eidetica::NewAccount::passwordless("example"),
+).await?;
 let owner = PrivateKey::generate();
 let app = PrivateKey::generate();
 let identity = Database::create(&instance, owner, Doc::new()).await?;
