@@ -145,11 +145,11 @@ pub(crate) fn select_effective_permission(
 /// whether through one key path, a whole map or a tombstone — requires the signer
 /// to rank at least as high as both its old and its new permission. A weaker signer
 /// therefore cannot strip a stronger grant or manufacture one. Delegations count
-/// at their bounds, and the wildcard `global` grant at its permission. A changed
-/// grant left malformed requires the highest permission: its fragments could
-/// later merge with another write into any grant at all.
+/// at their bounds, and the wildcard `global` grant at its permission. Malformed
+/// resulting grants or auth containers are rejected regardless of signer privilege.
 ///
-/// Returns `None` when no grant changes, and an error when `delta` is not a Doc.
+/// Returns `None` when no grant changes, and an error for malformed resulting auth
+/// state or when `delta` is not a Doc.
 pub(crate) fn required_auth_change_permission(
     pre_auth: &AuthSettings,
     delta: &[u8],
@@ -159,30 +159,36 @@ pub(crate) fn required_auth_change_permission(
     before.set("auth", pre_auth.as_doc().clone());
     let after = before.merge(&delta)?;
     let empty = Doc::new();
+    let malformed = || AuthError::InvalidAuthConfiguration {
+        reason: "settings write leaves malformed authentication state".to_string(),
+    };
     let after_auth = match after.get("auth") {
         Some(Value::Doc(auth)) => auth,
-        // Deleting or replacing the whole auth value drops every grant.
-        _ => &empty,
+        // Deletion is distinct from a present value of the wrong type.
+        None => &empty,
+        Some(_) => return Err(malformed().into()),
     };
     let before_auth = pre_auth.as_doc();
 
     let mut required = None;
-    let mut require =
-        |old: Option<&Value>, new: Option<&Value>, grant: fn(&Doc) -> Option<Permission>| {
-            if old == new {
-                return;
-            }
-            if let Some(Value::Doc(doc)) = old {
-                required = required.max(grant(doc));
-            }
-            if let Some(new) = new {
-                let parsed = match new {
-                    Value::Doc(doc) => grant(doc),
-                    _ => None,
-                };
-                required = required.max(Some(parsed.unwrap_or(Permission::Admin(0))));
-            }
+    let mut require = |old: Option<&Value>,
+                       new: Option<&Value>,
+                       grant: fn(&Doc) -> Option<Permission>|
+     -> Result<()> {
+        let parsed = match new {
+            Some(Value::Doc(doc)) => Some(grant(doc).ok_or_else(malformed)?),
+            Some(_) => return Err(malformed().into()),
+            None => None,
         };
+        if old == new {
+            return Ok(());
+        }
+        if let Some(Value::Doc(doc)) = old {
+            required = required.max(grant(doc));
+        }
+        required = required.max(parsed);
+        Ok(())
+    };
     let key_grant = |doc: &Doc| AuthKey::try_from(doc).ok().map(|key| *key.permissions());
     let delegation_grant = |doc: &Doc| {
         DelegatedTreeRef::try_from(doc).ok().map(|delegation| {
@@ -199,17 +205,23 @@ pub(crate) fn required_auth_change_permission(
             Some(Value::Doc(entries)) => entries.clone(),
             _ => Doc::new(),
         };
+        if after_auth
+            .get(map)
+            .is_some_and(|value| !matches!(value, Value::Doc(_)))
+        {
+            return Err(malformed().into());
+        }
         let (old, new) = (entries(before_auth), entries(after_auth));
         let names: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
         for name in names {
-            require(old.get(name), new.get(name), grant);
+            require(old.get(name), new.get(name), grant)?;
         }
     }
     require(
         before_auth.get("global"),
         after_auth.get("global"),
         key_grant,
-    );
+    )?;
     Ok(required)
 }
 
