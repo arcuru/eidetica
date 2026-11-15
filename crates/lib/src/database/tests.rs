@@ -157,7 +157,7 @@ async fn test_genesis_first_auth_survives_reverification() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_create_rejects_preconfigured_auth() -> Result<()> {
+async fn test_create_rejects_unauthorized_explicit_auth() -> Result<()> {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
         crate::NewAccount::passwordless("admin"),
@@ -168,9 +168,9 @@ async fn test_create_rejects_preconfigured_auth() -> Result<()> {
 
     let (_, other_pubkey) = generate_keypair();
 
-    // Pre-configure auth in settings — this should be rejected
+    // Explicit Auth does not authorize the supplied signer.
     let mut settings = Doc::new();
-    settings.set("name", "test_reject");
+    settings.set("name", "test_unauthorized");
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
@@ -185,8 +185,8 @@ async fn test_create_rejects_preconfigured_auth() -> Result<()> {
 
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("must not contain auth configuration"),
-        "Error should mention auth configuration, got: {err_msg}"
+        err_msg.contains("Entry validation failed"),
+        "Error should report native validation failure, got: {err_msg}"
     );
 
     Ok(())

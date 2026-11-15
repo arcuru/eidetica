@@ -11,7 +11,7 @@
   - [Database Storage](user_guide/concepts/backends.md)
   - [Stores](user_guide/concepts/stores.md)
   - [Transactions](user_guide/transactions.md)
-- [Authentication Guide](user_guide/authentication_guide.md)
+- [Authentication and Database Creation](user_guide/authentication_guide.md)
 - [Explicit Credentials and Signers](user_guide/account_credentials.md)
 - [Encryption Guide](user_guide/encryption_guide.md)
 - [Synchronization Guide](user_guide/synchronization_guide.md)

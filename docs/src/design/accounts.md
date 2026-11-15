@@ -20,6 +20,22 @@ The [explicit credential and signer API](../user_guide/account_credentials.md) s
 Its [native local-record substrate](../internal/account_credentials.md) is separate from the Entry DAG.
 The ordinary login/key/preference writers also use native local records; AccountDB does not carry those records.
 
+## Explicit genesis authority
+
+The native foundation is `Database::create` / `create_with_init` with explicit `_settings.auth` and a `PrivateKey` or `DatabaseKey` signer.
+It supports direct-only, delegation-only and mixed Auth without inserting an independent creator grant.
+An app with effective `Admin(20)` can initialize a root that preserves stronger owner authority, including a pre-existing Identity delegation bounded by `Admin(0)`.
+Genesis validates its actual signer against the initial Auth and complete locally Verified proof; subsequent entries use causal pre-write Auth and enforce priority protection of the owner.
+There is no automatic personal parent, new app principal or distinct ownership ACL.
+Identity creation remains separate and optional, and an organizational reference grants no authority.
+
+This primitive is reusable by Account and Identity constructors; it does not by itself provide linked-account provisioning, app login registration or device enrollment.
+The existing `NewAccount` convenience flow still creates its ordinary default root-key grant.
+Applications using explicit authority must supply every target's intended Auth rather than assume a reference conveys the owner's grants.
+Credential bundles and immutable acting handles remain separate from replicated authority.
+No live data, existing Auth, old history or local verification labels are migrated or deleted.
+See the [tested direct/delegation/mixed examples](../user_guide/authentication_guide.md#creating-with-explicit-authority) and [genesis invariants](authentication.md#explicit-genesis-authority).
+
 ## Current custody and security boundary
 
 Fresh Account histories contain public Auth and portable application references, not private-key/unlock records or installation activation preferences.

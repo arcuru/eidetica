@@ -14,6 +14,7 @@ This document outlines the authentication and authorization scheme for Eidetica,
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
   - [Authentication Modes and Bootstrap Behavior](#authentication-modes-and-bootstrap-behavior)
+    - [Explicit Genesis Authority](#explicit-genesis-authority)
     - [Unsigned Mode (No Authentication)](#unsigned-mode-no-authentication)
     - [Signed Mode (Mandatory Authentication)](#signed-mode-mandatory-authentication)
     - [Future: Overlay Databases](#future-overlay-databases)
@@ -81,7 +82,30 @@ The authentication system is **not** implemented as a pure consumer of the datab
 ## Authentication Modes and Bootstrap Behavior
 
 The entry validator distinguishes unauthenticated histories from histories with configured authentication.
-`Database::create` bootstraps a signing key in the genuine genesis entry; a later signed settings write cannot bootstrap its own authority.
+`Database::create` validates a signing key against the genuine genesis Auth; a later signed settings write cannot bootstrap its own authority.
+
+### Explicit Genesis Authority
+
+Database creation accepts explicit initial Auth and an actual signer, including an exact `DatabaseKey` delegation identity.
+Only omission of `auth` selects the convenience default of direct signer `Admin(0)`.
+Explicit direct-only, delegation-only and mixed Auth are used without adding a creator key or elevating its permission.
+Explicit empty, malformed or deleted Auth cannot obtain that default.
+Every configured delegation pointer requires complete locally Verified proof, including when a direct key signs.
+Delegation-only Auth is signed mode: unsigned genesis and descendants fail, while signatures must resolve active authority at the claimed snapshots under the existing bounds and causal rules.
+
+Genesis establishes a new authority state, rather than changing an existing owner's grants.
+An effective `Admin(20)` signer may therefore initialize explicit owner `Admin(0)` authority, directly or through a pre-existing owner-bearing delegation.
+It must still sign with an actual authorized Admin key and supply valid proof; a Write-only key cannot initialize settings.
+The ceiling `max Admin(0), min none` preserves `Admin(20)` rather than promoting it.
+Subsequent entries validate against causal pre-write Auth and must outrank every old and new grant they change.
+This permits lower-priority app initialization without letting that app revoke, replace, demote or bypass the stronger owner later.
+New staged Auth never authorizes a non-genesis entry, even the first Auth update in an otherwise unauthenticated history.
+
+The constructor and raw remote ingest share the native validator; Account/Identity wrappers do not supply this protection.
+Missing/unverified proof is unresolved, not permission; foreign, empty or Failed proof is rejected.
+No globally latest revocation rule, unseen-root trust enrollment, historical rewrite or live migration follows from these primitives.
+Older validators lacking delegation-only detection must be upgraded before consuming such new histories; existing verification labels are not reset automatically.
+See [runnable creation examples](../user_guide/authentication_guide.md#creating-with-explicit-authority), [internal flow and regression map](../internal/authentication.md#explicit-genesis-flow), and [Account integration status](accounts.md#explicit-genesis-authority).
 
 ### Unsigned Mode (No Authentication)
 
@@ -89,7 +113,7 @@ Databases are in **unsigned mode** when created without authentication configura
 
 - The `_settings.auth` key is either missing or contains an empty `Doc` (`{"auth": {}}`)
 - Both states are equivalent and treated identically by the system
-- **Unsigned operations succeed**: Transactions without signatures are allowed
+- **Unsigned operations succeed at the low-level validator**: normal transaction APIs still require a signing key
 - **No validation overhead**: Authentication validation is skipped for performance
 - **Suitable for**: Local-only databases, temporary workspaces, development environments, overlay networks
 
@@ -104,7 +128,7 @@ Unsigned mode enables use cases where authentication overhead is unnecessary, su
 
 Once authentication is configured, databases are in **signed mode** where:
 
-- The `_settings.auth` key contains at least one authentication key
+- The `_settings.auth` key configures keys, delegations or a global permission
 - **All operations require valid signatures**: Only authenticated and transactions are valid
 - **Fail-safe validation**: Corrupted or deleted auth configuration causes all transactions to fail
 - **Permanent transition**: Cannot return to unsigned mode (would require creating a new database)
