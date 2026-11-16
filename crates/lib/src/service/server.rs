@@ -79,6 +79,7 @@ struct ConnectionContext {
     tx: mpsc::UnboundedSender<ServerFrame>,
     instance: Instance,
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
+    local_metadata: std::sync::Mutex<Option<crate::account::local_state::MetadataRegistration>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
@@ -123,6 +124,11 @@ struct ConnectionGuard {
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
+        self.ctx
+            .local_metadata
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         let subs = self.ctx.subscribed_lock();
         if !subs.is_empty() {
             tracing::debug!(
@@ -675,6 +681,7 @@ async fn handle_connection(
         tx: frame_tx.clone(),
         instance: instance.clone(),
         subscribed: std::sync::Mutex::new(HashMap::new()),
+        local_metadata: std::sync::Mutex::new(None),
         staging: std::sync::Mutex::new(HashMap::new()),
         staging_idle_ttl,
         published_view_idle_ttl,
@@ -798,6 +805,10 @@ async fn dispatch_inner(
     match request {
         // === Pre-auth: login handshake ===
         ServiceRequest::TrustedLoginAccount { username } => {
+            ctx.local_metadata
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
             handle_trusted_login_account(instance, state, username).await
         }
         ServiceRequest::TrustedLoginProve { signature } => {
@@ -805,6 +816,10 @@ async fn dispatch_inner(
         }
 
         ServiceRequest::SignerChallenge { pubkey } => {
+            ctx.local_metadata
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
             let challenge = generate_challenge();
             *state = ConnectionState::AwaitingProof {
                 username: String::new(),
@@ -862,6 +877,26 @@ async fn dispatch_inner(
             Ok(ServiceResponse::LocalAccounts(
                 crate::account::local_logins::list(&instance.users_db().await?).await?,
             ))
+        }
+        ServiceRequest::SubscribeLocalAccountMetadata { login_id } => {
+            require_local_login(state, &login_id)?;
+            let tx = ctx.tx.clone();
+            let scope = login_id.clone();
+            let callback = Arc::new(move |keys: Arc<crate::account::local_state::KeyMetadata>| {
+                // Only public metadata; a failed send means this connection is
+                // closing, and ConnectionGuard removes the registration.
+                let _ = tx.send(ServerFrame::Notification(
+                    Notification::LocalAccountMetadata {
+                        login_id: scope.clone(),
+                        keys: (*keys).clone(),
+                    },
+                ));
+            });
+            let (registration, initial) =
+                crate::account::local_state::register_metadata(instance, &login_id, callback)
+                    .await?;
+            *ctx.local_metadata.lock().unwrap_or_else(|p| p.into_inner()) = Some(registration);
+            Ok(ServiceResponse::LocalAccountMetadata((*initial).clone()))
         }
         ServiceRequest::LocalAccountState { login_id } => {
             require_local_login(state, &login_id)?;

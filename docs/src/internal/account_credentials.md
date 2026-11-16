@@ -94,6 +94,35 @@ No operation exposes arbitrary native record names or general backend secrets.
 The unchanged frame-size limit bounds each request/response; oversize state is refused rather than split into partially applied writes.
 Updated clients require matching support for these operations; older peers may return Unsupported, with no replicated-store fallback.
 
+## Live mapping metadata
+
+Registered AccountSessions subscribe to their login's native public key metadata.
+The initial snapshot and registration are serialized with native reads and compare/exchange publication, so an edit cannot fall between loading and subscribing.
+Successful replacements publish a complete public metadata snapshot, including mapping removals; failed compare/exchanges publish nothing.
+Explicit native reads republish the persisted metadata to reconcile a previously lost acknowledgement.
+No Account Entry, schema change or polling loop is involved.
+
+Embedded mapping lookups see a completed native edit immediately.
+Connected sessions receive `LocalAccountMetadata` notifications asynchronously.
+A native read, such as `databases()` or `refresh_mapping_metadata()`, is a visibility barrier: its response follows the current metadata snapshot on that connection.
+Applications that need immediate visibility after another client's completed edit should await one of those reads before `find_key`, `key_mapping` or opening the database.
+Concurrent edits can still occur after the barrier; a mapping is not a transaction with database Auth.
+
+Mapping lookups select only signing keys already held by the session.
+A public metadata snapshot does not unlock new private keys; a new login is needed to load keys added by another session.
+Caller-held sessions keep their existing session-local bookkeeping and do not subscribe to daemon records.
+Existing Database handles retain their immutable signer and identity; changing a mapping is not revocation, and every operation still uses normal database Auth.
+
+The service subscription requires the exact authenticated local login UUID, just like native-state reads and writes.
+Proof-only signer connections have no login-record scope.
+Notifications contain public key metadata only, never a credential bundle or private key.
+They are applied by the client reader before later responses, without user callbacks or asynchronous refresh jobs.
+Local registrations drop with their session; the wire registration belongs to the connection and ends on reauthentication or disconnect.
+The registries hold weak channels, not sessions or private keys.
+A closed service connection makes mapping lookup fail rather than returning a supposedly live snapshot.
+Updated clients require subscription support from the service; an older service's Unsupported response fails login rather than silently using stale mappings.
+The existing frame cap is unchanged.
+
 ## Bundle format and key lifetimes
 
 The v1 encrypted bundle's logical JSON payload has only `account_id` and an explicit ordered, nonempty, unique list of private keys.

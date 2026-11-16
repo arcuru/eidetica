@@ -87,6 +87,10 @@ pub struct AccountSession {
     /// Decrypted account keys (in memory only during session)
     key_manager: AccountKeyManager,
 
+    /// Live public mapping metadata, scoped to this installation login. Actual
+    /// private keys remain exactly those unlocked into this session.
+    metadata: Option<super::local_state::MetadataSubscription>,
+
     /// Account info (cached from the native login record)
     account_info: Option<AccountInfo>,
 
@@ -121,22 +125,24 @@ impl AccountSession {
     /// * `instance` - Instance reference
     /// * `key_manager` - Initialized key manager with decrypted keys
     #[allow(dead_code)]
-    pub(crate) fn new(
+    pub(crate) async fn new(
         login_id: String,
         account_info: AccountInfo,
         account_database: Database,
         instance: Instance,
         key_manager: AccountKeyManager,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let metadata = super::local_state::subscribe_metadata(&instance, &login_id).await?;
+        Ok(Self {
             login_id,
             username: account_info.username.clone(),
             account: Account::new(account_database),
             instance,
             key_manager,
+            metadata: Some(metadata),
             account_info: Some(account_info),
             caller_state: None,
-        }
+        })
     }
 
     /// Open a full session using an explicit signer and Account locator, without
@@ -206,6 +212,7 @@ impl AccountSession {
             account,
             instance: instance.clone(),
             key_manager,
+            metadata: None,
             account_info: None,
             caller_state: Some(tokio::sync::Mutex::new(state)),
         })
@@ -696,7 +703,10 @@ impl AccountSession {
     /// Find which key can access a database.
     ///
     /// Searches this account's keys to find one that can access the specified database.
-    /// Considers the SigKey mappings stored in account key metadata.
+    /// Considers the current login-scoped public metadata for held keys.
+    /// Embedded edits are visible after native persistence returns. Service
+    /// notifications arrive asynchronously; a native read (such as
+    /// [`Self::databases`] or [`Self::refresh_mapping_metadata`]) is a barrier.
     ///
     /// Returns the key_id of a suitable key, preferring keys with mappings for this database.
     ///
@@ -708,9 +718,7 @@ impl AccountSession {
     pub fn find_key(&self, database_id: &ID) -> Result<Option<PublicKey>> {
         // Iterate through all keys and find ones with SigKey mappings for this database
         for key_id in self.key_manager.list_key_ids() {
-            if let Some(metadata) = self.key_manager.get_key_metadata(&key_id)
-                && metadata.database_sigkeys.contains_key(database_id)
-            {
+            if self.stored_key_mapping(&key_id, database_id)?.is_some() {
                 return Ok(Some(key_id));
             }
         }
@@ -739,20 +747,50 @@ impl AccountSession {
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the AccountKeyManager
     pub fn key_mapping(&self, key_id: &PublicKey, database_id: &ID) -> Result<Option<SigKey>> {
-        let metadata = self.key_manager.get_key_metadata(key_id).ok_or_else(|| {
-            super::errors::AccountError::KeyNotFound {
+        Ok(self
+            .stored_key_mapping(key_id, database_id)?
+            .map(|identity| identity.unwrap_or_else(|| SigKey::from_pubkey(key_id))))
+    }
+
+    fn stored_key_mapping(
+        &self,
+        key_id: &PublicKey,
+        database_id: &ID,
+    ) -> Result<Option<Option<SigKey>>> {
+        // Public metadata can select only a signer already held by this session.
+        if self.key_manager.get_signing_key(key_id).is_none() {
+            return Err(AccountError::KeyNotFound {
                 key_id: key_id.to_string(),
             }
-        })?;
-
-        match metadata.database_sigkeys.get(database_id) {
-            None => Ok(None), // no mapping exists
-            Some(None) => {
-                // Default: pubkey identity derived directly from key_id
-                Ok(Some(SigKey::from_pubkey(key_id)))
-            }
-            Some(Some(sigkey)) => Ok(Some(sigkey.clone())),
+            .into());
         }
+        if let Some(subscription) = &self.metadata {
+            #[cfg(all(unix, feature = "service"))]
+            if let Some(connection) = self.instance.remote_connection() {
+                connection.ensure_open()?;
+            }
+            let snapshot = subscription.receiver.borrow();
+            let keys = snapshot.as_ref().ok_or(AccountError::InvalidLocalState)?;
+            return Ok(keys
+                .get(&key_id.to_string())
+                .and_then(|metadata| metadata.database_sigkeys.get(database_id))
+                .cloned());
+        }
+        Ok(self
+            .key_manager
+            .get_key_metadata(key_id)
+            .and_then(|metadata| metadata.database_sigkeys.get(database_id))
+            .cloned())
+    }
+
+    /// Wait for a native-state read barrier. On a service connection, earlier
+    /// mapping notifications are consumed before this read's response. Use this
+    /// after another client's completed edit when immediate visibility matters;
+    /// otherwise service notifications update mappings asynchronously.
+    /// This does not import private keys, write state, or change database Auth.
+    pub async fn refresh_mapping_metadata(&self) -> Result<()> {
+        self.read_local_state().await?;
+        Ok(())
     }
 
     /// Map a key to a SigKey identity for a specific database.

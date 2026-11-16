@@ -266,3 +266,146 @@ async fn join_concurrent_local_bookkeeping_preserves_state_without_account_entry
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn native_mapping_subscription_orders_concurrent_edits_and_removal() -> Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let (instance, mut first) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            NewAccount::passwordless("mapping-race"),
+        )
+        .await?;
+        let mut second = instance.login_account("mapping-race", "").await?;
+        let observer = instance.login_account("mapping-race", "").await?;
+        let key = first.get_default_key()?;
+        let a = ID::from_bytes("a");
+        let b = ID::from_bytes("b");
+        let (a_result, b_result) = tokio::join!(
+            first.map_key(&key, &a, SigKey::from_pubkey(&key)),
+            second.map_key(&key, &b, SigKey::from_name("explicit")),
+        );
+        a_result?;
+        b_result?;
+        assert_eq!(observer.find_key(&a)?, Some(key.clone()));
+        assert_eq!(
+            observer.key_mapping(&key, &b)?,
+            Some(SigKey::from_name("explicit"))
+        );
+        // Removal through the native observed-byte API must replace the cached
+        // snapshot, not merge it and accidentally resurrect the old mapping.
+        super::super::local_state::update(&instance, first.login_id(), |state| {
+            state
+                .keys
+                .get_mut(&key.to_string())
+                .unwrap()
+                .database_sigkeys
+                .remove(&a);
+            Ok(())
+        })
+        .await?;
+        assert_eq!(observer.find_key(&a)?, None);
+        assert_eq!(observer.key_mapping(&key, &a)?, None);
+        assert!(observer.open_database(&a).await.is_err());
+        assert_eq!(
+            observer.key_mapping(&key, &b)?,
+            Some(SigKey::from_name("explicit"))
+        );
+        // Simulate a durable effect without its publication/acknowledgement.
+        // An explicit native read must reconcile, not merely await old pushes.
+        let before = super::super::local_state::read_raw(&instance, first.login_id()).await?;
+        let mut state = super::super::local_state::read(&instance, first.login_id()).await?;
+        AccountSession::map_key_in_state(&mut state, &key, &a, SigKey::from_pubkey(&key))?;
+        assert!(
+            instance
+                .require_local_engine()?
+                .compare_exchange_local_account_record(
+                    &format!("account-state:{}", first.login_id()),
+                    before.as_deref(),
+                    &serde_json::to_vec(&state).unwrap(),
+                )
+                .await?
+        );
+        assert_eq!(observer.find_key(&a)?, None);
+        observer.refresh_mapping_metadata().await?;
+        assert_eq!(observer.find_key(&a)?, Some(key));
+        Ok(())
+    })
+    .await
+    .expect("native mapping edit deadlocked")
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn native_mapping_push_reaches_live_session_without_reads() -> Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        use std::os::unix::fs::PermissionsExt;
+        let (server, _) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            NewAccount::passwordless("push-owner"),
+        )
+        .await?;
+        let directory = tempfile::tempdir()?;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+        let path = directory.path().join("push.sock");
+        let service = crate::service::ServiceServer::bind(server.clone(), &path).await?;
+        let (shutdown, rx) = tokio::sync::watch::channel(());
+        let task = tokio::spawn(service.run(rx));
+        let creator_instance = Instance::connect(format!("unix://{}", path.display())).await?;
+        let observer_instance = Instance::connect(format!("unix://{}", path.display())).await?;
+        let mut creator = creator_instance.login_account("push-owner", "").await?;
+        let observer = observer_instance.login_account("push-owner", "").await?;
+        let key = creator.get_default_key()?;
+        let mut updates = observer.metadata.as_ref().unwrap().receiver.clone();
+        updates.borrow_and_update();
+        let database = creator.create_database(Doc::new(), &key).await?;
+        // Event-driven wait: no native read/refresh on the observer. Ignore
+        // coalesced snapshots that precede the actual mapping replacement.
+        loop {
+            updates.changed().await.unwrap();
+            if updates.borrow_and_update().as_ref().unwrap()[&key.to_string()]
+                .database_sigkeys
+                .contains_key(database.root_id())
+            {
+                break;
+            }
+        }
+        assert_eq!(observer.find_key(database.root_id())?, Some(key.clone()));
+        observer
+            .open_database(database.root_id())
+            .await?
+            .snapshot()
+            .await?;
+        super::super::local_state::update(&creator_instance, creator.login_id(), |state| {
+            state
+                .keys
+                .get_mut(&key.to_string())
+                .unwrap()
+                .database_sigkeys
+                .remove(database.root_id());
+            Ok(())
+        })
+        .await?;
+        loop {
+            updates.changed().await.unwrap();
+            if !updates.borrow_and_update().as_ref().unwrap()[&key.to_string()]
+                .database_sigkeys
+                .contains_key(database.root_id())
+            {
+                break;
+            }
+        }
+        assert_eq!(observer.find_key(database.root_id())?, None);
+        observer_instance.remote_connection().unwrap().retire();
+        assert!(observer.key_mapping(&key, database.root_id()).is_err());
+        drop(updates);
+        drop(observer);
+        drop(creator);
+        drop(observer_instance);
+        drop(creator_instance);
+        drop(shutdown);
+        task.await.unwrap()?;
+        Ok(())
+    })
+    .await
+    .expect("native push subscription stalled")
+}

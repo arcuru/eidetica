@@ -238,6 +238,7 @@ async fn v0_client_fails_closed_on_malformed_or_required_unknown_frames() {
         r#"{"Response":{"SessionKeyChallenge":{"challenge":"bad"}}}"#,
         r#"{"Notification":{"DatabaseWrite":{"root_id":"","previous_tips":[],"post_tips":[],"source":"FutureSource"}}}"#,
         r#"{"Notification":{"DatabaseWrite":{"root_id":"","previous_tips":[],"post_tips":[]}}}"#,
+        r#"{"Notification":{"LocalAccountMetadata":{"login_id":"login","keys":"bad"}}}"#,
     ] {
         let (conn, mut peer) = connect_peer().await;
         let first = start_call(&conn, "first");

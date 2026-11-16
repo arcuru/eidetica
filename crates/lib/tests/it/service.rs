@@ -2658,6 +2658,18 @@ async fn test_local_account_state_requires_exact_login_and_preserves_conflicts()
     );
     write_frame(
         &mut writer,
+        &ServiceRequest::SubscribeLocalAccountMetadata {
+            login_id: alice.login_id().to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(read_response(&mut reader).await, ServiceResponse::Error(_)),
+        "pre-auth subscription succeeded"
+    );
+    write_frame(
+        &mut writer,
         &ServiceRequest::TrustedLoginAccount {
             username: "local-alice".to_owned(),
         },
@@ -2684,6 +2696,9 @@ async fn test_local_account_state_requires_exact_login_and_preserves_conflicts()
         ServiceResponse::TrustedLoginOk
     ));
     for request in [
+        ServiceRequest::SubscribeLocalAccountMetadata {
+            login_id: bob.login_id().to_owned(),
+        },
         ServiceRequest::LocalAccountState {
             login_id: bob.login_id().to_owned(),
         },
@@ -2875,4 +2890,160 @@ async fn creation_registration_failure_retains_committed_root() {
     proxy.abort();
     assert!(proxy.await.unwrap_err().is_cancelled());
     shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn test_native_metadata_notifications_replace_snapshots_and_end_on_reauthentication() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        use eidetica::service::protocol::Notification;
+        let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+        create_user_via_admin(&server, "metadata-alice").await;
+        create_user_via_admin(&server, "metadata-bob").await;
+        let mut alice = server.login_account("metadata-alice", "").await.unwrap();
+        let bob = server.login_account("metadata-bob", "").await.unwrap();
+        let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+        let key = alice.get_default_key().unwrap();
+        let tree = eidetica::ID::from_bytes("metadata-notification");
+        for (index, user) in [&alice, &bob].into_iter().enumerate() {
+            write_frame(
+                &mut writer,
+                &ServiceRequest::TrustedLoginAccount {
+                    username: user.username().to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+            let challenge = match read_response(&mut reader).await {
+                ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+                other => panic!("expected login challenge, got {other:?}"),
+            };
+            let signer = user
+                .get_signing_key(&user.get_default_key().unwrap())
+                .unwrap();
+            write_frame(
+                &mut writer,
+                &ServiceRequest::TrustedLoginProve {
+                    signature: create_challenge_response(&challenge, &signer),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                read_response(&mut reader).await,
+                ServiceResponse::TrustedLoginOk
+            ));
+            if index == 0 {
+                write_frame(
+                    &mut writer,
+                    &ServiceRequest::SubscribeLocalAccountMetadata {
+                        login_id: user.login_id().to_owned(),
+                    },
+                )
+                .await
+                .unwrap();
+                assert!(matches!(
+                    read_response(&mut reader).await,
+                    ServiceResponse::LocalAccountMetadata(_)
+                ));
+            }
+        }
+        // The old login's subscription ended before the new login started.
+        // A normal response is a FIFO barrier, not an absence-by-timeout probe.
+        alice
+            .map_key(&key, &tree, SigKey::from_pubkey(&key))
+            .await
+            .unwrap();
+        write_frame(&mut writer, &ServiceRequest::GetInstanceMetadata)
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_response(&mut reader).await,
+            ServiceResponse::InstanceMetadata(_)
+        ));
+        // Reauthenticate as Alice on a separate ordinary client. Observe an
+        // actual positive push, then a raw CAS removal on this same connection.
+        let client = Instance::connect(format!("unix://{}", socket_path.display()))
+            .await
+            .unwrap();
+        let observer = client.login_account("metadata-alice", "").await.unwrap();
+        alice
+            .map_key(&key, &tree, SigKey::from_name("explicit"))
+            .await
+            .unwrap();
+        observer.refresh_mapping_metadata().await.unwrap();
+        assert_eq!(
+            observer.key_mapping(&key, &tree).unwrap(),
+            Some(SigKey::from_name("explicit"))
+        );
+        // Keep raw connection identity Bob: only his initial metadata is exposed.
+        write_frame(
+            &mut writer,
+            &ServiceRequest::SubscribeLocalAccountMetadata {
+                login_id: bob.login_id().to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        let initial = match read_response(&mut reader).await {
+            ServiceResponse::LocalAccountMetadata(keys) => keys,
+            other => panic!("expected native metadata, got {other:?}"),
+        };
+        assert!(!initial.contains_key(&key.to_string()));
+        let name = format!("account-state:{}", bob.login_id());
+        let before = server
+            .backend()
+            .local_engine()
+            .unwrap()
+            .local_account_record(&name)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut replacement: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        let bob_key = bob.get_default_key().unwrap();
+        replacement["keys"][bob_key.to_string()]["database_sigkeys"][tree.to_string()] =
+            serde_json::Value::Null;
+        let with_mapping = serde_json::to_vec(&replacement).unwrap();
+        for (expected, value, present) in [
+            (before.clone(), with_mapping.clone(), true),
+            (with_mapping, before, false),
+        ] {
+            write_frame(
+                &mut writer,
+                &ServiceRequest::ExchangeLocalAccountState {
+                    login_id: bob.login_id().to_owned(),
+                    expected: Some(expected),
+                    value,
+                },
+            )
+            .await
+            .unwrap();
+            // Notification enqueue is part of the successful CAS, before ack.
+            match read_frame::<_, ServerFrame>(&mut reader)
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                ServerFrame::Notification(Notification::LocalAccountMetadata {
+                    login_id,
+                    keys,
+                }) => {
+                    assert_eq!(login_id, bob.login_id());
+                    assert_eq!(
+                        keys[&bob_key.to_string()]
+                            .database_sigkeys
+                            .contains_key(&tree),
+                        present
+                    );
+                    assert!(!keys.contains_key(&key.to_string()));
+                }
+                other => panic!("expected native metadata notification, got {other:?}"),
+            }
+            assert!(matches!(
+                read_response(&mut reader).await,
+                ServiceResponse::LocalAccountStateExchanged(true)
+            ));
+        }
+    })
+    .await
+    .expect("native metadata notification stalled");
 }

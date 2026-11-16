@@ -3,7 +3,157 @@
 use super::{AccountKey, TrackedDatabase};
 use crate::{ID, Instance, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, Mutex, Weak},
+};
+
+pub(crate) type KeyMetadata = BTreeMap<String, AccountKey>;
+type MetadataCallback = Arc<dyn Fn(Arc<KeyMetadata>) + Send + Sync>;
+
+/// Weak registry: neither a dropped session nor its cached metadata is retained.
+#[derive(Default)]
+pub(crate) struct MetadataRegistry(Mutex<HashMap<String, Weak<MetadataChannel>>>);
+
+#[derive(Default)]
+pub(crate) struct MetadataChannel {
+    // Serializes snapshot/registration and CAS/publication for this login only.
+    gate: tokio::sync::Mutex<()>,
+    callbacks: Mutex<HashMap<uuid::Uuid, MetadataCallback>>,
+}
+
+impl MetadataRegistry {
+    pub(crate) fn channel(&self, login_id: &str) -> Arc<MetadataChannel> {
+        let mut channels = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        channels.retain(|_, channel| channel.strong_count() != 0);
+        if let Some(channel) = channels.get(login_id).and_then(Weak::upgrade) {
+            return channel;
+        }
+        let channel = Arc::new(MetadataChannel::default());
+        channels.insert(login_id.to_owned(), Arc::downgrade(&channel));
+        channel
+    }
+}
+
+pub(crate) struct MetadataRegistration {
+    channel: Arc<MetadataChannel>,
+    id: uuid::Uuid,
+}
+
+impl Drop for MetadataRegistration {
+    fn drop(&mut self) {
+        self.channel
+            .callbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.id);
+    }
+}
+
+/// The receiver owns no session or signing material. Replacing a snapshot is
+/// synchronous; there is no user callback or session lock on the writer path.
+pub(crate) struct MetadataSubscription {
+    pub(crate) receiver: tokio::sync::watch::Receiver<Option<Arc<KeyMetadata>>>,
+    _registration: MetadataRegistration,
+}
+
+pub(crate) async fn register_metadata(
+    instance: &Instance,
+    login_id: &str,
+    callback: MetadataCallback,
+) -> Result<(MetadataRegistration, Arc<KeyMetadata>)> {
+    let channel = instance.local_account_metadata().channel(login_id);
+    let _gate = channel.gate.lock().await;
+    let initial = Arc::new(
+        decode_state(
+            instance
+                .require_local_engine()?
+                .local_account_record(&record_name(login_id))
+                .await?,
+        )?
+        .keys,
+    );
+    let id = uuid::Uuid::new_v4();
+    channel
+        .callbacks
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(id, callback);
+    Ok((
+        MetadataRegistration {
+            channel: channel.clone(),
+            id,
+        },
+        initial,
+    ))
+}
+
+pub(crate) async fn subscribe_metadata(
+    instance: &Instance,
+    login_id: &str,
+) -> Result<MetadataSubscription> {
+    let channel = instance.local_account_metadata().channel(login_id);
+    let (sender, receiver) = tokio::sync::watch::channel(None);
+    let sender = Arc::new(sender);
+    let updates = sender.clone();
+    let callback: MetadataCallback = Arc::new(move |keys| {
+        updates.send_replace(Some(keys));
+    });
+    // Install the receiver before the wire request, since a notification can
+    // precede its initial response. Never replace a newer pushed snapshot.
+    #[cfg(all(unix, feature = "service"))]
+    if let Some(connection) = instance.remote_connection() {
+        let id = uuid::Uuid::new_v4();
+        channel
+            .callbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, callback);
+        let registration = MetadataRegistration { channel, id };
+        let initial = connection
+            .subscribe_local_account_metadata(login_id)
+            .await?;
+        sender.send_if_modified(|current| {
+            if current.is_none() {
+                *current = Some(Arc::new(initial));
+                true
+            } else {
+                false
+            }
+        });
+        return Ok(MetadataSubscription {
+            receiver,
+            _registration: registration,
+        });
+    }
+    let (registration, initial) = register_metadata(instance, login_id, callback).await?;
+    sender.send_if_modified(|current| {
+        if current.is_none() {
+            *current = Some(initial);
+            true
+        } else {
+            false
+        }
+    });
+    Ok(MetadataSubscription {
+        receiver,
+        _registration: registration,
+    })
+}
+
+pub(crate) fn publish_metadata(instance: &Instance, login_id: &str, keys: Arc<KeyMetadata>) {
+    let channel = instance.local_account_metadata().channel(login_id);
+    // All callbacks are internal watch replacements or nonblocking frame sends.
+    // Keep them ordered with native CAS, not spawned futures that can reorder.
+    for callback in channel
+        .callbacks
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .values()
+    {
+        callback(keys.clone());
+    }
+}
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,10 +177,18 @@ pub(crate) async fn read_raw(instance: &Instance, login_id: &str) -> Result<Opti
     if let Some(connection) = instance.remote_connection() {
         return connection.local_account_state(login_id).await;
     }
-    instance
+    let channel = instance.local_account_metadata().channel(login_id);
+    let _gate = channel.gate.lock().await;
+    let bytes = instance
         .require_local_engine()?
         .local_account_record(&record_name(login_id))
-        .await
+        .await?;
+    // An explicit read also reconciles a write whose acknowledgement was lost.
+    // Publish under the same gate: a later CAS cannot be overwritten by this
+    // snapshot, and a service read response follows its metadata frame.
+    let keys = decode_state(bytes.clone())?.keys;
+    publish_metadata(instance, login_id, Arc::new(keys));
+    Ok(bytes)
 }
 
 pub(crate) async fn exchange_raw(
@@ -41,24 +199,34 @@ pub(crate) async fn exchange_raw(
 ) -> Result<bool> {
     // Refuse malformed state before enabling a durable writer. No old DAG data
     // is imported or deleted; missing native state starts empty.
-    let _: LocalAccountState = serde_json::from_slice(value).map_err(|_| invalid_state())?;
+    let state: LocalAccountState = serde_json::from_slice(value).map_err(|_| invalid_state())?;
     #[cfg(all(unix, feature = "service"))]
     if let Some(connection) = instance.remote_connection() {
         return connection
             .exchange_local_account_state(login_id, expected, value)
             .await;
     }
-    instance
+    let channel = instance.local_account_metadata().channel(login_id);
+    let _gate = channel.gate.lock().await;
+    let changed = instance
         .require_local_engine()?
         .compare_exchange_local_account_record(&record_name(login_id), expected, value)
-        .await
+        .await?;
+    if changed {
+        publish_metadata(instance, login_id, Arc::new(state.keys));
+    }
+    Ok(changed)
 }
 
-pub(crate) async fn read(instance: &Instance, login_id: &str) -> Result<LocalAccountState> {
-    match read_raw(instance, login_id).await? {
+fn decode_state(bytes: Option<Vec<u8>>) -> Result<LocalAccountState> {
+    match bytes {
         Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| invalid_state()),
         None => Ok(LocalAccountState::default()),
     }
+}
+
+pub(crate) async fn read(instance: &Instance, login_id: &str) -> Result<LocalAccountState> {
+    decode_state(read_raw(instance, login_id).await?)
 }
 
 /// Retry against the observed bytes, so independent sessions do not lose each
@@ -275,5 +443,65 @@ mod tests {
     async fn two_installations_keep_distinct_signers_and_local_activation_connected() -> Result<()>
     {
         two_installations(true).await
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+    use crate::{NewAccount, backend::database::InMemory};
+
+    #[tokio::test]
+    async fn metadata_snapshot_registration_and_drop_are_coherent() -> Result<()> {
+        let (instance, owner) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            NewAccount::passwordless("metadata-lifetime"),
+        )
+        .await?;
+        // An independent slot tests cleanup while the Instance is still alive.
+        let slot = instance.local_account_metadata().channel("test-slot");
+        let weak = Arc::downgrade(&slot);
+        let mut subscription = subscribe_metadata(&instance, "test-slot").await?;
+        assert!(
+            subscription
+                .receiver
+                .borrow_and_update()
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(slot.callbacks.lock().unwrap().len(), 1);
+        let before = read_raw(&instance, "test-slot").await?;
+        let state = LocalAccountState::default();
+        let bytes = serde_json::to_vec(&state).unwrap();
+        assert!(exchange_raw(&instance, "test-slot", before.as_deref(), &bytes).await?);
+        assert!(subscription.receiver.has_changed().unwrap());
+        subscription.receiver.borrow_and_update();
+        // A rejected CAS emits no snapshot; the earlier successful CAS proves
+        // the receiver is live, so this negative observation is meaningful.
+        assert!(!exchange_raw(&instance, "test-slot", None, &bytes).await?);
+        assert!(!subscription.receiver.has_changed().unwrap());
+        drop(subscription);
+        assert!(slot.callbacks.lock().unwrap().is_empty());
+        drop(slot);
+        assert!(weak.upgrade().is_none());
+        // Registration racing a write sees either the post-write initial
+        // snapshot or its notification; in neither case can the write be lost.
+        let key = owner.get_default_key()?;
+        let replacement = serde_json::to_vec(&read(&instance, owner.login_id()).await?).unwrap();
+        let (subscription, result) = tokio::join!(
+            subscribe_metadata(&instance, "test-slot"),
+            exchange_raw(&instance, "test-slot", Some(bytes.as_slice()), &replacement),
+        );
+        assert!(result?);
+        assert!(
+            subscription?
+                .receiver
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .contains_key(&key.to_string())
+        );
+        Ok(())
     }
 }

@@ -354,13 +354,14 @@ pub(crate) async fn build_account_session(
         );
     }
 
-    Ok(AccountSession::new(
+    AccountSession::new(
         login_id.to_string(),
         account_info.clone(),
         account_database,
         instance.handle(),
         key_manager,
-    ))
+    )
+    .await
 }
 
 /// Preserve the existing device-Read grant for daemon replication. This is

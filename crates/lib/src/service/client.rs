@@ -791,6 +791,32 @@ impl RemoteConnection {
         }
     }
 
+    pub(crate) fn ensure_open(&self) -> crate::Result<()> {
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "service connection closed",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn subscribe_local_account_metadata(
+        &self,
+        login_id: &str,
+    ) -> crate::Result<crate::account::local_state::KeyMetadata> {
+        match self
+            .request_ok(ServiceRequest::SubscribeLocalAccountMetadata {
+                login_id: login_id.to_owned(),
+            })
+            .await?
+        {
+            ServiceResponse::LocalAccountMetadata(keys) => Ok(keys),
+            other => Err(unexpected_response("LocalAccountMetadata", &other)),
+        }
+    }
+
     pub(crate) async fn local_account_state(
         &self,
         login_id: &str,
@@ -1741,8 +1767,26 @@ async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionI
 /// [`TODO(backpressure)`]) so the drop-semantics tests get focused
 /// review.
 fn route_notification(inner: &Arc<RemoteConnectionInner>, notif: Notification) {
+    // Native metadata is a synchronous watch replacement, not user work. Apply
+    // inline so a later RPC response is a reliable visibility barrier.
+    let notif = match notif {
+        Notification::LocalAccountMetadata { login_id, keys } => {
+            let instance = inner
+                .weak_instance
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(WeakInstance::upgrade);
+            if let Some(instance) = instance {
+                crate::account::local_state::publish_metadata(&instance, &login_id, Arc::new(keys));
+            }
+            return;
+        }
+        other => other,
+    };
     let tree_id = match &notif {
         Notification::DatabaseWrite { root_id, .. } => root_id.clone(),
+        Notification::LocalAccountMetadata { .. } => unreachable!(),
     };
     let tx = {
         let mut workers = inner.tree_workers.lock().unwrap_or_else(|p| p.into_inner());
@@ -1825,6 +1869,7 @@ async fn run_tree_worker(
         };
 
         match notif {
+            Notification::LocalAccountMetadata { .. } => unreachable!(),
             Notification::DatabaseWrite {
                 root_id,
                 previous_tips,

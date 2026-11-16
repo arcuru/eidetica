@@ -419,6 +419,9 @@ pub enum ServiceRequest {
     /// Read only the authenticated login's installation-local state. An
     /// explicit signer connection without a login record has no such scope.
     LocalAccountState { login_id: String },
+    /// Subscribe to public key metadata for exactly the authenticated local
+    /// login. Replaces this connection's previous native-state subscription.
+    SubscribeLocalAccountMetadata { login_id: String },
     /// Atomic observed-byte replacement within that same login scope.
     ExchangeLocalAccountState {
         login_id: String,
@@ -449,11 +452,14 @@ pub enum ServiceRequest {
 /// Server-initiated push to the client, interleaved with normal responses
 /// at any point after a connection has authenticated.
 ///
-/// Notifications are not solicited by a specific request; the client signs up
-/// for them with a [`DatabaseOp::SubscribeWrites`] and unsubscribes by
-/// dropping the connection or sending [`DatabaseOp::UnsubscribeWrites`].
+/// Database write notifications use [`DatabaseOp::SubscribeWrites`] and
+/// [`DatabaseOp::UnsubscribeWrites`]. Native public mapping snapshots use
+/// [`ServiceRequest::SubscribeLocalAccountMetadata`], scoped to the authenticated
+/// login and removed on reauthentication or disconnect. They contain no private
+/// keys or credential bundles and are independent of the Entry DAG.
 ///
-/// Notifications are **triggered only by settled-state writes** — i.e.
+/// The remaining cursor semantics describe [`Notification::DatabaseWrite`].
+/// These notifications are **triggered only by settled-state writes** — i.e.
 /// entries that have passed local verification on the daemon. An entry
 /// that arrives `Unverified` (via sync, or as a `SubmitSignedEntry` body)
 /// is ingested silently and only produces a notification once the daemon's
@@ -493,6 +499,12 @@ pub enum ServiceRequest {
 ///    is constant-size regardless of batch width.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Notification {
+    /// Current public metadata only; never a credential bundle or private key.
+    /// Scoped at subscription; native CAS and frame enqueue have one order.
+    LocalAccountMetadata {
+        login_id: String,
+        keys: std::collections::BTreeMap<String, crate::account::AccountKey>,
+    },
     /// A settled-state write landed on the daemon for `root_id`.
     ///
     /// - `previous_tips` is the daemon-side subscription cursor at the
@@ -610,6 +622,8 @@ pub enum ServiceResponse {
     LocalAccounts(Vec<String>),
     /// Opaque installation-local state, never a replicated Entry.
     LocalAccountState(Option<Vec<u8>>),
+    /// Initial snapshot for SubscribeLocalAccountMetadata.
+    LocalAccountMetadata(std::collections::BTreeMap<String, crate::account::AccountKey>),
     /// Whether observed-byte replacement succeeded.
     LocalAccountStateExchanged(bool),
     /// Result of a ticket bootstrap (response to `TicketBootstrap`).
@@ -624,6 +638,7 @@ const REQUEST_VARIANTS: &[&str] = &[
     "ListLocalAccounts",
     "LocalAccountState",
     "ExchangeLocalAccountState",
+    "SubscribeLocalAccountMetadata",
     "SignerChallenge",
     "TrustedLoginUser",
     "TrustedLoginProve",
@@ -657,6 +672,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "CreateTicket",
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
+    "LocalAccountMetadata",
     "LocalAccounts",
     "LocalAccountState",
     "LocalAccountStateExchanged",
@@ -788,7 +804,10 @@ impl<'de> Deserialize<'de> for IncomingServerFrame {
                     Ok(Self::Response(Box::new(response)))
                 }
                 Envelope::Notification(raw) => {
-                    let notification = if variant_name(&raw)? == "DatabaseWrite" {
+                    let notification = if matches!(
+                        variant_name(&raw)?.as_str(),
+                        "DatabaseWrite" | "LocalAccountMetadata"
+                    ) {
                         Some(serde_json::from_str(raw.get())?)
                     } else {
                         None

@@ -243,3 +243,216 @@ async fn service_creation_failure_retains_committed_root() {
     shutdown.send(()).unwrap();
     task.await.unwrap().unwrap();
 }
+
+/// Two live sessions must discover and open mappings created after login. The
+/// service case uses separate connections, never reauthenticates the observer.
+#[tokio::test]
+async fn two_live_sessions_observe_native_mapping_changes() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        use eidetica::{
+            Instance, NewAccount,
+            auth::{
+                AuthKey, Permission, SigKey,
+                crypto::{generate_keypair, verify_entry_signature},
+            },
+            store::DocStore,
+        };
+        let (server, mut setup) = Instance::create_backend(
+            crate::helpers::test_backend().await,
+            NewAccount::passwordless("mapping-owner"),
+        )
+        .await
+        .unwrap();
+        let root_key = setup.get_default_key().unwrap();
+        let extra = setup
+            .add_private_key(Some("database signer"))
+            .await
+            .unwrap();
+        let mut creator_instance = server.clone();
+        let mut observer_instance = server.clone();
+        #[cfg(all(unix, feature = "service"))]
+        let (shutdown, server_task, _directory) = {
+            use std::os::unix::fs::PermissionsExt;
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let (shutdown, rx) = tokio::sync::watch::channel(());
+            let task = if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
+                let path = directory.path().join("mappings.sock");
+                let service = eidetica::service::ServiceServer::bind(server.clone(), &path)
+                    .await
+                    .unwrap();
+                let task = tokio::spawn(service.run(rx));
+                creator_instance = Instance::connect(format!("unix://{}", path.display()))
+                    .await
+                    .unwrap();
+                observer_instance = Instance::connect(format!("unix://{}", path.display()))
+                    .await
+                    .unwrap();
+                Some(task)
+            } else {
+                None
+            };
+            (shutdown, task, directory)
+        };
+        let mut creator = creator_instance
+            .login_account("mapping-owner", "")
+            .await
+            .unwrap();
+        let observer = observer_instance
+            .login_account("mapping-owner", "")
+            .await
+            .unwrap();
+        let before = observer.account().database().snapshot().await.unwrap();
+        let target = creator.create_database(Doc::new(), &extra).await.unwrap();
+        // Mirrors the consumer's catalog-then-open sequence. The native read
+        // response is also a notification barrier, not a sleep/polling loop.
+        assert!(
+            observer
+                .databases()
+                .await
+                .unwrap()
+                .iter()
+                .any(|row| row.database_id == *target.root_id())
+        );
+        assert_eq!(
+            observer.find_key(target.root_id()).unwrap(),
+            Some(extra.clone())
+        );
+        let retained = observer.open_database(target.root_id()).await.unwrap();
+        let tx = retained.new_transaction().await.unwrap();
+        tx.get_store::<DocStore>("data")
+            .await
+            .unwrap()
+            .set("message", "retained session")
+            .await
+            .unwrap();
+        let entry = tx.commit().await.unwrap();
+        verify_entry_signature(&retained.get_entry(entry).await.unwrap(), &extra).unwrap();
+        assert_eq!(
+            observer.account().database().snapshot().await.unwrap(),
+            before
+        );
+
+        // An explicit invalid identity must replace, not fall back to, the
+        // formerly working direct-key mapping.
+        let wrong = SigKey::from_name("not-an-authorized-identity");
+        creator
+            .map_key(&extra, target.root_id(), wrong.clone())
+            .await
+            .unwrap();
+        observer.refresh_mapping_metadata().await.unwrap();
+        assert_eq!(
+            observer.key_mapping(&extra, target.root_id()).unwrap(),
+            Some(wrong)
+        );
+        let invalid = observer.open_database(target.root_id()).await;
+        assert!(match invalid {
+            Err(_) => true,
+            Ok(db) => db.current_permission().await.is_err(),
+        });
+        creator
+            .map_key(&extra, target.root_id(), SigKey::from_pubkey(&extra))
+            .await
+            .unwrap();
+        observer.refresh_mapping_metadata().await.unwrap();
+        observer
+            .open_database(target.root_id())
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap();
+
+        // A valid read-only mapping stays read-only; mapping is not authority.
+        target
+            .with_transaction(|tx| {
+                let root_key = root_key.clone();
+                async move {
+                    tx.get_settings()?
+                        .set_auth_key(&root_key, AuthKey::active(None, Permission::Read))
+                        .await
+                }
+            })
+            .await
+            .unwrap();
+        creator
+            .map_key(&root_key, target.root_id(), SigKey::from_pubkey(&root_key))
+            .await
+            .unwrap();
+        observer.refresh_mapping_metadata().await.unwrap();
+        let read_only = observer
+            .open_database_with_key(target.root_id(), &root_key)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_only.current_permission().await.unwrap(),
+            Permission::Read
+        );
+        let tx = read_only.new_transaction().await.unwrap();
+        let write = async {
+            tx.get_store::<DocStore>("data")
+                .await?
+                .set("forbidden", "write")
+                .await?;
+            tx.commit().await
+        }
+        .await;
+        assert!(write.is_err());
+
+        let foreign = eidetica::Database::create(&server, generate_keypair().0, Doc::new())
+            .await
+            .unwrap();
+        creator
+            .set_reference("app", "foreign", foreign.root_id())
+            .await
+            .unwrap();
+        assert!(
+            observer.open_reference("app", "foreign").await.is_err(),
+            "a catalog reference supplied a key"
+        );
+        creator
+            .map_key(&extra, foreign.root_id(), SigKey::from_pubkey(&extra))
+            .await
+            .unwrap();
+        observer.refresh_mapping_metadata().await.unwrap();
+        let denied = observer
+            .open_database_with_key(foreign.root_id(), &extra)
+            .await;
+        assert!(
+            match denied {
+                Err(_) => true,
+                Ok(db) => db.current_permission().await.is_err(),
+            },
+            "a mapping bypassed Auth"
+        );
+
+        // Public metadata never imports private key material into a live session.
+        let later_key = creator
+            .add_private_key(Some("not unlocked by observer"))
+            .await
+            .unwrap();
+        let later_db = creator
+            .create_database(Doc::new(), &later_key)
+            .await
+            .unwrap();
+        observer.refresh_mapping_metadata().await.unwrap();
+        assert!(observer.get_signing_key(&later_key).is_err());
+        assert!(observer.open_database(later_db.root_id()).await.is_err());
+        // Already opened handles remain immutable; mapping changes are not revocation.
+        retained.snapshot().await.unwrap();
+        drop(observer);
+        drop(creator);
+        drop(observer_instance);
+        drop(creator_instance);
+        #[cfg(all(unix, feature = "service"))]
+        {
+            drop(shutdown);
+            if let Some(task) = server_task {
+                task.await.unwrap().unwrap();
+            }
+        }
+    })
+    .await
+    .expect("native mapping regression stalled");
+}

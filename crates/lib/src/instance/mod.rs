@@ -322,6 +322,7 @@ pub(crate) struct InstanceInternal {
     /// `WriteEvent::previous_tips` is consistent for concurrent writers
     /// to the same tree.
     tree_locks: Mutex<HashMap<ID, Arc<tokio::sync::Mutex<()>>>>,
+    local_account_metadata: crate::account::local_state::MetadataRegistry,
 }
 
 impl std::fmt::Debug for InstanceInternal {
@@ -486,6 +487,10 @@ pub struct WeakInstance {
 }
 
 impl Instance {
+    pub(crate) fn local_account_metadata(&self) -> &crate::account::local_state::MetadataRegistry {
+        &self.inner.local_account_metadata
+    }
+
     /// Open a connection to an eidetica instance described by a connection URL.
     ///
     /// Strict load: returns [`InstanceError::NotInitialized`] when the URL
@@ -825,6 +830,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            local_account_metadata: Default::default(),
         });
         let instance = Self { inner };
         // Hand the reader task a Weak reference so it can dispatch
@@ -1002,6 +1008,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            local_account_metadata: Default::default(),
         });
         Ok(Self { inner })
     }
@@ -1034,6 +1041,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            local_account_metadata: Default::default(),
         });
         Ok(Self { inner })
     }
@@ -1083,6 +1091,7 @@ impl Instance {
                 global_write_callbacks: Mutex::new(Vec::new()),
                 next_callback_id: AtomicU64::new(0),
                 tree_locks: Mutex::new(HashMap::new()),
+                local_account_metadata: Default::default(),
             }),
         };
         let users_db = create_accounts_database(&temp_instance, &device_key).await?;
@@ -1116,6 +1125,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            local_account_metadata: Default::default(),
         });
 
         let instance = Self { inner };
