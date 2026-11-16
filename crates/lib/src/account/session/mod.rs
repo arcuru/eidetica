@@ -442,6 +442,8 @@ impl AccountSession {
     /// # Errors
     /// - Returns an error if the specified key_id doesn't exist
     /// - Returns an error if the key cannot be retrieved
+    /// - After genesis, returns [`crate::Error::DatabaseCreation`] with the
+    ///   committed root and underlying setup failure; see [`Self::create_database_with_init`].
     ///
     /// # Example
     /// ```rust,ignore
@@ -472,6 +474,13 @@ impl AccountSession {
     /// After the genesis entry commits, this method performs the standard
     /// installation-local tracking write (key mapping and `TrackedDatabase`)
     /// in one atomic native record replacement, separate from genesis.
+    ///
+    /// # Errors
+    /// After genesis succeeds, failures in session-key registration, local
+    /// tracking, key installation or sync setup carry the committed root in
+    /// [`crate::Error::DatabaseCreation`], preserving the original cause. The
+    /// same contract applies to [`Self::create_database`] and the builder.
+    /// No automatic repair or replacement creation is performed.
     pub async fn create_database_with_init<F>(
         &mut self,
         settings: Doc,
@@ -496,30 +505,35 @@ impl AccountSession {
         let database =
             Database::create_with_init(&self.instance, signing_key, settings, init).await?;
 
-        let state = self
-            .update_local_state(|state| {
-                let metadata = state.keys.get_mut(&key_id.to_string()).ok_or_else(|| {
-                    AccountError::KeyNotFound {
-                        key_id: key_id.to_string(),
-                    }
-                })?;
-                metadata
-                    .database_sigkeys
-                    .insert(database.root_id().clone(), None);
-                state.databases.insert(
-                    database.root_id().to_string(),
-                    TrackedDatabase {
-                        database_id: database.root_id().clone(),
-                        key_id: key_id.clone(),
-                        sync_settings: SyncSettings::disabled(),
-                    },
-                );
-                Ok(())
-            })
-            .await?;
-        self.key_manager
-            .add_key(state.keys[&key_id.to_string()].clone())?;
-        self.refresh_local_sync().await?;
+        let setup = async {
+            let state = self
+                .update_local_state(|state| {
+                    let metadata = state.keys.get_mut(&key_id.to_string()).ok_or_else(|| {
+                        AccountError::KeyNotFound {
+                            key_id: key_id.to_string(),
+                        }
+                    })?;
+                    metadata
+                        .database_sigkeys
+                        .insert(database.root_id().clone(), None);
+                    state.databases.insert(
+                        database.root_id().to_string(),
+                        TrackedDatabase {
+                            database_id: database.root_id().clone(),
+                            key_id: key_id.clone(),
+                            sync_settings: SyncSettings::disabled(),
+                        },
+                    );
+                    Ok(())
+                })
+                .await?;
+            self.key_manager
+                .add_key(state.keys[&key_id.to_string()].clone())?;
+            self.refresh_local_sync().await?;
+            Ok::<_, crate::Error>(())
+        }
+        .await;
+        setup.map_err(|error| error.after_database_creation(database.root_id()))?;
         Ok(self.with_local_account(database))
     }
 

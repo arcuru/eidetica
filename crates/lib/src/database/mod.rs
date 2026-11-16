@@ -240,6 +240,7 @@ impl Database {
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance configured with a `DatabaseKey`.
+    /// See [`Self::create_with_init`] for post-genesis error context.
     ///
     /// # Example
     /// ```rust,no_run
@@ -291,6 +292,12 @@ impl Database {
     /// * `signing_key` - The private key for this database (becomes Admin(0))
     /// * `initial_settings` - Initial settings document (must not contain auth)
     /// * `init` - Callback run against the genesis transaction before commit
+    ///
+    /// # Errors
+    /// If genesis succeeds but connected session-key registration fails, returns
+    /// [`Error::DatabaseCreation`] with the committed root and original cause.
+    /// Failures before genesis succeeds are returned unchanged. This does not
+    /// resolve an unknown commit outcome after transport loss.
     pub async fn create_with_init<F>(
         instance: &Instance,
         signing_key: PrivateKey,
@@ -388,7 +395,9 @@ impl Database {
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = instance.remote_connection() {
             let pubkey_for_identity = signing_key.public_key();
-            conn.register_session_key(&signing_key).await?;
+            conn.register_session_key(&signing_key)
+                .await
+                .map_err(|error| error.after_database_creation(&new_root_id))?;
             return Ok(Self {
                 root: new_root_id.clone(),
                 instance: instance.downgrade(),
