@@ -12,6 +12,20 @@ Plain `Database` handles remain valid for ordinary reads and transactions, but
 cannot manage a user's private sharing preference. Their sharing methods return
 an explicit missing-capability error.
 
+## Creation Failures
+
+Database genesis and the caller's local setup are separate steps.
+If genesis succeeds but session-key registration, tracking, key installation, or sync setup fails, creation returns `Error::DatabaseCreation { root_id, source }`.
+This applies to the direct `Database` constructors, `AccountSession` creation methods, and `DatabaseBuilder::build`.
+Use `error.created_database_id()` to obtain the exact committed root and inspect `source` for the underlying failure.
+Keep that ID and the caller-held credentials for explicit repair; retrying creation can produce a second database.
+
+The ID alone grants no access and does not mean setup finished.
+Reopen that root through an authorized signer, for example `AccountSigner::open_database`, using the original database key.
+Local tracking and activation are separate choices, not automatic consequences of reopening.
+Pre-genesis failures return their original error with no created ID.
+A transport failure during the commit itself may leave its outcome unknown; this API does not provide exactly-once creation or recover a lost commit acknowledgement.
+
 ## Share a Database
 
 `AccountSession::create_database` returns a capability-backed handle. For an existing

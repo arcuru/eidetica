@@ -273,7 +273,9 @@ async fn test_builder_init_callback_failure_aborts() {
         .build()
         .await;
 
-    assert!(result.is_err());
+    let error = result.unwrap_err();
+    assert!(error.created_database_id().is_none());
+    assert!(matches!(&error, eidetica::Error::Io(cause) if cause.to_string() == "init failed"));
 
     // No database should have been tracked for the user.
     let after_dbs = user.databases().await.expect("databases").len();

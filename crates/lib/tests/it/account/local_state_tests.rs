@@ -125,3 +125,121 @@ async fn account_login_directory_has_no_replicated_unlock_history() {
             .any(|name| name == "login:app")
     );
 }
+
+// The observer corrupts only fixture-local bookkeeping, not Auth or genesis.
+// Repair uses the returned ID; the observer's independently found ID is only an assertion.
+async fn creation_failure_retains_committed_root(
+    owner: &eidetica::Instance,
+    client: &eidetica::Instance,
+    user: &mut eidetica::AccountSession,
+) {
+    use eidetica::{Error, auth::crypto::verify_entry_signature};
+    use std::error::Error as _;
+
+    let key = user
+        .add_private_key(Some("partial-creation"))
+        .await
+        .unwrap();
+    let engine = owner.backend().local_engine().unwrap();
+    let record = format!("account-state:{}", user.login_id());
+    let original = engine.local_account_record(&record).await.unwrap().unwrap();
+    let before = engine.all_roots().await.unwrap();
+    let error = user
+        .create_database_with_init(Doc::new(), &key, async |_| {
+            assert!(
+                engine
+                    .compare_exchange_local_account_record(&record, Some(&original), b"{")
+                    .await?
+            );
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        engine
+            .compare_exchange_local_account_record(&record, Some(b"{"), &original)
+            .await
+            .unwrap()
+    );
+
+    let id = error
+        .created_database_id()
+        .expect("committed repair ID")
+        .clone();
+    let created: Vec<_> = engine
+        .all_roots()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|root| !before.contains(root))
+        .collect();
+    assert_eq!(created, vec![id.clone()]);
+    let Error::DatabaseCreation { source, .. } = &error else {
+        panic!("missing creation context: {error:?}");
+    };
+    assert!(
+        source
+            .to_string()
+            .contains("Invalid installation-local account state")
+    );
+    assert_eq!(error.source().unwrap().to_string(), source.to_string());
+    assert!(error.to_string().contains(&id.to_string()));
+    assert!(user.tracked_database(&id).await.unwrap().is_none());
+    let genesis = owner.backend().get(&id).await.unwrap();
+    verify_entry_signature(&genesis, &key).unwrap();
+    assert!(verify_entry_signature(&genesis, &user.get_default_key().unwrap()).is_err());
+
+    // The reported ID grants neither tracking nor a key mapping. Repair is explicit,
+    // using the already-held key through the ordinary signer/permission path.
+    assert!(user.open_database(&id).await.is_err());
+    let reopened = user
+        .acting_as(&key, None)
+        .unwrap()
+        .open_database(client, &id)
+        .await
+        .unwrap();
+    assert_eq!(reopened.root_id(), &id);
+    reopened
+        .new_transaction()
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    assert_eq!(engine.all_roots().await.unwrap().len(), before.len() + 1);
+}
+
+#[tokio::test]
+async fn embedded_creation_failure_retains_committed_root() {
+    let (owner, name) =
+        super::helpers::setup_local_instance_with_user("partial-creation", "").await;
+    let mut user = login_account(&owner, &name, "").await;
+    creation_failure_retains_committed_root(&owner, &owner, &mut user).await;
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn service_creation_failure_retains_committed_root() {
+    use eidetica::{Instance, NewAccount, backend::database::InMemory, service::ServiceServer};
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("creation.sock");
+    let (owner, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewAccount::passwordless("partial-creation"),
+    )
+    .await
+    .unwrap();
+    let server = ServiceServer::bind(owner.clone(), &socket).await.unwrap();
+    let (shutdown, receiver) = tokio::sync::watch::channel(());
+    let task = tokio::spawn(server.run(receiver));
+    let client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let mut user = client.login_account("partial-creation", "").await.unwrap();
+    creation_failure_retains_committed_root(&owner, &client, &mut user).await;
+    shutdown.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}

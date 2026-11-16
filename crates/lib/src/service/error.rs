@@ -115,6 +115,7 @@ fn error_kind_name(err: &crate::Error) -> String {
     match err {
         crate::Error::Io(_) => "Io".to_string(),
         crate::Error::Serialize(_) => "Serialize".to_string(),
+        crate::Error::DatabaseCreation { .. } => "DatabaseCreation".to_string(),
         crate::Error::Auth(e) => format!("{e:?}")
             .split_once(|c: char| !c.is_alphanumeric())
             .map_or_else(|| format!("{e:?}"), |(name, _)| name.to_string()),
@@ -294,6 +295,9 @@ mod tests {
         match err {
             crate::Error::Io(_) => {}
             crate::Error::Serialize(_) => {}
+            // Creation context is attached client-side after the genesis RPC.
+            // The existing generic wire fallback is sufficient if forwarded.
+            crate::Error::DatabaseCreation { .. } => {}
             crate::Error::Auth(_) => {}
             crate::Error::Backend(_) => {}
             crate::Error::Instance(_) => {}
