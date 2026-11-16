@@ -38,6 +38,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 hex = { workspace = true }
 blake3 = { workspace = true }
 cid = { workspace = true }
+bao-tree = { workspace = true }
 multihash-codetable = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
 thiserror = { workspace = true }

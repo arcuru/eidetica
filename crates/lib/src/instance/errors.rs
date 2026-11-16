@@ -97,6 +97,11 @@ pub enum InstanceError {
     )]
     SnapshotNotSupported,
 
+    /// A local blob operation requires a storage engine. Connected clients
+    /// must route these operations through their daemon instead.
+    #[error("local blob operation requires a storage engine")]
+    BlobOpRequiresLocalEngine,
+
     /// Entry does not belong to the specified database.
     #[error("Entry '{entry_id}' does not belong to database '{database_id}'")]
     EntryNotInDatabase {

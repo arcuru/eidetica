@@ -831,14 +831,17 @@ include!("parent_v2.rs");
 /// Literal verification-only DDL and rows, never a cache database downgraded
 /// by dropping columns or editing its version marker.
 async fn parent_v2_fixture(db: &TestDatabase) -> StoreStateRequest {
-    use crate::backend::VerificationStatus;
-
     for statement in PARENT_V2 {
         db.pool
             .execute(sqlx::AssertSqlSafe(statement.replace("BLOB", "BYTEA")))
             .await
             .unwrap();
     }
+    verification_fixture_rows(db).await
+}
+
+async fn verification_fixture_rows(db: &TestDatabase) -> StoreStateRequest {
+    use crate::backend::VerificationStatus;
     let root = Entry::root_builder().build().unwrap();
     let child = Entry::builder(root.id())
         .add_parent(root.id())
@@ -1337,6 +1340,8 @@ async fn local_accounts_v4_adds_empty_storage_without_rewriting_v3_data() {
     db.populate(&backend).await;
     db.close_backend(backend).await;
     // Synthetic previous mainline layout. This is not a migration of live keys.
+    db.pool.execute("DROP TABLE blob_pins").await.unwrap();
+    db.pool.execute("DROP TABLE blobs").await.unwrap();
     db.pool.execute("DROP TABLE local_accounts").await.unwrap();
     db.pool
         .execute("UPDATE schema_version SET version = 3")
@@ -1358,7 +1363,7 @@ async fn local_accounts_v4_adds_empty_storage_without_rewriting_v3_data() {
         [(0,)],
         "v3-to-v4 must not backfill old cache accounting"
     );
-    assert_eq!(db.versions().await, [(4,)]);
+    assert_eq!(db.versions().await, [(SCHEMA_VERSION,)]);
     assert_eq!(db.content().await, before);
     assert!(reopened.local_account_names().await.unwrap().is_empty());
     assert!(
@@ -1402,5 +1407,282 @@ async fn local_accounts_v4_missing_native_table_is_not_recreated_as_empty() {
         "{error}"
     );
     assert_eq!(db.catalog().await, before);
+    db.cleanup().await;
+}
+
+/// Existing v3 files have no blob tables. Add them without a trust repair or
+/// changing any Entry, Account, Store-state or retained verification bytes.
+#[tokio::test]
+async fn blob_tables_upgrade_existing_v3_and_persist_on_reopen() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.populate(&backend).await;
+    db.close_backend(backend).await;
+    db.pool.execute("DROP TABLE blob_pins").await.unwrap();
+    db.pool.execute("DROP TABLE blobs").await.unwrap();
+    db.pool.execute("DROP TABLE local_accounts").await.unwrap();
+    db.pool
+        .execute("UPDATE schema_version SET version = 3")
+        .await
+        .unwrap();
+    let before = db.content().await;
+    let backend = db.open().await.unwrap();
+    assert_eq!(db.content().await, before);
+    assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
+    let data = b"new bytes after supported reopen".to_vec();
+    let cid = crate::ID::from_bytes(&data);
+    backend.put_blob(&cid, data.clone()).await.unwrap();
+    backend.pin_blob("local-owner", "db", &cid).await.unwrap();
+    backend.touch_blob_accessed(&cid, 1234).await.unwrap();
+    db.close_backend(backend).await;
+    let backend = db.open().await.unwrap();
+    assert_eq!(backend.get_blob(&cid).await.unwrap(), Some(data));
+    assert!(backend.pinned_cids().await.unwrap().contains(&cid));
+    assert_eq!(
+        backend.all_blob_meta().await.unwrap()[0].last_accessed,
+        1234
+    );
+    assert_eq!(db.content().await, before);
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn blob_current_missing_table_refuses_without_recreating_content() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.close_backend(backend).await;
+    db.pool.execute("DROP TABLE blobs").await.unwrap();
+    let before = db.catalog().await;
+    assert!(db.open().await.is_err());
+    assert_eq!(db.catalog().await, before);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn blob_corrupt_range_metadata_returns_error() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    let (instance, admin) = crate::Instance::create_backend(
+        Box::new(backend),
+        crate::NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let bytes = vec![7u8; 100_000];
+    let cid = instance.put_blob(bytes.clone()).await.unwrap();
+    assert_eq!(
+        instance.get_blob_range(&cid, 40_000..40_123).await.unwrap(),
+        Some(bytes[40_000..40_123].to_vec())
+    );
+    sqlx::query("UPDATE blobs SET outboard = $1 WHERE cid = $2")
+        .bind(vec![0u8])
+        .bind(cid.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        matches!(instance.get_blob_range(&cid, 40_000..40_123).await,
+        Err(crate::Error::Backend(e)) if matches!(*e, BackendError::BlobStreamInvalid { .. }))
+    );
+
+    // Invalid persisted sizes are rejected before they select a byte window.
+    // Point at an unavailable disk tier so an attempted read cannot hide this
+    // guard behind the encoder's later size check.
+    sqlx::query("UPDATE blobs SET size = $1, location = 1 WHERE cid = $2")
+        .bind(crate::backend::DEFAULT_MAX_BLOB_BYTES as i64 + 1)
+        .bind(cid.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(instance.get_blob_range(&cid, 0..u64::MAX).await,
+        Err(crate::Error::Backend(e)) if matches!(*e, BackendError::BlobTooLarge { .. })));
+    sqlx::query("UPDATE blobs SET size = -1 WHERE cid = $1")
+        .bind(cid.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(instance.get_blob_range(&cid, 0..1).await,
+        Err(crate::Error::Backend(e)) if matches!(*e, BackendError::StateInconsistency { .. })));
+    drop(admin);
+    drop(instance);
+    db.cleanup().await;
+}
+include!("mainline_v4.rs");
+
+/// Literal mainline SQL4 (not a renamed blob candidate) retains native opaque
+/// credentials, verified frontiers, Entries and authoritative Store records.
+#[tokio::test]
+async fn blob_mainline_v4_migration_preserves_authority_and_credentials() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let blob_type = if db.url.starts_with("sqlite:") {
+        "BLOB"
+    } else {
+        "BYTEA"
+    };
+    for statement in MAINLINE_V4_CREATE_TABLES
+        .iter()
+        .chain(MAINLINE_V4_CREATE_STORE_STATE_TABLES)
+    {
+        db.pool
+            .execute(sqlx::AssertSqlSafe(
+                statement
+                    .replace("BYTEA", blob_type)
+                    .replace("BLOB", blob_type),
+            ))
+            .await
+            .unwrap();
+    }
+    db.pool
+        .execute("INSERT INTO schema_version VALUES (4)")
+        .await
+        .unwrap();
+    let request = verification_fixture_rows(&db).await;
+    // Credential bytes belong to the native backend, not the Entry DAG.
+    let credentials = b"opaque mainline encrypted account bundle".to_vec();
+    sqlx::query("INSERT INTO local_accounts (name, data) VALUES ($1, $2)")
+        .bind("account-state:mainline")
+        .bind(&credentials)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.pool
+        .execute("UPDATE store_state_namespaces SET size_bytes = 13, last_access_tick = 9000")
+        .await
+        .unwrap();
+    // SQLite's separate cache intentionally discards old Derived rows on open;
+    // authoritative namespaces and their accounting must remain byte-verbatim.
+    let mut before = db.content().await;
+    before.namespaces.retain(|row| row.0 != "unlinked-parent");
+    before.records.retain(|row| row.0 != "unlinked-parent");
+    if db.url.starts_with("sqlite:") {
+        before.namespaces.retain(|row| row.0 == "authority-parent");
+        before.records.retain(|row| row.0 == "authority-parent");
+        db.pool.execute("CREATE TRIGGER forbid_blob_repair BEFORE DELETE ON verified_tips BEGIN SELECT RAISE(ABORT, 'unexpected blob migration repair'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE FUNCTION forbid_blob_repair() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'unexpected blob migration repair'; END $$").await.unwrap();
+        db.pool.execute("CREATE TRIGGER forbid_blob_repair BEFORE DELETE ON verified_tips FOR EACH ROW EXECUTE FUNCTION forbid_blob_repair()").await.unwrap();
+    }
+    for _ in 0..2 {
+        let backend = db.open().await.unwrap();
+        assert_eq!(db.versions().await, [(SCHEMA_VERSION,)]);
+        assert_eq!(db.content().await, before);
+        assert_eq!(
+            backend
+                .local_account_record("account-state:mainline")
+                .await
+                .unwrap(),
+            Some(credentials.clone())
+        );
+        let counters: Vec<(i64, i64)> = sqlx::query_as("SELECT size_bytes, last_access_tick FROM store_state_namespaces WHERE namespace_id = 'authority-parent'")
+            .fetch_all(&db.pool).await.unwrap();
+        assert_eq!(
+            counters,
+            [(13, 9000)],
+            "SQL4 migration must not backfill counters"
+        );
+        assert!(
+            !backend
+                .verified_snapshot(&request.database)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let cid = crate::ID::from_bytes(b"new mainline blob");
+        backend
+            .put_blob(&cid, b"new mainline blob".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            backend.get_blob(&cid).await.unwrap(),
+            Some(b"new mainline blob".to_vec())
+        );
+        db.close_backend(backend).await;
+    }
+    db.cleanup().await;
+}
+
+type BlobRow = (String, i64, i64, Option<Vec<u8>>, Option<Vec<u8>>, i64);
+
+#[tokio::test]
+async fn blob_experimental_sql4_refused_without_mutation() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.populate(&backend).await;
+    let data = b"unsupported experimental candidate bytes".to_vec();
+    let cid = crate::ID::from_bytes(&data);
+    backend.put_blob(&cid, data.clone()).await.unwrap();
+    backend
+        .pin_blob("candidate", "database", &cid)
+        .await
+        .unwrap();
+    db.close_backend(backend).await;
+    // This is the accepted experimental SQL4 layout: blobs/roots but no
+    // native account table. It is not a supported mainline SQL4 fixture.
+    db.pool.execute("DROP TABLE local_accounts").await.unwrap();
+    db.pool
+        .execute("UPDATE schema_version SET version = 4")
+        .await
+        .unwrap();
+    let catalog = db.catalog().await;
+    let content = db.content().await;
+    let blobs: Vec<BlobRow> = sqlx::query_as(
+        "SELECT cid, size, location, data, outboard, last_accessed FROM blobs ORDER BY cid",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    let pins: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT user_id, database_id, blob_cid FROM blob_pins ORDER BY 1, 2, 3")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    let file = db
+        ._directory
+        .as_ref()
+        .map(|dir| dir.path().join("schema.db"));
+    let file_before = file.as_ref().map(|path| std::fs::read(path).unwrap());
+    let error = match db.open().await {
+        Ok(backend) => {
+            db.close_backend(backend).await;
+            panic!("experimental blob SQL4 was accepted");
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported experimental blob layout"),
+        "{error}"
+    );
+    assert_eq!(db.catalog().await, catalog);
+    assert_eq!(db.content().await, content);
+    assert_eq!(db.versions().await, [(4,)]);
+    let after: Vec<BlobRow> = sqlx::query_as(
+        "SELECT cid, size, location, data, outboard, last_accessed FROM blobs ORDER BY cid",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(after, blobs);
+    let after: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT user_id, database_id, blob_cid FROM blob_pins ORDER BY 1, 2, 3")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(after, pins);
+    if let Some(file) = file {
+        assert_eq!(std::fs::read(file).unwrap(), file_before.unwrap());
+    }
     db.cleanup().await;
 }
