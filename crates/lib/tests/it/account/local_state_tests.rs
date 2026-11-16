@@ -268,10 +268,12 @@ async fn two_live_sessions_observe_native_mapping_changes() {
             .add_private_key(Some("database signer"))
             .await
             .unwrap();
-        let mut creator_instance = server.clone();
-        let mut observer_instance = server.clone();
+        #[cfg(not(all(unix, feature = "service")))]
+        let (creator_instance, observer_instance) = (server.clone(), server.clone());
         #[cfg(all(unix, feature = "service"))]
-        let (shutdown, server_task, _directory) = {
+        let (creator_instance, observer_instance, shutdown, server_task, _directory) = {
+            let mut creator_instance = server.clone();
+            let mut observer_instance = server.clone();
             use std::os::unix::fs::PermissionsExt;
             let directory = tempfile::tempdir().unwrap();
             std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
@@ -293,7 +295,13 @@ async fn two_live_sessions_observe_native_mapping_changes() {
             } else {
                 None
             };
-            (shutdown, task, directory)
+            (
+                creator_instance,
+                observer_instance,
+                shutdown,
+                task,
+                directory,
+            )
         };
         let mut creator = creator_instance
             .login_account("mapping-owner", "")
