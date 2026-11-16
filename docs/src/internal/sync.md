@@ -92,6 +92,7 @@ A peer on an older version without the blob endpoint or ALPN reports an error, n
 
 A range payload starts with an eight-byte little-endian logical blob size, followed by the Bao proof and chunk-aligned bytes.
 The receiver validates the CID envelope, the 64 MiB logical-size cap and the proof before returning the requested window.
+Empty and past-EOF ranges of a nonempty blob carry its last leaf to authenticate the claimed EOF; a zero-size blob must match the empty-content CID.
 Each transport bounds received bytes to the capped requested length plus 1 MiB of Bao alignment/proof overhead.
 HTTP reuses its shared connect/read-timeout client; Iroh bounds connection establishment and the request exchange.
 The handler serves only local bytes under the existing blob read/GC lock and cannot induce a fetch or retention request.

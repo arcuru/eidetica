@@ -1027,9 +1027,10 @@ async fn dispatch_inner(
 
             // Per-tree permission gate. Unconditional for every op *except*
             // submit (verification in the handler is its boundary) and
-            // set-metadata (gated against `_databases` below). Create-flow
-            // passthrough (false) for the rest, so a not-yet-propagated tree is
-            // waved through and database creation works.
+            // set-metadata (gated against `_databases` below). Blob fetch is
+            // never a creation flow: a made-up root must not authorize local
+            // bytes or peer selection. Other ops retain create-flow passthrough
+            // so a not-yet-propagated tree can be created.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -1047,7 +1048,7 @@ async fn dispatch_inner(
                     &identity,
                     &root_id,
                     op.required_permission(),
-                    false,
+                    matches!(op, DatabaseOp::FetchBlobRange { .. }),
                 )
                 .await?;
             }

@@ -723,6 +723,14 @@ async fn invalid_streams(transport: Transport) {
     .await
     .unwrap();
     let address = transport.address(good.get_server_address().unwrap());
+    // The shared dial path still selects the JSON sync protocol, not blob ALPN.
+    assert_eq!(
+        client
+            .send_request(&address, &SyncRequest::SendEntries(Vec::new()))
+            .await
+            .unwrap(),
+        SyncResponse::Ack
+    );
     assert_eq!(
         client
             .fetch_blob_range(&address, &cid, 40_000..40_100)

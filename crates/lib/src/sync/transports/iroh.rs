@@ -944,38 +944,7 @@ impl SyncTransport for IrohTransport {
     }
 
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
-        if !self.can_handle_address(address) {
-            return Err(SyncError::UnsupportedTransport {
-                transport_type: address.transport_type.clone(),
-            }
-            .into());
-        }
-
-        // Ensure we have an endpoint (lazy initialization)
-        let endpoint = self.ensure_endpoint().await?;
-
-        // Deserialize the EndpointTicket address
-        let endpoint_ticket =
-            <EndpointTicket as Ticket>::decode_string(&address.address).map_err(|e| {
-                SyncError::SerializationError(format!(
-                    "Failed to parse EndpointTicket '{}': {e}",
-                    address.address
-                ))
-            })?;
-        let endpoint_addr = endpoint_ticket.endpoint_addr().clone();
-
-        // Connect to the peer, bounding how long an unreachable one can cost.
-        let conn = timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, SYNC_ALPN))
-            .await
-            .map_err(|_| SyncError::Timeout {
-                address: address.address.clone(),
-                phase: TimeoutPhase::Connect,
-                elapsed: CONNECT_TIMEOUT,
-            })?
-            .map_err(|e| SyncError::ConnectionFailed {
-                address: address.address.clone(),
-                reason: e.to_string(),
-            })?;
+        let conn = self.connect(address, SYNC_ALPN).await?;
 
         // Serialize the request before starting the exchange clock.
         let request_bytes = JsonHandler::serialize_request(request)?;

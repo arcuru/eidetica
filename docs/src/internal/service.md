@@ -517,6 +517,7 @@ See [Blob Storage](../user_guide/concepts/blobs.md).
 ## Database-associated blob reads
 
 `DatabaseOp::FetchBlobRange { cid, start, end }` is carried by `AuthenticatedDb` and gates Read on its `root_id` using the existing session-identity checks.
+Unlike operations used during Database creation, it rejects a nonexistent root before reading bytes or selecting peers.
 It reads daemon-local storage first, then asks only that Database's active peers through the existing sync engine.
 This differs from global `GetBlobRange`, which remains local-only.
 Successful reads return `Blob`; an unsuccessful provider round returns `BlobUnavailable { cid, attempt }`, which the client reconstructs as `SyncError::BlobUnavailable` without parsing an error message.
