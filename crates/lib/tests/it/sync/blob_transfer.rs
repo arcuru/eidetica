@@ -746,7 +746,16 @@ async fn invalid_streams(transport: Transport) {
     let mut size = valid.clone();
     size[..8].copy_from_slice(&(u64::MAX).to_le_bytes());
     let truncated = valid[..valid.len() - 1].to_vec();
-    for stream in [tampered, size, truncated, vec![0; 1_048_677]] {
+    // An unproved short size must not turn a requested nonempty range into
+    // successful empty bytes. The declared size itself needs CID authentication.
+    for stream in [
+        0u64.to_le_bytes().to_vec(),
+        1u64.to_le_bytes().to_vec(),
+        tampered,
+        size,
+        truncated,
+        vec![0; 1_048_677],
+    ] {
         let server = transport.build();
         server
             .start_server(Arc::new(BadHandler {

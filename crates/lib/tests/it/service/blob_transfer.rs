@@ -1,6 +1,9 @@
 //! Database-scoped fetch is read-authorized even when the bytes are local.
 use super::*;
-use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp};
+use eidetica::{
+    entry::ID,
+    service::protocol::{AuthenticatedDbRequest, DatabaseOp},
+};
 
 #[tokio::test]
 async fn blob_fetch_range_keeps_session_identity_and_database_read_gates() {
@@ -60,6 +63,20 @@ async fn blob_fetch_range_keeps_session_identity_and_database_read_gates() {
         .unwrap();
     assert!(
         matches!(read_response(&mut reader).await, ServiceResponse::Blob(Some(bytes)) if bytes == b"held")
+    );
+    // A made-up root must not inherit the create-flow permission bypass.
+    write_frame(
+        &mut writer,
+        &request(
+            ID::from_dagcbor_bytes(b"nonexistent database"),
+            identity.clone(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(read_response(&mut reader).await, ServiceResponse::Error(_)),
+        "Database fetch requires a real authorized root even for local bytes"
     );
     // A valid logged-in identity cannot read through another Database's context.
     write_frame(&mut writer, &request(foreign_root, identity))
