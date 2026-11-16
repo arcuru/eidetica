@@ -828,7 +828,7 @@ async fn directory_bootstrap_reuses_instance_key_without_premature_metadata() {
 }
 
 #[tokio::test]
-async fn v4_credentials_and_authority_survive_split_but_unreleased_layouts_refuse() {
+async fn credentials_and_authority_survive_split_but_unreleased_layouts_refuse() {
     let files = Files::new();
     let backend = files.open().await;
     let keep = publish(
@@ -841,7 +841,7 @@ async fn v4_credentials_and_authority_survive_split_but_unreleased_layouts_refus
         .await
         .unwrap();
     close(backend).await;
-    // Seed the landed single-file v4 layout, including a legacy Derived row.
+    // Seed a legacy Derived row alongside current authoritative storage.
     let h = raw(&files.history).await;
     h.execute("INSERT INTO store_state_namespaces SELECT 'legacy-derived', database_id, store_name, 0, status, scope_user_uuid, projection_name, projection_version, source_key, created_revision, size_bytes, last_access_tick FROM store_state_namespaces").await.unwrap();
     h.execute("INSERT INTO store_state_records SELECT 'legacy-derived', record_key, record_value FROM store_state_records WHERE namespace_id <> 'legacy-derived'").await.unwrap();
@@ -849,7 +849,7 @@ async fn v4_credentials_and_authority_survive_split_but_unreleased_layouts_refus
     let backend = files.open().await;
     assert_eq!(
         count(backend.pool(), "SELECT version FROM schema_version").await,
-        4
+        super::super::schema::SCHEMA_VERSION
     );
     assert_eq!(
         backend
