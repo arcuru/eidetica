@@ -257,6 +257,10 @@ pub enum DatabaseOp {
     /// Return a point-in-time locator for the request's `root_id`.
     /// Gate Read.
     CreateTicket,
+
+    /// Receive a verified blob range from this Database's peers, local storage
+    /// first, without storing it. Gate Read on the envelope root_id.
+    FetchBlobRange { cid: ID, start: u64, end: u64 },
 }
 
 impl DatabaseOp {
@@ -292,7 +296,8 @@ impl DatabaseOp {
             | DatabaseOp::StoreStateRecordScan { .. }
             | DatabaseOp::SubscribeWrites { .. }
             | DatabaseOp::UnsubscribeWrites
-            | DatabaseOp::CreateTicket => Permission::Read,
+            | DatabaseOp::CreateTicket
+            | DatabaseOp::FetchBlobRange { .. } => Permission::Read,
         }
     }
 }
@@ -593,6 +598,12 @@ pub enum ServiceResponse {
     /// or `GetBlobRange`). `None` on miss. Whole-blob bytes are guaranteed to
     /// hash to the requested CID; a range is the verified window of that blob.
     Blob(Option<Vec<u8>>),
+    /// No Database peer delivered verified bytes; preserves non-absence outcomes
+    /// without trying to reconstruct counters from a Display error message.
+    BlobUnavailable {
+        cid: ID,
+        attempt: crate::blob::BlobFetchAttempt,
+    },
     /// Aggregate outcome of a blob GC pass (response to
     /// `ServiceRequest::GcBlobs`). Counts only — never the swept CID list.
     GcReport(GcReport),
@@ -689,6 +700,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "SubscribeWrites",
     "UnsubscribeWrites",
     "CreateTicket",
+    "FetchBlobRange",
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
     "LocalAccounts",
@@ -696,6 +708,7 @@ const RESPONSE_VARIANTS: &[&str] = &[
     "LocalAccountStateExchanged",
     "SignerChallenge",
     "Blob",
+    "BlobUnavailable",
     "GcReport",
     "Entry",
     "Entries",
@@ -1449,13 +1462,22 @@ mod blob_compatibility_tests {
     fn blob_extensions_are_known_but_application_pins_stay_unsupported() {
         let cid = ID::from_bytes(b"wire blob");
         for request in [
+            ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+                root_id: ID::from_dagcbor_bytes(b"database"),
+                identity: SigKey::default(),
+                op: DatabaseOp::FetchBlobRange {
+                    cid: cid.clone(),
+                    start: 0,
+                    end: 4,
+                },
+            })),
             ServiceRequest::GetBlob { cid: cid.clone() },
             ServiceRequest::PutBlob {
                 cid: cid.clone(),
                 data: b"wire blob".to_vec(),
             },
             ServiceRequest::GetBlobRange {
-                cid,
+                cid: cid.clone(),
                 start: 0,
                 end: 4,
             },
@@ -1470,6 +1492,10 @@ mod blob_compatibility_tests {
             ));
         }
         for response in [
+            ServiceResponse::BlobUnavailable {
+                cid: cid.clone(),
+                attempt: crate::blob::BlobFetchAttempt::default(),
+            },
             ServiceResponse::Blob(Some(vec![1, 2, 3])),
             ServiceResponse::GcReport(GcReport {
                 evicted_count: 1,

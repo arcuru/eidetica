@@ -100,6 +100,21 @@ pub enum SyncCommand {
         response: oneshot::Sender<Result<SyncResponse>>,
     },
 
+    /// Fetch a verified blob range from a peer.
+    FetchBlobRange {
+        address: Address,
+        cid: crate::entry::ID,
+        range: std::ops::Range<u64>,
+        response: oneshot::Sender<Result<Option<Vec<u8>>>>,
+    },
+
+    /// Ask a peer which of the named blobs it holds.
+    QueryBlobs {
+        address: Address,
+        cids: Vec<crate::entry::ID>,
+        response: oneshot::Sender<Result<Vec<bool>>>,
+    },
+
     /// Flush: process all queued entries and retry queue, then respond.
     Flush {
         response: oneshot::Sender<Result<()>>,
@@ -152,6 +167,22 @@ impl std::fmt::Debug for SyncCommand {
                 .field("address", address)
                 .field("request", request)
                 .finish(),
+            Self::FetchBlobRange {
+                address,
+                cid,
+                range,
+                ..
+            } => f
+                .debug_struct("FetchBlobRange")
+                .field("address", address)
+                .field("cid", cid)
+                .field("range", range)
+                .finish(),
+            Self::QueryBlobs { address, cids, .. } => f
+                .debug_struct("QueryBlobs")
+                .field("address", address)
+                .field("cids", &cids.len())
+                .finish(),
             Self::Flush { .. } => write!(f, "Flush"),
         }
     }
@@ -185,12 +216,18 @@ pub struct BackgroundSync {
 
     // Communication
     command_rx: mpsc::Receiver<SyncCommand>,
+
+    // Blob tasks leave the command loop immediately but cannot grow without bound.
+    blob_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// How many peers may be synced at once, and so how many outbound connections a
 /// periodic sync can hold open. Bounds a large peer set; well above the point
 /// where the work stops being dominated by any single unreachable peer.
 const MAX_CONCURRENT_PEER_SYNCS: usize = 16;
+
+/// Bound concurrent blob buffers and tasks without occupying the command loop.
+const MAX_CONCURRENT_BLOB_COMMANDS: usize = 4;
 
 /// Bound on a single registration handshake while a route is being selected.
 ///
@@ -220,6 +257,7 @@ impl BackgroundSync {
             peer_state,
             retry_queue: Vec::new(),
             command_rx: rx,
+            blob_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BLOB_COMMANDS)),
         };
 
         // Spawn background sync as a regular tokio task
@@ -532,6 +570,61 @@ impl BackgroundSync {
                     }
                 }
             }
+
+            SyncCommand::FetchBlobRange {
+                address,
+                cid,
+                range,
+                response,
+            } => {
+                // A blob transfer can run for the whole transport deadline;
+                // like `SendRequest`, it runs in its own task so a stalled
+                // provider never holds up Database sync.
+                match self.transport_manager.handle_for_address(&address) {
+                    Some(transport) => {
+                        let Ok(slot) = self.blob_slots.clone().try_acquire_owned() else {
+                            let _ = response.send(Err(SyncError::Network(
+                                "blob transfer capacity reached".into(),
+                            )
+                            .into()));
+                            return Ok(());
+                        };
+                        tokio::spawn(async move {
+                            let _slot = slot;
+                            let result = transport.fetch_blob_range(&address, &cid, range).await;
+                            let _ = response.send(result);
+                        });
+                    }
+                    None => {
+                        let _ =
+                            response.send(Err(SyncError::NoTransportForAddress { address }.into()));
+                    }
+                }
+            }
+
+            SyncCommand::QueryBlobs {
+                address,
+                cids,
+                response,
+            } => match self.transport_manager.handle_for_address(&address) {
+                Some(transport) => {
+                    let Ok(slot) = self.blob_slots.clone().try_acquire_owned() else {
+                        let _ = response.send(Err(SyncError::Network(
+                            "blob transfer capacity reached".into(),
+                        )
+                        .into()));
+                        return Ok(());
+                    };
+                    tokio::spawn(async move {
+                        let _slot = slot;
+                        let result = transport.query_blobs(&address, &cids).await;
+                        let _ = response.send(result);
+                    });
+                }
+                None => {
+                    let _ = response.send(Err(SyncError::NoTransportForAddress { address }.into()));
+                }
+            },
 
             SyncCommand::Flush { response } => {
                 // Process retry queue first (old failures), then main queue (new entries)

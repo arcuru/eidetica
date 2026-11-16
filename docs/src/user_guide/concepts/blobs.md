@@ -77,4 +77,42 @@ The existing authenticated-session requirement remains; no blob inventory or ret
 The service frame limit remains 64 MiB, independently of the blob limit.
 JSON encoding can make a blob below the byte cap too large for one frame: such a response returns an error without hanging or closing the connection.
 Read smaller ranges when a whole response does not fit.
-Network blob transfer is not provided by this local API.
+These Instance methods never fetch from peers.
+Use the Database read interface below for an explicit network read.
+
+## Verified peer reads
+
+`Database::get_blob_range(cid, range)` checks the caller's Database Read permission, reads local storage first, then asks only that Database's active sync peers.
+It tries at most 16 providers and 16 usable addresses per provider, using the registered transports and falling back after address failures.
+The provider receives only the CID and byte range, not the requesting Database or Account.
+HTTP and Iroh both return Bao-verified ranges; requesting `0..u64::MAX` receives the whole blob within the unchanged 64 MiB limit.
+Empty and past-EOF ranges follow the local range semantics.
+Neither partial nor whole network reads publish bytes to local storage or establish retention.
+An application can explicitly store received whole bytes with `Instance::put_blob`.
+
+```rust,no_run
+# async fn example(database: &eidetica::Database, cid: &eidetica::entry::ID) -> eidetica::Result<()> {
+let bytes = database.get_blob_range(cid, 4096..8192).await?;
+# let _ = bytes;
+# Ok(())
+# }
+```
+
+`Ok(None)` means every queried provider answered absent.
+With sync enabled, no eligible providers, unreachable or stalled peers, unsupported transports and invalid streams are not absence: an unsuccessful read returns `SyncError::BlobUnavailable` with per-provider `BlobFetchAttempt` counters.
+Without sync, a local miss returns `SyncError::SyncNotEnabled`.
+Providers outside the bounded round are not covered by that observation.
+A connected Database performs the same read on its daemon and preserves those counters over the socket.
+Oversized service responses still fail within the existing 64 MiB frame cap; request smaller ranges when JSON encoding does not fit.
+
+For an explicit peer address, `Sync::fetch_blob_range_from_peer` receives bytes without a Database relationship, and `Sync::query_blob_availability` checks up to `MAX_BLOB_AVAILABILITY_BATCH` (64) named CIDs.
+Availability returns one boolean per requested CID in the same order, including duplicates; no other CID is returned.
+The answer is advisory, not a lease or a promise that a later read will succeed.
+Malformed or oversized requests and responses are errors, never fabricated absence.
+Peer serving reads only local bytes: it cannot recurse to another provider, reserve storage, or enumerate hosted content.
+Naming a CID needs no peer-side blob or Database authorization; Database and Entry authorization is unchanged.
+
+Blob commands run outside the Database sync command loop, with at most four active outbound blob commands per Instance.
+Capacity exhaustion is an error, not absence; a stalled transfer does not hold the sync engine.
+Transport connect and read deadlines and bounded response buffers remain in force.
+There is no automatic fetching, wanted-set declaration, application retention, provider advertisement or inventory discovery API.

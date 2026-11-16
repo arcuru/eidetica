@@ -513,3 +513,17 @@ Backend retention records are internal substrate; no application pin/unpin opera
 Responses that exceed the existing service-frame budget return `BlobResponseTooLarge` before framing, so a client can continue with smaller ranges on the same connection.
 The frame cap remains 64 MiB and is independent of the blob byte cap.
 See [Blob Storage](../user_guide/concepts/blobs.md).
+
+## Database-associated blob reads
+
+`DatabaseOp::FetchBlobRange { cid, start, end }` is carried by `AuthenticatedDb` and gates Read on its `root_id` using the existing session-identity checks.
+It reads daemon-local storage first, then asks only that Database's active peers through the existing sync engine.
+This differs from global `GetBlobRange`, which remains local-only.
+Successful reads return `Blob`; an unsuccessful provider round returns `BlobUnavailable { cid, attempt }`, which the client reconstructs as `SyncError::BlobUnavailable` without parsing an error message.
+Only unanimous absence among queried providers returns `Blob(None)`.
+The ordinary frame budget applies to fetched bytes too.
+Neither operation publishes received bytes, changes registration ownership, exposes pins, or delegates sync configuration to clients.
+
+The request/response classifiers recognize these variants explicitly.
+Current v0 readers refuse unknown operations or responses, so an older daemon cannot silently turn a peer fetch into a local read or a failed fetch into absence.
+This adds no persisted record format; connect clients and daemons with blob protocol support to use the new read.

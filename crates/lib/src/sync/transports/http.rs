@@ -1,15 +1,17 @@
 //! HTTP transport implementation for sync communication.
 //!
 //! This module provides HTTP-based sync communication using a single
-//! JSON endpoint (/api/v0) with axum for the server and reqwest for the client.
+//! JSON sync endpoint (`/api/v0`) and separate named-blob endpoints, using axum
+//! for the server and a shared reqwest client for outbound requests.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, ops::Range, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
     Router,
     extract::{ConnectInfo, Json as ExtractJson, State},
-    response::Json,
+    http::{StatusCode, header::CONTENT_TYPE},
+    response::{IntoResponse, Json, Response},
     routing::post,
 };
 use serde::{Deserialize, Serialize};
@@ -19,12 +21,16 @@ use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
 use crate::{
     Result,
     crdt::Doc,
+    entry::ID,
     store::Registered,
     sync::{
         error::{SyncError, TimeoutPhase},
         handler::SyncHandler,
         peer_types::Address,
-        protocol::{RequestContext, SyncRequest, SyncResponse},
+        protocol::{
+            BlobAvailabilityRequest, BlobAvailabilityResponse, BlobRangeRequest, RequestContext,
+            SyncRequest, SyncResponse,
+        },
     },
 };
 
@@ -39,8 +45,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// reqwest applies no timeout by default, so without this a peer that accepts
 /// the connection and never answers holds the request open forever. Requests
-/// are awaited inline by the background sync engine, so an unbounded one stalls
-/// every other thing that engine does.
+/// run outside the background engine's command loop; the silence deadline
+/// prevents an unresponsive peer from holding those tasks indefinitely.
 ///
 /// This bounds silence rather than the whole exchange, because the two are not
 /// the same request. A bootstrap response carries an entire database, so a
@@ -81,6 +87,27 @@ fn timeout_error(error: &reqwest::Error, address: &str) -> Option<SyncError> {
         phase,
         elapsed,
     })
+}
+
+/// Slack added to the requested range length when bounding the blob-range
+/// response read: the bao stream adds a small size prefix plus parent hashes
+/// (≈0.4% of the range + a per-request path overhead). 1 MiB dwarfs the path
+/// overhead for any realistic blob, so a response larger than this is a
+/// misbehaving peer and is rejected rather than buffered unbounded.
+const BAO_STREAM_SLACK: u64 = 1024 * 1024;
+
+// Distinguish a blob miss from an older peer's missing HTTP endpoint.
+const BLOB_PROTOCOL_HEADER: &str = "x-eidetica-blob";
+
+/// Most bytes a verified stream for `range` may occupy on the wire: the range
+/// (capped at the blob limit) plus bao overhead. Shared by every transport so
+/// none of them buffers an unbounded response.
+pub(super) fn blob_stream_budget(range: &Range<u64>) -> u64 {
+    range
+        .end
+        .saturating_sub(range.start)
+        .min(crate::backend::DEFAULT_MAX_BLOB_BYTES as u64)
+        .saturating_add(BAO_STREAM_SLACK)
 }
 
 /// Persistable configuration for the HTTP transport.
@@ -206,6 +233,8 @@ impl HttpTransport {
     fn create_router(handler: Arc<dyn SyncHandler>) -> Router {
         Router::new()
             .route("/api/v0", post(handle_sync_request))
+            .route("/api/v0/blob", post(handle_blob_request))
+            .route("/api/v0/blob/has", post(handle_blob_availability))
             .with_state(handler)
     }
 }
@@ -362,6 +391,139 @@ impl SyncTransport for HttpTransport {
         Ok(sync_response)
     }
 
+    async fn fetch_blob_range(
+        &self,
+        address: &Address,
+        cid: &ID,
+        range: Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        crate::backend::validate_blob_cid(cid)?;
+        if !self.can_handle_address(address) {
+            return Err(SyncError::UnsupportedTransport {
+                transport_type: address.transport_type.clone(),
+            }
+            .into());
+        }
+
+        let url = format!("http://{}/api/v0/blob", address.address);
+        let req = BlobRangeRequest {
+            cid: cid.clone(),
+            start: range.start,
+            end: range.end,
+        };
+
+        let mut response = self
+            .client
+            .post(&url)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| {
+                timeout_error(&e, &address.address).unwrap_or_else(|| SyncError::ConnectionFailed {
+                    address: address.address.clone(),
+                    reason: e.to_string(),
+                })
+            })?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return if response
+                .headers()
+                .get(BLOB_PROTOCOL_HEADER)
+                .and_then(|v| v.to_str().ok())
+                == Some("0")
+            {
+                Ok(None)
+            } else {
+                Err(SyncError::UnsupportedTransport {
+                    transport_type: "http blob/v0".into(),
+                }
+                .into())
+            };
+        }
+        if !response.status().is_success() {
+            return Err(SyncError::Network(format!(
+                "Server returned error: {}",
+                response.status()
+            ))
+            .into());
+        }
+
+        // Bounded read: the verified stream for this range is at most the range
+        // length (capped at the blob limit) plus bao overhead. A chunk-by-chunk
+        // budget bounds memory even if the peer misbehaves. This is the
+        // *only* peer blob-fetch path — whole-blob fetches ride it with a
+        // `0..cap` range — so the receive is always bounded (no unbounded
+        // whole-blob buffering, the memory-DoS that the removed JSON blob path
+        // had).
+        let budget = blob_stream_budget(&range);
+        let mut buf: Vec<u8> = Vec::new();
+        // A peer that stalls mid-stream hits the shared read timeout here and
+        // is reported as a timeout, as for `send_request`.
+        while let Some(chunk) = response.chunk().await.map_err(|e| {
+            timeout_error(&e, &address.address)
+                .unwrap_or_else(|| SyncError::Network(format!("Failed to read blob stream: {e}")))
+        })? {
+            if buf.len() as u64 + chunk.len() as u64 > budget {
+                return Err(crate::backend::errors::BackendError::BlobStreamInvalid {
+                    cid: cid.clone(),
+                }
+                .into());
+            }
+            buf.extend_from_slice(&chunk);
+        }
+
+        // Decode + verify against the CID; tampered/wrong bytes are rejected.
+        let bytes = crate::blob::bao::decode_range(cid, range, &buf)?;
+        Ok(Some(bytes))
+    }
+
+    async fn query_blobs(&self, address: &Address, cids: &[ID]) -> Result<Vec<bool>> {
+        if !self.can_handle_address(address) {
+            return Err(SyncError::UnsupportedTransport {
+                transport_type: address.transport_type.clone(),
+            }
+            .into());
+        }
+        crate::sync::handler::check_blob_availability_request(cids)?;
+        let url = format!("http://{}/api/v0/blob/has", address.address);
+        let mut response = self
+            .client
+            .post(&url)
+            .json(&BlobAvailabilityRequest {
+                cids: cids.to_vec(),
+            })
+            .send()
+            .await
+            .map_err(|e| {
+                timeout_error(&e, &address.address).unwrap_or_else(|| SyncError::ConnectionFailed {
+                    address: address.address.clone(),
+                    reason: e.to_string(),
+                })
+            })?;
+        if !response.status().is_success() {
+            return Err(SyncError::Network(format!(
+                "Server returned error: {}",
+                response.status()
+            ))
+            .into());
+        }
+        let mut payload = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|e| {
+            timeout_error(&e, &address.address).unwrap_or_else(|| SyncError::Network(e.to_string()))
+        })? {
+            if payload.len().saturating_add(chunk.len()) > 64 * 1024 {
+                return Err(SyncError::InvalidData(
+                    "blob availability response exceeded its receive budget".into(),
+                )
+                .into());
+            }
+            payload.extend_from_slice(&chunk);
+        }
+        let answer: BlobAvailabilityResponse = serde_json::from_slice(&payload)
+            .map_err(|e| SyncError::SerializationError(e.to_string()))?;
+        check_availability_answer(cids, answer)
+    }
+
     fn is_server_running(&self) -> bool {
         self.server_state.is_running()
     }
@@ -396,6 +558,56 @@ async fn handle_sync_request(
     let response = handler.handle_request(&request, &context).await;
 
     Json(response)
+}
+
+/// Handler for `/api/v0/blob` — serves a verified bao stream of a blob range as
+/// `application/octet-stream`. `404` when the blob isn't held; `500` on error.
+/// Blob reads are global and deliberately unauthorized.
+async fn handle_blob_request(
+    State(handler): State<Arc<dyn SyncHandler>>,
+    ExtractJson(req): ExtractJson<BlobRangeRequest>,
+) -> Response {
+    match handler.serve_blob_range(&req.cid, req.start..req.end).await {
+        Ok(Some(stream)) => ([(CONTENT_TYPE, "application/octet-stream")], stream).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, [(BLOB_PROTOCOL_HEADER, "0")]).into_response(),
+        Err(e) => {
+            tracing::warn!(cid = %req.cid, error = %e, "Failed to serve blob range");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// Handler for `/api/v0/blob/has` — a blind availability answer covering
+/// exactly the requested CIDs. `400` for an oversized or non-blob query.
+async fn handle_blob_availability(
+    State(handler): State<Arc<dyn SyncHandler>>,
+    ExtractJson(req): ExtractJson<BlobAvailabilityRequest>,
+) -> Response {
+    if crate::sync::handler::check_blob_availability_request(&req.cids).is_err() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match handler.blob_availability(&req.cids).await {
+        Ok(available) => Json(BlobAvailabilityResponse { available }).into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to answer blob availability");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// Accept an availability answer only if it covers exactly the request.
+pub(super) fn check_availability_answer(
+    cids: &[ID],
+    answer: BlobAvailabilityResponse,
+) -> Result<Vec<bool>> {
+    if answer.available.len() != cids.len() {
+        return Err(SyncError::UnexpectedResponse {
+            expected: "one availability answer per requested CID",
+            actual: format!("{} answers for {} CIDs", answer.available.len(), cids.len()),
+        }
+        .into());
+    }
+    Ok(answer.available)
 }
 
 #[cfg(test)]
@@ -438,6 +650,51 @@ mod tests {
         }
     }
 
+    /// A blob-range fetch rides the transport's shared client, so a peer that
+    /// starts a blob stream and then goes quiet is reported as a request-phase
+    /// timeout rather than as a malformed stream.
+    #[tokio::test]
+    async fn a_peer_that_stalls_mid_blob_stream_times_out_in_the_request_phase() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+
+        // Answer with headers and a partial body, then hold the connection.
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 1024\r\n\r\npartial")
+                .await
+                .unwrap();
+            pending::<()>().await;
+        });
+
+        let transport = HttpTransport {
+            server_state: ServerState::new(),
+            bind_address: None,
+            client: reqwest::Client::builder()
+                .read_timeout(Duration::from_millis(200))
+                .build()
+                .unwrap(),
+        };
+        let cid = ID::from_bytes(b"blob");
+        let error = transport
+            .fetch_blob_range(&Address::http(address), &cid, 0..4)
+            .await
+            .expect_err("a stalled blob stream cannot complete");
+
+        match error {
+            crate::Error::Sync(sync) => match *sync {
+                SyncError::Timeout { phase, .. } => assert_eq!(phase, TimeoutPhase::Request),
+                other => panic!("expected a request-phase timeout, got {other:?}"),
+            },
+            other => panic!("expected a sync error, got {other:?}"),
+        }
+    }
+
     /// A refusal is not a timeout: nothing is listening, so the connection is
     /// rejected rather than left waiting, and a caller must be able to tell the
     /// two apart without reading the message.
@@ -457,5 +714,43 @@ mod tests {
             .expect_err("nothing is listening on that port");
 
         assert!(timeout_error(&error, &address).is_none());
+    }
+}
+
+#[cfg(test)]
+mod blob_budget_tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn blob_range_with_unbounded_end_still_has_a_receive_cap() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = Address::http(listener.local_addr().unwrap().to_string());
+        // An intentionally invalid stream whose zero size would decode as
+        // empty. The receive budget must reject it before Bao is consulted.
+        let body =
+            vec![0u8; crate::backend::DEFAULT_MAX_BLOB_BYTES + BAO_STREAM_SLACK as usize + 1];
+        let router = Router::new().route("/api/v0/blob", post(move || async move { body }));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let transport = HttpTransport {
+            server_state: ServerState::new(),
+            bind_address: None,
+            client: build_client().unwrap(),
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            transport.fetch_blob_range(&address, &ID::from_bytes(b"blob"), 0..u64::MAX),
+        )
+        .await;
+        server.abort();
+        let error = result
+            .expect("bounded receive finishes")
+            .expect_err("over-cap body must be refused");
+        assert!(
+            matches!(error, crate::Error::Backend(ref e) if matches!(**e, crate::backend::errors::BackendError::BlobStreamInvalid { .. })),
+            "{error:?}"
+        );
     }
 }

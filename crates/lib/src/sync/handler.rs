@@ -53,6 +53,45 @@ pub trait SyncHandler: Send + std::marker::Sync {
     /// The appropriate response for the given request.
     async fn handle_request(&self, request: &SyncRequest, context: &RequestContext)
     -> SyncResponse;
+
+    /// Serve a verified bao stream for a byte range of a blob.
+    ///
+    /// Returns the self-describing bao encoding for `range` of blob `cid` if held
+    /// locally, or `None` if absent. Resolution is local-only, without Database
+    /// authorization or recursive peer fetch. This is the binary blob path, separate from
+    /// the JSON `handle_request`. The default serves nothing.
+    async fn serve_blob_range(
+        &self,
+        _cid: &ID,
+        _range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    /// Answer a blind availability query for explicitly named blobs.
+    ///
+    /// Returns one entry per requested CID, in order, from local storage only.
+    /// The default holds nothing.
+    async fn blob_availability(&self, cids: &[ID]) -> Result<Vec<bool>> {
+        check_blob_availability_request(cids)?;
+        Ok(vec![false; cids.len()])
+    }
+}
+
+/// Reject an availability query that is too large or names a non-blob CID.
+pub(crate) fn check_blob_availability_request(cids: &[ID]) -> Result<()> {
+    if cids.len() > crate::blob::MAX_BLOB_AVAILABILITY_BATCH {
+        return Err(SyncError::InvalidData(format!(
+            "blob availability query names {} CIDs; at most {} are allowed",
+            cids.len(),
+            crate::blob::MAX_BLOB_AVAILABILITY_BATCH
+        ))
+        .into());
+    }
+    for cid in cids {
+        crate::backend::validate_blob_cid(cid)?;
+    }
+    Ok(())
 }
 
 /// How far a request's timestamp may sit from our clock, in either direction.
@@ -363,6 +402,44 @@ impl SyncHandler for SyncHandlerImpl {
                 }
             }
         }
+    }
+
+    /// Serve a verified bao stream of a blob range by CID — the sole way a peer
+    /// fetches blob bytes (both partial reads and, via a `0..cap` range, whole
+    /// blobs go through here).
+    ///
+    /// Blob reads are deliberately unauthorized: a peer that names a CID gets
+    /// the bytes, with no per-blob or per-Database check. A CID is not a
+    /// secret — predictable content can be hashed by anyone — so this is a
+    /// policy choice, not a confidentiality guarantee. What the peer cannot do
+    /// is discover anything it did not name: only the requested CID is
+    /// answered, a CID we lack returns nothing (`None` → 404), and there is no
+    /// list, prefix or summary form. The returned stream is self-verifying —
+    /// every parent and leaf hashes to the CID as the receiver decodes — so the
+    /// bytes need no separate trust step on the far side.
+    async fn serve_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        // Local-only (no recursion into peer-fetch, which would amplify and
+        // could loop). `encode_blob_range_local` codec-gates to raw blobs and
+        // reads only the requested window plus the persisted outboard — a
+        // range serve of a large blob never whole-loads or re-hashes it.
+        let instance = self.instance()?;
+        instance.encode_blob_range_local(cid, range).await
+    }
+
+    /// Answer a blind availability query from local storage only. Like range
+    /// serving, it never fetches from other peers or records retention.
+    async fn blob_availability(&self, cids: &[ID]) -> Result<Vec<bool>> {
+        check_blob_availability_request(cids)?;
+        let instance = self.instance()?;
+        let mut available = Vec::with_capacity(cids.len());
+        for cid in cids {
+            available.push(instance.has_blob_local(cid).await?);
+        }
+        Ok(available)
     }
 }
 

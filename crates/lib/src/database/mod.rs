@@ -1134,6 +1134,40 @@ impl Database {
         crate::account::ticket_locator(&self.instance()?, self.root_id()).await
     }
 
+    /// Receive a verified byte range of a blob from this Database's peers.
+    ///
+    /// Reads local storage first; otherwise asks this Database's peers, not
+    /// every peer the Instance knows. The range is verified against `cid`
+    /// and returned without being stored, since a range is not the whole
+    /// blob. `Ok(None)` only when every peer asked said it lacks the blob;
+    /// otherwise a failed fetch is
+    /// [`SyncError::BlobUnavailable`](crate::sync::SyncError::BlobUnavailable).
+    pub async fn get_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        crate::backend::validate_blob_cid(cid)?;
+        let instance = self.instance()?;
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = instance.remote_connection() {
+            return conn
+                .fetch_blob_range_remote(
+                    self.root_id().clone(),
+                    self.auth_identity().cloned().unwrap_or_default(),
+                    cid.clone(),
+                    range,
+                )
+                .await;
+        }
+        if self.current_permission().await? < Permission::Read {
+            return Err(AccountError::InsufficientPermissions.into());
+        }
+        instance
+            .fetch_blob_range_for_database(self.root_id(), cid, range)
+            .await
+    }
+
     fn account(&self) -> Result<(&str, &ID)> {
         self.local_account
             .as_ref()
