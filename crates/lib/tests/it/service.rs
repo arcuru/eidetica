@@ -2942,6 +2942,13 @@ async fn test_native_metadata_notifications_replace_snapshots_and_end_on_reauthe
                 .await
                 .unwrap();
                 assert!(matches!(
+                    read_frame::<_, ServerFrame>(&mut reader)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    ServerFrame::Notification(Notification::LocalAccountMetadata { .. })
+                ));
+                assert!(matches!(
                     read_response(&mut reader).await,
                     ServiceResponse::LocalAccountMetadata(_)
                 ));
@@ -2984,6 +2991,13 @@ async fn test_native_metadata_notifications_replace_snapshots_and_end_on_reauthe
         )
         .await
         .unwrap();
+        assert!(matches!(
+            read_frame::<_, ServerFrame>(&mut reader)
+                .await
+                .unwrap()
+                .unwrap(),
+            ServerFrame::Notification(Notification::LocalAccountMetadata { .. })
+        ));
         let initial = match read_response(&mut reader).await {
             ServiceResponse::LocalAccountMetadata(keys) => keys,
             other => panic!("expected native metadata, got {other:?}"),

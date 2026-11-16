@@ -73,6 +73,10 @@ pub(crate) async fn register_metadata(
         )?
         .keys,
     );
+    // Deliver initialization under the publication gate too. A restored wire
+    // subscription must refresh retained receivers, even if its caller abandons
+    // the response or never constructs a new AccountSession.
+    callback(initial.clone());
     let id = uuid::Uuid::new_v4();
     channel
         .callbacks

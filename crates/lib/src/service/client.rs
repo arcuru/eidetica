@@ -241,6 +241,9 @@ struct RemoteConnectionInner {
     /// per-request wire chatter for the common case where a single per-DB
     /// key is reused across many ops.
     registered_keys: Mutex<HashSet<PublicKey>>,
+    /// A native subscription is valid only for this exact authentication. The
+    /// authentication mutex serializes its wire operations with re-login.
+    local_metadata_login: std::sync::Mutex<Option<String>>,
     /// Keep compound possession proofs and database requests outside a racing
     /// login handshake, which replaces the server's connection keyset.
     authentication: Mutex<()>,
@@ -569,6 +572,7 @@ impl RemoteConnection {
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
+            local_metadata_login: std::sync::Mutex::new(None),
             authentication: Mutex::new(()),
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             subscription_locks: std::sync::Mutex::new(HashMap::new()),
@@ -734,6 +738,11 @@ impl RemoteConnection {
     /// Prove a caller-owned signer, with no daemon credential-store dependency.
     pub(crate) async fn authenticate_signer(&self, signer: &PrivateKey) -> crate::Result<()> {
         let _guard = self.inner.authentication.lock().await;
+        self.inner
+            .local_metadata_login
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         self.inner.registered_keys.lock().await.clear();
         let response = self
             .request_ok(ServiceRequest::SignerChallenge {
@@ -802,25 +811,64 @@ impl RemoteConnection {
         Ok(())
     }
 
+    pub(crate) fn ensure_local_account_metadata(&self, login_id: &str) -> crate::Result<()> {
+        self.ensure_open()?;
+        if self
+            .inner
+            .local_metadata_login
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_deref()
+            != Some(login_id)
+        {
+            return Err(crate::instance::InstanceError::AuthenticationRequired.into());
+        }
+        Ok(())
+    }
+
     pub(crate) async fn subscribe_local_account_metadata(
         &self,
         login_id: &str,
     ) -> crate::Result<crate::account::local_state::KeyMetadata> {
-        match self
+        let _guard = self.inner.authentication.lock().await;
+        self.subscribe_local_account_metadata_locked(login_id).await
+    }
+
+    async fn subscribe_local_account_metadata_locked(
+        &self,
+        login_id: &str,
+    ) -> crate::Result<crate::account::local_state::KeyMetadata> {
+        let keys = match self
             .request_ok(ServiceRequest::SubscribeLocalAccountMetadata {
                 login_id: login_id.to_owned(),
             })
             .await?
         {
-            ServiceResponse::LocalAccountMetadata(keys) => Ok(keys),
-            other => Err(unexpected_response("LocalAccountMetadata", &other)),
+            ServiceResponse::LocalAccountMetadata(keys) => keys,
+            other => return Err(unexpected_response("LocalAccountMetadata", &other)),
+        };
+        *self
+            .inner
+            .local_metadata_login
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(login_id.to_owned());
+        Ok(keys)
+    }
+
+    async fn ensure_local_account_metadata_locked(&self, login_id: &str) -> crate::Result<()> {
+        if self.ensure_local_account_metadata(login_id).is_err() {
+            self.subscribe_local_account_metadata_locked(login_id)
+                .await?;
         }
+        Ok(())
     }
 
     pub(crate) async fn local_account_state(
         &self,
         login_id: &str,
     ) -> crate::Result<Option<Vec<u8>>> {
+        let _guard = self.inner.authentication.lock().await;
+        self.ensure_local_account_metadata_locked(login_id).await?;
         match self
             .request_ok(ServiceRequest::LocalAccountState {
                 login_id: login_id.to_owned(),
@@ -838,6 +886,8 @@ impl RemoteConnection {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> crate::Result<bool> {
+        let _guard = self.inner.authentication.lock().await;
+        self.ensure_local_account_metadata_locked(login_id).await?;
         match self
             .request_ok(ServiceRequest::ExchangeLocalAccountState {
                 login_id: login_id.to_owned(),
@@ -877,6 +927,11 @@ impl RemoteConnection {
     ) -> crate::Result<(String, AccountInfo, crate::account::UnlockedCredentials)> {
         let _guard = self.inner.authentication.lock().await;
         // A failed/abandoned attempt also invalidates the server keyset.
+        self.inner
+            .local_metadata_login
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         self.inner.registered_keys.lock().await.clear();
         // Step 1: name the user, receive challenge + user record.
         let resp = self
@@ -2111,6 +2166,7 @@ mod tests {
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
+            local_metadata_login: std::sync::Mutex::new(None),
             authentication: Mutex::new(()),
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             subscription_locks: std::sync::Mutex::new(HashMap::new()),

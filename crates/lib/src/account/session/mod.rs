@@ -767,7 +767,7 @@ impl AccountSession {
         if let Some(subscription) = &self.metadata {
             #[cfg(all(unix, feature = "service"))]
             if let Some(connection) = self.instance.remote_connection() {
-                connection.ensure_open()?;
+                connection.ensure_local_account_metadata(&self.login_id)?;
             }
             let snapshot = subscription.receiver.borrow();
             let keys = snapshot.as_ref().ok_or(AccountError::InvalidLocalState)?;

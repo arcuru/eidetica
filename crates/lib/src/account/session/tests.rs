@@ -395,7 +395,40 @@ async fn native_mapping_push_reaches_live_session_without_reads() -> Result<()> 
             }
         }
         assert_eq!(observer.find_key(database.root_id())?, None);
-        observer_instance.remote_connection().unwrap().retire();
+        // Finish the same-login proof, but abandon session reconstruction before
+        // AccountSession::new. This is the exact interrupted re-login boundary.
+        let connection = observer_instance.remote_connection().unwrap();
+        let _ = connection.trusted_login("push-owner", "").await?;
+        let later = creator.create_database(Doc::new(), &key).await?;
+        assert!(
+            observer.find_key(later.root_id()).is_err(),
+            "lost subscription looked live"
+        );
+        observer.refresh_mapping_metadata().await?;
+        assert_eq!(
+            observer.find_key(later.root_id())?,
+            Some(key.clone()),
+            "successful refresh after interrupted re-login left the old session stale"
+        );
+        updates.borrow_and_update();
+        creator
+            .map_key(&key, later.root_id(), SigKey::from_name("after-recovery"))
+            .await?;
+        loop {
+            updates.changed().await.unwrap();
+            if updates.borrow_and_update().as_ref().unwrap()[&key.to_string()]
+                .database_sigkeys
+                .get(later.root_id())
+                == Some(&Some(SigKey::from_name("after-recovery")))
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            observer.key_mapping(&key, later.root_id())?,
+            Some(SigKey::from_name("after-recovery"))
+        );
+        connection.retire();
         assert!(observer.key_mapping(&key, database.root_id()).is_err());
         drop(updates);
         drop(observer);

@@ -119,7 +119,9 @@ Notifications contain public key metadata only, never a credential bundle or pri
 They are applied by the client reader before later responses, without user callbacks or asynchronous refresh jobs.
 Local registrations drop with their session; the wire registration belongs to the connection and ends on reauthentication or disconnect.
 The registries hold weak channels, not sessions or private keys.
-A closed service connection makes mapping lookup fail rather than returning a supposedly live snapshot.
+A closed service connection or interrupted reauthentication makes mapping lookup fail rather than returning a supposedly live snapshot.
+A scoped native read restores the subscription after a completed same-login proof, including when construction of the replacement session was interrupted.
+Subscription initialization is delivered under the native publication gate before its acknowledgement, so it refreshes retained sessions without overwriting a newer push.
 Updated clients require subscription support from the service; an older service's Unsupported response fails login rather than silently using stale mappings.
 The existing frame cap is unchanged.
 
