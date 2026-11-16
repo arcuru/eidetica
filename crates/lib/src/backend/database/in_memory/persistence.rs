@@ -4,7 +4,7 @@
 //! the in-memory database state to/from JSON files.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     sync::{Mutex, RwLock},
 };
@@ -23,10 +23,9 @@ use crate::{
 
 /// Internal JSON format revision counter, independent of release versions and
 /// the SQL schema counter. v0 reconstructs retained state on load; v2 persists
-/// verified tips only. Unreleased v1 prefix files are refused.
-// v3 adds non-replicated local account records. v2 readers refuse this version
-// rather than silently discarding credentials when saving an older snapshot.
-const PERSISTENCE_VERSION: u8 = 3;
+/// verified tips only; v3 adds native local accounts, v4 adds blob storage.
+/// Experimental blob snapshots using v3 are refused, not migrated.
+const PERSISTENCE_VERSION: u8 = 4;
 
 /// Helper to check if version is default (0) for serde skip_serializing_if
 fn is_v0(v: &u8) -> bool {
@@ -40,7 +39,7 @@ where
 {
     use serde::Deserialize;
     let version = u8::deserialize(deserializer)?;
-    if version != 0 && version != 2 && version != PERSISTENCE_VERSION {
+    if version != 0 && version != 2 && version != 3 && version != PERSISTENCE_VERSION {
         return Err(serde::de::Error::custom(format!(
             "unsupported persistence version {version}; newest supported version \
              is {PERSISTENCE_VERSION} (v0 files rebuild retained state on load)"
@@ -87,6 +86,26 @@ struct SerializableDatabase {
     /// rebuilt on load; persisted since v2.
     #[serde(default)]
     verified: HashMap<ID, VerifiedState>,
+    /// Blob bytes cannot be rebuilt from Entries, so snapshots include them.
+    /// Presence is tracked so experimental snapshots cannot masquerade as mainline.
+    #[serde(default, deserialize_with = "present")]
+    blobs: Option<HashMap<ID, Vec<u8>>>,
+    /// Per-blob last-access time (epoch ms) for LRU eviction.
+    #[serde(default, deserialize_with = "present")]
+    blob_accessed: Option<HashMap<ID, i64>>,
+    /// Blob pins (`(user_id, database_id, blob_cid)`): the local GC root set.
+    #[serde(default, deserialize_with = "present")]
+    blob_pins: Option<HashSet<(String, String, ID)>>,
+}
+
+// Unlike Option's normal decoder, an explicitly present null is not treated as
+// an absent field. Old supported snapshots have no blob fields at all.
+fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 impl Serialize for InMemory {
@@ -109,6 +128,9 @@ impl Serialize for InMemory {
                 cache: None,
                 tips: inner.tips.clone(),
                 verified: inner.verified.clone(),
+                blobs: Some(inner.blobs.clone()),
+                blob_accessed: Some(inner.blob_accessed.clone()),
+                blob_pins: Some(inner.blob_pins.clone()),
             }
         };
 
@@ -123,6 +145,24 @@ impl<'de> Deserialize<'de> for InMemory {
     {
         // Version validation happens via deserialize_with on SerializableDatabase._v
         let serializable = SerializableDatabase::deserialize(deserializer)?;
+        let blob_fields = [
+            serializable.blobs.is_some(),
+            serializable.blob_accessed.is_some(),
+            serializable.blob_pins.is_some(),
+        ];
+        if serializable.version < PERSISTENCE_VERSION && blob_fields.iter().any(|present| *present)
+        {
+            return Err(serde::de::Error::custom(
+                "unsupported experimental blob snapshot",
+            ));
+        }
+        if serializable.version == PERSISTENCE_VERSION
+            && blob_fields.iter().any(|present| !*present)
+        {
+            return Err(serde::de::Error::custom(
+                "current snapshot is missing authoritative blob fields",
+            ));
+        }
 
         let mut inner = InMemoryInner {
             entries: serializable.entries,
@@ -134,6 +174,9 @@ impl<'de> Deserialize<'de> for InMemory {
             local_accounts: serializable.local_accounts,
             tips: serializable.tips,
             verified: serializable.verified,
+            blobs: serializable.blobs.unwrap_or_default(),
+            blob_accessed: serializable.blob_accessed.unwrap_or_default(),
+            blob_pins: serializable.blob_pins.unwrap_or_default(),
         };
         // v0 files predate the retained verified state: rebuild every
         // touched tree from entries and statuses so the hot path never
@@ -197,6 +240,9 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
             cache: None,
             tips: inner.tips.clone(),
             verified: inner.verified.clone(),
+            blobs: Some(inner.blobs.clone()),
+            blob_accessed: Some(inner.blob_accessed.clone()),
+            blob_pins: Some(inner.blob_pins.clone()),
         }
     };
 
@@ -310,7 +356,7 @@ mod persistence_tests {
         assert_eq!(before.tips(), std::slice::from_ref(&a_id));
 
         let value = serde_json::to_value(&backend).expect("serializes");
-        assert_eq!(value["_v"], 3);
+        assert_eq!(value["_v"], 4);
         assert!(value.get("verified").is_some());
 
         let loaded: InMemory = serde_json::from_value(value).expect("deserializes");
@@ -327,6 +373,9 @@ mod persistence_tests {
         let mut value = serde_json::to_value(&backend).expect("serializes");
         value.as_object_mut().unwrap().remove("verified");
         value.as_object_mut().unwrap().remove("_v");
+        for field in ["blobs", "blob_accessed", "blob_pins"] {
+            value.as_object_mut().unwrap().remove(field);
+        }
 
         let loaded: InMemory = serde_json::from_value(value).expect("v0 still loads");
         let after =
@@ -342,6 +391,9 @@ mod persistence_tests {
         let (backend, root_id, _) = verified_chain();
         let mut value = serde_json::to_value(&backend).expect("serializes");
         value["_v"] = 2.into();
+        for field in ["blobs", "blob_accessed", "blob_pins"] {
+            value.as_object_mut().unwrap().remove(field);
+        }
         value.as_object_mut().unwrap().remove("local_accounts");
         value["verified"] = serde_json::Value::Object(Default::default());
 

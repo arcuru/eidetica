@@ -707,6 +707,59 @@ impl BackendImpl for Counting {
         self
     }
 
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> eidetica::Result<()> {
+        self.inner.put_blob(cid, data).await
+    }
+    async fn get_blob(&self, cid: &ID) -> eidetica::Result<Option<Vec<u8>>> {
+        self.inner.get_blob(cid).await
+    }
+    async fn get_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> eidetica::Result<Option<Vec<u8>>> {
+        self.inner.get_blob_range(cid, range).await
+    }
+    async fn get_blob_header(&self, cid: &ID) -> eidetica::Result<Option<(u64, Vec<u8>)>> {
+        self.inner.get_blob_header(cid).await
+    }
+    async fn has_blob(&self, cid: &ID) -> eidetica::Result<bool> {
+        self.inner.has_blob(cid).await
+    }
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> eidetica::Result<()> {
+        self.inner.touch_blob_accessed(cid, now_ms).await
+    }
+    async fn delete_blob(&self, cid: &ID) -> eidetica::Result<bool> {
+        self.inner.delete_blob(cid).await
+    }
+    async fn all_blob_meta(&self) -> eidetica::Result<Vec<eidetica::backend::BlobMeta>> {
+        self.inner.all_blob_meta().await
+    }
+    async fn pin_blob(
+        &self,
+        user_id: &str,
+        database_id: &str,
+        blob_cid: &ID,
+    ) -> eidetica::Result<()> {
+        self.inner.pin_blob(user_id, database_id, blob_cid).await
+    }
+    async fn unpin_blob(
+        &self,
+        user_id: &str,
+        database_id: &str,
+        blob_cid: &ID,
+    ) -> eidetica::Result<bool> {
+        self.inner.unpin_blob(user_id, database_id, blob_cid).await
+    }
+    async fn pinned_cids(&self) -> eidetica::Result<std::collections::HashSet<ID>> {
+        self.inner.pinned_cids().await
+    }
+    async fn all_blob_pins(&self) -> eidetica::Result<Vec<(String, String, ID)>> {
+        self.inner.all_blob_pins().await
+    }
+    async fn pinned_size_by_user(&self, user_id: &str) -> eidetica::Result<u64> {
+        self.inner.pinned_size_by_user(user_id).await
+    }
     async fn get_tree(&self, tree: &ID) -> eidetica::Result<Vec<Entry>> {
         self.counters.get_tree_calls.fetch_add(1, Ordering::Relaxed);
         self.inner.get_tree(tree).await

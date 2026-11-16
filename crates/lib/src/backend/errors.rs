@@ -211,6 +211,103 @@ pub enum BackendError {
         reason: String,
     },
 
+    /// A blob's bytes did not hash to the content address they were stored under.
+    ///
+    /// Content addressing is self-verifying: a blob's address is the BLAKE3 CID
+    /// of its bytes. This is raised when `cid != ID::from_bytes(&data)`, which
+    /// means either a programming error (wrong CID passed to `put_blob`) or
+    /// corrupted/tampered bytes.
+    #[error("Blob content address mismatch: stored under {claimed} but bytes hash to {computed}")]
+    BlobHashMismatch {
+        /// The content address the blob was claimed to have.
+        claimed: ID,
+        /// The content address actually computed from the bytes.
+        computed: ID,
+    },
+
+    /// A blob exceeded the configured maximum size.
+    ///
+    /// Whole-blob operations buffer bytes in memory, so a content address
+    /// alone is not a sufficient resource bound.
+    #[error("Blob size {size} bytes exceeds maximum {max} bytes")]
+    BlobTooLarge {
+        /// The size of the offending blob in bytes.
+        size: usize,
+        /// The configured maximum blob size in bytes.
+        max: usize,
+    },
+
+    /// A blob address is not a raw-codec BLAKE3-256 CIDv1.
+    ///
+    /// Wrong codecs, hash algorithms and digest lengths are rejected rather
+    /// than silently treated as missing blobs.
+    #[error("Not a raw-codec BLAKE3-256 CIDv1 blob address: {cid}")]
+    BlobInvalidCodec {
+        /// The invalid address that was supplied.
+        cid: ID,
+    },
+
+    /// A blob's SQL row records it on disk (`location = 1`) but the
+    /// content-addressed file is absent.
+    ///
+    /// The metadata row claims the backend holds these bytes, so a missing file
+    /// is a storage inconsistency — a lost rename after a crash, an external
+    /// deletion, or bit-rot — not the same as "blob not held locally". It is
+    /// surfaced as an error rather than reported as absent so a vanished
+    /// (possibly pinned) blob cannot masquerade as one that was never stored.
+    #[error("Blob {cid} is recorded on disk but its backing file is missing")]
+    BlobFileMissing {
+        /// The content address whose backing file is absent.
+        cid: ID,
+    },
+
+    /// A bao verified-streaming blob transfer failed to decode or verify.
+    ///
+    /// Raised when a received range stream is malformed, does not cover the
+    /// requested range, or fails verification against the requested CID (a
+    /// tampered or wrong-blob stream). Resolution is self-verifying, so this is
+    /// how an untrusted peer's bad bytes are rejected.
+    #[error("Blob stream did not verify against {cid}")]
+    BlobStreamInvalid {
+        /// The content address the stream was supposed to deliver.
+        cid: ID,
+    },
+
+    /// A blob's delivered length did not match the size declared by a
+    /// [`BlobRef`](crate::blob::BlobRef).
+    ///
+    /// A content address pins a blob's *identity* (its bytes hash to the CID)
+    /// but not its declared length; a reference may carry a `size` that lets a
+    /// reader budget the transfer and decide fetch-or-not before the bytes
+    /// arrive. Resolving such a reference checks the delivered length
+    /// against the declared one and rejects a mismatch here.
+    #[error("Blob {cid} length {actual} bytes does not match declared size {declared} bytes")]
+    BlobSizeMismatch {
+        /// The content address of the blob.
+        cid: ID,
+        /// The size declared by the reference.
+        declared: u64,
+        /// The actual byte length resolved.
+        actual: u64,
+    },
+
+    /// A blob or blob range is too large to return in one service frame.
+    ///
+    /// The service socket carries blob bytes as JSON, which can take up to four
+    /// bytes per blob byte, so a stored blob under the size cap may still not
+    /// fit in one response. The daemon refuses it rather than sending a frame
+    /// the client cannot read; read such a blob in windows with
+    /// [`Instance::get_blob_range`](crate::Instance::get_blob_range).
+    #[error(
+        "Blob response of {size} bytes is too large for the service protocol ({encoded_bytes} bytes encoded)"
+    )]
+    BlobResponseTooLarge {
+        /// Raw byte length of the blob or range that was refused.
+        size: usize,
+        /// Encoded size rejected before transmission.
+        encoded_bytes: usize,
+    },
+
     /// SQL database error (sqlx).
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     #[error("SQL error: {reason}")]
@@ -243,6 +340,7 @@ impl BackendError {
                 | BackendError::HeightCalculationCorruption { .. }
                 | BackendError::TreeIntegrityViolation { .. }
                 | BackendError::StateInconsistency { .. }
+                | BackendError::BlobFileMissing { .. }
         )
     }
 

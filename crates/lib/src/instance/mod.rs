@@ -322,6 +322,10 @@ pub(crate) struct InstanceInternal {
     /// `WriteEvent::previous_tips` is consistent for concurrent writers
     /// to the same tree.
     tree_locks: Mutex<HashMap<ID, Arc<tokio::sync::Mutex<()>>>>,
+    /// Serialize local blob reads/writes/pins with the complete GC sweep so
+    /// its pin/access snapshot stays valid until deletion (including unlink).
+    /// coding: global lock; use per-CID locking if blob throughput warrants it.
+    blob_lock: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for InstanceInternal {
@@ -471,6 +475,41 @@ impl Drop for InstanceInternal {
 #[derive(Clone, Debug, Handle)]
 pub struct Instance {
     inner: Arc<InstanceInternal>,
+}
+
+/// Options for [`Instance::gc_blobs`](Instance::gc_blobs).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GcOptions {
+    /// Evict least-recently-used unpinned blobs until total blob bytes are at
+    /// or below this. `None` evicts every collectable unpinned blob.
+    pub max_total_bytes: Option<u64>,
+    /// Grace window (ms): never evict a blob accessed within this many
+    /// milliseconds of now. Protects a just-written-but-not-yet-pinned blob
+    /// from a concurrent sweep. Default 60_000.
+    pub min_age_ms: u64,
+}
+
+impl Default for GcOptions {
+    fn default() -> Self {
+        Self {
+            max_total_bytes: None,
+            min_age_ms: 60_000,
+        }
+    }
+}
+
+/// Outcome of a [`Instance::gc_blobs`](Instance::gc_blobs) pass — aggregate
+/// counts only; the swept CID list is never returned.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GcReport {
+    /// Number of blobs evicted.
+    pub evicted_count: usize,
+    /// Total bytes reclaimed by eviction.
+    pub reclaimed_bytes: u64,
+    /// Total blob bytes still held locally after the pass.
+    pub retained_bytes: u64,
+    /// Bytes belonging to pinned blobs (a subset of `retained_bytes`).
+    pub pinned_bytes: u64,
 }
 
 /// Weak reference to an Instance.
@@ -825,6 +864,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            blob_lock: tokio::sync::Mutex::new(()),
         });
         let instance = Self { inner };
         // Hand the reader task a Weak reference so it can dispatch
@@ -1002,6 +1042,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            blob_lock: tokio::sync::Mutex::new(()),
         });
         Ok(Self { inner })
     }
@@ -1034,6 +1075,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            blob_lock: tokio::sync::Mutex::new(()),
         });
         Ok(Self { inner })
     }
@@ -1083,6 +1125,7 @@ impl Instance {
                 global_write_callbacks: Mutex::new(Vec::new()),
                 next_callback_id: AtomicU64::new(0),
                 tree_locks: Mutex::new(HashMap::new()),
+                blob_lock: tokio::sync::Mutex::new(()),
             }),
         };
         let users_db = create_accounts_database(&temp_instance, &device_key).await?;
@@ -1116,6 +1159,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            blob_lock: tokio::sync::Mutex::new(()),
         });
 
         let instance = Self { inner };
@@ -1200,6 +1244,314 @@ impl Instance {
             Ok(snap) => !snap.is_empty(),
             Err(_) => false,
         }
+    }
+
+    // === Blob Storage (content-addressed, out-of-band from the entry DAG) ===
+
+    /// Store bytes in the local blob tier and return their content address.
+    ///
+    /// The returned [`ID`] is the raw-codec (`0x55`) BLAKE3 CID of the bytes;
+    /// embed it (as a string, or inside a typed reference) in any store value
+    /// to "attach" the blob. Idempotent — the same bytes always yield the same
+    /// CID and a re-store is a no-op (content-addressed dedup). This does NOT
+    /// commit anything to the DAG: the caller embeds the returned CID in a
+    /// store value and commits that entry normally.
+    ///
+    /// Rejects blobs larger than [`DEFAULT_MAX_BLOB_BYTES`](crate::backend::DEFAULT_MAX_BLOB_BYTES)
+    /// ([`BackendError::BlobTooLarge`]);
+    ///
+    /// Routes through the backend seam, so it works on both local and remote
+    /// (daemon-backed) instances. On a remote instance the bytes are submitted
+    /// over the service wire as a global blob (`PutBlob`); the daemon
+    /// re-verifies the content address.
+    pub async fn put_blob(&self, data: impl Into<Vec<u8>>) -> Result<ID> {
+        let data = data.into();
+        if data.len() > crate::backend::DEFAULT_MAX_BLOB_BYTES {
+            return Err(crate::backend::errors::BackendError::BlobTooLarge {
+                size: data.len(),
+                max: crate::backend::DEFAULT_MAX_BLOB_BYTES,
+            }
+            .into());
+        }
+        let cid = ID::from_bytes(&data);
+        self.persist_blob(&cid, data).await?;
+        Ok(cid)
+    }
+
+    /// Store bytes and return a typed [`BlobRef`](crate::blob::BlobRef) carrying
+    /// both the content address and the size.
+    ///
+    /// Identical to [`put_blob`](Self::put_blob) except for the return type: the
+    /// reference is ready to embed in a Store value, with a declared size that
+    /// readers can check before reading bytes. Resolve it with
+    /// [`get_blob_ref`](Self::get_blob_ref).
+    pub async fn put_blob_ref(&self, data: impl Into<Vec<u8>>) -> Result<crate::blob::BlobRef> {
+        let data = data.into();
+        let size = data.len() as u64;
+        let cid = self.put_blob(data).await?;
+        Ok(crate::blob::BlobRef::new(cid, size))
+    }
+
+    /// Read a blob's bytes by content address from this Instance's storage.
+    ///
+    /// Local only: on an embedded Instance this is its own store, on a
+    /// connected Instance the daemon's store. It never asks peers.
+    /// Returns `Ok(None)` if absent. Returned bytes are guaranteed to hash to
+    /// `cid`. Errors with
+    /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
+    /// if `cid` is not a raw-codec blob address.
+    pub async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        self.get_blob_local(cid).await
+    }
+
+    /// Resolve a blob named by a [`BlobRef`](crate::blob::BlobRef), using the
+    /// declared size as both an up-front guard and a post-fetch integrity check.
+    ///
+    /// The declared `size` is enforced *before* any fetch: a reference larger
+    /// than [`DEFAULT_MAX_BLOB_BYTES`](crate::backend::DEFAULT_MAX_BLOB_BYTES) is
+    /// rejected with
+    /// [`BlobTooLarge`](crate::backend::errors::BackendError::BlobTooLarge)
+    /// before reading (size-before-fetch, §5.4). Resolution then
+    /// reads local storage exactly as [`get_blob`](Self::get_blob), and the bytes
+    /// must be exactly `size` long — a content address pins identity but not
+    /// declared length, so a mismatch is rejected with
+    /// [`BlobSizeMismatch`](crate::backend::errors::BackendError::BlobSizeMismatch).
+    /// `Ok(None)` if the blob is not held locally.
+    pub async fn get_blob_ref(&self, blob_ref: &crate::blob::BlobRef) -> Result<Option<Vec<u8>>> {
+        if blob_ref.size > crate::backend::DEFAULT_MAX_BLOB_BYTES as u64 {
+            return Err(crate::backend::errors::BackendError::BlobTooLarge {
+                size: blob_ref.size as usize,
+                max: crate::backend::DEFAULT_MAX_BLOB_BYTES,
+            }
+            .into());
+        }
+        match self.get_blob(&blob_ref.cid).await? {
+            Some(bytes) if bytes.len() as u64 != blob_ref.size => {
+                Err(crate::backend::errors::BackendError::BlobSizeMismatch {
+                    cid: blob_ref.cid.clone(),
+                    declared: blob_ref.size,
+                    actual: bytes.len() as u64,
+                }
+                .into())
+            }
+            other => Ok(other),
+        }
+    }
+
+    /// The single blob-persist path: write bytes through the seam (which
+    /// re-verifies the content address) and stamp `last_accessed` to *now* so
+    /// LRU/GC see a fresh blob and the grace window protects it. Used by
+    /// local put and the daemon `PutBlob` handler. The
+    /// stamp is a no-op on a remote backend (no local engine) — there the
+    /// daemon stamps when it persists.
+    pub(crate) async fn persist_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        let _guard = self.inner.blob_lock.lock().await;
+        self.inner.backend.put_blob(cid, data).await?;
+        if let Some(engine) = self.inner.backend.local_engine() {
+            let now = self.inner.clock.now_millis() as i64;
+            engine.touch_blob_accessed(cid, now).await?;
+        }
+        Ok(())
+    }
+
+    /// Local-only blob lookup; never consults sync peers.
+    ///
+    /// Routes through the backend seam: on a local instance this is the
+    /// in-process engine; on a remote instance it is the daemon's own store
+    /// (still not a peer fetch). Returns `Ok(None)` if absent.
+    pub async fn get_blob_local(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        crate::backend::validate_blob_cid(cid)?;
+        let _guard = self.inner.blob_lock.lock().await;
+        let blob = self.inner.backend.get_blob(cid).await?;
+        // Stamp last-access on a local hit so LRU eviction reflects reads.
+        // Range reads stamp in `encode_blob_range_local` too. On a remote
+        // backend the daemon stamps its own reads.
+        if blob.is_some()
+            && let Some(engine) = self.inner.backend.local_engine()
+        {
+            let now = self.inner.clock.now_millis() as i64;
+            engine.touch_blob_accessed(cid, now).await?;
+        }
+        Ok(blob)
+    }
+
+    /// Read a byte range of a blob from this Instance's storage.
+    ///
+    /// `range` is a half-open byte range into the blob, clamped to the blob's
+    /// length: an over-long `end` yields the available tail, and a `start` at or
+    /// past the end yields an empty slice. Local only, like
+    /// [`get_blob`](Self::get_blob); `Ok(None)` means the blob is not held.
+    /// Errors with
+    /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
+    /// for a non-raw `cid`.
+    ///
+    /// An in-process engine reads only the requested window from storage,
+    /// and a connected Instance asks its daemon for just that window.
+    pub async fn get_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        crate::backend::validate_blob_cid(cid)?;
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.remote_connection() {
+            return conn
+                .get_blob_range_remote(cid.clone(), range.start, range.end)
+                .await;
+        }
+        self.get_blob_range_local(cid, range).await
+    }
+
+    /// Windowed blob range read from **local storage only** (the in-process
+    /// engine; never sync peers, never the whole blob). `Ok(None)` if this
+    /// instance has no local engine or the blob is absent. Stamps last-access on
+    /// a hit so LRU eviction reflects reads. This is the daemon's serve
+    /// path for a client's [`get_blob_range`](Self::get_blob_range).
+    pub(crate) async fn get_blob_range_local(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        crate::backend::validate_blob_cid(cid)?;
+        if self.inner.backend.local_engine().is_none() {
+            return Ok(None);
+        }
+        // Reuse the persisted outboard and validated window.
+        // A verified put alone cannot protect later reads from disk corruption.
+        match self.encode_blob_range_local(cid, range.clone()).await? {
+            Some(encoded) => Ok(Some(crate::blob::bao::decode_range(cid, range, &encoded)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Encode a bao verified-streaming range from **local storage only** (no
+    /// peer fetch), reading just the chunk-aligned window bytes plus the
+    /// persisted outboard — never the whole blob. Returns `Ok(None)` if the
+    /// blob is not held locally. Requires a
+    /// local engine (only a node with storage serves); a non-raw `cid` is
+    /// rejected with
+    /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec).
+    pub(crate) async fn encode_blob_range_local(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        crate::backend::validate_blob_cid(cid)?;
+        let _guard = self.inner.blob_lock.lock().await;
+        let engine = self.local_blob_engine()?;
+        let Some((size, outboard)) = engine.get_blob_header(cid).await? else {
+            return Ok(None);
+        };
+        // Check persisted metadata before it controls the storage read, not
+        // only when the Bao encoder receives the resulting window.
+        if size > crate::backend::DEFAULT_MAX_BLOB_BYTES as u64 {
+            return Err(crate::backend::BackendError::BlobTooLarge {
+                size: size.try_into().unwrap_or(usize::MAX),
+                max: crate::backend::DEFAULT_MAX_BLOB_BYTES,
+            }
+            .into());
+        }
+        // Read only the chunk-aligned window the encoder needs, not the blob.
+        let window = crate::blob::bao::serve_window(size, range.clone());
+        let window_bytes = engine
+            .get_blob_range(cid, window.clone())
+            .await?
+            .unwrap_or_default();
+        // A serve is a read — keep LRU recency honest.
+        let now = self.inner.clock.now_millis() as i64;
+        engine.touch_blob_accessed(cid, now).await?;
+        let encoded = crate::blob::bao::encode_range_with_outboard(
+            cid,
+            size,
+            &outboard,
+            window.start,
+            &window_bytes,
+            range,
+        )?;
+        Ok(Some(encoded))
+    }
+
+    // === Local blob garbage collection ===
+
+    /// Storage for local range verification and GC. Connected clients route
+    /// those operations to their daemon before reaching this helper.
+    fn local_blob_engine(&self) -> Result<std::sync::Arc<dyn crate::backend::BackendImpl>> {
+        self.inner
+            .backend
+            .local_engine()
+            .ok_or_else(|| InstanceError::BlobOpRequiresLocalEngine.into())
+    }
+
+    /// Garbage-collect unowned locally-held cache bytes.
+    ///
+    /// Backend retention roots are never evicted, nor are
+    /// blobs accessed within [`GcOptions::min_age_ms`] (the grace window that
+    /// protects a just-written but not-yet-pinned blob from a concurrent
+    /// sweep). Among the remaining (unpinned, aged-out) blobs, eviction is
+    /// **least-recently-used first**:
+    /// - [`GcOptions::max_total_bytes`] `= Some(n)`: evict LRU blobs until total
+    ///   blob bytes are `≤ n` (a no-op if already under).
+    /// - `= None`: evict every collectable unpinned blob.
+    ///
+    /// Deletion is complete-only (a blob is removed whole). Returns a
+    /// [`GcReport`] of aggregate counts/bytes — never the list of swept CIDs
+    /// (no enumeration is exposed). On a remote instance the pass runs on
+    /// the daemon, which owns the blobs and evaluates the grace window against
+    /// its own clock.
+    pub async fn gc_blobs(&self, opts: GcOptions) -> Result<GcReport> {
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.remote_connection() {
+            return conn.gc_blobs_remote(opts).await;
+        }
+        let _guard = self.inner.blob_lock.lock().await;
+        let engine = self.local_blob_engine()?;
+        let now = self.inner.clock.now_millis() as i64;
+
+        let pinned = engine.pinned_cids().await?;
+        let metas = engine.all_blob_meta().await?;
+
+        let total_bytes: u64 = metas.iter().map(|m| m.size).sum();
+        let pinned_bytes: u64 = metas
+            .iter()
+            .filter(|m| pinned.contains(&m.cid))
+            .map(|m| m.size)
+            .sum();
+
+        // Eviction candidates: unpinned and outside the grace window. Sorted
+        // least-recently-used first.
+        let mut candidates: Vec<crate::backend::BlobMeta> = metas
+            .into_iter()
+            .filter(|m| {
+                !pinned.contains(&m.cid)
+                    && m.last_accessed <= now
+                    && now.saturating_sub(m.last_accessed) as u64 >= opts.min_age_ms
+            })
+            .collect();
+        candidates.sort_by_key(|m| m.last_accessed);
+
+        let mut current_total = total_bytes;
+        let mut reclaimed_bytes = 0u64;
+        let mut evicted_count = 0usize;
+        for m in candidates {
+            // Stop early once we're under the target (size-driven mode).
+            if let Some(max) = opts.max_total_bytes
+                && current_total <= max
+            {
+                break;
+            }
+            if engine.delete_blob(&m.cid).await? {
+                current_total = current_total.saturating_sub(m.size);
+                reclaimed_bytes += m.size;
+                evicted_count += 1;
+            }
+        }
+
+        Ok(GcReport {
+            evicted_count,
+            reclaimed_bytes,
+            retained_bytes: current_total,
+            pinned_bytes,
+        })
     }
 
     /// Get a reference to the clock.

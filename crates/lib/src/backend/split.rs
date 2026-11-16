@@ -2,21 +2,21 @@
 //!
 //! [`SplitBackend`] composes any primary [`BackendImpl`] with any
 //! [`DerivedCacheStorage`]. Entries, verification, instance metadata/secrets,
-//! local credentials and Authoritative Store state stay in the primary. Only
+//! local credentials, blobs/retention roots and Authoritative Store state stay in the primary. Only
 //! disposable Derived Store state and its private builds use the cache. Each
 //! engine keeps its own resolve/stage/publish/read/scan/clear and
 //! budget/eviction implementation, dialect, schema and ownership; the split
 //! only routes requests and opaque handles.
 
-use std::any::Any;
+use std::{any::Any, collections::HashSet, ops::Range};
 
 use async_trait::async_trait;
 
 use crate::{
     Result,
     backend::{
-        BackendImpl, InstanceMetadata, InstanceSecrets, Reachability, RecordMutations, RecordPage,
-        RecordRange, RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest,
+        BackendImpl, BlobMeta, InstanceMetadata, InstanceSecrets, Reachability, RecordMutations,
+        RecordPage, RecordRange, RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest,
         VerificationRepair, VerificationStatus, errors::BackendError,
     },
     entry::{Entry, ID},
@@ -242,6 +242,60 @@ impl SplitBackend {
 
 #[async_trait]
 impl BackendImpl for SplitBackend {
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        self.primary.put_blob(cid, data).await
+    }
+
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        self.primary.get_blob(cid).await
+    }
+
+    async fn get_blob_range(&self, cid: &ID, range: Range<u64>) -> Result<Option<Vec<u8>>> {
+        self.primary.get_blob_range(cid, range).await
+    }
+
+    async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
+        self.primary.get_blob_header(cid).await
+    }
+
+    async fn has_blob(&self, cid: &ID) -> Result<bool> {
+        self.primary.has_blob(cid).await
+    }
+
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> Result<()> {
+        self.primary.touch_blob_accessed(cid, now_ms).await
+    }
+
+    async fn delete_blob(&self, cid: &ID) -> Result<bool> {
+        self.primary.delete_blob(cid).await
+    }
+
+    async fn all_blob_meta(&self) -> Result<Vec<BlobMeta>> {
+        self.primary.all_blob_meta().await
+    }
+
+    async fn pin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<()> {
+        self.primary.pin_blob(user_id, database_id, blob_cid).await
+    }
+
+    async fn unpin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<bool> {
+        self.primary
+            .unpin_blob(user_id, database_id, blob_cid)
+            .await
+    }
+
+    async fn pinned_cids(&self) -> Result<HashSet<ID>> {
+        self.primary.pinned_cids().await
+    }
+
+    async fn all_blob_pins(&self) -> Result<Vec<(String, String, ID)>> {
+        self.primary.all_blob_pins().await
+    }
+
+    async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64> {
+        self.primary.pinned_size_by_user(user_id).await
+    }
+
     async fn local_account_record(&self, name: &str) -> Result<Option<Vec<u8>>> {
         self.primary.local_account_record(name).await
     }

@@ -21,6 +21,7 @@
 //!
 //! See [`schema`] module documentation for details on adding migrations.
 
+mod blob_disk;
 mod cache;
 #[cfg(feature = "sqlite")]
 mod sqlite_cache;
@@ -123,6 +124,14 @@ pub struct SqlxBackend {
     derived_pool: Option<AnyPool>,
     _cache_owner: Option<StorageOwner>,
     kind: DbKind,
+    /// Directory for the on-disk blob tier, or `None` to keep every blob
+    /// inline in the SQL `data` column. Orthogonal to [`kind`](Self::kind): the
+    /// blob storage is local to the owning `Instance` (one backend = its
+    /// database + blob dir + cache), so it applies equally to SQLite and
+    /// Postgres. Set it via [`with_blob_dir`](Self::with_blob_dir);
+    /// [`open_sqlite`](Self::open_sqlite) seeds a sensible default
+    /// (`<db>.blobs`). In-memory SQLite leaves it `None` (nothing is on disk).
+    blob_dir: Option<std::path::PathBuf>,
     _owner: Option<StorageOwner>,
     #[cfg(all(feature = "postgres", feature = "testing"))]
     postgres_token: Option<String>,
@@ -394,6 +403,32 @@ impl SqlxBackend {
     /// Get the database kind.
     pub fn kind(&self) -> DbKind {
         self.kind
+    }
+
+    /// The on-disk blob-tier directory, if this backend has one. `None` means
+    /// every blob is stored inline in SQL.
+    pub(crate) fn blob_dir(&self) -> Option<&std::path::Path> {
+        self.blob_dir.as_deref()
+    }
+
+    /// Attach an on-disk blob tier rooted at `dir`, regardless of
+    /// database kind. Blobs larger than the inline threshold are then stored as
+    /// content-addressed files under `dir` (read via `pread`), while the
+    /// database keeps the metadata; smaller blobs stay inline. The directory is
+    /// created lazily on first write.
+    ///
+    /// This is the single, kind-agnostic way to configure blob storage — one
+    /// backend (database + blob dir + cache) belongs to exactly one `Instance`,
+    /// and clients reach blobs *through* that instance, so the blob dir is the
+    /// instance's local disk for both SQLite and Postgres.
+    ///
+    /// ```ignore
+    /// let backend = Postgres::connect(url).await?.with_blob_dir("/var/lib/eidetica/blobs");
+    /// let backend = Sqlite::open(path).await?.with_blob_dir("/var/lib/eidetica/blobs");
+    /// ```
+    pub fn with_blob_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.blob_dir = Some(dir.into());
+        self
     }
 
     /// Check if this backend is using SQLite.
@@ -681,16 +716,30 @@ impl SqlxBackend {
     /// }
     /// ```
     pub async fn open_sqlite<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
         // mode=rwc: read-write-create (create file if it doesn't exist)
-        let url = sqlite_path_url(path.as_ref())?;
-        Self::connect_sqlite(&url).await
+        let url = sqlite_path_url(path)?;
+        // The on-disk blob tier lives in a sibling directory named
+        // "<db-file>.blobs", so it shares the DB file's device (atomic renames)
+        // and travels with it. Large blobs go here; small ones stay inline.
+        let mut blob_dir = path.as_os_str().to_owned();
+        blob_dir.push(".blobs");
+        let blob_dir = PathBuf::from(blob_dir);
+        Ok(Self::connect_sqlite_configured(&url, None, None)
+            .await?
+            .with_blob_dir(blob_dir))
     }
 
     /// Connect to a SQLite database using a connection URL.
     ///
+    /// Blobs are stored inline in SQL (no on-disk tier); use [`open_sqlite`] for
+    /// a file-based database with the hybrid inline/disk tier.
+    ///
     /// # Arguments
     ///
     /// * `url` - SQLite connection URL (e.g., "sqlite:./my.db")
+    ///
+    /// [`open_sqlite`]: Self::open_sqlite
     pub async fn connect_sqlite(url: &str) -> Result<Self> {
         Self::connect_sqlite_configured(url, None, None).await
     }
@@ -708,7 +757,13 @@ impl SqlxBackend {
         path: P,
         policy: DerivedCachePolicy,
     ) -> Result<Self> {
-        Self::connect_sqlite_with_cache_policy(&sqlite_path_url(path.as_ref())?, policy).await
+        let mut blob_dir = path.as_ref().as_os_str().to_owned();
+        blob_dir.push(".blobs");
+        Ok(
+            Self::connect_sqlite_with_cache_policy(&sqlite_path_url(path.as_ref())?, policy)
+                .await?
+                .with_blob_dir(PathBuf::from(blob_dir)),
+        )
     }
 
     /// Connect with a separately provisioned cache path and explicit bounds.
@@ -793,6 +848,7 @@ impl SqlxBackend {
             cache_tick_seeded: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "testing")]
             recency_flushes: std::sync::atomic::AtomicU64::new(0),
+            blob_dir: None,
         };
 
         let cache_url = if let Some(url) = fixed_cache_url {
@@ -1080,6 +1136,9 @@ impl SqlxBackend {
             cache_tick_seeded: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "testing")]
             recency_flushes: std::sync::atomic::AtomicU64::new(0),
+            // Attach an on-disk blob tier via `with_blob_dir`; bare connections
+            // keep blobs inline (Postgres TOASTs large BYTEA out of line).
+            blob_dir: None,
         };
 
         // Initialize schema (tables will be created in the current search_path)
@@ -1392,6 +1451,67 @@ impl BackendImpl for SqlxBackend {
 
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
         traversal::store_at(self, tree, store, snapshot.tips()).await
+    }
+
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        crate::backend::verify_blob_cid(cid, &data)?;
+        storage::put_blob(self, cid, data).await
+    }
+
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        let blob = storage::get_blob(self, cid).await?;
+        if let Some(bytes) = &blob {
+            crate::backend::verify_blob_cid(cid, bytes)?;
+        }
+        Ok(blob)
+    }
+
+    async fn get_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        storage::get_blob_range(self, cid, range).await
+    }
+
+    async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
+        storage::get_blob_header(self, cid).await
+    }
+
+    async fn has_blob(&self, cid: &ID) -> Result<bool> {
+        storage::has_blob(self, cid).await
+    }
+
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> Result<()> {
+        storage::touch_blob_accessed(self, cid, now_ms).await
+    }
+
+    async fn delete_blob(&self, cid: &ID) -> Result<bool> {
+        storage::delete_blob(self, cid).await
+    }
+
+    async fn all_blob_meta(&self) -> Result<Vec<crate::backend::BlobMeta>> {
+        storage::all_blob_meta(self).await
+    }
+
+    async fn pin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<()> {
+        storage::pin_blob(self, user_id, database_id, blob_cid).await
+    }
+
+    async fn unpin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<bool> {
+        storage::unpin_blob(self, user_id, database_id, blob_cid).await
+    }
+
+    async fn all_blob_pins(&self) -> Result<Vec<(String, String, ID)>> {
+        storage::all_blob_pins(self).await
+    }
+
+    async fn pinned_cids(&self) -> Result<std::collections::HashSet<ID>> {
+        storage::pinned_cids(self).await
+    }
+
+    async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64> {
+        storage::pinned_size_by_user(self, user_id).await
     }
 
     async fn get_sorted_store_parents(
