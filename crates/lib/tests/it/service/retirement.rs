@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 /// cancelling its client future or changing the daemon's execution path.
 #[tokio::test]
 async fn test_retire_lost_write_ack_preserves_commit_without_replay() {
+    tokio::time::timeout(Duration::from_secs(30), async {
     let (socket_path, _shutdown, server, _dir) = start_test_server().await;
     let proxy_dir = tempfile::tempdir().unwrap();
     let proxy_path = proxy_dir.path().join("proxy.sock");
@@ -30,8 +31,15 @@ async fn test_retire_lost_write_ack_preserves_commit_without_replay() {
             let is_submit = matches!(&request, ServiceRequest::AuthenticatedDb(db)
                 if matches!(db.op, DatabaseOp::SubmitSignedEntry { .. }));
             write_frame(&mut upstream, &request).await.unwrap();
-            // No subscriptions are installed, so each request has one response.
-            let response: ServerFrame = read_frame(&mut upstream).await.unwrap().unwrap();
+            // Login now subscribes to native metadata. Forward interleaved
+            // pushes without consuming the actual request's response slot.
+            let response = loop {
+                let frame: ServerFrame = read_frame(&mut upstream).await.unwrap().unwrap();
+                match frame {
+                    ServerFrame::Notification(_) => write_frame(&mut client, &frame).await.unwrap(),
+                    response @ ServerFrame::Response(_) => break response,
+                }
+            };
             if is_submit && gate.load(Ordering::Acquire) {
                 assert!(
                     matches!(&response, ServerFrame::Response(reply) if matches!(**reply, ServiceResponse::Ok)),
@@ -171,4 +179,5 @@ async fn test_retire_lost_write_ack_preserves_commit_without_replay() {
         fresh_conn.get_instance_metadata().await.unwrap().is_some(),
         "retiring an old generation affected its replacement"
     );
+    }).await.expect("retirement proxy or lost-ack check stalled");
 }
