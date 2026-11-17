@@ -240,6 +240,7 @@ impl<B: BackendImpl> BackendImpl for Recordless<B> {
                 }
                 .into());
             }
+            8 => return Err(BackendError::EntryNotFound { id: ID::default() }.into()),
             7 => {
                 let mut value = self.0.store_state_record_get(view, key).await?;
                 if let Some(bytes) = &mut value {
@@ -889,4 +890,51 @@ async fn corrupt_encrypted_cached_row_is_not_a_history_miss() {
     assert!(!error.is_invalid_store_state_view());
     state.phase.store(0, Ordering::SeqCst);
     assert_eq!(table.get("a").await.unwrap().value, 1);
+}
+
+#[tokio::test]
+async fn docstore_optional_preserves_backend_errors() {
+    let state = Arc::new(StaleThenUnsupported {
+        phase: AtomicU8::new(0),
+        get: AtomicU8::new(0),
+        scan: AtomicU8::new(0),
+    });
+    let (instance, _) = Instance::create_backend(
+        Box::new(Recordless(InMemory::new(), Some(state.clone()))),
+        NewAccount::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let database = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("data").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
+    let viewer = database.get_store_viewer::<DocStore>("data").await.unwrap();
+    // Positive controls also populate the opaque cache reached by the fault.
+    assert_eq!(viewer.try_get("key").await.unwrap(), Some("value".into()));
+    assert_eq!(viewer.try_get("absent").await.unwrap(), None);
+    for phase in [6, 8] {
+        state.phase.store(phase, Ordering::SeqCst);
+        for key in ["key", "absent"] {
+            for result in [viewer.try_get(key).await, viewer.try_get_path(key).await] {
+                let error = result.unwrap_err();
+                assert!(
+                    matches!(error, eidetica::Error::Backend(ref e) if match phase {
+                        6 => matches!(e.as_ref(), BackendError::StateInconsistency { reason }
+                            if reason == "injected real read failure"),
+                        8 => matches!(e.as_ref(), BackendError::EntryNotFound { id } if id == &ID::default()),
+                        _ => unreachable!(),
+                    }),
+                    "{error}"
+                );
+            }
+            // Compatibility helpers still suppress errors; strict helpers must not.
+            assert!(viewer.get_option(key).await.is_none());
+            assert!(viewer.get_path_option(key).await.is_none());
+        }
+    }
+    state.phase.store(0, Ordering::SeqCst);
+    assert_eq!(viewer.try_get("key").await.unwrap(), Some("value".into()));
 }
