@@ -87,6 +87,9 @@ async fn test_builder_initialize_doc_preserves_nested_values() {
     let mut meta = Doc::new();
     meta.set("scalar", "top-level");
     meta.set("nested", nested);
+    meta.set_literal("nested.inner", "literal");
+    meta.set_literal("", "empty");
+    meta.set_literal(".日本.", "unicode");
 
     let (db, _) = user
         .new_database()
@@ -108,6 +111,9 @@ async fn test_builder_initialize_doc_preserves_nested_values() {
     assert_eq!(inner, "deep");
     let count = store.get_path("nested.count").await.unwrap();
     assert_eq!(count, 42i64);
+    assert_eq!(store.get_literal("nested.inner").await.unwrap(), "literal");
+    assert_eq!(store.get_literal("").await.unwrap(), "empty");
+    assert_eq!(store.get_literal(".日本.").await.unwrap(), "unicode");
 }
 
 #[tokio::test]

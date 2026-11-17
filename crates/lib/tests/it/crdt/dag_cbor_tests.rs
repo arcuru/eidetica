@@ -412,3 +412,60 @@ fn test_dag_cbor_complete_state_continuation_and_lawful_merges() {
     suffix.insert("nested".to_owned(), b);
     assert_continuation(&outer, &[suffix]);
 }
+
+#[test]
+fn test_doc_literal_keys_keep_existing_wire_shape() {
+    use eidetica::crdt::Codec;
+
+    // Existing Serde/Codec shape, readable before the literal accessor existed.
+    let historical = br#"{"children":{"":{"Text":"empty"},".":{"Int":1},"a.b":"Deleted"}}"#;
+    let old_doc = Doc::decode(historical).unwrap();
+    let mut doc = Doc::new();
+    doc.set_literal("", "empty");
+    doc.set_literal(".", 1);
+    doc.remove_literal("a.b");
+    assert_eq!(doc, old_doc);
+    assert_eq!(doc.get_literal(""), Some(&Value::from("empty")));
+    assert!(doc.is_tombstone_literal("a.b"));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&doc.encode().unwrap()).unwrap(),
+        serde_json::from_slice::<serde_json::Value>(historical).unwrap()
+    );
+    golden(
+        &doc,
+        "a1686368696c6472656ea360a1645465787465656d707479612ea163496e740163612e626744656c65746564",
+    );
+
+    // Canonical map ordering changes neither key text nor Unicode identity.
+    let keys = [
+        "",
+        ".",
+        "..",
+        "a.b",
+        ".a",
+        "a.",
+        "é",
+        "e\u{301}",
+        "日本.語",
+        "_a",
+        "\"\\\n\0",
+    ];
+    let mut forward = Doc::atomic();
+    let mut reverse = Doc::atomic();
+    for key in keys {
+        forward.set_literal(key, key);
+    }
+    for key in keys.into_iter().rev() {
+        reverse.set_literal(key, key);
+    }
+    let bytes = dag_cbor::encode(&forward).unwrap();
+    assert_eq!(dag_cbor::encode(&reverse).unwrap(), bytes);
+    let restored: Doc = dag_cbor::decode(&bytes).unwrap();
+    assert!(restored.is_atomic());
+    assert_eq!(restored.len(), keys.len());
+    for key in keys {
+        assert_eq!(restored.get_literal(key), Some(&Value::from(key)));
+    }
+    assert_ne!(restored.get_literal("é"), restored.get_literal("e\u{301}"));
+    assert_eq!(Doc::decode(&forward.encode().unwrap()).unwrap(), forward);
+}
