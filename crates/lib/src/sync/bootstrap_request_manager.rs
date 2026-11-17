@@ -37,6 +37,9 @@ pub struct BootstrapRequest {
     pub requesting_key_name: String,
     /// Permission level being requested
     pub requested_permission: Permission,
+    /// Require an explicit active key grant, independent of public readability.
+    #[serde(default)]
+    pub require_direct_key: bool,
     /// When the request was made (ISO 8601 timestamp)
     pub timestamp: String,
     /// Current status of the request
@@ -81,6 +84,26 @@ pub(super) fn request_id_for(
     ID::from_dagcbor_bytes(identity).to_string()
 }
 
+impl BootstrapRequest {
+    fn storage_id(&self) -> String {
+        if !self.require_direct_key {
+            return request_id_for(
+                &self.tree_id,
+                &self.requesting_pubkey,
+                &self.requested_permission,
+            );
+        }
+        let bytes = serde_ipld_dagcbor::to_vec(&(
+            "explicit-key-membership/v1",
+            &self.tree_id,
+            &self.requesting_pubkey,
+            &self.requested_permission,
+        ))
+        .expect("membership request identity is serializable");
+        ID::from_dagcbor_bytes(bytes).to_string()
+    }
+}
+
 impl<'a> BootstrapRequestManager<'a> {
     /// Create a new BootstrapRequestManager that operates on the given Transaction.
     pub(super) fn new(txn: &'a Transaction) -> Self {
@@ -102,11 +125,7 @@ impl<'a> BootstrapRequestManager<'a> {
 
         debug!(tree_id = %request.tree_id, "Storing bootstrap request");
 
-        let request_id = request_id_for(
-            &request.tree_id,
-            &request.requesting_pubkey,
-            &request.requested_permission,
-        );
+        let request_id = request.storage_id();
         requests.set(&request_id, request.clone()).await?;
 
         info!(request_id = %request_id, tree_id = %request.tree_id, "Successfully stored bootstrap request");
@@ -160,6 +179,19 @@ impl<'a> BootstrapRequestManager<'a> {
         self.filter_requests(&RequestStatus::Pending).await
     }
 
+    pub(super) async fn pending_requests_for(
+        &self,
+        root_id: &ID,
+    ) -> Result<Vec<(String, BootstrapRequest)>> {
+        self.txn
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
+            .await?
+            .search(|request| {
+                &request.tree_id == root_id && request.status == RequestStatus::Pending
+            })
+            .await
+    }
+
     /// Get all approved bootstrap requests.
     ///
     /// # Returns
@@ -190,6 +222,7 @@ impl<'a> BootstrapRequestManager<'a> {
         tree_id: &ID,
         requesting_pubkey: &PublicKey,
         requested_permission: &Permission,
+        require_direct_key: bool,
     ) -> Result<Option<(String, BootstrapRequest)>> {
         let requests = self
             .txn
@@ -200,6 +233,7 @@ impl<'a> BootstrapRequestManager<'a> {
                 &request.tree_id == tree_id
                     && &request.requesting_pubkey == requesting_pubkey
                     && &request.requested_permission == requested_permission
+                    && request.require_direct_key == require_direct_key
             })
             .await?;
         Ok(matches
@@ -287,6 +321,7 @@ mod tests {
             requesting_pubkey: PublicKey::random(),
             requesting_key_name: "laptop_key".to_string(),
             requested_permission: Permission::Write(5),
+            require_direct_key: false,
             timestamp: clock.now_rfc3339(),
             status: RequestStatus::Pending,
             peer_address: Address {
@@ -419,11 +454,7 @@ mod tests {
     fn request_identity_ignores_mutable_record_fields() {
         let clock = FixedClock::default();
         let request = create_test_request(&clock);
-        let request_id = request_id_for(
-            &request.tree_id,
-            &request.requesting_pubkey,
-            &request.requested_permission,
-        );
+        let request_id = request.storage_id();
         let mut changed = request;
         changed.requesting_key_name = "renamed key".to_string();
         changed.timestamp = "2026-09-16T12:34:56Z".to_string();
@@ -439,14 +470,9 @@ mod tests {
         metadata.set("note", "changed");
         changed.metadata = Some(metadata);
 
-        assert_eq!(
-            request_id,
-            request_id_for(
-                &changed.tree_id,
-                &changed.requesting_pubkey,
-                &changed.requested_permission,
-            )
-        );
+        assert_eq!(request_id, changed.storage_id());
+        changed.require_direct_key = true;
+        assert_ne!(request_id, changed.storage_id());
     }
 
     #[tokio::test]

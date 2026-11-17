@@ -19,7 +19,8 @@ use super::{
     peer_types::Address,
     protocol::{
         BootstrapResponse, HandshakeRequest, HandshakeResponse, IncrementalResponse,
-        PROTOCOL_VERSION, RequestContext, SyncRequest, SyncResponse, SyncTreeRequest,
+        PROTOCOL_VERSION, RequestContext, SyncRequest, SyncRequestAuth, SyncResponse,
+        SyncTreeRequest,
     },
 };
 use crate::{
@@ -130,10 +131,13 @@ impl SyncHandlerImpl {
             .as_ref()
             .ok_or_else(|| SyncError::AuthenticationRequired(request.tree_id.to_string()))?;
         let instance = self.instance()?;
-        auth.verify(&instance.id(), &request.tree_id, &request.our_tips)
-            .map_err(|_| {
-                SyncError::AuthenticationFailed("invalid request signature".to_string())
-            })?;
+        auth.verify_access(
+            &instance.id(),
+            &request.tree_id,
+            &request.our_tips,
+            request.requested_permission,
+        )
+        .map_err(|_| SyncError::AuthenticationFailed("invalid request signature".to_string()))?;
         let now = instance.clock().now_millis();
         if now.abs_diff(auth.timestamp_ms) > MAX_REQUEST_AGE_MS {
             return Err(SyncError::AuthenticationFailed(
@@ -198,6 +202,7 @@ impl SyncHandlerImpl {
         &self,
         sync_request: &SyncTreeRequest,
         requesting_key_name: &str,
+        require_direct_key: bool,
     ) -> Result<BootstrapRequestOutcome> {
         let tree_id = &sync_request.tree_id;
         let requesting_key = sync_request
@@ -217,7 +222,12 @@ impl SyncHandlerImpl {
         let manager = BootstrapRequestManager::new(&txn);
 
         if let Some((request_id, request)) = manager
-            .find_existing_request(tree_id, requesting_key, &requested_permission)
+            .find_existing_request(
+                tree_id,
+                requesting_key,
+                &requested_permission,
+                require_direct_key,
+            )
             .await?
         {
             match request.status {
@@ -225,11 +235,12 @@ impl SyncHandlerImpl {
                     return Ok(BootstrapRequestOutcome::Rejected(request_id));
                 }
                 RequestStatus::Pending => {
-                    if Database::can_access(
+                    if super::bootstrap::request_satisfied(
                         &instance,
                         tree_id,
                         requesting_key,
                         &requested_permission,
+                        require_direct_key,
                     )
                     .await?
                     {
@@ -238,11 +249,12 @@ impl SyncHandlerImpl {
                     return Ok(BootstrapRequestOutcome::Pending(request_id));
                 }
                 RequestStatus::Approved { .. } => {
-                    if Database::can_access(
+                    if super::bootstrap::request_satisfied(
                         &instance,
                         tree_id,
                         requesting_key,
                         &requested_permission,
+                        require_direct_key,
                     )
                     .await?
                     {
@@ -252,7 +264,15 @@ impl SyncHandlerImpl {
             }
         }
 
-        if Database::can_access(&instance, tree_id, requesting_key, &requested_permission).await? {
+        if super::bootstrap::request_satisfied(
+            &instance,
+            tree_id,
+            requesting_key,
+            &requested_permission,
+            require_direct_key,
+        )
+        .await?
+        {
             return Ok(BootstrapRequestOutcome::Approved);
         }
 
@@ -261,6 +281,7 @@ impl SyncHandlerImpl {
             requesting_pubkey: requesting_key.clone(),
             requesting_key_name: requesting_key_name.to_string(),
             requested_permission,
+            require_direct_key,
             timestamp: self.instance()?.clock().now_rfc3339(),
             status: RequestStatus::Pending,
             // TODO: We need to get the actual peer address from the transport layer
@@ -731,11 +752,18 @@ impl SyncHandlerImpl {
     ) -> SyncResponse {
         async move {
             trace!(tree_id = %request.tree_id, "Processing sync tree request");
+            let membership = request.auth.as_ref().is_some_and(SyncRequestAuth::requires_direct_key);
+            if membership && (request.requesting_key.is_none()
+                || request.requesting_key_name.as_deref().is_none_or(str::is_empty)
+                || request.requested_permission.is_none())
+            {
+                return SyncResponse::Error("membership requires a named key and permission".to_owned());
+            }
 
             // A named permission request must resolve its lifecycle even when
             // the caller supplies tips; tips cannot bypass terminal rejection.
             let response = if request.our_tips.is_empty() || request.requested_permission.is_some() {
-                self.handle_bootstrap_request(request).await
+                self.handle_bootstrap_request(request, membership).await
             } else {
                 self.handle_incremental_sync(request).await
             };
@@ -794,7 +822,11 @@ impl SyncHandlerImpl {
     /// - `BootstrapResponse`: Contains entries and approval status (key_approved, granted_permission)
     /// - `BootstrapPending`: Manual approval required (request queued)
     /// - `Error`: Tree not found, auth required, key not authorized, or processing failure
-    async fn handle_bootstrap_request(&self, request: &SyncTreeRequest) -> SyncResponse {
+    async fn handle_bootstrap_request(
+        &self,
+        request: &SyncTreeRequest,
+        require_direct_key: bool,
+    ) -> SyncResponse {
         let tree_id = &request.tree_id;
         let requesting_key = request.requesting_key.as_ref();
         let requesting_key_name = request.requesting_key_name.as_deref();
@@ -889,7 +921,10 @@ impl SyncHandlerImpl {
                     "Processing key approval request for bootstrap"
                 );
 
-                match self.resolve_bootstrap_request(request, key_name).await {
+                match self
+                    .resolve_bootstrap_request(request, key_name, require_direct_key)
+                    .await
+                {
                     Ok(BootstrapRequestOutcome::Pending(request_id)) => {
                         info!(
                             tree_id = %tree_id,

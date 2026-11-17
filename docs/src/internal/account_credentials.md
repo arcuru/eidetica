@@ -36,7 +36,7 @@ A binary rollback does not roll back data; see the [format matrix](../design/ver
 
 `login:<name>` contains the installation login UUID and `AccountInfo`: local label, Account ID, root credential, creation time and status.
 Names are inserted atomically when absent; a duplicate registration is refused.
-`account-state:<UUID>` contains `credentials` (the complete current bundle), `keys` (public-key-indexed metadata), `databases` (ID-indexed `TrackedDatabase` values) and `last_login`.
+`account-state:<UUID>` contains `credentials` (the complete current bundle), `keys` (public-key-indexed metadata), `databases` (ID-indexed `TrackedDatabase` values), `identities` (name-indexed `TrackedIdentity` values), and `last_login`.
 A key metadata record includes its public ID, display label and per-database SigKey hints, never a private key or per-key ciphertext.
 The directory's initial bundle supplies the login root proof; after authentication, the scoped local-state read supplies the current complete bundle.
 Its authenticated Account locator must match the directory hint, and the login key must be present.
@@ -142,8 +142,8 @@ A direct-key handle needs no Identity.
 A delegated handle carries the exact supplied path, not a reference-derived guess or an automatic direct-key fallback.
 A newly selected handle is a new value; old handles are never rebound.
 A missing public-key hint is bound to the actual signer so name-based service reads cannot fall back to the connection login key; a mismatched supplied public-key hint fails open-time validation.
-Identity code can supply an exact `DatabaseKey`/`SigKey` through this seam without storing local key selection or activation in portable metadata.
-The Identity membership request lifecycle is not implemented here.
+An Identity handle uses this seam to bind one actual signer and open through the exact Identity root. Local selection and activation are not part of portable metadata.
+See [Identity membership](bootstrap.md#identity-membership) for peer approval and [Accounts design](../design/accounts.md#identity-references-and-activation) for tracking.
 
 ## Service execution
 

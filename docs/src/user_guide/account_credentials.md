@@ -155,7 +155,7 @@ This is low-level storage control, not a recovery/export service.
 `acting.open_database(&instance, &root_id).await` opens the exact target under the selected signer and Auth identity.
 Target Auth and verified proof availability still apply.
 A direct key needs no Identity database.
-For delegation, construct the handle with an explicit `DatabaseKey`/`SigKey` representing the chosen Identity path, or use `with_identity` to obtain a new handle.
+For [Identity membership](identity_guide.md), use `Identity::open_database` to open through that exact Identity root. At the lower level, construct an explicit `DatabaseKey`/`SigKey` or use `with_identity` to obtain a new handle.
 An invalid path fails even if the same key has a separate direct grant.
 Never turn an organizational Identity reference or lookup hint into an authorization path automatically.
 

@@ -438,6 +438,16 @@ pub enum ServiceRequest {
     /// through its own sync engine. The proof's key must already be in the
     /// connection's session keyset (see `SessionKeyRegister`).
     TicketBootstrap(Box<TicketBootstrapRequest>),
+    /// Pending shared access requests, visible only to a current target Admin.
+    AccessRequests { root_id: ID, identity: SigKey },
+    /// Finalize approval only after a sufficient target grant exists, or reject.
+    /// The daemon records the decision, never receives the Admin private key.
+    FinishAccessRequest {
+        root_id: ID,
+        request_id: String,
+        identity: SigKey,
+        reject: bool,
+    },
 
     // === Authenticated wrapper for tree-scoped storage operations ===
     /// Tree-scoped storage ops travel inside this wrapper. The inner
@@ -594,11 +604,15 @@ pub enum ServiceResponse {
     /// Trusted login succeeded; the connection is now authenticated.
     TrustedLoginOk,
     /// Challenge for an explicit client-held signer (no credential record).
-    SignerChallenge { challenge: Vec<u8> },
+    SignerChallenge {
+        challenge: Vec<u8>,
+    },
     /// Challenge bytes returned in response to `SessionKeyChallenge`. The
     /// client signs these with the named pubkey's private key and returns the
     /// signature in `SessionKeyRegister`.
-    SessionKeyChallenge { challenge: Vec<u8> },
+    SessionKeyChallenge {
+        challenge: Vec<u8>,
+    },
     /// Route selected for a ticket bootstrap (response to
     /// `TicketBootstrapPrepare`).
     TicketBootstrapRoute {
@@ -614,6 +628,7 @@ pub enum ServiceResponse {
     LocalAccountStateExchanged(bool),
     /// Result of a ticket bootstrap (response to `TicketBootstrap`).
     TicketBootstrapOutcome(TicketBootstrapOutcome),
+    AccessRequests(Vec<(String, crate::sync::BootstrapRequest)>),
 }
 
 // These names classify only the four optional extension points. Keep them in
@@ -632,6 +647,8 @@ const REQUEST_VARIANTS: &[&str] = &[
     "SessionKeyRegister",
     "TicketBootstrapPrepare",
     "TicketBootstrap",
+    "AccessRequests",
+    "FinishAccessRequest",
     "AuthenticatedDb",
 ];
 const DATABASE_OP_VARIANTS: &[&str] = &[
@@ -682,6 +699,7 @@ const RESPONSE_VARIANTS: &[&str] = &[
     "SessionKeyChallenge",
     "TicketBootstrapRoute",
     "TicketBootstrapOutcome",
+    "AccessRequests",
 ];
 
 /// Read an externally tagged JSON enum's name without erasing duplicate keys

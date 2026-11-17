@@ -846,6 +846,10 @@ impl Sync {
             .clone()
             .zip(request.requested_permission);
         let pull_only = requested_access.is_some() && request.our_tips.is_empty();
+        let require_direct_key = request
+            .auth
+            .as_ref()
+            .is_some_and(SyncRequestAuth::requires_direct_key);
         let request = SyncRequest::SyncTree(request);
 
         // Send request via background sync command
@@ -958,7 +962,14 @@ impl Sync {
         }
 
         if let Some((key, permission)) = requested_access
-            && !Database::can_access(&self.instance()?, &tree_id, &key, &permission).await?
+            && !super::bootstrap::request_satisfied(
+                &self.instance()?,
+                &tree_id,
+                &key,
+                &permission,
+                require_direct_key,
+            )
+            .await?
         {
             return Err(SyncError::AuthenticationFailed(
                 "verified transfer does not grant the requested permission".to_string(),

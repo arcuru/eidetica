@@ -60,7 +60,9 @@ use crate::{
     sync::{BootstrapRequest, DatabaseTicket, Sync, SyncError},
 };
 
+mod access_requests;
 mod builder;
+mod identity;
 #[cfg(test)]
 mod tests;
 
@@ -1346,18 +1348,37 @@ impl AccountSession {
         metadata: Option<Doc>,
     ) -> Result<Database> {
         let database_id = ticket.database_id().clone();
+        let original = self.tracked_database(&database_id).await?;
+        let result = self
+            .bootstrap_access(ticket, key_id, requested_permission, metadata, false)
+            .await;
+        self.record_database_access_if_unchanged(
+            &database_id,
+            key_id,
+            sync_settings,
+            result,
+            original,
+        )
+        .await?;
+        self.open_joined_database(&database_id, key_id, requested_permission)
+            .await
+    }
 
+    // Network phase shared by generic joins and Identity membership registration.
+    // Keeping it separate preserves request state after a successful peer exchange
+    // even if a later local mapping/activation write fails.
+    async fn bootstrap_access(
+        &self,
+        ticket: &DatabaseTicket,
+        key_id: &PublicKey,
+        requested_permission: Permission,
+        metadata: Option<Doc>,
+        require_direct_key: bool,
+    ) -> Result<()> {
+        let signing_key = self.get_signing_key(key_id)?;
         #[cfg(all(unix, feature = "service"))]
         if let Some(connection) = self.instance.remote_connection() {
-            let original = self.tracked_database(&database_id).await?;
-            let signing_key = self
-                .key_manager
-                .get_signing_key(key_id)
-                .ok_or_else(|| super::errors::AccountError::KeyNotFound {
-                    key_id: key_id.to_string(),
-                })?
-                .clone();
-            let result = connection
+            return connection
                 .bootstrap_ticket(
                     ticket,
                     &signing_key,
@@ -1365,33 +1386,30 @@ impl AccountSession {
                     requested_permission,
                     metadata,
                     self.instance.clock().now_millis(),
+                    require_direct_key,
                 )
                 .await;
-            self.record_database_access_with_expected(
-                &database_id,
-                key_id,
-                sync_settings,
-                result,
-                Some(original),
-            )
-            .await?;
-            return self
-                .open_joined_database(&database_id, key_id, requested_permission)
-                .await;
         }
-
         let sync = self.instance.sync().ok_or(SyncError::SyncNotEnabled)?;
-        self.request_database_access(
-            &sync,
-            ticket,
-            key_id,
-            requested_permission,
-            sync_settings,
-            metadata,
-        )
-        .await?;
-        self.open_joined_database(&database_id, key_id, requested_permission)
+        if require_direct_key {
+            sync.request_membership_with_ticket(
+                ticket,
+                &signing_key,
+                &key_id.to_string(),
+                requested_permission,
+                metadata,
+            )
             .await
+        } else {
+            sync.bootstrap_with_ticket(
+                ticket,
+                &signing_key,
+                &key_id.to_string(),
+                requested_permission,
+                metadata,
+            )
+            .await
+        }
     }
 
     async fn open_joined_database(

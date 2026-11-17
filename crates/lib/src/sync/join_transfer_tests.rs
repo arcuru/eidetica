@@ -709,6 +709,7 @@ async fn pending_request(
             requesting_pubkey: key.clone(),
             requesting_key_name: "requester".into(),
             requested_permission: permission,
+            require_direct_key: false,
             timestamp: "2026-10-03T18:00:00Z".into(),
             status: RequestStatus::Pending,
             peer_address: Address::http("unused"),

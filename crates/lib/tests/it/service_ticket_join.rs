@@ -6,11 +6,11 @@
 use std::{os::unix::fs::PermissionsExt, path::PathBuf};
 
 use eidetica::{
-    Error, Instance, NewAccount,
-    account::types::SyncSettings,
+    AccountSession, Error, Instance, NewAccount,
+    account::{AccountError, Identity, IdentityRegistration, IdentityStatus, types::SyncSettings},
     auth::{
-        AuthKey, Permission,
-        crypto::{create_challenge_response, generate_keypair},
+        AuthKey, Permission, SigKey,
+        crypto::{PublicKey, create_challenge_response, generate_keypair},
     },
     backend::database::InMemory,
     crdt::Doc,
@@ -123,7 +123,7 @@ impl Daemon {
         instance
             .sync()
             .unwrap()
-            .register_transport("http", HttpTransport::builder())
+            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
             .await
             .unwrap();
         let (shutdown, rx) = watch::channel(());
@@ -144,6 +144,382 @@ impl Daemon {
             .await
             .unwrap()
     }
+}
+
+#[tokio::test]
+async fn embedded_identity_membership_uses_shared_request_lifecycle() -> eidetica::Result<()> {
+    identity_membership_round_trip(false, false).await
+}
+
+#[tokio::test]
+async fn connected_identity_membership_on_missing_root() -> eidetica::Result<()> {
+    identity_membership_round_trip(true, false).await
+}
+
+#[tokio::test]
+async fn connected_identity_membership_on_replicated_public_root() -> eidetica::Result<()> {
+    identity_membership_round_trip(true, true).await
+}
+
+async fn identity_membership_round_trip(connected: bool, replicated: bool) -> eidetica::Result<()> {
+    let sharer = Daemon::start().await;
+    let requester = Daemon::start().await;
+    let (owner_client, requester_client) = if connected {
+        (sharer.connect().await, requester.connect().await)
+    } else {
+        (sharer.instance.clone(), requester.instance.clone())
+    };
+    if connected {
+        assert!(owner_client.sync().is_none() && requester_client.sync().is_none());
+    }
+    let mut owner = owner_client.login_account("alice", "").await?;
+    let mut joiner = requester_client.login_account("alice", "").await?;
+    let owner_key = owner.get_default_key()?;
+    let key = joiner.add_private_key(Some("new member")).await?;
+    assert_ne!(key, owner_key);
+
+    let identity = owner.create_identity("team", &owner_key).await?;
+    let other = owner.create_identity("other", &owner_key).await?;
+    let root = identity.root_id();
+    let sharer_sync = sharer.instance.sync().unwrap();
+    sharer_sync.accept_connections().await?;
+    identity.database().share().await?;
+    let ticket = identity.ticket().await?;
+    assert_eq!(ticket.database_id(), root);
+    if replicated {
+        requester
+            .instance
+            .sync()
+            .unwrap()
+            .sync_with_ticket(&ticket)
+            .await?;
+        assert!(requester.instance.has_database(root).await);
+        let public = joiner
+            .acting_as(&key, None)?
+            .open_database(&requester_client, root)
+            .await?;
+        assert_eq!(public.current_permission().await?, Permission::Read);
+        assert!(
+            public
+                .get_settings()
+                .await?
+                .auth_snapshot()
+                .await?
+                .get_key_by_pubkey(&key)
+                .is_err()
+        );
+    } else {
+        assert!(!requester.instance.has_database(root).await);
+    }
+
+    let permission = Permission::Write(5);
+    let unreachable = DatabaseTicket::new(root.clone());
+    Box::pin(assert_initial_membership_failure(
+        &mut joiner,
+        &unreachable,
+        &key,
+        permission,
+    ))
+    .await?;
+    assert!(matches!(
+        joiner
+            .register_identity("team", &ticket, &key, permission, SyncSettings::disabled())
+            .await?,
+        IdentityRegistration::Pending
+    ));
+    assert_eq!(joiner.identity_id("team").await?.as_ref(), Some(root));
+    assert!(joiner.get_identity("team").await?.is_none());
+    assert!(joiner.activate_identity("team").await.is_err());
+    let pending = owner.pending_access_requests(root, &owner_key).await?;
+    let [(request_id, request)] = pending.as_slice() else {
+        panic!("expected one request: {pending:?}")
+    };
+    assert_eq!(&request.requesting_pubkey, &key);
+    assert_eq!(request.requested_permission, permission);
+    assert!(request.require_direct_key);
+    assert!(
+        owner
+            .pending_access_requests(other.root_id(), &owner_key)
+            .await?
+            .is_empty()
+    );
+    assert!(
+        owner
+            .complete_access_request(other.root_id(), request_id, &owner_key)
+            .await
+            .is_err()
+    );
+
+    // Proof of an ordinary member key is not decision authority.
+    let weaker = owner.add_private_key(Some("write only")).await?;
+    identity
+        .add_key(&weaker, AuthKey::active(None, Permission::Write(10)))
+        .await?;
+    assert!(owner.pending_access_requests(root, &weaker).await.is_err());
+    assert!(
+        owner
+            .reject_access_request(root, request_id, &weaker)
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .complete_access_request(root, request_id, &weaker)
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .complete_access_request(root, request_id, &owner_key)
+            .await
+            .is_err()
+    );
+    identity
+        .add_key(&key, AuthKey::active(None, Permission::Write(6)))
+        .await?;
+    assert!(
+        owner
+            .complete_access_request(root, request_id, &owner_key)
+            .await
+            .is_err(),
+        "insufficient priority is not the requested grant"
+    );
+    if replicated {
+        requester
+            .instance
+            .sync()
+            .unwrap()
+            .sync_with_ticket(&ticket)
+            .await?;
+        assert!(
+            joiner.activate_identity("team").await.is_err(),
+            "activation must not accept a weaker verified grant"
+        );
+    }
+
+    // Relogin sees the same local request. A failed retry keeps it; identical
+    // requests, even with changed local preferences, keep the same remote ID.
+    joiner.logout()?;
+    let mut joiner = requester_client.login_account("alice", "").await?;
+    let previous = joiner.tracked_identity("team").await?.unwrap();
+    assert_eq!(previous.status, IdentityStatus::Pending);
+    assert!(
+        matches!(joiner.register_identity("team", &ticket, &key, Permission::Read, SyncSettings::disabled()).await,
+        Err(Error::Account(error)) if matches!(*error, AccountError::IdentityRegistrationConflict { .. }))
+    );
+    assert!(
+        joiner
+            .register_identity(
+                "team",
+                &unreachable,
+                &key,
+                permission,
+                SyncSettings::disabled()
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(joiner.tracked_identity("team").await?, Some(previous));
+    let settings = SyncSettings::disabled().with_interval(456);
+    assert!(matches!(
+        joiner
+            .register_identity("team", &ticket, &key, permission, settings.clone())
+            .await?,
+        IdentityRegistration::Pending
+    ));
+    assert_eq!(
+        owner.pending_access_requests(root, &owner_key).await?[0].0,
+        *request_id
+    );
+    assert_eq!(
+        joiner
+            .tracked_identity("team")
+            .await?
+            .unwrap()
+            .sync_settings,
+        settings
+    );
+
+    // Keep the separate rejection scenario's future out of this already large
+    // debug-build test frame. The embedded path uses the default thread stack.
+    Box::pin(assert_membership_rejection(
+        &mut joiner,
+        &owner,
+        &identity,
+        &ticket,
+    ))
+    .await?;
+
+    identity
+        .add_key(&key, AuthKey::active(None, permission))
+        .await?;
+    if connected {
+        owner
+            .complete_access_request(root, request_id, &owner_key)
+            .await?;
+    } else {
+        // A durable grant can survive interruption before recording the
+        // decision. The retry below must verify it without a second grant.
+        assert_eq!(
+            owner.pending_access_requests(root, &owner_key).await?[0].0,
+            *request_id
+        );
+    }
+
+    let IdentityRegistration::Active(member) = joiner
+        .register_identity("team", &ticket, &key, permission, settings.clone())
+        .await?
+    else {
+        panic!("verified grant should permit activation")
+    };
+    assert_eq!(member.root_id(), root);
+    assert_eq!(
+        member.keys().await?.get_key_by_pubkey(&key)?.permissions(),
+        &permission
+    );
+    assert_eq!(joiner.database(root).await?.sync_settings, settings);
+    let tx = member.database().new_transaction().await?;
+    tx.get_store::<DocStore>("messages")
+        .await?
+        .set("signed", "new member")
+        .await?;
+    let entry = tx.commit().await?;
+    let verified = member.database().get_entry(&entry).await?;
+    assert!(
+        matches!(verified.auth().key, SigKey::Direct { ref hint } if hint.pubkey.as_ref() == Some(&key))
+    );
+    eidetica::auth::crypto::verify_entry_signature(&verified, &key)?;
+    assert_eq!(
+        read_string(member.database(), "signed").await?,
+        "new member"
+    );
+
+    let grant_snapshot = identity.database().snapshot().await?;
+    owner
+        .complete_access_request(root, request_id, &owner_key)
+        .await?;
+    owner
+        .complete_access_request(root, request_id, &owner_key)
+        .await?;
+    assert!(
+        owner
+            .reject_access_request(root, request_id, &owner_key)
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .pending_access_requests(root, &owner_key)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(
+        identity.database().snapshot().await?,
+        grant_snapshot,
+        "finalization never rewrites the signed grant"
+    );
+
+    // The actual login persistence contains an encrypted credential, not a
+    // serialized plaintext key. The positive control checks the same bundle
+    // can recover the precise requester key after the on-wire exchanges.
+    let engine = requester.instance.backend().local_engine().unwrap();
+    let bytes = engine
+        .local_account_record(&format!("account-state:{}", joiner.login_id()))
+        .await?
+        .unwrap();
+    let secret = joiner.get_signing_key(&key)?.to_prefixed_string();
+    assert!(
+        !std::str::from_utf8(&bytes)
+            .unwrap()
+            .contains(secret.as_str())
+    );
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let eidetica::account::KeyStorage::Encrypted { bundle } =
+        serde_json::from_value(value["credentials"].clone())?;
+    assert_eq!(
+        bundle
+            .unlock_for(joiner.account().id(), "")?
+            .signer(&key)?
+            .public_key(),
+        key
+    );
+    sharer_sync.stop_server().await?;
+    Ok(())
+}
+
+async fn assert_initial_membership_failure(
+    joiner: &mut AccountSession,
+    unreachable: &DatabaseTicket,
+    key: &PublicKey,
+    permission: Permission,
+) -> eidetica::Result<()> {
+    assert!(
+        joiner
+            .register_identity(
+                "initial failure",
+                unreachable,
+                key,
+                permission,
+                SyncSettings::disabled()
+            )
+            .await
+            .is_err()
+    );
+    assert!(joiner.tracked_identity("initial failure").await?.is_none());
+    assert_eq!(
+        joiner.identity_id("initial failure").await?.as_ref(),
+        Some(unreachable.database_id())
+    );
+    Ok(())
+}
+
+async fn assert_membership_rejection(
+    joiner: &mut AccountSession,
+    owner: &AccountSession,
+    identity: &Identity,
+    ticket: &DatabaseTicket,
+) -> eidetica::Result<()> {
+    let root = identity.root_id();
+    let owner_key = identity.key_id();
+    let key = joiner.add_private_key(Some("read candidate")).await?;
+    // Explicit Read membership stays pending despite the public floor.
+    assert!(matches!(
+        joiner
+            .register_identity(
+                "rejected",
+                ticket,
+                &key,
+                Permission::Read,
+                SyncSettings::disabled()
+            )
+            .await?,
+        IdentityRegistration::Pending
+    ));
+    let (rejected, _) = owner
+        .pending_access_requests(root, owner_key)
+        .await?
+        .into_iter()
+        .find(|(_, request)| request.requesting_pubkey == key)
+        .unwrap();
+    owner
+        .reject_access_request(root, &rejected, owner_key)
+        .await?;
+    owner
+        .reject_access_request(root, &rejected, owner_key)
+        .await?;
+    assert!(
+        owner
+            .complete_access_request(root, &rejected, owner_key)
+            .await
+            .is_err()
+    );
+    assert!(
+        matches!(joiner.register_identity("rejected", ticket, &key, Permission::Read, SyncSettings::disabled()).await,
+        Err(Error::Sync(error)) if matches!(error.as_ref(), SyncError::BootstrapRejected { request_id, .. } if request_id == &rejected))
+    );
+    assert!(joiner.activate_identity("rejected").await.is_err());
+    assert!(identity.keys().await?.get_key_by_pubkey(&key).is_err());
+    Ok(())
 }
 
 fn is_pending(error: &Error) -> bool {
@@ -1020,9 +1396,13 @@ async fn identical_completed_join_preserves_user_and_routing_history() {
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
-async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eidetica::Result<()> {
+async fn pending_join_and_identity_tracking_survive_sqlite_daemon_restart() -> eidetica::Result<()>
+{
     use eidetica::backend::database::Sqlite;
-    let peer = Peer::start(false).await;
+    let mut peer = Peer::start(false).await;
+    let identity = peer.user.create_identity("team", &peer.admin_key).await?;
+    identity.database().share().await?;
+    let identity_ticket = identity.ticket().await?;
     let dir = tempfile::tempdir()?;
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
     let file = dir.path().join("daemon.sqlite");
@@ -1060,6 +1440,28 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
     let pending = peer.sync.pending_bootstrap_requests().await?;
     assert_eq!(pending.len(), 1);
     assert_eq!(before, user.account().database().snapshot().await?);
+    let member_key = user.add_private_key(Some("new installation key")).await?;
+    let membership = Permission::Write(7);
+    let preferences = SyncSettings::disabled().with_interval(890);
+    assert!(matches!(
+        user.register_identity(
+            "team",
+            &identity_ticket,
+            &member_key,
+            membership,
+            preferences.clone()
+        )
+        .await?,
+        IdentityRegistration::Pending
+    ));
+    let identity_pending = user.tracked_identity("team").await?.unwrap();
+    let (membership_id, _) = peer
+        .user
+        .pending_access_requests(identity.root_id(), &peer.admin_key)
+        .await?
+        .pop()
+        .unwrap();
+    let before_restart = user.account().database().snapshot().await?;
     drop(user);
     drop(service);
     drop(shutdown);
@@ -1082,8 +1484,28 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
     let running = tokio::spawn(server.run(rx));
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
     let mut user = service.login_account("alice", "").await?;
-    assert_eq!(before, user.account().database().snapshot().await?);
+    assert_eq!(before_restart, user.account().database().snapshot().await?);
     assert_eq!(user.key_mapping(&key, &peer.tree())?, None);
+    assert_eq!(user.tracked_identity("team").await?, Some(identity_pending));
+    assert!(user.get_identity("team").await?.is_none());
+    assert!(matches!(
+        user.register_identity(
+            "team",
+            &identity_ticket,
+            &member_key,
+            membership,
+            preferences.clone()
+        )
+        .await?,
+        IdentityRegistration::Pending
+    ));
+    assert_eq!(
+        peer.user
+            .pending_access_requests(identity.root_id(), &peer.admin_key)
+            .await?[0]
+            .0,
+        membership_id
+    );
     assert!(is_pending(
         &user
             .join(
@@ -1097,7 +1519,10 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
             .unwrap_err()
     ));
     assert_eq!(
-        peer.sync.pending_bootstrap_requests().await?[0].0,
+        peer.user
+            .pending_access_requests(&peer.tree(), &peer.admin_key)
+            .await?[0]
+            .0,
         pending[0].0
     );
     peer.user
@@ -1123,6 +1548,27 @@ async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eid
     )
     .await?;
     assert_eq!(after, user.account().database().snapshot().await?);
+    identity
+        .add_key(&member_key, AuthKey::active(None, membership))
+        .await?;
+    peer.user
+        .complete_access_request(identity.root_id(), &membership_id, &peer.admin_key)
+        .await?;
+    let IdentityRegistration::Active(active) = user
+        .register_identity(
+            "team",
+            &identity_ticket,
+            &member_key,
+            membership,
+            preferences,
+        )
+        .await?
+    else {
+        panic!("explicit retry after restart did not activate")
+    };
+    assert_eq!(active.key_id(), &member_key);
+    assert_eq!(active.database().current_permission().await?, membership);
+    drop(active);
     drop(db);
     drop(user);
     drop(service);
