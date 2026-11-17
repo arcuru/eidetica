@@ -308,3 +308,28 @@ Atomic Docs are appropriate for configuration or typed data that should be treat
 - **Performance**: Caching eliminates redundant work
 - **Deterministic**: Maintains ordering through proper merge base computation
 - **Immutable Caching**: Entry immutability ensures cache validity
+
+## Doc literal keys and paths
+
+`Doc::set`, `get`, `remove` and `FromIterator<(String, Value)>` retain their
+existing dotted-path behavior. `set_literal`, `get_literal` and `remove_literal`
+operate on exactly one top-level map key; `is_tombstone_literal` checks its
+retained deletion marker. Construct a literal-key document with `Doc::new()`
+(or `Doc::atomic()`) and `set_literal`. For a literal key inside a nested Doc,
+operate on that Doc, rather than concatenating the key into a path string.
+
+Literal keys are the existing `children` map's strings, not escaped path
+segments or new wire identifiers. Empty strings, dots, leading/trailing dots,
+reserved-looking names and Unicode text are stored verbatim. Composed `é` and
+`e\u{301}` are distinct keys. There is no Unicode normalization or key encoding.
+Tombstones and atomic/recursive merge rules are unchanged.
+
+The existing `Doc` Codec still uses its JSON Serde shape, including `children`,
+`_v` and `_a`; it does not promise canonical JSON map order. If a new format
+explicitly selects `dag_cbor`, the same Serde shape is encoded with the helper's
+existing canonical map ordering, without changing key text. This API does not
+switch DocStore to DAG-CBOR, add a format version, or change Entry hashing or
+signing. Historical Entry payload bytes, CIDs and signatures are not rewritten.
+Existing literal keys decoded from that shape are accessible directly, while
+historical nested paths remain nested. Ambiguous historical external names
+require application-level catalog/backup recovery, not automatic reinterpretation.
