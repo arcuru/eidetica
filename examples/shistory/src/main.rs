@@ -37,6 +37,13 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..))]
     test_capture_deadline_ms: u64,
 
+    /// Override diagnostic timing for structural integration tests, not normal status checks.
+    #[cfg(feature = "testing")]
+    #[arg(long, hide = true,
+        default_value_t = CAPTURE_DEADLINE.as_millis() as u64,
+        value_parser = clap::value_parser!(u64).range(1..))]
+    test_status_deadline_ms: u64,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -133,6 +140,10 @@ async fn run(cli: Cli) -> Result<()> {
     let capture_deadline = Duration::from_millis(cli.test_capture_deadline_ms);
     #[cfg(not(feature = "testing"))]
     let capture_deadline = CAPTURE_DEADLINE;
+    #[cfg(feature = "testing")]
+    let status_deadline = Duration::from_millis(cli.test_status_deadline_ms);
+    #[cfg(not(feature = "testing"))]
+    let status_deadline = CAPTURE_DEADLINE;
 
     match cli.command {
         Command::Setup {
@@ -240,7 +251,7 @@ async fn run(cli: Cli) -> Result<()> {
             let database = open_database(&user).await?;
             print_summary(std::io::stdout(), &summarize(&database, host_id).await?)?;
         }
-        Command::Status => status(&cli.user, cli.host_id).await?,
+        Command::Status => status(&cli.user, cli.host_id, status_deadline).await?,
     }
     Ok(())
 }
@@ -270,7 +281,7 @@ async fn capture_with_deadline<T>(
         })?
 }
 
-async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
+async fn status(username: &str, host_id: Option<Uuid>, deadline: Duration) -> Result<()> {
     let socket_path = default_socket_path();
     println!(
         "effective socket: {}",
@@ -294,6 +305,7 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
     };
 
     let instance = match status_with_deadline(
+        deadline,
         "daemon connection",
         Instance::connect(default_socket_url()),
     )
@@ -317,6 +329,7 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
     };
 
     let user = match status_with_deadline(
+        deadline,
         "passwordless user login",
         instance.login_account(username, ""),
     )
@@ -338,29 +351,32 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
         }
     };
 
-    let database = match status_with_deadline("history database lookup", open_database(&user)).await
-    {
-        Ok(database) => {
-            println!(
-                "history database: ok ({})",
-                status_value(&database.root_id().to_string())
-            );
-            database
-        }
-        Err(error) => {
-            println!(
-                "history database: failed — {}; run shistory setup once for this user",
-                status_error_value(&error)
-            );
-            println!("configured host: skipped — history database lookup failed");
-            status_limitations();
-            return status_result(false);
-        }
-    };
+    let database =
+        match status_with_deadline(deadline, "history database lookup", open_database(&user)).await
+        {
+            Ok(database) => {
+                println!(
+                    "history database: ok ({})",
+                    status_value(&database.root_id().to_string())
+                );
+                database
+            }
+            Err(error) => {
+                println!(
+                    "history database: failed — {}; run shistory setup once for this user",
+                    status_error_value(&error)
+                );
+                println!("configured host: skipped — history database lookup failed");
+                status_limitations();
+                return status_result(false);
+            }
+        };
 
     match host_id {
         Some(host_id) => {
-            match status_with_deadline("configured host lookup", host(&database, host_id)).await {
+            match status_with_deadline(deadline, "configured host lookup", host(&database, host_id))
+                .await
+            {
                 Ok(host) => println!(
                     "configured host: ok ({host_id}, {})",
                     bounded_escaped(&host.name, HOST_DISPLAY_LIMIT)
@@ -398,16 +414,16 @@ fn status_error_value(error: &impl std::fmt::Display) -> String {
 }
 
 async fn status_with_deadline<T>(
+    deadline: Duration,
     operation: &str,
     future: impl Future<Output = Result<T>>,
 ) -> Result<T> {
-    tokio::time::timeout(CAPTURE_DEADLINE, future)
-        .await
-        .map_err(|_| {
-            status_error(format!(
-                "{operation} exceeded the 1 second diagnostic deadline"
-            ))
-        })?
+    tokio::time::timeout(deadline, future).await.map_err(|_| {
+        status_error(format!(
+            "{operation} exceeded the {} second diagnostic deadline",
+            deadline.as_secs_f64()
+        ))
+    })?
 }
 
 fn status_result(healthy: bool) -> Result<()> {

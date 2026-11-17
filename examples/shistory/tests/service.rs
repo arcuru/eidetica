@@ -88,10 +88,15 @@ async fn run_cli(daemon: &Daemon, args: &[&str]) -> std::process::Output {
 }
 
 async fn run_cli_with_stdin(daemon: &Daemon, args: &[&str], stdin: &[u8]) -> std::process::Output {
-    // Correctness tests must not enforce the shell's capture latency budget.
+    // Correctness tests must not enforce capture or diagnostic latency budgets.
     #[cfg(feature = "testing")]
     let args = [
-        vec!["--test-capture-deadline-ms", TEST_CAPTURE_DEADLINE_MS],
+        vec![
+            "--test-capture-deadline-ms",
+            TEST_DEADLINE_MS,
+            "--test-status-deadline-ms",
+            TEST_DEADLINE_MS,
+        ],
         args.to_vec(),
     ]
     .concat();
@@ -99,7 +104,7 @@ async fn run_cli_with_stdin(daemon: &Daemon, args: &[&str], stdin: &[u8]) -> std
 }
 
 #[cfg(feature = "testing")]
-const TEST_CAPTURE_DEADLINE_MS: &str = "30000";
+const TEST_DEADLINE_MS: &str = "30000";
 
 async fn run_cli_at_socket(
     socket: &std::path::Path,
@@ -614,7 +619,8 @@ async fn cli_status_reports_read_only_recording_prerequisites() -> Result<()> {
     .await;
     assert!(
         healthy.status.success(),
-        "{}",
+        "status stdout:\n{}\nstatus stderr:\n{}",
+        String::from_utf8_lossy(&healthy.stdout),
         String::from_utf8_lossy(&healthy.stderr)
     );
     let healthy = String::from_utf8(healthy.stdout).unwrap();
@@ -745,6 +751,28 @@ async fn cli_status_reports_unavailable_and_unresponsive_daemons_within_deadline
     assert!(stalled.contains("daemon connection exceeded the 1 second diagnostic deadline"));
     release_tx.send(()).unwrap();
     server.join().unwrap();
+
+    #[cfg(feature = "testing")]
+    {
+        let socket = dir.path().join("override.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            // An ignored override must encounter EOF, not the default 1s timeout.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        });
+        let output =
+            run_cli_at_socket(&socket, &["--test-status-deadline-ms", "25", "status"], b"").await;
+        server.abort();
+        let _ = server.await;
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("daemon connection exceeded the 0.025 second diagnostic deadline"),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
 }
 
 #[tokio::test]
@@ -1979,11 +2007,7 @@ async fn remembered_capture_opens_no_unrelated_databases_as_they_grow() -> Resul
             // This test checks which databases are opened, not capture latency.
             // Keep the shell's one-second budget out of the structural assertions.
             #[cfg(feature = "testing")]
-            let args = [
-                vec!["--test-capture-deadline-ms", TEST_CAPTURE_DEADLINE_MS],
-                args,
-            ]
-            .concat();
+            let args = [vec!["--test-capture-deadline-ms", TEST_DEADLINE_MS], args].concat();
             let trace = traced_cli(daemon, bin, &args, b"true", &history).await;
             assert!(
                 trace.output.status.success(),
