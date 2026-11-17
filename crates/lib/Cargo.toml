@@ -85,6 +85,12 @@ name = "it"
 path = "tests/it/main.rs"
 required-features = ["testing"]
 
+# A manually invoked simulation, not a test binary or an installable CLI.
+[[example]]
+name = "runtime-test"
+required-features = ["testing"]
+test = false
+
 [[bench]]
 name = "benchmarks"
 harness = false
