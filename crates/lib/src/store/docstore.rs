@@ -24,6 +24,7 @@ use async_trait::async_trait;
 ///   [`delete_literal`](Self::delete_literal) preserve a single key verbatim
 /// - **Path operations**: [`get_path`](Self::get_path), [`set_path`](Self::set_path),
 ///   [`contains_path`](Self::contains_path)
+/// - **Fallible optional reads**: [`try_get`](Self::try_get), [`try_get_path`](Self::try_get_path)
 /// - **Path mutation**: [`modify_path`](Self::modify_path),
 ///   [`get_or_insert_path`](Self::get_or_insert_path),
 ///   [`modify_or_insert_path`](Self::modify_or_insert_path)
@@ -146,10 +147,27 @@ impl DocStore {
         }
     }
 
+    /// Gets an optional value without hiding read failures.
+    ///
+    /// Reads the historical state and merges staged changes, as in
+    /// [`get_all`](Self::get_all), then looks up the dotted key/path.
+    /// Returns `Ok(None)` only when the requested value is missing or deleted
+    /// in that merged document, including deletion of an ancestor.
+    /// Backend errors (including missing historical Entries), authentication,
+    /// decoding and transaction errors propagate unchanged, even if a value
+    /// is staged locally.
+    ///
+    /// Prefer this method to [`get_option`](Self::get_option) when absence permits
+    /// a fallback but an unreadable Store must not be treated as empty.
+    pub async fn try_get(&self, key: impl AsRef<str>) -> Result<Option<Value>> {
+        Ok(self.get_all().await?.get(key.as_ref()).cloned())
+    }
+
     /// Gets a value associated with a key from the Store (HashMap-like API).
     ///
     /// This method returns an Option for compatibility with std::HashMap.
-    /// Returns `None` if the key is not found or is deleted.
+    /// Returns `None` for **any** error, including missing/deleted keys and read failures.
+    /// Use [`try_get`](Self::try_get) to preserve errors.
     ///
     /// # Arguments
     /// * `key` - The key to retrieve the value for.
@@ -354,10 +372,21 @@ impl DocStore {
         }
     }
 
+    /// Gets an optional path value without hiding read failures.
+    ///
+    /// Like [`try_get`](Self::try_get), but accepts a [`Path`]. Missing or deleted
+    /// values yield `Ok(None)`; backend, authentication, decoding and transaction
+    /// errors propagate unchanged. Staged changes are merged with history before
+    /// lookup, including tombstones and replacement of ancestor containers.
+    pub async fn try_get_path(&self, path: impl AsRef<Path>) -> Result<Option<Value>> {
+        self.try_get(path.as_ref().as_str()).await
+    }
+
     /// Gets a value by path using dot notation (HashMap-like API).
     ///
     /// # Returns
-    /// An `Option<Value>` containing the value if found, or `None` if not found.
+    /// An `Option<Value>` containing the value if found, or `None` for any error.
+    /// Use [`try_get_path`](Self::try_get_path) to preserve errors.
     pub async fn get_path_option(&self, path: impl AsRef<Path>) -> Option<Value> {
         self.get_path(path).await.ok()
     }

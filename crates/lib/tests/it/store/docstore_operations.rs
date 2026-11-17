@@ -12,6 +12,7 @@ use eidetica::{
 };
 
 mod contains;
+mod optional;
 mod paths;
 
 use super::helpers::*;

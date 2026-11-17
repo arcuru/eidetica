@@ -97,6 +97,38 @@ Build it with repeated `set_literal` calls; collecting key/value pairs into a
 `Doc` retains the existing path behavior. `initialize_doc` copies its top-level
 keys literally. No historical paths or stored bytes are automatically converted.
 
+#### Optional reads and safe fallback
+
+Use `try_get` or `try_get_path` when a missing/deleted value permits a default,
+but an unreadable Store must stop the operation:
+
+```rust,no_run
+# use eidetica::{Result, crdt::doc::{Value, path}, store::DocStore};
+# async fn example(store: &DocStore) -> Result<()> {
+let theme = store.try_get("theme").await?
+    .unwrap_or_else(|| Value::Text("system".into()));
+let language = store.try_get_path(path!("user.language")).await?
+    .unwrap_or_else(|| Value::Text("en".into()));
+# let _ = (theme, language);
+# Ok(())
+# }
+```
+
+`Ok(None)` means the requested key/path is absent or deleted, not that its
+history failed to load.
+Backend failures (including missing historical Entries), permission, decoding,
+and transaction errors remain errors; propagate or handle them explicitly.
+These strict reads use the merged document from `get_all`, so staged deletions
+and ancestor replacements hide older values.
+They read history even when a value is staged locally; a history failure is not
+hidden by a local default or tombstone.
+These methods do not change path syntax, persisted Doc payloads, DAG-CBOR Entry
+encoding, IDs, or signatures.
+The compatibility methods `get_option` and `get_path_option` discard **all**
+errors, not just absence; do not use them for error-sensitive fallback.
+Likewise, `get_or_insert` is not a strict optional-read replacement: it may write
+a default after a read or type error.
+
 #### Important: Path Operations Create Nested Structures
 
 When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not flat keys with dots:

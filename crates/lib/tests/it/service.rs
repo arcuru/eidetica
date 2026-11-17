@@ -2471,6 +2471,12 @@ async fn live_delegation_service_rechecks_retained_session_identity() {
         .await
         .unwrap();
     assert!(!retained.snapshot().await.unwrap().is_empty());
+    let retained_store = retained.get_store_viewer::<DocStore>("data").await.unwrap();
+    assert_eq!(
+        retained_store.try_get("secret").await.unwrap(),
+        Some("private target".into())
+    );
+    assert_eq!(retained_store.try_get("absent").await.unwrap(), None);
     conn.db_get_entry(
         target.root_id().clone(),
         sigkey.clone(),
@@ -2491,6 +2497,20 @@ async fn live_delegation_service_rechecks_retained_session_identity() {
         retained.snapshot().await.is_err(),
         "a logged-in, identity-bound handle must lose access after accepted removal"
     );
+    // Even a warmed optional reader must surface revocation, for present and
+    // absent keys alike. The wire's existing auth-error mapping stays intact.
+    for key in ["secret", "absent"] {
+        for result in [
+            retained_store.try_get(key).await,
+            retained_store.try_get_path(key).await,
+        ] {
+            assert!(
+                matches!(result, Err(eidetica::Error::Io(ref e))
+                if e.to_string().contains("[auth::PermissionDenied]")),
+                "{result:?}"
+            );
+        }
+    }
     let old_claim_error = conn
         .db_get_entry(
             target.root_id().clone(),
@@ -2875,4 +2895,40 @@ async fn creation_registration_failure_retains_committed_root() {
     proxy.abort();
     assert!(proxy.await.unwrap_err().is_cancelled());
     shutdown.send(()).unwrap();
+}
+
+/// A disconnected service must not enable settings/default fallback.
+#[tokio::test]
+async fn test_docstore_optional_service_connection_failure() {
+    let (socket_path, shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let client = login_client(&socket_path, "alice").await;
+    let mut user = client.login_account("alice", "").await.unwrap();
+    let key = user.get_default_key().unwrap();
+    let database = user.create_database(Doc::new(), &key).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("key", "value")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let viewer = database.get_store_viewer::<DocStore>("data").await.unwrap();
+    assert_eq!(viewer.try_get("key").await.unwrap(), Some("value".into()));
+    assert_eq!(viewer.try_get("absent").await.unwrap(), None);
+    let conn = remote_conn(&client);
+    drop(shutdown);
+    tokio::time::timeout(Duration::from_secs(2), conn.wait_closed_for_test())
+        .await
+        .unwrap();
+    for key in ["key", "absent"] {
+        for result in [viewer.try_get(key).await, viewer.try_get_path(key).await] {
+            assert!(
+                matches!(result, Err(eidetica::Error::Io(ref e))
+                if e.kind() == std::io::ErrorKind::ConnectionAborted),
+                "{result:?}"
+            );
+        }
+    }
 }
