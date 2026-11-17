@@ -5,7 +5,7 @@
 
 use eidetica::{
     crdt::{
-        Doc,
+        CRDT, Doc,
         doc::{List, Value, path},
     },
     store::DocStore,
@@ -611,10 +611,22 @@ async fn test_docstore_literal_keys_staging_and_history() {
         assert_eq!(store.get_literal(key).await.unwrap(), Value::from(key));
     }
     store.set("a.b", "nested").await.unwrap();
+    let branch: Doc = [("x".to_owned(), Value::Int(1))].into_iter().collect();
+    store
+        .set_literal("branch.key", branch.clone())
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let tx = db.new_transaction().await.unwrap();
     let store = tx.get_store::<DocStore>("literal").await.unwrap();
+    let delta: Doc = [("y".to_owned(), Value::Int(2))].into_iter().collect();
+    let expected_branch = Value::Doc(branch.merge(&delta).unwrap());
+    store.set_literal("branch.key", delta).await.unwrap();
+    assert_eq!(
+        store.get_literal("branch.key").await.unwrap(),
+        expected_branch
+    );
     for key in keys {
         assert_eq!(store.get_literal(key).await.unwrap(), Value::from(key));
         assert!(store.delete_literal(key).await.unwrap());
@@ -642,6 +654,10 @@ async fn test_docstore_literal_keys_staging_and_history() {
     );
     assert_eq!(store.get_string("a.b").await.unwrap(), "nested");
     assert!(!all.is_tombstone_literal("missing.key"));
+    assert_eq!(
+        store.get_literal("branch.key").await.unwrap(),
+        expected_branch
+    );
 }
 
 #[cfg(feature = "sqlite")]
