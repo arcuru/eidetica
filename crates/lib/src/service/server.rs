@@ -845,7 +845,26 @@ async fn dispatch_inner(
         ServiceRequest::TicketBootstrap(request) => {
             handle_ticket_bootstrap(instance, state, *request).await
         }
-
+        ServiceRequest::AccessRequests { root_id, identity } => {
+            let key = proven_acting_key(state, &identity)?;
+            let sync = instance.sync().ok_or(SyncError::SyncNotEnabled)?;
+            let requests = sync
+                .pending_access_requests_for(&root_id, &key, &identity)
+                .await?;
+            Ok(ServiceResponse::AccessRequests(requests))
+        }
+        ServiceRequest::FinishAccessRequest {
+            root_id,
+            request_id,
+            identity,
+            reject,
+        } => {
+            let key = proven_acting_key(state, &identity)?;
+            let sync = instance.sync().ok_or(SyncError::SyncNotEnabled)?;
+            sync.finish_access_request(&root_id, &request_id, &key, &identity, reject)
+                .await?;
+            Ok(ServiceResponse::Ok)
+        }
         ServiceRequest::RegisterLocalAccount {
             login_id,
             account_info,
@@ -1019,6 +1038,20 @@ async fn dispatch_inner(
             )
             .await
         }
+    }
+}
+
+fn proven_acting_key(state: &ConnectionState, identity: &SigKey) -> crate::Result<PublicKey> {
+    match state {
+        ConnectionState::Authenticated {
+            login_pubkey,
+            session_keyset,
+            ..
+        } => resolve_acting_pubkey(identity, login_pubkey, session_keyset),
+        _ => Err(AuthError::InvalidAuthConfiguration {
+            reason: "access request management requires an authenticated signer".to_owned(),
+        }
+        .into()),
     }
 }
 

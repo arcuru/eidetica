@@ -83,6 +83,23 @@ pub enum AccountError {
 
     #[error("Duplicate store name in DatabaseBuilder: {name}")]
     DuplicateBuilderStore { name: String },
+    #[error("Identity already exists: {name}")]
+    IdentityAlreadyExists { name: String },
+
+    #[error("Identity not found: {name}")]
+    IdentityNotFound { name: String },
+
+    #[error("Identity registration conflicts with the tracked root, key, or permission: {name}")]
+    IdentityRegistrationConflict { name: String },
+
+    #[error(
+        "Identity registration failed for {name}: {registration}; local cleanup also failed: {cleanup}"
+    )]
+    IdentityRegistrationCleanupFailed {
+        name: String,
+        registration: Box<crate::Error>,
+        cleanup: Box<crate::Error>,
+    },
 }
 
 impl AccountError {
@@ -94,6 +111,7 @@ impl AccountError {
                 | AccountError::KeyNotFound { .. }
                 | AccountError::DatabaseNotTracked { .. }
                 | AccountError::DatabaseNotFoundByName { .. }
+                | AccountError::IdentityNotFound { .. }
         )
     }
 }

@@ -7,6 +7,8 @@ The Bootstrap system provides secure key management for Eidetica databases by co
 1. **Global Wildcard Permissions** - Databases with global '\*' permissions automatically approve bootstrap requests without adding new keys
 2. **Manual Approval** - Bootstrap requests are queued for administrator review and explicit approval
 
+This page describes ordinary database access. [Identity membership](identity_guide.md) uses the same request lifecycle but requires an explicit active member key, even when a global grant allows reading the database.
+
 ## Global Permission Bootstrap
 
 Global '\*' permissions provide the simplest and most flexible approach for collaborative or public databases:

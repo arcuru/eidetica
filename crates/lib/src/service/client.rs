@@ -970,6 +970,7 @@ impl RemoteConnection {
     /// [`SyncError::BootstrapPending`](crate::sync::SyncError::BootstrapPending)
     /// and [`SyncError::BootstrapRejected`](crate::sync::SyncError::BootstrapRejected)
     /// an embedded [`Sync`](crate::sync::Sync) would.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn bootstrap_ticket(
         &self,
         ticket: &crate::sync::DatabaseTicket,
@@ -978,6 +979,7 @@ impl RemoteConnection {
         requested_permission: crate::auth::Permission,
         metadata: Option<crate::crdt::Doc>,
         now_millis: u64,
+        require_direct_key: bool,
     ) -> crate::Result<()> {
         use crate::sync::{SyncError, protocol::SyncRequestAuth};
 
@@ -995,21 +997,26 @@ impl RemoteConnection {
             } => (address, peer, tips),
             other => return Err(unexpected_response("TicketBootstrapRoute", &other)),
         };
-        let auth =
-            SyncRequestAuth::sign(signing_key, &peer, ticket.database_id(), &tips, now_millis);
+        let auth = SyncRequestAuth::sign_access(
+            signing_key,
+            &peer,
+            ticket.database_id(),
+            &tips,
+            now_millis,
+            require_direct_key.then_some(requested_permission),
+        );
+        let request = Box::new(TicketBootstrapRequest {
+            database_id: ticket.database_id().clone(),
+            address,
+            peer,
+            tips,
+            requesting_key_name: requesting_key_name.to_owned(),
+            requested_permission,
+            metadata,
+            auth,
+        });
         let response = self
-            .request_ok(ServiceRequest::TicketBootstrap(Box::new(
-                TicketBootstrapRequest {
-                    database_id: ticket.database_id().clone(),
-                    address,
-                    peer,
-                    tips,
-                    requesting_key_name: requesting_key_name.to_string(),
-                    requested_permission,
-                    metadata,
-                    auth,
-                },
-            )))
+            .request_ok(ServiceRequest::TicketBootstrap(request))
             .await?;
         match response {
             ServiceResponse::TicketBootstrapOutcome(outcome) => match outcome {
@@ -1033,6 +1040,41 @@ impl RemoteConnection {
             },
             other => Err(unexpected_response("TicketBootstrapOutcome", &other)),
         }
+    }
+
+    pub(crate) async fn pending_access_requests(
+        &self,
+        root_id: &ID,
+        identity: crate::auth::SigKey,
+    ) -> crate::Result<Vec<(String, crate::sync::BootstrapRequest)>> {
+        match self
+            .request_ok(ServiceRequest::AccessRequests {
+                root_id: root_id.clone(),
+                identity,
+            })
+            .await?
+        {
+            ServiceResponse::AccessRequests(requests) => Ok(requests),
+            other => Err(unexpected_response("AccessRequests", &other)),
+        }
+    }
+
+    pub(crate) async fn finish_access_request(
+        &self,
+        root_id: &ID,
+        request_id: &str,
+        identity: crate::auth::SigKey,
+        reject: bool,
+    ) -> crate::Result<()> {
+        Self::expect_ok(
+            self.request_ok(ServiceRequest::FinishAccessRequest {
+                root_id: root_id.clone(),
+                request_id: request_id.to_owned(),
+                identity,
+                reject,
+            })
+            .await?,
+        )
     }
 
     // === Response extraction helpers ===

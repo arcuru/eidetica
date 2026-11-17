@@ -749,6 +749,7 @@ mod tests {
             requesting_pubkey: PublicKey::random(),
             requesting_key_name: "<script>not a verified name</script>".to_string(),
             requested_permission: Permission::Admin(42),
+            require_direct_key: false,
             timestamp: "<untrusted>".to_string(),
             status: RequestStatus::Pending,
             peer_address: Address::http("127.0.0.1:0"),

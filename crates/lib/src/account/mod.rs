@@ -41,8 +41,10 @@
 pub mod admin;
 mod credentials;
 pub mod crypto;
+mod identity;
 mod signer;
 pub use credentials::{CredentialBundle, UnlockedCredentials};
+pub use identity::{Identity, IdentityRegistration};
 pub use signer::AccountSigner;
 pub mod errors;
 pub mod key_manager;

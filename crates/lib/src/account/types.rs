@@ -264,3 +264,32 @@ pub struct DatabaseTracking {
     /// Additional metadata
     pub metadata: HashMap<String, String>,
 }
+
+/// Whether a locally tracked identity is ready for authenticated use.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum IdentityStatus {
+    /// The selected local key is authorized by the identity database.
+    Active,
+    /// A bootstrap request is awaiting approval or the approved state has not arrived yet.
+    Pending,
+}
+
+/// Installation-local activation and membership-request state for a named Identity.
+///
+/// The identity database remains the source of truth for membership. This record is only
+/// a local name and signing-key selection.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TrackedIdentity {
+    /// Root ID of the identity database.
+    pub root_id: ID,
+    /// Local bootstrap/access state.
+    pub status: IdentityStatus,
+    /// Locally held key selected for this identity.
+    pub key_id: PublicKey,
+    /// Original membership-request key; independent of later signer selection.
+    pub requested_key_id: PublicKey,
+    /// Permission requested when registering (initial membership for a created identity).
+    pub requested_permission: crate::auth::Permission,
+    /// Local replication preferences, including while approval is pending.
+    pub sync_settings: SyncSettings,
+}

@@ -13,6 +13,7 @@
   - [Transactions](user_guide/transactions.md)
 - [Authentication and Database Creation](user_guide/authentication_guide.md)
 - [Explicit Credentials and Signers](user_guide/account_credentials.md)
+- [Identity Membership](user_guide/identity_guide.md)
 - [Encryption Guide](user_guide/encryption_guide.md)
 - [Synchronization Guide](user_guide/synchronization_guide.md)
 - [Database Sharing](user_guide/database_management.md)

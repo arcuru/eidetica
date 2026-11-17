@@ -12,6 +12,8 @@ pub(crate) struct LocalAccountState {
     pub keys: BTreeMap<String, AccountKey>,
     pub last_login: Option<i64>,
     pub databases: BTreeMap<String, TrackedDatabase>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub identities: BTreeMap<String, super::TrackedIdentity>,
 }
 
 fn record_name(login_id: &str) -> String {

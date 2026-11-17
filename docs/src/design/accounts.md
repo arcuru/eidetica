@@ -133,6 +133,14 @@ If local bookkeeping fails after a grant, the error remains visible and retries 
 Explicit signer selection and per-database mappings remain necessary.
 See [Bootstrapping](bootstrap.md) for request, transfer, approval, and retry behavior.
 
+### Identity references and activation
+
+The `identities` Account reference namespace names Identity roots, not grants. Account Auth and the Auth on each referenced Identity are independent. A local `TrackedIdentity` record binds the name, root, selected key, original request key and permission, sync preferences, and Pending/Active state. The original request tuple remains stable when the selected signer changes. Keys and local tracking are not part of the reference; caller-held sessions retain tracking in memory.
+
+Each Identity is an ordinary globally readable database at creation. An explicit active member is needed for local activation; public Read is not enough. Activation of a pending selection checks the exact requested permission against verified local Auth. Key selection produces a new handle, and neither selection nor forgetting revokes or rebinds older handles. An Identity delegation supplies the chosen root and verified snapshot, not a shortcut around the target's `PermissionBounds` or causal Auth rules.
+
+`register_identity` uses the [shared bootstrap request lifecycle](../internal/bootstrap.md#identity-membership). The peer decision, verified transfer, local metadata, and portable reference are not one transaction. A reference can outlive a failed registration; it is useful for locating the original root and confers no access. A failed initial exchange removes only its provisional local row; later failures preserve existing tracking, and approval or replicated history can survive an error. Serialize first-time initialization and recover using the original root and request rather than allocating another Identity. See the [membership walkthrough](../user_guide/identity_guide.md) for the caller and approver steps.
+
 ### Mapping persistence and retry safety
 
 Key mappings and tracked-database preferences are written together in one native
