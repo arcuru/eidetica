@@ -430,6 +430,15 @@ async fn test_structured_registry_only_mixed_entry_and_cache() {
     let id = tx.commit().await.unwrap();
     let original = db.get_entry(&id).await.unwrap();
     let bytes = original.canonical_bytes().unwrap();
+    // Exercise both actual reader directions, not just a synthetic bad header:
+    // legacy Doc cannot decode new bytes, and new readers cannot guess the
+    // contract of a real untagged legacy contribution. Normal opens also refuse
+    // at their registration boundary before either payload decoder runs.
+    assert!(Doc::decode(original.data("first").unwrap()).is_err());
+    assert!(Attributed::<Events, A>::decode(original.data("legacy").unwrap()).is_err());
+    assert!(db.get_store_viewer::<S>("legacy").await.is_err());
+    let check = db.new_transaction().await.unwrap();
+    assert!(check.get_store::<DocStore>("first").await.is_err());
     assert_eq!(
         inspect_contract(original.data("first").unwrap()).unwrap(),
         ContractDescriptor::from(A::ID)
