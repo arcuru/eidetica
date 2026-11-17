@@ -18,6 +18,8 @@
 pub mod errors;
 
 #[cfg(test)]
+mod structured_tests;
+#[cfg(test)]
 mod tests;
 
 use std::{
@@ -92,6 +94,11 @@ type SnapshotPause = (
 /// }
 /// ```
 pub(crate) trait Encryptor: Send + Sync {
+    /// Static type whose wrapped metadata was successfully checked on unlock.
+    fn supports_store_type(&self, _type_id: &str) -> bool {
+        false
+    }
+
     /// Decrypt ciphertext bytes to plaintext bytes
     ///
     /// # Arguments
@@ -187,6 +194,7 @@ pub struct Transaction {
     record_views: Arc<Mutex<HashMap<String, RecordView>>>,
     /// Captured Store boundaries which declined optional retention.
     record_bypass: Arc<Mutex<HashSet<String>>>,
+    structured_contracts: Arc<Mutex<HashMap<String, crate::store::schema::ContractDescriptor>>>,
     #[cfg(test)]
     snapshot_pause: Arc<Mutex<Option<SnapshotPause>>>,
 }
@@ -254,6 +262,7 @@ impl Transaction {
             db: database.clone(),
             provided_signing_key: None,
             encryptors: Arc::new(Mutex::new(HashMap::new())),
+            structured_contracts: Arc::new(Mutex::new(HashMap::new())),
             system_subtrees_locked: Arc::new(AtomicBool::new(false)),
             record_mutations: Arc::new(Mutex::new(HashMap::new())),
             logical_record_mutations: Arc::new(Mutex::new(HashMap::new())),
@@ -381,6 +390,95 @@ impl Transaction {
 
     pub(crate) fn database_id(&self) -> &ID {
         self.db.root_id()
+    }
+
+    pub(crate) fn structured_error(&self, store: &str, operation: &str, error: Error) -> Error {
+        if self.encryptors.lock().unwrap().contains_key(store) {
+            StoreError::InvalidOperation {
+                store: store.into(),
+                operation: operation.into(),
+                reason: "encrypted structured operation failed".into(),
+            }
+            .into()
+        } else {
+            error
+        }
+    }
+
+    pub(crate) async fn bind_structured<C: crate::store::schema::StoreContract>(
+        &self,
+        store: &str,
+    ) -> Result<()> {
+        use crate::store::schema::ContractDescriptor;
+        let expected = ContractDescriptor::from(C::ID);
+        if expected.store.is_empty() || expected.data.is_empty() || expected.schema.is_empty() {
+            return Err(StoreError::InvalidConfiguration {
+                store: store.into(),
+                reason: "empty contract identifier".into(),
+            }
+            .into());
+        }
+        // PasswordStore checked the wrapped type before installing its encryptor.
+        // Never compare its outer registry ID to the plaintext Store ID.
+        let unlocked = self
+            .encryptors
+            .lock()
+            .unwrap()
+            .get(store)
+            .map(|encryptor| encryptor.supports_store_type(C::ID.store));
+        if unlocked == Some(false) {
+            return Err(StoreError::InvalidOperation {
+                store: store.into(),
+                operation: "load".into(),
+                reason: "wrapped Store type mismatch".into(),
+            }
+            .into());
+        }
+        if unlocked.is_none() {
+            match self.get_index().await?.get_entry(store).await {
+                Ok(info) if info.type_id != C::ID.store => {
+                    return Err(StoreError::TypeMismatch {
+                        store: store.into(),
+                        expected: C::ID.store.into(),
+                        actual: info.type_id,
+                    }
+                    .into());
+                }
+                Ok(_) => {}
+                Err(Error::Store(e)) if matches!(e.as_ref(), StoreError::KeyNotFound { store: s, key } if s == INDEX && key == store) =>
+                    {}
+                Err(e) => return Err(e),
+            }
+        }
+        let mut bindings = self.structured_contracts.lock().unwrap();
+        if bindings.get(store).is_some_and(|bound| bound != &expected) {
+            return Err(StoreError::InvalidOperation {
+                store: store.into(),
+                operation: "load".into(),
+                reason: "structured Store already bound to another contract".into(),
+            }
+            .into());
+        }
+        bindings.insert(store.into(), expected);
+        Ok(())
+    }
+
+    /// Serialize decode/compose/validate/encode/replace across cloned handles.
+    /// Present empty bytes reach the strict decoder, not empty-as-absent logic.
+    pub(crate) fn with_structured_staging<T>(
+        &self,
+        store: &str,
+        apply: impl FnOnce(Option<&[u8]>) -> Result<(T, Option<Vec<u8>>)>,
+    ) -> Result<T> {
+        let mut guard = self.entry_builder.lock().unwrap();
+        let builder = guard
+            .as_mut()
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+        let (result, bytes) = apply(builder.data(store).ok().map(Vec::as_slice))?;
+        if let Some(bytes) = bytes {
+            builder.set_subtree_data_mut(store.to_string(), bytes);
+        }
+        Ok(result)
     }
 
     /// Decrypt bytes if an encryptor is registered, otherwise return them unchanged.
@@ -854,7 +952,7 @@ impl Transaction {
         Ok(crate::backend::RecordPage { records, next })
     }
 
-    fn encrypted_projection_descriptor(
+    pub(crate) fn encrypted_projection_descriptor(
         &self,
         store: &str,
         descriptor: ProjectionDescriptor,
@@ -1178,14 +1276,16 @@ impl Transaction {
                 name: "eidetica/opaque".to_string(),
                 version: 0,
             },
+            None,
         )
         .await
     }
 
-    async fn get_full_state_with_descriptor<T>(
+    pub(crate) async fn get_full_state_with_descriptor<T>(
         &self,
         subtree_name: impl AsRef<str> + Send,
         descriptor: ProjectionDescriptor,
+        retain: Option<fn(&T) -> bool>,
     ) -> Result<T>
     where
         T: CRDT + Codec + Default + Send,
@@ -1209,7 +1309,7 @@ impl Transaction {
         }
 
         // Compute the CRDT state using merge-base ROOT-to-target computation
-        self.compute_subtree_state_merge_based(subtree_name, &parents, &descriptor)
+        self.compute_subtree_state_merge_based(subtree_name, &parents, &descriptor, retain)
             .await
     }
 
@@ -1234,6 +1334,7 @@ impl Transaction {
         subtree_name: impl AsRef<str> + Send,
         entry_ids: &[ID],
         descriptor: &ProjectionDescriptor,
+        retain: Option<fn(&T) -> bool>,
     ) -> Result<T>
     where
         T: CRDT + Codec + Default + Send,
@@ -1248,7 +1349,12 @@ impl Transaction {
         // If we have a single entry, compute its state recursively
         if entry_ids.len() == 1 {
             return self
-                .compute_single_entry_state_recursive(subtree_name, &entry_ids[0], descriptor)
+                .compute_single_entry_state_recursive(
+                    subtree_name,
+                    &entry_ids[0],
+                    descriptor,
+                    retain,
+                )
                 .await;
         }
 
@@ -1281,7 +1387,7 @@ impl Transaction {
                 // Compute the base state recursively, then fold the path
                 // entries (deduplicated, height/ID sorted) on top of it.
                 let state: T = self
-                    .compute_single_entry_state_recursive(subtree_name, base, descriptor)
+                    .compute_single_entry_state_recursive(subtree_name, base, descriptor, retain)
                     .await?;
                 self.merge_path_entries(subtree_name, state, &merge.path)
                     .await?
@@ -1304,10 +1410,8 @@ impl Transaction {
         };
 
         // Cache the computed merge result
-        state::store_cached(self.db.ops(), cache_request, result, |result| {
-            self.encrypt_if_needed(subtree_name, &result.encode()?)
-        })
-        .await
+        self.cache_full_state(subtree_name, cache_request, result, retain)
+            .await
     }
 
     /// Computes the CRDT state for a single entry using batch fetching.
@@ -1332,6 +1436,7 @@ impl Transaction {
         subtree_name: &'a str,
         entry_id: &'a ID,
         descriptor: &'a ProjectionDescriptor,
+        retain: Option<fn(&T) -> bool>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>
     where
         T: CRDT + Codec + Default + Send + 'a,
@@ -1365,11 +1470,48 @@ impl Transaction {
             let result: T = self.fold_store_entries(subtree_name, &entries)?;
 
             // Step 4: Cache only the final result (encrypted if encryptor is registered)
-            state::store_cached(self.db.ops(), request, result, |result| {
-                self.encrypt_if_needed(subtree_name, &result.encode()?)
-            })
-            .await
+            self.cache_full_state(subtree_name, request, result, retain)
+                .await
         })
+    }
+
+    async fn cache_full_state<T: Codec + Send>(
+        &self,
+        store: &str,
+        request: crate::backend::StoreStateRequest,
+        value: T,
+        retain: Option<fn(&T) -> bool>,
+    ) -> Result<T> {
+        if retain.is_some_and(|retain| !retain(&value)) {
+            return Ok(value);
+        }
+        let (value, view) = state::store_cached(self.db.ops(), request, value, |value| {
+            self.encrypt_if_needed(store, &value.encode()?)
+        })
+        .await?;
+        // Publication may adopt a competing ready namespace. Structured readers
+        // must gate that winner just as they gate an ordinary exact cache hit.
+        if retain.is_some()
+            && let Some(view) = view
+        {
+            match state::load_opaque(self.db.ops(), &view).await {
+                Ok(Some(bytes)) => {
+                    T::decode(&self.decrypt_if_needed(store, &bytes)?)?;
+                }
+                Ok(None) => {
+                    return Err(StoreError::DataCorruption {
+                        store: store.into(),
+                        reason: "missing attributed cache value".into(),
+                    }
+                    .into());
+                }
+                Err(e)
+                    if e.is_invalid_store_state_view()
+                        || e.is_optional_store_state_unavailable() => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(value)
     }
 
     /// Folds already-fetched entries into a CRDT state from the default.
