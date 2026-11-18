@@ -88,7 +88,7 @@ required-features = ["testing"]
 # A manually invoked simulation, not a test binary or an installable CLI.
 [[example]]
 name = "runtime-test"
-required-features = ["testing"]
+required-features = ["testing", "sqlite", "service"]
 test = false
 
 [[bench]]
