@@ -20,7 +20,7 @@ use eidetica::service::default_socket_path;
 use eidetica::sync::DatabaseTicket;
 use eidetica::sync::transports::iroh::IrohTransport;
 
-use crate::backend::create_backend;
+use crate::backend::{create_backend, open_instance};
 use crate::cli::{BackendConfig, DaemonArgs, DaemonInitArgs};
 
 /// Run the Eidetica daemon against an already-initialised backend.
@@ -36,7 +36,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Instance — load only. Map NotInitialized to a friendly
     // pointer at `daemon init`.
-    let instance = match Instance::open_backend(backend).await {
+    let instance = match open_instance(&args.backend_config, backend).await {
         Ok(instance) => instance,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e
@@ -227,7 +227,13 @@ pub async fn run_init(
     };
 
     let backend = create_backend(backend_args).await?;
-    let (instance, _user) = match Instance::create_backend(backend, new_account).await {
+    let initialized = match backend_args.instance_credentials_dir.as_deref() {
+        Some(directory) => {
+            Instance::create_backend_with_credential_store(backend, new_account, directory).await
+        }
+        None => Instance::create_backend(backend, new_account).await,
+    };
+    let (instance, _user) = match initialized {
         Ok(pair) => pair,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e
@@ -250,7 +256,11 @@ pub async fn run_init(
     println!("  Device ID:    {}", instance.id());
     println!("  Initial user: {}", args.username);
     println!();
-    println!("Start the daemon with: `eidetica daemon`");
+    if backend_args.instance_credentials_dir.is_some() {
+        println!("Start `eidetica daemon` with the same instance credential directory.");
+    } else {
+        println!("Start the daemon with: `eidetica daemon`");
+    }
 
     Ok(())
 }
@@ -285,6 +295,7 @@ mod tests {
                 backend: Backend::Inmemory,
                 data_dir: Some(data_dir.to_path_buf()),
                 postgres_url: None,
+                instance_credentials_dir: None,
                 cache_bytes: None,
                 cache_namespaces: 1024,
             },
@@ -306,6 +317,7 @@ mod tests {
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,
+            instance_credentials_dir: None,
             cache_bytes: None,
             cache_namespaces: 1024,
         })
@@ -336,6 +348,7 @@ mod tests {
             backend: Backend::Inmemory,
             data_dir: Some(dir.path().into()),
             postgres_url: None,
+            instance_credentials_dir: None,
             cache_bytes: None,
             cache_namespaces: 1024,
         })
@@ -373,6 +386,7 @@ mod tests {
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,
+            instance_credentials_dir: None,
             cache_bytes: None,
             cache_namespaces: 1024,
         })

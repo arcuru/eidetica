@@ -333,18 +333,20 @@ in {
     # correctly over the real Unix socket protocol.
     service =
       pkgs.runCommand "integration-service" {
-        nativeBuildInputs = [eidetica-bin pkgs.cargo-nextest pkgs.curl];
+        nativeBuildInputs = [eidetica-bin pkgs.cargo-nextest pkgs.curl pkgs.jq];
       } ''
         SOCKET="$TMPDIR/test.sock"
         DATA="$TMPDIR/data"
         export EIDETICA_CACHE_DIR="$TMPDIR/cache"
 
-        # The daemon refuses to run an uninitialised backend, so initialise a
-        # fresh sqlite instance first, then start the daemon against the same
-        # data dir. (inmemory can't be used here: init and daemon are separate
-        # processes and an in-memory backend wouldn't persist between them.)
+        # Use the separate device key store on fresh, disposable state. Init
+        # and both daemon starts below are separate processes.
+        export EIDETICA_INSTANCE_CREDENTIALS_DIR="$TMPDIR/credentials"
+        install -d -m 0700 "$EIDETICA_INSTANCE_CREDENTIALS_DIR"
         eidetica daemon --backend sqlite --data-dir "$DATA" init \
-          --username admin --passwordless
+          --username admin --passwordless >"$TMPDIR/init.log" 2>&1
+        DEVICE_ID=$(sed -n 's/^  Device ID:    //p' "$TMPDIR/init.log")
+        test -n "$DEVICE_ID"
         DAEMON_LOG="$TMPDIR/daemon.log"
         eidetica daemon --backend sqlite --data-dir "$DATA" --socket "$SOCKET" \
           --dashboard --dashboard-port 0 \
@@ -394,6 +396,7 @@ in {
           -H "Origin: http://127.0.0.1:$PORT" -d 'ticket=invalid&permission=read' \
           "http://127.0.0.1:$PORT/dashboard/track")" = 400
 
+        grep -Fq "Instance initialized (device ID: $DEVICE_ID)" "$DAEMON_LOG"
         echo "Daemon started (pid=$DAEMON_PID, socket=$SOCKET)"
 
         # Copy source to a writable location (nextest creates target/nextest/ in the workspace)
@@ -473,7 +476,14 @@ in {
         wait "$DAEMON_PID"
         DAEMON_PID=""
 
-        echo "Service integration test passed"
+        grep -Fq "Instance initialized (device ID: $DEVICE_ID)" "$DAEMON_LOG"
+        jq -e --rawfile init "$TMPDIR/init.log" \
+          --rawfile first "$TMPDIR/daemon.log" --rawfile restart "$DAEMON_LOG" \
+          '.signing_key | select(type == "string" and length > 0) as $secret
+           | all([$init, $first, $restart][]; contains($secret) | not)' \
+          "$EIDETICA_INSTANCE_CREDENTIALS_DIR/instance-secrets.json" >/dev/null
+
+        echo "Service integration test passed (same device ID from separate credential store across both daemon starts)"
         mkdir -p $out
         echo "passed" > $out/result
       '';

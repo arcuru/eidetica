@@ -32,6 +32,42 @@ Older binaries refuse the new format counters instead of silently dropping crede
 These are tested synthetic storage transitions, not permission to open/migrate live installations.
 A binary rollback does not roll back data; see the [format matrix](../design/verification.md#persistence-restart-and-forward-migration).
 
+## Device signing key trial
+
+The separate credential store is an opt-in Unix trial for fresh, disposable
+instances. It moves only `InstanceSecrets` (the device signing key); public
+`InstanceMetadata`, encrypted login bundles, and Iroh transport settings keep
+their existing storage. No key moves across the service socket. Embedded callers
+pass the configured directory to `Instance::create_backend_with_credential_store`
+and `Instance::open_backend_with_credential_store`. The CLI exposes the same mode
+for SQLite. Without it, valid legacy instances still use their existing
+`instance_secrets` row or snapshot field. A local open with metadata but no key
+now fails, rather than returning a partially usable instance. Remote clients
+continue to open without a local device key.
+
+The configured directory must already be owned by the effective user with mode
+`0700`, under a path the operator trusts. The key is plaintext in an owner-only
+`0600` file, `instance-secrets.json`. This is filesystem isolation, not encryption
+at rest or protection against another process running as that user. No mode
+changes apply to the ordinary database or snapshot. Use a dedicated directory
+outside cache paths; cache clear, eviction, and trust reset do not use the credential
+store.
+
+Creation refuses legacy credentials and existing instance metadata or history
+roots. It durably publishes the key without replacing a file before writing
+instance roots or metadata. Opening reads the key and checks it against the public
+identity in metadata; it cannot create a file or fall back to the database.
+The ordinary backend still follows its normal schema/open rules, but the trial
+never migrates legacy keys. The two stores do not share a transaction: interrupted
+bootstrap can leave an orphaned key or partial history. Preserve both for inspection;
+do not retry by removing the key or redirecting startup to a new directory.
+
+A production change would need a coordinated transfer and identity check, a plan for
+legacy copies in snapshots, WAL and backups, tested recovery of the matching
+history and key, and a rollback procedure with compatible readers. This trial
+implements none of those operations. Removing the option is not a way to roll back
+an initialized trial; use a fresh disposable pair to return to legacy mode.
+
 ## Convenience-login records
 
 `login:<name>` contains the installation login UUID and `AccountInfo`: local label, Account ID, root credential, creation time and status.

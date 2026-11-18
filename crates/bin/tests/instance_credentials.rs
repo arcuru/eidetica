@@ -92,6 +92,30 @@ async fn protected_credentials_survive_cli_restart_without_writing_history() {
     }
     assert!(!String::from_utf8_lossy(&fs::read(db).unwrap()).contains(secret));
 
+    let stale = command(root.path(), "other-history")
+        .env("EIDETICA_INSTANCE_CREDENTIALS_DIR", &credentials)
+        .args(["daemon", "init", "--username", "trial", "--passwordless"])
+        .output()
+        .unwrap();
+    assert!(
+        !stale.status.success(),
+        "init replaced an existing device key"
+    );
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("refusing to replace it"));
+    assert!(
+        fs::read(&path).unwrap() == saved,
+        "init changed the original device key"
+    );
+    let other = SqlxBackend::open_sqlite_with_memory_cache(
+        &root.path().join("other-history/eidetica.db"),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(other.all_roots().await.unwrap().is_empty());
+    assert!(other.get_instance_metadata().await.unwrap().is_none());
+    assert!(other.get_instance_secrets().await.unwrap().is_none());
+
     let no_flag = command(root.path(), "history")
         .arg("info")
         .output()
@@ -116,7 +140,9 @@ async fn protected_credentials_survive_cli_restart_without_writing_history() {
         !refused.status.success(),
         "daemon started without its credentials"
     );
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("credential store"));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("cannot open existing credential file")
+    );
     assert!(!path.exists());
     assert!(!socket.exists());
 }
