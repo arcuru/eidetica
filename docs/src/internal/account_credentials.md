@@ -57,10 +57,14 @@ Creation refuses legacy credentials and existing instance metadata or history
 roots. It durably publishes the key without replacing a file before writing
 instance roots or metadata. Opening reads the key and checks it against the public
 identity in metadata; it cannot create a file or fall back to the database.
-The ordinary backend still follows its normal schema/open rules, but the trial
-never migrates legacy keys. The two stores do not share a transaction: interrupted
-bootstrap can leave an orphaned key or partial history. Preserve both for inspection;
-do not retry by removing the key or redirecting startup to a new directory.
+The ordinary backend opens before the credential check and may run its usual schema
+and cache setup. Do not point the trial at production data. The trial never migrates
+legacy keys.
+
+The two stores do not share a transaction. Interrupted bootstrap can leave an
+orphaned key or partial history; even matching metadata does not prove the initial
+account was created. Preserve both stores for inspection. Do not retry by removing
+the key or pointing startup at a new directory.
 
 A production change would need a coordinated transfer and identity check, a plan for
 legacy copies in snapshots, WAL and backups, tested recovery of the matching

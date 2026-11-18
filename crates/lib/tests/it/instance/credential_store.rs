@@ -5,11 +5,13 @@ use std::{
 };
 
 use eidetica::{
-    Instance, NewAccount,
+    Entry, Instance, NewAccount,
     auth::crypto::PrivateKey,
     backend::{BackendImpl, database::InMemory},
     instance::InstanceError,
 };
+
+use crate::helpers::TestVerify;
 
 async fn open(snapshot: &Path, directory: &Path) -> eidetica::Result<Instance> {
     let backend = InMemory::try_load_from_file(snapshot).await?.unwrap();
@@ -105,4 +107,33 @@ async fn test_credential_store_embedded_snapshot_reopen() {
         .expect_err("malformed key accepted");
     assert!(error.to_string().contains("invalid credential file"));
     assert!(!format!("{error:?} {error}").contains(canary));
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn test_credential_store_refuses_partial_history() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("credentials");
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .unwrap();
+    let backend = InMemory::new();
+    backend
+        .put_verified(Entry::root_builder().build().unwrap())
+        .await
+        .unwrap();
+
+    let result = Instance::create_backend_with_credential_store(
+        Box::new(backend),
+        NewAccount::passwordless("trial"),
+        &directory,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(eidetica::Error::Instance(error))
+            if matches!(*error, InstanceError::CredentialStore { ref reason } if reason.contains("roots without instance metadata"))
+    ));
+    assert!(fs::read_dir(directory).unwrap().next().is_none());
 }

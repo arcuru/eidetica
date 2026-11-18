@@ -42,6 +42,9 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
             if let eidetica::Error::Instance(boxed) = &e
                 && matches!(boxed.as_ref(), InstanceError::NotInitialized)
             {
+                if args.backend_config.instance_credentials_dir.is_some() {
+                    return Err("Trial database has no instance metadata. Run `eidetica daemon init` only for a fresh disposable pair. If initialisation was interrupted, preserve both stores for inspection.".into());
+                }
                 return Err(format!(
                     "Backend at {} is not initialised.\nRun `eidetica daemon init --username <NAME> [--password PASS | --passwordless]` first.",
                     crate::backend::backend_label(&args.backend_config)
