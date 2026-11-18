@@ -145,6 +145,19 @@ pub enum InstanceError {
     #[error("Device key not found in instance metadata")]
     DeviceKeyNotFound,
 
+    /// The local backend lacks the key required to open this instance.
+    #[error(
+        "Local instance has no device key in the database; if initialised with a separate credential store, open it with that store"
+    )]
+    MissingLocalDeviceKey,
+
+    /// The selected instance credential store could not be used safely.
+    #[error("Instance credential store: {reason}")]
+    CredentialStore {
+        /// Safe diagnostic; never includes credential contents.
+        reason: String,
+    },
+
     /// Device key in secrets does not match the public key in metadata.
     #[error("Device key in secrets does not match public key in metadata")]
     DeviceKeyMismatch,

@@ -29,7 +29,7 @@ use eidetica::{
     },
 };
 
-use crate::backend::create_backend;
+use crate::backend::{create_backend, open_instance};
 use crate::cli::ServeArgs;
 use crate::session::SessionStore;
 use crate::templates::DatabaseInfo;
@@ -94,7 +94,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Load the existing Instance — initialise via `eidetica daemon init`
     // first if the backend is empty. The auto-bootstrapped `admin/admin`
     // pair is gone.
-    let instance = match Instance::open_backend(backend_box).await {
+    let instance = match open_instance(&args.backend_config, backend_box).await {
         Ok(instance) => instance,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e

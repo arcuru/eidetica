@@ -32,3 +32,4 @@ rpassword = "7"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
