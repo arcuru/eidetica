@@ -199,7 +199,7 @@ install -d -m 0700 "$trial/credentials"
 export EIDETICA_DATA_DIR="$trial/data"
 export EIDETICA_CACHE_DIR="$trial/cache"
 export EIDETICA_INSTANCE_CREDENTIALS_DIR="$trial/credentials"
-eidetica daemon init --backend sqlite --username trial --passwordless
+eidetica daemon --backend sqlite init --username trial --passwordless
 eidetica daemon --backend sqlite --socket "$trial/service.sock"
 ```
 

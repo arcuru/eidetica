@@ -679,10 +679,13 @@ impl Instance {
     ) -> Result<(Self, AccountSession)> {
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
         credential_store::reject_legacy(&*backend).await?;
-        if backend.get_instance_metadata().await?.is_some()
-            || !backend.all_roots().await?.is_empty()
-        {
+        if backend.get_instance_metadata().await?.is_some() {
             return Err(InstanceError::InstanceAlreadyExists.into());
+        }
+        if !backend.all_roots().await?.is_empty() {
+            return Err(credential_store::failure(
+                "database contains roots without instance metadata; preserve both stores for inspection",
+            ));
         }
         Self::create_internal(backend, Arc::new(SystemClock), initial, Some(directory)).await
     }

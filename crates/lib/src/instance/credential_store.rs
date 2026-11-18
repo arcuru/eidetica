@@ -11,7 +11,7 @@ use crate::{
     backend::{BackendImpl, InstanceSecrets},
 };
 
-fn failure(reason: impl Into<String>) -> crate::Error {
+pub(super) fn failure(reason: impl Into<String>) -> crate::Error {
     InstanceError::CredentialStore {
         reason: reason.into(),
     }
