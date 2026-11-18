@@ -20,6 +20,7 @@
 pub mod account;
 pub mod auth;
 pub mod backend;
+pub mod blob;
 pub mod clock;
 pub mod constants;
 pub mod crdt;
@@ -38,13 +39,16 @@ pub mod transaction;
 
 pub use account::{Account, AccountSession};
 pub use auth::crypto::{PrivateKey, PublicKey};
+pub use blob::BlobRef;
 pub use clock::{Clock, SystemClock};
 #[cfg(any(test, feature = "testing"))]
 pub use clock::{ClockHold, FixedClock};
 pub use database::{Database, DatabaseKey};
 pub use entry::{Entry, ID};
 pub use height::HeightStrategy;
-pub use instance::{Instance, NewAccount, WeakInstance, WriteCallback, WriteEvent, WriteSource};
+pub use instance::{
+    GcOptions, GcReport, Instance, NewAccount, WeakInstance, WriteCallback, WriteEvent, WriteSource,
+};
 pub use snapshot::Snapshot;
 pub use store::{Registered, Store};
 #[cfg(any(test, feature = "testing"))]

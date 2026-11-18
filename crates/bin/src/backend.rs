@@ -135,18 +135,23 @@ pub async fn create_backend(
                 "Using in-memory backend with persistence at {}",
                 json_path.display()
             );
-            match InMemory::load_from_file_with_cache_policy(&json_path, policy).await {
-                Ok(backend) => {
-                    tracing::info!("Loaded existing data from {}", json_path.display());
-                    Ok(Box::new(backend))
-                }
-                Err(_) => {
-                    tracing::info!("Starting with fresh database");
-                    Ok(Box::new(InMemory::new_with_cache_policy(policy)))
-                }
-            }
+            // Missing snapshots start empty; malformed or unsupported files must
+            // surface their error, never become a fresh backend on the next save.
+            Ok(Box::new(
+                InMemory::load_from_file_with_cache_policy(&json_path, policy).await?,
+            ))
         }
     }
+}
+
+fn blob_dir(config: &BackendConfig) -> PathBuf {
+    config.blob_dir.clone().unwrap_or_else(|| {
+        config
+            .data_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("blobs")
+    })
 }
 
 async fn connect_postgres(
@@ -164,7 +169,7 @@ async fn connect_postgres(
     match Postgres::connect_with_cache_policy(url, policy).await {
         Ok(backend) => {
             tracing::info!("Connected to PostgreSQL successfully");
-            Ok(backend)
+            Ok(backend.with_blob_dir(blob_dir(config)))
         }
         Err(e) => Err(format!("Failed to connect to PostgreSQL at {}: {}", display_url, e).into()),
     }
@@ -192,11 +197,17 @@ pub async fn open_sqlite(
 ) -> Result<SqlxBackend, Box<dyn std::error::Error>> {
     if separate_cache(config)?.is_some() {
         return Ok(
-            SqlxBackend::open_sqlite_with_memory_cache(path, primary_policy(config)?).await?,
+            SqlxBackend::open_sqlite_with_memory_cache(path, primary_policy(config)?)
+                .await?
+                .with_blob_dir(blob_dir(config)),
         );
     }
     let cache_dir = cache_dir(config).await?;
-    Ok(SqlxBackend::open_sqlite_with_cache_dir(path, &cache_dir, cache_policy(config)).await?)
+    Ok(
+        SqlxBackend::open_sqlite_with_cache_dir(path, &cache_dir, cache_policy(config))
+            .await?
+            .with_blob_dir(blob_dir(config)),
+    )
 }
 
 /// Route Derived state from an opened primary to the selected cache engine.
@@ -393,5 +404,70 @@ mod cache_policy_tests {
             primary_policy(&config).unwrap(),
             DerivedCachePolicy::persistent()
         );
+    }
+}
+
+#[cfg(test)]
+mod blob_integration_tests {
+    use super::*;
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+
+    #[tokio::test]
+    async fn blob_candidate_inmemory_open_refuses_without_replacing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("eidetica.json");
+        let original = br#"{"_v":3,"entries":{},"blobs":{},"blob_accessed":{},"blob_pins":[]}"#;
+        std::fs::write(&path, original).unwrap();
+        let cli = Cli::try_parse_from([
+            "eidetica",
+            "daemon",
+            "--backend",
+            "inmemory",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+        ])
+        .unwrap();
+        let Some(Commands::Daemon(args)) = cli.command else {
+            panic!("daemon config");
+        };
+        assert!(
+            create_backend(&args.backend_config).await.is_err(),
+            "must not turn unsupported storage into a fresh backend"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn blob_sqlite_split_cache_preserves_disk_tier_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let blobs = dir.path().join("chosen-blobs");
+        let cli = Cli::try_parse_from([
+            "eidetica",
+            "daemon",
+            "--backend",
+            "sqlite",
+            "--cache-backend",
+            "inmemory",
+            "--data-dir",
+            data.to_str().unwrap(),
+            "--blob-dir",
+            blobs.to_str().unwrap(),
+        ])
+        .unwrap();
+        let Some(Commands::Daemon(args)) = cli.command else {
+            panic!("daemon config");
+        };
+        let bytes = vec![71u8; 40_000];
+        let cid = eidetica::ID::from_bytes(&bytes);
+        let backend = create_backend(&args.backend_config).await.unwrap();
+        backend.put_blob(&cid, bytes.clone()).await.unwrap();
+        assert_eq!(std::fs::read(blobs.join(cid.to_string())).unwrap(), bytes);
+        backend.clear_derived_store_state().await.unwrap();
+        assert_eq!(backend.get_blob(&cid).await.unwrap(), Some(bytes.clone()));
+        drop(backend);
+        let reopened = create_backend(&args.backend_config).await.unwrap();
+        assert_eq!(reopened.get_blob(&cid).await.unwrap(), Some(bytes));
     }
 }

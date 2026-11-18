@@ -287,6 +287,7 @@ mod tests {
                 postgres_url: None,
                 cache_bytes: None,
                 cache_namespaces: 1024,
+                blob_dir: None,
             },
         }
     }
@@ -308,6 +309,7 @@ mod tests {
             postgres_url: None,
             cache_bytes: None,
             cache_namespaces: 1024,
+            blob_dir: None,
         })
         .await
         .unwrap();
@@ -338,6 +340,7 @@ mod tests {
             postgres_url: None,
             cache_bytes: None,
             cache_namespaces: 1024,
+            blob_dir: None,
         })
         .await
         .unwrap();
@@ -375,6 +378,7 @@ mod tests {
             postgres_url: None,
             cache_bytes: None,
             cache_namespaces: 1024,
+            blob_dir: None,
         })
         .await
         .unwrap();

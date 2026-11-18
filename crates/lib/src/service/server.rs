@@ -895,6 +895,50 @@ async fn dispatch_inner(
             Ok(ServiceResponse::LocalAccountStateExchanged(exchanged))
         }
 
+        // === Post-auth: global content-addressed blobs ===
+        //
+        // Gate: an authenticated connection, nothing more. Blobs are global and
+        // unscoped — no per-tree permission gate, no acting identity — and
+        // strictly by-CID. Blob reads are deliberately unauthorized: the daemon
+        // serves any blob the caller names and never enumerates what it holds.
+        ServiceRequest::GetBlob { cid } => {
+            require_authenticated(state, "GetBlob")?;
+            // `get_blob_local` codec-gates (raw `0x55` only) and routes through
+            // the seam — on a daemon that is the in-process engine.
+            let blob = instance.get_blob_local(&cid).await?;
+            ensure_blob_fits(blob.as_deref())?;
+            Ok(ServiceResponse::Blob(blob))
+        }
+        ServiceRequest::PutBlob { cid, data } => {
+            require_authenticated(state, "PutBlob")?;
+            if data.len() > crate::backend::DEFAULT_MAX_BLOB_BYTES {
+                return Err(crate::backend::errors::BackendError::BlobTooLarge {
+                    size: data.len(),
+                    max: crate::backend::DEFAULT_MAX_BLOB_BYTES,
+                }
+                .into());
+            }
+            // `persist_blob` re-verifies `cid == hash(data)` (a client that lies
+            // about the address is rejected, never trusted) and stamps
+            // `last_accessed` so the daemon's LRU/GC sees a fresh blob.
+            instance.persist_blob(&cid, data).await?;
+            Ok(ServiceResponse::Ok)
+        }
+        ServiceRequest::GetBlobRange { cid, start, end } => {
+            require_authenticated(state, "GetBlobRange")?;
+            // Local windowed serve: read only `[start, end)` from the daemon's
+            // store (codec-gated, no peer fetch — same local-only semantics as
+            // `GetBlob`), never whole-loading a large blob.
+            let blob = instance.get_blob_range_local(&cid, start..end).await?;
+            ensure_blob_fits(blob.as_deref())?;
+            Ok(ServiceResponse::Blob(blob))
+        }
+        ServiceRequest::GcBlobs { opts } => {
+            require_authenticated(state, "GcBlobs")?;
+            let report = instance.gc_blobs(opts).await?;
+            Ok(ServiceResponse::GcReport(report))
+        }
+
         // === Authenticated storage operations ===
         //
         // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
@@ -1575,6 +1619,34 @@ async fn dispatch_database_op(
 
 fn random_token() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// Refuse blob bytes the wire cannot carry, before they are framed.
+///
+/// A response the writer cannot frame would otherwise end the connection and
+/// leave the client waiting on a reply that never arrives. Blob bytes encode as
+/// a JSON number array, so the encoded length is computed from the bytes
+/// without serializing them.
+fn ensure_blob_fits(blob: Option<&[u8]>) -> crate::Result<()> {
+    if let Some(bytes) = blob {
+        let digits: usize = bytes
+            .iter()
+            .map(|&b| match b {
+                0..=9 => 1,
+                10..=99 => 2,
+                _ => 3,
+            })
+            .sum();
+        let encoded = 2 + digits + bytes.len().saturating_sub(1);
+        if encoded > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
+            return Err(crate::backend::BackendError::BlobResponseTooLarge {
+                size: bytes.len(),
+                encoded_bytes: encoded,
+            }
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// Refuse a record the wire cannot carry, before it is framed.

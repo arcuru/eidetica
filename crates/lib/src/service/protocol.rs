@@ -40,7 +40,7 @@ use crate::auth::crypto::PublicKey;
 use crate::auth::types::{Permission, SigKey};
 use crate::backend::{InstanceMetadata, RecordPage, RecordRange, StoreStateRequest};
 use crate::entry::{Entry, ID};
-use crate::instance::WriteSource;
+use crate::instance::{GcOptions, GcReport, WriteSource};
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
@@ -444,6 +444,29 @@ pub enum ServiceRequest {
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
     /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
+
+    // === Post-auth: global content-addressed blobs ===
+    //
+    // Blobs are **global and unscoped**: reads are deliberately unauthorized,
+    // and a CID is not a secret. Unlike every `DatabaseOp`, these carry **no
+    // `root_id`** and **no acting identity** — only an authenticated connection
+    // is required, and there is *no* per-tree permission gate. There is
+    // deliberately no list/enumerate or application retention operation.
+    /// Fetch raw blob bytes by content address. `None` on miss; the daemon never
+    /// reveals anything beyond "these exact bytes for this exact CID".
+    GetBlob { cid: ID },
+    /// Store raw blob bytes under their content address. The daemon re-verifies
+    /// `cid == hash(data)` and enforces the size cap; a mismatch is rejected.
+    PutBlob { cid: ID, data: Vec<u8> },
+    /// Read a half-open byte range `[start, end)` of a blob by content address.
+    /// The daemon reads only the requested window from its store, so a
+    /// thin client gets a true windowed read instead of fetch-whole-and-slice.
+    /// `None` on miss; the range is clamped to the blob's length.
+    GetBlobRange { cid: ID, start: u64, end: u64 },
+    /// Run a GC pass on the daemon's blob store. The daemon evaluates the grace
+    /// window against *its own* clock (the blobs and their access stamps live
+    /// there), so no client timestamp crosses the wire.
+    GcBlobs { opts: GcOptions },
 }
 
 /// Server-initiated push to the client, interleaved with normal responses
@@ -566,6 +589,13 @@ pub enum ServiceResponse {
     MergeState(MergeState),
     /// Optional instance metadata
     InstanceMetadata(Option<InstanceMetadata>),
+    /// Raw blob bytes by content address (response to `ServiceRequest::GetBlob`
+    /// or `GetBlobRange`). `None` on miss. Whole-blob bytes are guaranteed to
+    /// hash to the requested CID; a range is the verified window of that blob.
+    Blob(Option<Vec<u8>>),
+    /// Aggregate outcome of a blob GC pass (response to
+    /// `ServiceRequest::GcBlobs`). Counts only — never the swept CID list.
+    GcReport(GcReport),
     /// Error response
     Error(ServiceError),
     /// Point-in-time locator for one authorized database.
@@ -625,6 +655,10 @@ const REQUEST_VARIANTS: &[&str] = &[
     "LocalAccountState",
     "ExchangeLocalAccountState",
     "SignerChallenge",
+    "GetBlob",
+    "PutBlob",
+    "GetBlobRange",
+    "GcBlobs",
     "TrustedLoginUser",
     "TrustedLoginProve",
     "GetInstanceMetadata",
@@ -661,6 +695,8 @@ const RESPONSE_VARIANTS: &[&str] = &[
     "LocalAccountState",
     "LocalAccountStateExchanged",
     "SignerChallenge",
+    "Blob",
+    "GcReport",
     "Entry",
     "Entries",
     "Ids",
@@ -1403,5 +1439,59 @@ mod tests {
 
         let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut client_read).await;
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod blob_compatibility_tests {
+    use super::*;
+    #[test]
+    fn blob_extensions_are_known_but_application_pins_stay_unsupported() {
+        let cid = ID::from_bytes(b"wire blob");
+        for request in [
+            ServiceRequest::GetBlob { cid: cid.clone() },
+            ServiceRequest::PutBlob {
+                cid: cid.clone(),
+                data: b"wire blob".to_vec(),
+            },
+            ServiceRequest::GetBlobRange {
+                cid,
+                start: 0,
+                end: 4,
+            },
+            ServiceRequest::GcBlobs {
+                opts: GcOptions::default(),
+            },
+        ] {
+            let json = serde_json::to_string(&request).unwrap();
+            assert!(matches!(
+                serde_json::from_str::<IncomingRequest>(&json).unwrap(),
+                IncomingRequest::Known(_)
+            ));
+        }
+        for response in [
+            ServiceResponse::Blob(Some(vec![1, 2, 3])),
+            ServiceResponse::GcReport(GcReport {
+                evicted_count: 1,
+                reclaimed_bytes: 3,
+                retained_bytes: 0,
+                pinned_bytes: 0,
+            }),
+        ] {
+            let json = serde_json::to_string(&ServerFrame::Response(Box::new(response))).unwrap();
+            assert!(
+                !matches!(serde_json::from_str::<IncomingServerFrame>(&json).unwrap(), IncomingServerFrame::Response(r) if matches!(*r, ServiceResponse::Unsupported))
+            );
+        }
+        for json in [r#"{"PinBlob":{}}"#, r#"{"UnpinBlob":{}}"#] {
+            assert!(matches!(
+                serde_json::from_str::<IncomingRequest>(json).unwrap(),
+                IncomingRequest::Unsupported
+            ));
+        }
+        assert!(
+            serde_json::from_str::<IncomingRequest>(r#"{"GetBlobRange":{"cid":""}}"#).is_err(),
+            "malformed known op is not Unsupported"
+        );
     }
 }
