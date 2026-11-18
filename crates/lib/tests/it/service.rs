@@ -2756,6 +2756,128 @@ async fn test_local_account_state_requires_exact_login_and_preserves_conflicts()
     }
 }
 
+#[tokio::test]
+async fn creation_registration_failure_retains_committed_root() {
+    use eidetica::service::error::ServiceError;
+    use eidetica::{Database, Error, account::AccountSigner, auth::crypto::verify_entry_signature};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tokio::net::UnixListener;
+
+    let (socket, shutdown, owner, dir) = start_test_server().await;
+    let proxy_path = dir.path().join("creation-proxy.sock");
+    let listener = UnixListener::bind(&proxy_path).unwrap();
+    let refuse = Arc::new(AtomicBool::new(false));
+    let proxy_refuse = refuse.clone();
+    // Forward real daemon traffic unchanged except for one explicit handshake
+    // refusal. No successful possession proof or signed commit is fabricated.
+    let proxy = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            let (mut client, _) = listener.accept().await.unwrap();
+            let mut server = UnixStream::connect(socket).await.unwrap();
+            let hello: Handshake = read_frame(&mut client).await.unwrap().unwrap();
+            write_frame(&mut server, &hello).await.unwrap();
+            let ack: HandshakeAck = read_frame(&mut server).await.unwrap().unwrap();
+            write_frame(&mut client, &ack).await.unwrap();
+            while let Some(request) = read_frame::<_, ServiceRequest>(&mut client).await.unwrap() {
+                if matches!(request, ServiceRequest::SessionKeyChallenge { .. })
+                    && proxy_refuse.swap(false, Ordering::SeqCst)
+                {
+                    let response =
+                        ServerFrame::Response(Box::new(ServiceResponse::Error(ServiceError {
+                            module: "io".into(),
+                            kind: "Io".into(),
+                            message: "fixture registration refusal".into(),
+                        })));
+                    write_frame(&mut client, &response).await.unwrap();
+                    continue;
+                }
+                write_frame(&mut server, &request).await.unwrap();
+                loop {
+                    let frame: ServerFrame = read_frame(&mut server).await.unwrap().unwrap();
+                    write_frame(&mut client, &frame).await.unwrap();
+                    if matches!(frame, ServerFrame::Response(_)) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+    });
+    let client = Instance::connect(format!("unix://{}", proxy_path.display()))
+        .await
+        .unwrap();
+    let mut user = client.login_account("admin", "").await.unwrap();
+    let key = user.add_private_key(Some("creation-repair")).await.unwrap();
+    let signer = user.get_signing_key(&key).unwrap().clone();
+    let engine = owner.backend().local_engine().unwrap();
+
+    // Both public entry points preserve the inner constructor's root context.
+    for via_account in [false, true] {
+        let before = engine.all_roots().await.unwrap();
+        refuse.store(true, Ordering::SeqCst);
+        // Use a fresh key per creation so registration cannot hit the client cache.
+        let signing_key = if via_account {
+            let key = user.add_private_key(None).await.unwrap();
+            user.get_signing_key(&key).unwrap().clone()
+        } else {
+            signer.clone()
+        };
+        let pubkey = signing_key.public_key();
+        let result = if via_account {
+            user.create_database(Doc::new(), &pubkey).await
+        } else {
+            Database::create(&client, signing_key.clone(), Doc::new()).await
+        };
+        let error = result.unwrap_err();
+        assert!(
+            !refuse.load(Ordering::SeqCst),
+            "registration fault was not reached"
+        );
+        let id = error
+            .created_database_id()
+            .expect("committed repair ID")
+            .clone();
+        let Error::DatabaseCreation { source, .. } = error else {
+            unreachable!()
+        };
+        assert!(matches!(*source, Error::Io(_)));
+        assert!(source.to_string().contains("fixture registration refusal"));
+        let created: Vec<_> = engine
+            .all_roots()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|root| !before.contains(root))
+            .collect();
+        assert_eq!(created, vec![id.clone()]);
+        verify_entry_signature(&owner.backend().get(&id).await.unwrap(), &pubkey).unwrap();
+        assert!(user.tracked_database(&id).await.unwrap().is_none());
+        // Login authority alone is not authority over the new root.
+        assert!(Database::open(&client, &id).await.is_err());
+        let reopened = AccountSigner::new(id.clone(), signing_key)
+            .open_database(&client, &id)
+            .await
+            .unwrap();
+        assert_eq!(reopened.root_id(), &id);
+        reopened
+            .new_transaction()
+            .await
+            .unwrap()
+            .commit()
+            .await
+            .unwrap();
+        assert_eq!(engine.all_roots().await.unwrap().len(), before.len() + 1);
+    }
+    // Explicitly end the proxy task; RemoteConnection's reader retains its socket.
+    proxy.abort();
+    assert!(proxy.await.unwrap_err().is_cancelled());
+    shutdown.send(()).unwrap();
+}
+
 // === Content-addressed blob storage over the service wire ===
 
 #[tokio::test]

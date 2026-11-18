@@ -140,6 +140,40 @@ before its parent. The receiver stores it regardless, and tip reconciliation
 completes once the parent arrives. That order-independence (proven by the delivery
 fuzzer) is exactly what lets arbitrarily-late, retry-driven delivery still land.
 
+## Run a seeded workload by hand
+
+`runtime-test` is a developer-only Cargo example, not a test in the Cargo or
+Nix CI suites. It needs the existing `testing` feature, not a VM or external
+services. In the dev shell, build it once and then run it from the repo root:
+
+```bash
+cargo build --locked -p eidetica --no-default-features --features testing --example runtime-test
+# Workload, seed, and write count; GNU timeout caps runtime, not compilation.
+timeout --signal=KILL 30s ./target/debug/examples/runtime-test interleaved-sync 42 12
+```
+
+`interleaved-sync` writes one distinct key per step across two in-memory peers.
+The seed chooses the writer and whether to exchange before each write after
+the first. The work bound is 1–1000 writes and at most as many exchanges,
+including the final one. The runner checks that both peers agree on tips
+and have every entry the workload committed.
+
+The runner logs its inputs and each operation to stderr before executing it.
+Save that trace and the command on failure. Rebuild at the same revision and
+use the same workload, seed, step count, timeout, and flags to replay. The
+seed reproduces the operation order, not the signing keys, entry IDs, or
+wall-clock timing. A timeout can truncate the trace at a different point on
+another machine.
+
+To try replay without a product bug, omit the final exchange using the
+example's test-only flag. Both invocations below should fail the tip agreement
+check. Removing the flag should pass.
+
+```bash
+timeout --signal=KILL 30s ./target/debug/examples/runtime-test interleaved-sync 42 12 --skip-final-exchange 2>failure.log
+timeout --signal=KILL 30s ./target/debug/examples/runtime-test interleaved-sync 42 12 --skip-final-exchange 2>replay.log
+```
+
 ## Where the tests live
 
 `tests/it/sync/`: `n_peer_convergence_tests`, `partition_heal_tests`,

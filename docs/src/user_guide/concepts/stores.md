@@ -74,10 +74,28 @@ store.set_path(path!("database.port"), "5432").await?;
 let version = store.get("version").await?; // Returns a Value
 let host = store.get_path(path!("database.host")).await?; // Returns Value
 
+// External names can be single literal keys, even when they contain dots.
+store.set_literal("database.host", "literal name").await?;
+assert_eq!(store.get_literal("database.host").await?, "literal name");
+assert_eq!(store.get("database.host").await?, "localhost"); // Still a nested path
+assert!(store.delete_literal("database.host").await?); // Leaves the nested path intact
+
 txn.commit().await?;
 # Ok(())
 # }
 ```
+
+`set`, `get` and `delete` interpret dotted strings as paths, just like the
+explicit path methods. Use `set_literal`, `get_literal` and `delete_literal`
+for one exact top-level key, including empty strings, leading/trailing dots and
+Unicode names. These methods do not escape or normalize names. Missing/deleted
+literal keys return `KeyNotFound` on get; deleting one returns `false` if it is
+already absent. Writes use the same transaction and authentication checks.
+
+For an in-memory `Doc`, use `set_literal`, `get_literal` and `remove_literal`.
+Build it with repeated `set_literal` calls; collecting key/value pairs into a
+`Doc` retains the existing path behavior. `initialize_doc` copies its top-level
+keys literally. No historical paths or stored bytes are automatically converted.
 
 #### Important: Path Operations Create Nested Structures
 

@@ -584,10 +584,12 @@ impl EntryBuilder {
     /// This method:
     /// 1. Sorts all parent lists in both the main tree and subtrees
     /// 2. Sorts the subtrees list by name
-    /// 3. Removes any empty subtrees
-    /// 4. Creates the immutable `Entry`
-    /// 5. Validates the entry structure
-    /// 6. Returns the validated entry or an error
+    /// 3. Creates the immutable `Entry`
+    /// 4. Validates the entry structure
+    /// 5. Returns the validated entry or an error
+    ///
+    /// Subtrees with empty data or no data are preserved. To explicitly remove empty
+    /// subtrees before building, use [`Self::remove_empty_subtrees`].
     ///
     /// After calling this method, the builder is consumed and cannot be used again.
     /// The returned `Entry` is immutable and its parts cannot be modified.

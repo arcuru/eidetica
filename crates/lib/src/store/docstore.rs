@@ -13,12 +13,15 @@ use async_trait::async_trait;
 /// A document-oriented Store providing ergonomic access to Doc CRDT data.
 ///
 /// DocStore wraps the [`Doc`](crate::crdt::Doc) CRDT to provide path-based access to nested
-/// document structures. It supports string values and deletions via tombstones.
+/// document structures and literal-key access to individual map entries.
+/// It supports typed values and deletions via tombstones.
 ///
 /// # API Overview
 ///
 /// - **Basic operations**: [`get`](Self::get), [`set`](Self::set), [`delete`](Self::delete),
 ///   [`get_all`](Self::get_all), [`contains_key`](Self::contains_key)
+/// - **Literal keys**: [`get_literal`](Self::get_literal), [`set_literal`](Self::set_literal),
+///   [`delete_literal`](Self::delete_literal) preserve a single key verbatim
 /// - **Path operations**: [`get_path`](Self::get_path), [`set_path`](Self::set_path),
 ///   [`contains_path`](Self::contains_path)
 /// - **Path mutation**: [`modify_path`](Self::modify_path),
@@ -56,6 +59,50 @@ impl Store for DocStore {
 }
 
 impl DocStore {
+    /// Gets one literal top-level key, without parsing dots or normalizing text.
+    ///
+    /// Reads the merged transaction view, including staged tombstones. Returns
+    /// `StoreError::KeyNotFound` for a missing or deleted key, and propagates
+    /// backend and decoding errors. Existing [`get`](Self::get) remains path-based.
+    pub async fn get_literal(&self, key: impl AsRef<str>) -> Result<Value> {
+        let key = key.as_ref();
+        self.get_all()
+            .await?
+            .get_literal(key)
+            .cloned()
+            .ok_or_else(|| {
+                StoreError::KeyNotFound {
+                    store: self.name.clone(),
+                    key: key.to_owned(),
+                }
+                .into()
+            })
+    }
+
+    /// Stages one literal top-level key through the normal transaction machinery.
+    ///
+    /// Accepts empty, dotted and Unicode keys verbatim. The existing Doc encoding,
+    /// merge rules and commit/authentication checks are unchanged; this does not
+    /// persist anything until [`Transaction::commit`] is called.
+    pub async fn set_literal(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
+        let mut data = self.local_data()?.unwrap_or_default();
+        data.set_literal(key, value);
+        self.txn.update_subtree(&self.name, data.encode()?).await
+    }
+
+    /// Stages deletion of one literal top-level key via a tombstone.
+    ///
+    /// Returns `false` without staging a change when the key is already missing
+    /// or deleted. A dotted key never deletes the corresponding nested path.
+    pub async fn delete_literal(&self, key: impl AsRef<str>) -> Result<bool> {
+        let key = key.as_ref();
+        if self.get_all().await?.get_literal(key).is_none() {
+            return Ok(false);
+        }
+        self.set_literal(key, Value::Deleted).await?;
+        Ok(true)
+    }
+
     /// Gets a value associated with a key from the Store.
     ///
     /// This method prioritizes returning data staged within the current `Transaction`.
@@ -1053,8 +1100,9 @@ pub trait DocStoreInit<'u> {
     /// Register a DocStore prepopulated with the contents of `doc`.
     ///
     /// Each top-level key in `doc` is written into the DocStore via
-    /// [`DocStore::set`]. The caller picks the storage layout — flat fields,
-    /// a single `set_json("data", ...)` blob, nested values, whatever the
+    /// [`DocStore::set_literal`], preserving dots and empty keys. The caller picks
+    /// the storage layout — flat fields, a single `set_json("data", ...)` blob,
+    /// nested values, whatever the
     /// downstream use case wants — by how they build the Doc before passing
     /// it in.
     fn initialize_doc(
@@ -1075,7 +1123,7 @@ impl<'u> DocStoreInit<'u> for crate::account::DatabaseBuilder<'u> {
     ) -> crate::account::DatabaseBuilder<'u> {
         self.initialize_store::<DocStore, _, _>(name, move |s| async move {
             for (key, value) in doc.iter() {
-                s.set(key.clone(), value.clone()).await?;
+                s.set_literal(key.clone(), value.clone()).await?;
             }
             Ok(())
         })

@@ -5,7 +5,7 @@
 
 use eidetica::{
     crdt::{
-        Doc,
+        CRDT, Doc,
         doc::{List, Value, path},
     },
     store::DocStore,
@@ -586,4 +586,131 @@ async fn test_empty_dict_behavior() {
         .await
         .expect("Failed to get empty Doc viewer");
     assert_key_not_found(dict_viewer.get("any_key").await);
+}
+
+#[tokio::test]
+async fn test_docstore_literal_keys_staging_and_history() {
+    let ctx = TestContext::new().with_database().await;
+    let db = ctx.database();
+    let keys = [
+        "",
+        ".",
+        "..",
+        "a.b",
+        ".a",
+        "a.",
+        "é",
+        "e\u{301}",
+        "日本.語",
+        "_v",
+    ];
+    let tx = db.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("literal").await.unwrap();
+    for key in keys {
+        store.set_literal(key, key).await.unwrap();
+        assert_eq!(store.get_literal(key).await.unwrap(), Value::from(key));
+    }
+    store.set("a.b", "nested").await.unwrap();
+    let branch: Doc = [("x".to_owned(), Value::Int(1))].into_iter().collect();
+    store
+        .set_literal("branch.key", branch.clone())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let tx = db.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("literal").await.unwrap();
+    let delta: Doc = [("y".to_owned(), Value::Int(2))].into_iter().collect();
+    let expected_branch = Value::Doc(branch.merge(&delta).unwrap());
+    store.set_literal("branch.key", delta).await.unwrap();
+    assert_eq!(
+        store.get_literal("branch.key").await.unwrap(),
+        expected_branch
+    );
+    for key in keys {
+        assert_eq!(store.get_literal(key).await.unwrap(), Value::from(key));
+        assert!(store.delete_literal(key).await.unwrap());
+        assert_key_not_found(store.get_literal(key).await);
+        assert!(!store.delete_literal(key).await.unwrap());
+    }
+    assert!(!store.delete_literal("missing.key").await.unwrap());
+    assert_eq!(store.get_string("a.b").await.unwrap(), "nested");
+    store.set_literal("a.b", "resurrected").await.unwrap();
+    assert_eq!(
+        store.get_literal("a.b").await.unwrap(),
+        Value::from("resurrected")
+    );
+    tx.commit().await.unwrap();
+
+    let store = db.get_store_viewer::<DocStore>("literal").await.unwrap();
+    let all = store.get_all().await.unwrap();
+    for key in keys.into_iter().filter(|key| *key != "a.b") {
+        assert_key_not_found(store.get_literal(key).await);
+        assert!(all.is_tombstone_literal(key));
+    }
+    assert_eq!(
+        store.get_literal("a.b").await.unwrap(),
+        Value::from("resurrected")
+    );
+    assert_eq!(store.get_string("a.b").await.unwrap(), "nested");
+    assert!(!all.is_tombstone_literal("missing.key"));
+    assert_eq!(
+        store.get_literal("branch.key").await.unwrap(),
+        expected_branch
+    );
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn test_docstore_literal_keys_survive_sqlite_reopen() {
+    use eidetica::{Instance, NewAccount, backend::database::Sqlite, store::DocStoreInit};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("literal.db");
+    let keys = ["", ".", "..", "a.b", ".a", "a.", "é", "e\u{301}", "日本.語"];
+    let (root, entry) = {
+        let (_instance, mut user) = Instance::create_backend(
+            Box::new(Sqlite::open(&path).await.unwrap()),
+            NewAccount::passwordless("literal"),
+        )
+        .await
+        .unwrap();
+        let mut initial = Doc::new();
+        for key in keys {
+            initial.set_literal(key, key);
+        }
+        initial.set("a.b", "nested");
+        let (db, _) = user
+            .new_database()
+            .name("literal")
+            .initialize_doc("data", initial.clone())
+            .build()
+            .await
+            .unwrap();
+        let tx = db.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("data").await.unwrap();
+        assert_eq!(store.get_all().await.unwrap(), initial);
+        assert!(store.delete_literal("a.b").await.unwrap());
+        let id = tx.commit().await.unwrap();
+        (db.root_id().clone(), db.get_entry(&id).await.unwrap())
+    };
+    let instance = Instance::open_backend(Box::new(Sqlite::open(&path).await.unwrap()))
+        .await
+        .unwrap();
+    let user = instance.login_account("literal", "").await.unwrap();
+    let db = user.open_database(&root).await.unwrap();
+    let read_entry = db.get_entry(&entry.id()).await.unwrap();
+    assert_eq!(
+        read_entry.to_dagcbor().unwrap(),
+        entry.to_dagcbor().unwrap()
+    );
+    assert_eq!(read_entry.id(), entry.id());
+    assert!(db.verify_entry_signature(&entry.id()).await.unwrap());
+    let store = db.get_store_viewer::<DocStore>("data").await.unwrap();
+    for key in keys.into_iter().filter(|key| *key != "a.b") {
+        assert_eq!(store.get_literal(key).await.unwrap(), Value::from(key));
+    }
+    assert_key_not_found(store.get_literal("a.b").await);
+    assert!(store.get_all().await.unwrap().is_tombstone_literal("a.b"));
+    assert_eq!(store.get_string("a.b").await.unwrap(), "nested");
 }

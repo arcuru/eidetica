@@ -226,20 +226,27 @@ impl Database {
     ///
     /// # Auth Bootstrapping
     ///
-    /// Auth is always bootstrapped with the signing key as `Admin(0)`. Passing auth
-    /// configuration in `initial_settings` is an error — additional keys must be added
-    /// via follow-up transactions after creation.
+    /// When `initial_settings` contains `auth`, that configuration is used exactly:
+    /// no creator grant is inserted. The actual signer must have active Admin authority
+    /// in that Auth, with locally Verified proof for every configured delegation.
+    /// A lower-priority administrator may initialize stronger owner grants at genesis;
+    /// subsequent changes must satisfy the ordinary Auth priority rules.
+    ///
+    /// Without `auth`, the convenience default grants the signer `Admin(0)`.
+    /// Pass a [`DatabaseKey`] to select an explicit name, global or delegation identity;
+    /// a [`PrivateKey`] selects its own direct public key. The returned handle retains
+    /// that exact signer and identity. Identity creation is separate and optional.
     ///
     /// # Arguments
     /// * `instance` - Instance handle for storage and coordination
-    /// * `signing_key` - The signing key to use for the initial commit and subsequent operations.
-    ///   This key should already be decrypted and ready to use. The public key is derived
-    ///   automatically and used as the key identifier in auth settings.
+    /// * `signing_key` - An unlocked private key or explicit [`DatabaseKey`] used for
+    ///   genesis and subsequent operations. No backend/default signer is selected.
     /// * `initial_settings` - `Doc` CRDT containing the initial settings for the database.
     ///   Use `Doc::new()` for an empty settings document.
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance configured with a `DatabaseKey`.
+    /// See [`Self::create_with_init`] for post-genesis error context.
     ///
     /// # Example
     /// ```rust,no_run
@@ -265,7 +272,7 @@ impl Database {
     /// ```
     pub async fn create(
         instance: &Instance,
-        signing_key: PrivateKey,
+        signing_key: impl Into<DatabaseKey>,
         initial_settings: Doc,
     ) -> Result<Self> {
         Self::create_with_init(instance, signing_key, initial_settings, async |_| Ok(())).await
@@ -288,12 +295,18 @@ impl Database {
     ///
     /// # Arguments
     /// * `instance` - Instance handle for storage and coordination
-    /// * `signing_key` - The private key for this database (becomes Admin(0))
-    /// * `initial_settings` - Initial settings document (must not contain auth)
+    /// * `signing_key` - Actual signer and optional explicit Auth identity, as in [`Self::create`]
+    /// * `initial_settings` - Initial settings, including optional explicit Auth
     /// * `init` - Callback run against the genesis transaction before commit
+    ///
+    /// # Errors
+    /// If genesis succeeds but connected session-key registration fails, returns
+    /// [`Error::DatabaseCreation`] with the committed root and original cause.
+    /// Failures before genesis succeeds are returned unchanged. This does not
+    /// resolve an unknown commit outcome after transport loss.
     pub async fn create_with_init<F>(
         instance: &Instance,
-        signing_key: PrivateKey,
+        signing_key: impl Into<DatabaseKey>,
         initial_settings: Doc,
         init: F,
     ) -> Result<Self>
@@ -301,21 +314,23 @@ impl Database {
         F: AsyncFnOnce(&Transaction) -> Result<()>,
     {
         let mut initial_settings = initial_settings;
+        let (signing_key, mut identity) = signing_key.into().into_parts();
         let pubkey = signing_key.public_key();
-
-        // Reject preconfigured auth — Database::create owns auth bootstrapping entirely.
-        if initial_settings.get("auth").is_some() {
-            return Err(Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
-                reason: "initial_settings must not contain auth configuration; \
-                         Database::create bootstraps auth with the signing key as Admin(0)"
-                    .to_string(),
-            })));
+        // Pin name-only hints to the actual signer, including on connected handles
+        // whose login key may be unrelated. Never change the chosen authority path.
+        if identity.hint().pubkey.is_none() {
+            identity.hint_mut().pubkey = Some(pubkey.clone());
         }
+        let key = DatabaseKey::with_identity(signing_key.clone(), identity.clone());
 
-        // Bootstrap auth with the signing key as Admin(0)
-        let mut auth_settings = AuthSettings::new();
-        auth_settings.add_key(&pubkey, AuthKey::active(None, Permission::Admin(0)))?;
-        initial_settings.set("auth", auth_settings.as_doc().clone());
+        // Only absent Auth opts into the convenience default. Explicit empty,
+        // malformed or unauthorized Auth must fail native validation, not gain
+        // a fallback creator grant. A tombstone is also explicit, not absence.
+        if initial_settings.get("auth").is_none() && !initial_settings.is_tombstone("auth") {
+            let mut auth_settings = AuthSettings::new();
+            auth_settings.add_key(&pubkey, AuthKey::active(None, Permission::Admin(0)))?;
+            initial_settings.set("auth", auth_settings.as_doc().clone());
+        }
 
         // Create the initial root entry using a temporary Database and Transaction.
         // This placeholder ID should not exist in the backend, so snapshot will be empty.
@@ -334,7 +349,7 @@ impl Database {
             root: ID::from_bytes(bootstrap_placeholder_id.as_bytes()),
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
-            key: Some(DatabaseKey::new(signing_key.clone())),
+            key: Some(key.clone()),
             local_account: None,
             allow_unverified: false,
         };
@@ -369,34 +384,22 @@ impl Database {
         // Commit the initial entry
         let new_root_id = txn.commit().await?;
 
-        // Construct the returned Database, wiring its `ops` to match the
-        // instance's flavour:
-        //
-        // - **Connected (remote) instance** — bind a `RemoteBackend` to the
-        //   *new database's* identity (the signing-key's pubkey, self-signed
-        //   as `Admin(0)` by the genesis). The connection's login pubkey is
-        //   the *caller's* (e.g. the registering admin), which is **not** a
-        //   member of the new tree's auth. If we cloned the instance's
-        //   session backend here, every read `Transaction::commit` performs
-        //   on this database would carry the connection's login identity, and
-        //   the server's per-tree gate would deny it. A per-database identity
-        //   makes all reads use the tree's own member key — but the server's
-        //   gate also requires that key to be in the connection's *session
-        //   keyset*, so we `register_session_key(signing_key)` first to do the
-        //   proof-of-possession handshake that adds it.
-        // - **Local instance** — clone the instance's backend, unchanged.
+        // Connected reads must use the same proven signer and authority path as
+        // genesis, never the connection's unrelated login key or a direct-key
+        // fallback. Registration proves possession; it does not grant tree Auth.
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = instance.remote_connection() {
-            let pubkey_for_identity = signing_key.public_key();
-            conn.register_session_key(&signing_key).await?;
+            conn.register_session_key(&signing_key)
+                .await
+                .map_err(|error| error.after_database_creation(&new_root_id))?;
             return Ok(Self {
                 root: new_root_id.clone(),
                 instance: instance.downgrade(),
                 ops: Arc::new(RemoteBackend::new(
                     conn.with_signer(signing_key.clone()),
-                    Some(SigKey::from_pubkey(&pubkey_for_identity)),
+                    Some(identity),
                 )),
-                key: Some(DatabaseKey::new(signing_key)),
+                key: Some(key),
                 local_account: None,
                 allow_unverified: false,
             });
@@ -406,7 +409,7 @@ impl Database {
             root: new_root_id,
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
-            key: Some(DatabaseKey::new(signing_key)),
+            key: Some(key),
             local_account: None,
             allow_unverified: false,
         })

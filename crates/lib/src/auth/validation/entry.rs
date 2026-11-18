@@ -69,9 +69,10 @@ impl AuthValidator {
             return Ok(false);
         }
 
-        // Check if auth is configured (keys or global permission)
-        let has_auth =
-            !auth_settings.get_all_keys()?.is_empty() || auth_settings.has_global_permission();
+        // Delegation-only databases are authenticated too, at genesis and later.
+        let has_auth = !auth_settings.get_all_keys()?.is_empty()
+            || !auth_settings.get_all_delegated_trees()?.is_empty()
+            || auth_settings.has_global_permission();
 
         // Handle unsigned entries
         if entry.auth().is_unsigned() {
