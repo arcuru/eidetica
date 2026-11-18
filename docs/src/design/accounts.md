@@ -36,6 +36,12 @@ Credential bundles and immutable acting handles remain separate from replicated 
 No live data, existing Auth, old history or local verification labels are migrated or deleted.
 See the [tested direct/delegation/mixed examples](../user_guide/authentication_guide.md#creating-with-explicit-authority) and [genesis invariants](authentication.md#explicit-genesis-authority).
 
+## Follow-up: linked Accounts and second installations
+
+Identity membership and explicit genesis authority are building blocks, not a linked-Account provisioning API. The planned app setup creates one app Account that its installations share. The personal Account references the app Account, the chosen owner Identity retains stronger administration through delegation, and the app receives a separate local credential bundle with only its scoped key. The app key does not become a member of the owner's Identity. Each downstream database still needs its own direct grants or explicit delegation.
+
+The initial second-installation flow is manual: generate a fresh local key, use a ticket to the same Account root, and have an existing authorized installation approve the request. Request membership separately for each Identity the new installation needs and is not already authorized to use. Neither a copied reference nor replicated public history is a grant. This does not require copying private keys, polished onboarding, or background-device enrollment.
+
 ## Current custody and security boundary
 
 Fresh Account histories contain public Auth and portable application references, not private-key/unlock records or installation activation preferences.
