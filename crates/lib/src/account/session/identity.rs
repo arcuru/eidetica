@@ -66,6 +66,9 @@ impl AccountSession {
     /// The same name/root/request key/permission resumes; changed request parameters
     /// conflict. Sync preferences may change independently. Connected clients sign
     /// proofs locally and use the daemon's Sync, never a client-side local engine.
+    /// For an Active Identity, pass the original request key and permission even
+    /// after rotation. Only the currently selected key needs to be owned and an
+    /// active direct member. This updates local tracking without using ticket addresses.
     ///
     /// Initial network errors remove only newly provisional local tracking; an
     /// accepted/pending exchange retains state through mapping/activation failures.
@@ -79,8 +82,13 @@ impl AccountSession {
         sync_settings: SyncSettings,
     ) -> Result<IdentityRegistration> {
         Self::validate_reference_name(IDENTITY_REFERENCES, name)?;
-        self.get_signing_key(key_id)?;
         let previous = self.tracked_identity(name).await?;
+        let active = previous
+            .as_ref()
+            .filter(|tracked| tracked.status == IdentityStatus::Active);
+        if active.is_none() {
+            self.get_signing_key(key_id)?;
+        }
         let reference = self.identity_id(name).await?;
         if previous.as_ref().is_some_and(|tracked| {
             tracked.root_id != *ticket.database_id()
@@ -95,6 +103,19 @@ impl AccountSession {
             }
             .into());
         }
+        // The reference is not a membership grant or a key selection on another
+        // installation. Do not overwrite a present, different reference.
+        let original_database = self.tracked_database(ticket.database_id()).await?;
+        if reference.is_none() {
+            self.set_reference(IDENTITY_REFERENCES, name, ticket.database_id())
+                .await?;
+        }
+        if let Some(previous) = active {
+            return self
+                .refresh_active_identity(name, previous, sync_settings, original_database)
+                .await
+                .map(IdentityRegistration::Active);
+        }
         let tracked = TrackedIdentity {
             sync_settings: sync_settings.clone(),
             ..previous.clone().unwrap_or(TrackedIdentity {
@@ -106,13 +127,6 @@ impl AccountSession {
                 sync_settings: sync_settings.clone(),
             })
         };
-        // The reference is not a membership grant or a key selection on another
-        // installation. Do not overwrite a present, different reference.
-        let original_database = self.tracked_database(ticket.database_id()).await?;
-        if reference.is_none() {
-            self.set_reference(IDENTITY_REFERENCES, name, ticket.database_id())
-                .await?;
-        }
         self.replace_tracked_identity(name, previous.clone(), Some(tracked.clone()))
             .await?;
         // The embedded exchange carries transfer and transaction futures. Keep
@@ -149,6 +163,47 @@ impl AccountSession {
         self.activate_tracked_identity(name, tracked)
             .await
             .map(IdentityRegistration::Active)
+    }
+
+    async fn refresh_active_identity(
+        &mut self,
+        name: &str,
+        previous: &TrackedIdentity,
+        sync_settings: SyncSettings,
+        original_database: Option<TrackedDatabase>,
+    ) -> Result<Identity> {
+        let identity = self.open_tracked_identity(name, previous).await?;
+        let root = &previous.root_id;
+        let key_id = &previous.key_id;
+        let database_key = root.to_string();
+        let result = self
+            .update_local_state(|state| {
+                // Do not refresh preferences or track a signer superseded while opening it.
+                let current = state.identities.get_mut(name).filter(|t| *t == previous);
+                let current =
+                    current.ok_or_else(|| AccountError::IdentityRegistrationConflict {
+                        name: name.to_owned(),
+                    })?;
+                current.sync_settings = sync_settings.clone();
+                Self::map_key_in_state(state, key_id, root, SigKey::from_pubkey(key_id))?;
+                if state.databases.get(&database_key) == original_database.as_ref() {
+                    state.databases.insert(
+                        database_key.clone(),
+                        TrackedDatabase {
+                            database_id: root.clone(),
+                            key_id: key_id.clone(),
+                            sync_settings: sync_settings.clone(),
+                        },
+                    );
+                }
+                Ok(())
+            })
+            .await;
+        // As with generic tracking, re-read the mapping even if its write was not acknowledged.
+        self.refresh_key_metadata(key_id).await?;
+        result?;
+        self.refresh_local_sync().await?;
+        Ok(identity)
     }
 
     /// Select an owned, explicitly active member key and return a newly bound handle.
