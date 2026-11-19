@@ -1,6 +1,6 @@
 use eidetica::{
     Database, Error, Result,
-    account::{AccountError, IdentityStatus, SyncSettings},
+    account::{AccountError, IdentityRegistration, IdentityStatus, SyncSettings},
     auth::{
         AuthKey, KeyStatus, Permission, PermissionBounds, SigKey,
         crypto::{PrivateKey, generate_keypair},
@@ -8,6 +8,7 @@ use eidetica::{
     crdt::Doc,
     database::DatabaseKey,
     store::DocStore,
+    sync::DatabaseTicket,
 };
 
 use super::helpers::{login_account, setup_instance_with_user, setup_local_instance_with_user};
@@ -162,6 +163,27 @@ async fn selected_key_changes_identity_and_target_signatures() -> Result<()> {
         SigKey::Direct { ref hint } if hint.pubkey.as_ref() == Some(&new_key)
     ));
 
+    let root = identity.root_id().clone();
+    let before_retry = identity.database().snapshot().await?;
+    // No peer addresses: succeeding must not depend on replaying bootstrap.
+    let ticket = DatabaseTicket::new(root.clone());
+    let preferences = SyncSettings::disabled().with_interval(456);
+    let IdentityRegistration::Active(retried) = Box::pin(user.register_identity(
+        "personal",
+        &ticket,
+        &old_key,
+        Permission::Admin(0),
+        preferences.clone(),
+    ))
+    .await?
+    else {
+        panic!("an active Identity must not return to pending after rotation");
+    };
+    assert_eq!(retried.root_id(), &root);
+    assert_eq!(retried.key_id(), &new_key);
+    assert_eq!(retried.database().snapshot().await?, before_retry);
+    assert_eq!(original.key_id(), &old_key);
+
     let admin_key = PrivateKey::generate();
     let target = Database::create(&instance, admin_key.clone(), Doc::new()).await?;
     let target = add_delegation(
@@ -174,7 +196,7 @@ async fn selected_key_changes_identity_and_target_signatures() -> Result<()> {
         },
     )
     .await?;
-    let delegated = identity.open_database(target.root_id()).await?;
+    let delegated = retried.open_database(target.root_id()).await?;
     let tx = delegated.new_transaction().await?;
     tx.get_store::<DocStore>("data")
         .await?
@@ -192,10 +214,18 @@ async fn selected_key_changes_identity_and_target_signatures() -> Result<()> {
     assert_eq!(reopened.key_id(), &new_key);
     // Dropping every old handle before login is also safe on the connected path.
     drop(reopened);
+    drop(retried);
     drop(original);
     drop(identity);
     user.logout()?;
     let user = login_account(&instance, &username, "").await;
+    let tracked = user.tracked_identity("personal").await?.unwrap();
+    assert_eq!(tracked.status, IdentityStatus::Active);
+    assert_eq!(tracked.requested_key_id, old_key);
+    assert_eq!(tracked.sync_settings, preferences);
+    let database = user.database(&root).await?;
+    assert_eq!(database.key_id, new_key);
+    assert_eq!(database.sync_settings, preferences);
     let reopened = user.get_identity("personal").await?.unwrap();
     assert_eq!(reopened.key_id(), &new_key);
     let tx = reopened.database().new_transaction().await?;
