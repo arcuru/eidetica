@@ -213,14 +213,15 @@ async fn identity_membership_round_trip(connected: bool, replicated: bool) -> ei
     }
 
     let permission = Permission::Write(5);
-    let unreachable = DatabaseTicket::new(root.clone());
-    Box::pin(assert_initial_membership_failure(
+    let invalid_root = if replicated { root } else { other.root_id() };
+    Box::pin(assert_addressless_membership_refused(
         &mut joiner,
-        &unreachable,
+        &DatabaseTicket::new(invalid_root.clone()),
         &key,
         permission,
     ))
     .await?;
+    let unreachable = DatabaseTicket::new(root.clone());
     assert!(matches!(
         joiner
             .register_identity("team", &ticket, &key, permission, SyncSettings::disabled())
@@ -447,29 +448,29 @@ async fn identity_membership_round_trip(connected: bool, replicated: bool) -> ei
     Ok(())
 }
 
-async fn assert_initial_membership_failure(
+async fn assert_addressless_membership_refused(
     joiner: &mut AccountSession,
-    unreachable: &DatabaseTicket,
+    ticket: &DatabaseTicket,
     key: &PublicKey,
     permission: Permission,
 ) -> eidetica::Result<()> {
+    let error = joiner
+        .register_identity("team", ticket, key, permission, SyncSettings::disabled())
+        .await
+        .unwrap_err();
     assert!(
-        joiner
-            .register_identity(
-                "initial failure",
-                unreachable,
-                key,
-                permission,
-                SyncSettings::disabled()
-            )
-            .await
-            .is_err()
+        match &error {
+            Error::Sync(error) =>
+                matches!(error.as_ref(), SyncError::InvalidAddress(message) if message == "Ticket has no address hints"),
+            Error::Io(error) =>
+                error.to_string().starts_with("[sync::InvalidAddress]")
+                    && error.to_string().ends_with("Ticket has no address hints"),
+            _ => false,
+        },
+        "unexpected addressless registration error: {error:?}"
     );
-    assert!(joiner.tracked_identity("initial failure").await?.is_none());
-    assert_eq!(
-        joiner.identity_id("initial failure").await?.as_ref(),
-        Some(unreachable.database_id())
-    );
+    assert!(joiner.tracked_identity("team").await?.is_none());
+    assert!(joiner.identity_id("team").await?.is_none());
     Ok(())
 }
 
