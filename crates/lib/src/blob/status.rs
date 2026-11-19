@@ -12,14 +12,14 @@ use crate::entry::ID;
 /// Local state of one requested blob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WantedBlobState {
-    /// Verified whole bytes are held locally.
+    /// A whole blob verified at publication is recorded locally. This does
+    /// not rehash the stored payload; byte reads verify their results.
     Available,
     /// The blob's whole bytes are not held locally.
     Pending {
         /// Outcome of the most recent unsuccessful fetch round for this blob on
-        /// this Instance, if any. `None` means no round has failed since the
-        /// Instance started, for example because syncing is paused for every
-        /// registration that wants it.
+        /// this Instance, if still recorded. Outcomes are not durable and
+        /// can be forgotten when nothing wants the CID.
         last_fetch: Option<BlobFetchAttempt>,
     },
 }
@@ -34,7 +34,7 @@ pub struct WantedBlobStatus {
 }
 
 impl WantedBlobStatus {
-    /// Whether verified whole bytes are held locally.
+    /// Whether local storage reports the whole blob is available.
     pub fn is_available(&self) -> bool {
         matches!(self.state, WantedBlobState::Available)
     }

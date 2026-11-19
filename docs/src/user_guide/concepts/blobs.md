@@ -150,6 +150,7 @@ Naming bytes that no Instance holds yet is valid: success records durable intent
 The set is stored on the Instance holding the registration (the daemon, for a connected Account) and survives app exit, reconnect and restart.
 It is local operational state and does not replicate with the Account.
 Caller-held sessions keep no registration on the Instance and cannot declare wanted blobs.
+Use `AccountSession::track_database_with_wanted_blobs` to track and declare together; the registration is recorded before the wanted set, so inspect both if the call fails.
 
 A blob is retained while at least one registration wants it, so the same bytes can be shared by several Accounts and Databases.
 Replacing a set records additions before removing dropped CIDs, so a CID in both sets stays retained throughout.
@@ -159,11 +160,15 @@ Released bytes that no other registration wants become eligible for the next exp
 
 While the registration is sharing, the Instance fetches missing wanted blobs from that Database's peers, exactly as `Database::get_blob_range` selects them, and publishes verified whole bytes locally.
 Fetching runs when a set is declared, when sharing is enabled and on the sync engine's 30-second retry cadence, at most four blobs at a time.
-Pausing sharing with `stop_sharing` stops fetching but keeps the set and the held bytes for offline use.
+Pausing sharing with `stop_sharing` stops new fetches for that registration but keeps the set and the held bytes for offline use; a fetch already started may finish.
 A fetch never records ownership: bytes that arrive after their CID was removed from the set are ordinary unowned cache bytes.
 
 Requested-blob status is separate from Database synchronization.
 A Database stays usable under its normal sync guarantees while wanted blobs are missing.
-`blob_status(cids)` and `wanted_blob_status()` report `Available` only for verified whole local bytes; otherwise `Pending` carries the most recent unsuccessful fetch round's `BlobFetchAttempt`, or `None` if no round has failed since the Instance started.
+`blob_status(cids)` and `wanted_blob_status()` report whole-blob availability after verified local publication, without rehashing stored bytes; byte reads verify their results.
+An absent backing file for a recorded blob is an error rather than `Available` or `Pending`.
+`Pending` carries the most recent recorded unsuccessful fetch round's `BlobFetchAttempt`, if any.
 `fetch_wanted_blobs()` runs one round now, and does nothing while the registration is paused.
-`wait_for_blobs(cids)` waits for the fixed set it was given, retrying with backoff from 200 ms to 5 s; changing the wanted set later does not change what it waits for, and cancelling it releases nothing.
+`wait_for_blobs(cids)` polls local status for the fixed set it was given, with backoff from 200 ms to 5 s.
+It does not occupy the daemon connection with a network fetch round; automatic fetching runs independently.
+Changing the wanted set later does not change what the wait observes, and cancelling it releases nothing.

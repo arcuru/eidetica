@@ -162,13 +162,19 @@ async fn wanted_scenario(transport: Transport, daemon: bool) {
         }
         embedded_caller(&receiver, &database).await
     };
-    let caller = connect().await;
+    let mut caller = connect().await;
 
     // Want-before-presence: no Instance holds the bytes yet, and the
     // registration is not sharing. Success records intent only.
+    let key = caller.account.get_default_key().unwrap();
     caller
-        .database
-        .set_wanted_blobs([cid.clone(), cid.clone()])
+        .account
+        .track_database_with_wanted_blobs(
+            database.root_id(),
+            &key,
+            eidetica::account::SyncSettings::disabled(),
+            [cid.clone(), cid.clone()],
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -350,6 +356,38 @@ async fn blob_wanted_set_survives_restart_before_presence() {
     holder.sync.stop_server().await.unwrap();
 }
 
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn blob_wanted_status_refuses_a_missing_disk_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = eidetica::backend::database::Sqlite::open(dir.path().join("test.db"))
+        .await
+        .unwrap();
+    let (instance, mut account) =
+        Instance::create_backend(Box::new(backend), NewAccount::passwordless("owner"))
+            .await
+            .unwrap();
+    let key = account.get_default_key().unwrap();
+    let database = account.create_database(Doc::new(), &key).await.unwrap();
+    let cid = instance.put_blob(data("disk status")).await.unwrap();
+    database.set_wanted_blobs([cid.clone()]).await.unwrap();
+    assert!(status(&database, &cid).await.is_available());
+    std::fs::remove_file(dir.path().join("test.db.blobs").join(cid.to_string())).unwrap();
+    assert!(matches!(database.wanted_blob_status().await,
+        Err(eidetica::Error::Backend(e)) if matches!(*e, eidetica::backend::BackendError::BlobFileMissing { .. })
+    ));
+    #[cfg(all(unix, feature = "service"))]
+    {
+        let daemon = Daemon::serve(&instance).await;
+        let client = daemon.client().await;
+        let remote = client.login_account("owner", "").await.unwrap();
+        let db = remote.open_database(database.root_id()).await.unwrap();
+        let error = db.wanted_blob_status().await.unwrap_err();
+        assert!(error.to_string().contains("BlobFileMissing"));
+        daemon.stop().await;
+    }
+}
+
 /// Only the registered Database's peers are asked. An unrelated Instance peer
 /// that holds X is never queried until it becomes a peer of that Database.
 #[tokio::test]
@@ -414,6 +452,7 @@ async fn blob_wanted_fetch_asks_only_database_peers() {
         .add_tree_sync(&unrelated_key, database.root_id())
         .await
         .unwrap();
+    database.fetch_wanted_blobs().await.unwrap();
     tokio::time::timeout(WAIT, database.wait_for_blobs(std::slice::from_ref(&cid)))
         .await
         .unwrap()
@@ -462,6 +501,154 @@ async fn gated_peer(body: Vec<u8>, gate: Arc<Notify>) -> GatedPeer {
         hits,
         task,
     }
+}
+
+/// Declare before enabling sync to avoid racing an automatic fetch round.
+async fn sharing_registration(cids: Vec<ID>) -> (Instance, Database) {
+    let (instance, mut account) =
+        Instance::create_backend(test_backend().await, NewAccount::passwordless("receiver"))
+            .await
+            .unwrap();
+    let key = account.get_default_key().unwrap();
+    let database = account.create_database(Doc::new(), &key).await.unwrap();
+    database.share().await.unwrap();
+    database.set_wanted_blobs(cids).await.unwrap();
+    (instance, database)
+}
+
+async fn start_gated_sync(instance: &Instance, database: &Database) -> (GatedPeer, Arc<Notify>) {
+    instance.enable_sync().await.unwrap();
+    let sync = instance.sync().unwrap();
+    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    let gate = Arc::new(Notify::new());
+    let provider = gated_peer(Vec::new(), gate.clone()).await;
+    link(
+        &sync,
+        &eidetica::auth::crypto::generate_keypair().1,
+        provider.address.clone(),
+        Some(database.root_id()),
+    )
+    .await;
+    (provider, gate)
+}
+
+async fn manual_round(cids: Vec<ID>) -> (Instance, Database, GatedPeer, Arc<Notify>) {
+    let (instance, database) = sharing_registration(cids).await;
+    let (provider, gate) = start_gated_sync(&instance, &database).await;
+    (instance, database, provider, gate)
+}
+
+#[tokio::test]
+async fn blob_wanted_wait_keeps_its_original_set() {
+    let (instance, mut account) =
+        Instance::create_backend(test_backend().await, NewAccount::passwordless("receiver"))
+            .await
+            .unwrap();
+    let key = account.get_default_key().unwrap();
+    let database = account.create_database(Doc::new(), &key).await.unwrap();
+    let x = ID::from_bytes(b"original");
+    let y = instance.put_blob(b"replacement".to_vec()).await.unwrap();
+    database.set_wanted_blobs([x.clone()]).await.unwrap();
+    let cids = [x];
+    let wait = database.wait_for_blobs(&cids);
+    tokio::pin!(wait);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut wait)
+            .await
+            .is_err()
+    );
+    database.set_wanted_blobs([y.clone()]).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), &mut wait)
+            .await
+            .is_err()
+    );
+    instance.put_blob(b"original".to_vec()).await.unwrap();
+    tokio::time::timeout(WAIT, wait).await.unwrap().unwrap();
+    assert_eq!(database.wanted_blobs().await.unwrap(), vec![y]);
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn blob_wanted_wait_does_not_hold_the_daemon_connection() {
+    let cid = ID::from_bytes(b"held back");
+    let (instance, database) = sharing_registration(vec![cid.clone()]).await;
+    let daemon = Daemon::serve(&instance).await;
+    let caller = daemon_caller(&daemon, database.root_id()).await;
+    let (provider, _gate) = start_gated_sync(&instance, &database).await;
+    let cids = [cid.clone()];
+    let wait = caller.database.wait_for_blobs(&cids);
+    tokio::pin!(wait);
+    tokio::select! {
+        result = &mut wait => panic!("missing blob ended wait: {result:?}"),
+        () = async {
+            // Let the wait issue requests, but don't let the stalled peer answer.
+            for _ in 0..20 {
+                if provider.hits.load(Ordering::SeqCst) > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        } => {}
+    }
+    let probe = tokio::time::timeout(Duration::from_secs(1), caller.database.snapshot());
+    tokio::select! {
+        result = &mut wait => panic!("missing blob ended wait: {result:?}"),
+        result = probe => assert!(result.expect("Database read occupied by blob wait").is_ok()),
+    }
+    instance.put_blob(b"held back".to_vec()).await.unwrap();
+    tokio::time::timeout(WAIT, wait).await.unwrap().unwrap();
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn blob_wanted_cancelled_fetch_can_be_retried() {
+    let cid = ID::from_bytes(b"retry after cancel");
+    let (_instance, database, provider, gate) = manual_round(vec![cid.clone()]).await;
+    let db = database.clone();
+    let round = tokio::spawn(async move { db.fetch_wanted_blobs().await });
+    eventually("first request", || async {
+        provider.hits.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    round.abort();
+    assert!(round.await.unwrap_err().is_cancelled());
+    gate.notify_waiters();
+
+    let check_retry = async {
+        eventually("retry after cancellation", || async {
+            provider.hits.load(Ordering::SeqCst) == 2
+        })
+        .await;
+        gate.notify_waiters();
+    };
+    let (result, ()) = tokio::join!(database.fetch_wanted_blobs(), check_retry);
+    result.unwrap();
+    assert_eq!(database.wanted_blobs().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn blob_wanted_pause_prevents_queued_fetches() {
+    let cids = (0..5u8).map(|i| ID::from_bytes([i])).collect();
+    let (_instance, database, provider, gate) = manual_round(cids).await;
+    let db = database.clone();
+    let round = tokio::spawn(async move { db.fetch_wanted_blobs().await });
+    eventually("four in-flight requests", || async {
+        provider.hits.load(Ordering::SeqCst) == 4
+    })
+    .await;
+    database.stop_sharing().await.unwrap();
+    gate.notify_waiters();
+    gate.notify_one(); // The negative control's fifth request can also finish.
+    tokio::time::timeout(WAIT, round)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 4);
+    assert_eq!(database.wanted_blobs().await.unwrap().len(), 5);
 }
 
 /// Replacing `[X, Y]` with `[Y, Z]` keeps Y owned throughout, and a fetch of

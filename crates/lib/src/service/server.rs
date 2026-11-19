@@ -968,7 +968,11 @@ async fn dispatch_inner(
         } => {
             let owner = local_blob_owner(instance, state, &login_id).await?;
             instance
-                .set_wanted_blobs_local(&owner, &database, &cids)
+                .set_wanted_blobs_local(
+                    &owner,
+                    &database,
+                    crate::instance::wanted_blobs::normalize_wanted(cids)?,
+                )
                 .await?;
             Ok(ServiceResponse::Ok)
         }
@@ -2224,6 +2228,80 @@ mod tests {
         drop(tx);
         task.await.unwrap().unwrap();
         assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
+    async fn blob_wanted_service_requests_require_the_owning_login() -> crate::Result<()> {
+        let dir = private_tempdir();
+        let socket = dir.path().join("wanted.sock");
+        let (instance, mut owner) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewAccount::passwordless("owner"),
+        )
+        .await?;
+        owner
+            .admin()
+            .await?
+            .create_account(crate::NewAccount::passwordless("other"))
+            .await?;
+        let key = owner.get_default_key()?;
+        let database = owner.create_database(crate::crdt::Doc::new(), &key).await?;
+        let cid = ID::from_bytes(b"private wanted intent");
+        database.set_wanted_blobs([cid.clone()]).await?;
+
+        let server = ServiceServer::bind(instance, &socket).await?;
+        let (shutdown, rx) = watch::channel(());
+        let server = tokio::spawn(server.run(rx));
+        let url = format!("unix://{}", socket.display());
+        let login = Instance::connect(&url).await?;
+        let other = login.login_account("other", "").await?;
+        let signer = Instance::connect(&url).await?;
+        let (secret, _) = crate::auth::crypto::generate_keypair();
+        signer
+            .remote_connection()
+            .unwrap()
+            .authenticate_signer(&secret)
+            .await?;
+        for client in [&login, &signer] {
+            let conn = client.remote_connection().unwrap();
+            let asking_as = owner.login_id();
+            let root = database.root_id();
+            for result in [
+                conn.wanted_blobs_remote(asking_as, root.clone())
+                    .await
+                    .map(|_| ()),
+                conn.set_wanted_blobs_remote(asking_as, root.clone(), vec![])
+                    .await,
+                conn.fetch_wanted_blobs_remote(asking_as, root.clone())
+                    .await,
+                conn.release_untracked_blobs_remote(asking_as, root.clone())
+                    .await,
+            ] {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("InsufficientPermissions")
+                );
+            }
+            // These identities may still observe the status of explicitly named bytes.
+            assert_eq!(conn.blob_status_remote(vec![cid.clone()]).await?.len(), 1);
+        }
+        drop((login, signer, other));
+        let connected = Instance::connect(&url).await?;
+        let same_owner = connected.login_account("owner", "").await?;
+        assert_eq!(
+            same_owner.wanted_blobs(database.root_id()).await?,
+            vec![cid]
+        );
+        let untracked = ID::from_dagcbor_bytes(b"not tracked");
+        assert!(matches!(same_owner.set_wanted_blobs(&untracked, []).await,
+            Err(crate::Error::Account(e)) if matches!(&*e, crate::account::AccountError::DatabaseNotTracked { database_id } if database_id == &untracked)
+        ));
+        drop((same_owner, connected));
+        drop(shutdown);
+        server.await.unwrap()?;
+        Ok(())
     }
 
     #[tokio::test]

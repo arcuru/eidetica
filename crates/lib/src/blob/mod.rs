@@ -16,8 +16,8 @@ pub use status::{WantedBlobState, WantedBlobStatus};
 /// Maximum number of CIDs in one peer availability query.
 pub const MAX_BLOB_AVAILABILITY_BATCH: usize = 64;
 
-/// Maximum number of CIDs in one registration's wanted set, and in one
-/// explicitly named status or wait set.
+/// Maximum number of distinct CIDs in a registration's wanted set, or total
+/// CIDs (including duplicates) in one explicitly named status or wait call.
 ///
 /// The set is replaced as a whole and travels in one service frame, so it is
 /// bounded like every other request.

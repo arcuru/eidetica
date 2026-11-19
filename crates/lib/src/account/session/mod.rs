@@ -44,7 +44,7 @@
 //! This explicit approach ensures predictable behavior and avoids ambiguity about which
 //! keys have access to which databases.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use std::sync::Arc;
 
@@ -1542,6 +1542,28 @@ impl AccountSession {
             .await
     }
 
+    /// Track a database and declare its wanted blob set in one call.
+    ///
+    /// The set is validated before tracking. The registration is recorded
+    /// before its wanted set, so a later error can leave the database tracked;
+    /// retry this call or inspect the registration and its wanted set.
+    /// Caller-held sessions cannot declare wanted blobs.
+    pub async fn track_database_with_wanted_blobs(
+        &mut self,
+        database_id: impl Into<ID>,
+        key_id: &PublicKey,
+        sync_settings: SyncSettings,
+        cids: impl IntoIterator<Item = ID>,
+    ) -> Result<()> {
+        let database_id = database_id.into();
+        let owner = self.blob_owner(&database_id)?;
+        let wanted = crate::instance::wanted_blobs::normalize_wanted(cids)?;
+        self.track_database(&database_id, key_id, sync_settings)
+            .await?;
+        self.set_registration_wanted_blobs(&owner, &database_id, wanted)
+            .await
+    }
+
     async fn track_database_with_expected(
         &mut self,
         database_id: ID,
@@ -1700,9 +1722,9 @@ impl AccountSession {
     ///
     /// The registration-level form of
     /// [`Database::set_wanted_blobs`](crate::Database::set_wanted_blobs), for
-    /// declaring wanted blobs alongside [`Self::track_database`] without
-    /// opening the database. Success records durable intent, not that the
-    /// bytes are local.
+    /// declaring wanted blobs without opening the database. To track and
+    /// declare in one call, use [`Self::track_database_with_wanted_blobs`].
+    /// Success records durable intent, not that the bytes are local.
     ///
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the account's
@@ -1712,18 +1734,30 @@ impl AccountSession {
         database_id: &ID,
         cids: impl IntoIterator<Item = ID>,
     ) -> Result<()> {
-        let cids: Vec<ID> = cids.into_iter().collect();
-        crate::instance::wanted_blobs::normalize_wanted(&cids)?;
         let owner = self.blob_owner(database_id)?;
-        self.database(database_id).await?;
+        let wanted = crate::instance::wanted_blobs::normalize_wanted(cids)?;
+        self.set_registration_wanted_blobs(&owner, database_id, wanted)
+            .await
+    }
+
+    async fn set_registration_wanted_blobs(
+        &self,
+        owner: &crate::instance::wanted_blobs::BlobOwner,
+        database_id: &ID,
+        wanted: BTreeSet<ID>,
+    ) -> Result<()> {
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = self.instance.remote_connection() {
             return conn
-                .set_wanted_blobs_remote(&self.login_id, database_id.clone(), cids)
+                .set_wanted_blobs_remote(
+                    &self.login_id,
+                    database_id.clone(),
+                    wanted.into_iter().collect(),
+                )
                 .await;
         }
         self.instance
-            .set_wanted_blobs_local(&owner, database_id, &cids)
+            .set_wanted_blobs_local(owner, database_id, wanted)
             .await
     }
 
@@ -1764,7 +1798,6 @@ impl AccountSession {
             Ok(())
         })
         .await?;
-        self.refresh_local_sync().await?;
         if self.caller_state.is_none() {
             // Release only this registration's blob ownership, re-checked
             // under the blob lock so a registration tracked again meanwhile
@@ -1781,6 +1814,7 @@ impl AccountSession {
                 .release_if_unregistered(&owner, database_id)
                 .await?;
         }
+        self.refresh_local_sync().await?;
         Ok(())
     }
 }

@@ -8,7 +8,10 @@
 //! it. Fetching missing bytes asks only the registered Database's peers, and
 //! only while that registration is syncing.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    sync::Mutex,
+};
 
 use super::Instance;
 use crate::{
@@ -27,10 +30,30 @@ pub(crate) struct BlobFetchState {
     in_flight: HashSet<ID>,
 }
 
-/// Concurrent blob fetches per reconciliation round, so one stalled provider
-/// cannot delay every other wanted blob behind its deadline. Matches the
-/// background engine's blob command capacity.
-const MAX_CONCURRENT_BLOB_FETCHES: usize = 4;
+/// Covers a whole fetch, including publication. Dropping a cancelled caller
+/// must not leave the CID permanently ineligible for reconciliation.
+struct BlobFetchGuard<'a> {
+    state: &'a Mutex<BlobFetchState>,
+    cid: &'a ID,
+}
+
+impl<'a> BlobFetchGuard<'a> {
+    fn claim(state: &'a Mutex<BlobFetchState>, cid: &'a ID) -> Option<Self> {
+        if !state.lock().unwrap().in_flight.insert(cid.clone()) {
+            return None;
+        }
+        Some(Self { state, cid })
+    }
+}
+
+impl Drop for BlobFetchGuard<'_> {
+    fn drop(&mut self) {
+        self.state.lock().unwrap().in_flight.remove(self.cid);
+    }
+}
+
+/// Concurrent wanted fetches across all rounds, including local publication.
+pub(super) const MAX_CONCURRENT_BLOB_FETCHES: usize = 4;
 
 /// The local owner of a registration: an Account root and the
 /// installation-local login record that holds its Database registrations.
@@ -74,22 +97,40 @@ impl BlobOwner {
 type Registration = (BlobOwner, ID);
 
 /// Validate and deduplicate a named blob set.
-pub(crate) fn normalize_wanted(cids: &[ID]) -> Result<BTreeSet<ID>> {
+pub(crate) fn normalize_wanted(cids: impl IntoIterator<Item = ID>) -> Result<BTreeSet<ID>> {
+    let mut set = BTreeSet::new();
     for cid in cids {
-        crate::backend::validate_blob_cid(cid)?;
-    }
-    let set: BTreeSet<ID> = cids.iter().cloned().collect();
-    if set.len() > MAX_WANTED_BLOBS {
-        return Err(AccountError::TooManyWantedBlobs {
-            count: set.len(),
-            max: MAX_WANTED_BLOBS,
-        }
-        .into());
+        crate::backend::validate_blob_cid(&cid)?;
+        set.insert(cid);
+        check_wanted_count(set.len())?;
     }
     Ok(set)
 }
 
+fn check_wanted_count(count: usize) -> Result<()> {
+    if count > MAX_WANTED_BLOBS {
+        return Err(AccountError::TooManyWantedBlobs {
+            count,
+            max: MAX_WANTED_BLOBS,
+        }
+        .into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_status_cids(cids: &[ID]) -> Result<()> {
+    check_wanted_count(cids.len())?;
+    for cid in cids {
+        crate::backend::validate_blob_cid(cid)?;
+    }
+    Ok(())
+}
+
 impl Instance {
+    pub(crate) fn blob_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.inner.blob_lock
+    }
+
     /// Read whether a registration still exists and whether it is syncing.
     ///
     /// `None` means the login record no longer belongs to the Account root or
@@ -149,16 +190,14 @@ impl Instance {
         &self,
         owner: &BlobOwner,
         database: &ID,
-        cids: &[ID],
+        wanted: BTreeSet<ID>,
     ) -> Result<()> {
-        let wanted = normalize_wanted(cids)?;
         {
             let _guard = self.inner.blob_lock.lock().await;
-            if !wanted.is_empty()
-                && self
-                    .registration_sync_enabled(owner, database)
-                    .await?
-                    .is_none()
+            if self
+                .registration_sync_enabled(owner, database)
+                .await?
+                .is_none()
             {
                 return Err(AccountError::DatabaseNotTracked {
                     database_id: database.clone(),
@@ -184,6 +223,10 @@ impl Instance {
         database: &ID,
     ) -> Result<()> {
         let _guard = self.inner.blob_lock.lock().await;
+        self.release_if_unregistered_locked(owner, database).await
+    }
+
+    async fn release_if_unregistered_locked(&self, owner: &BlobOwner, database: &ID) -> Result<()> {
         if self
             .registration_sync_enabled(owner, database)
             .await?
@@ -191,6 +234,33 @@ impl Instance {
         {
             self.replace_wanted_blobs_locked(owner, database, &BTreeSet::new())
                 .await?;
+        }
+        Ok(())
+    }
+
+    /// Called before the local CAS creates a registration, with the blob lock
+    /// held and the absence of those registrations confirmed. Abandoned pins
+    /// from an interrupted untrack cannot carry over to the new registration.
+    pub(crate) async fn clear_retracked_blob_pins_locked(
+        &self,
+        login_id: &str,
+        databases: &BTreeSet<&str>,
+    ) -> Result<()> {
+        let engine = self.local_blob_engine()?;
+        for (key, db, cid) in engine.all_blob_pins().await? {
+            if databases.contains(db.as_str())
+                && BlobOwner::parse(&key).is_some_and(|owner| owner.login_id == login_id)
+            {
+                engine.unpin_blob(&key, &db, &cid).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Explicit GC also works with synchronization disabled.
+    pub(super) async fn prune_unregistered_blob_pins_locked(&self) -> Result<()> {
+        for (owner, db) in self.wanted_registrations().await?.into_keys() {
+            self.release_if_unregistered_locked(&owner, &db).await?;
         }
         Ok(())
     }
@@ -253,6 +323,13 @@ impl Instance {
         database: &ID,
     ) -> Result<Vec<ID>> {
         let _guard = self.inner.blob_lock.lock().await;
+        if self
+            .registration_sync_enabled(owner, database)
+            .await?
+            .is_none()
+        {
+            return Ok(Vec::new());
+        }
         let set = self.registration_wanted(owner, database).await?;
         Ok(set.into_iter().collect())
     }
@@ -273,10 +350,19 @@ impl Instance {
 
     /// Local availability of explicitly named blobs, in the given order.
     pub(crate) async fn blob_status_local(&self, cids: &[ID]) -> Result<Vec<WantedBlobStatus>> {
-        normalize_wanted(cids)?;
+        validate_status_cids(cids)?;
         let mut statuses = Vec::with_capacity(cids.len());
         for cid in cids {
-            let state = if self.has_blob_local(cid).await? {
+            // A zero-byte read checks that disk-backed records have a backing
+            // file without loading the blob or updating access times.
+            let present = {
+                let _guard = self.inner.blob_lock.lock().await;
+                self.local_blob_engine()?
+                    .get_blob_range(cid, 0..0)
+                    .await?
+                    .is_some()
+            };
+            let state = if present {
                 WantedBlobState::Available
             } else {
                 let last_fetch = self
@@ -376,7 +462,7 @@ impl Instance {
             return Ok(());
         };
         let all = self.wanted_registrations().await?;
-        let mut providers_by_cid: BTreeMap<ID, Vec<PeerInfo>> = BTreeMap::new();
+        let mut registrations_by_cid: BTreeMap<ID, Vec<&Registration>> = BTreeMap::new();
         let mut providers_by_database: HashMap<ID, Vec<PeerInfo>> = HashMap::new();
         for registration in registrations {
             let Some(wanted) = all.get(registration) else {
@@ -387,33 +473,53 @@ impl Instance {
                 let providers = sync.blob_providers(database).await?;
                 providers_by_database.insert(database.clone(), providers);
             }
-            let providers = &providers_by_database[database];
             for cid in wanted {
                 if self.has_blob_local(cid).await? {
                     continue;
                 }
-                let entry = providers_by_cid.entry(cid.clone()).or_default();
-                for provider in providers {
-                    if !entry.iter().any(|p| p.id == provider.id) {
-                        entry.push(provider.clone());
-                    }
-                }
+                registrations_by_cid
+                    .entry(cid.clone())
+                    .or_default()
+                    .push(registration);
             }
         }
 
         use futures_util::stream::StreamExt;
-        futures_util::stream::iter(providers_by_cid)
-            .for_each_concurrent(MAX_CONCURRENT_BLOB_FETCHES, |(cid, providers)| {
-                let sync = sync.clone();
+        futures_util::stream::iter(registrations_by_cid)
+            .for_each_concurrent(MAX_CONCURRENT_BLOB_FETCHES, |(cid, registrations)| {
+                let sync = &sync;
+                let providers_by_database = &providers_by_database;
                 async move {
-                    if !self
-                        .inner
-                        .blob_fetch
-                        .lock()
-                        .unwrap()
-                        .in_flight
-                        .insert(cid.clone())
-                    {
+                    let Some(_claim) = BlobFetchGuard::claim(&self.inner.blob_fetch, &cid) else {
+                        return;
+                    };
+                    let Ok(_slot) = self.inner.blob_fetch_slots.acquire().await else {
+                        return;
+                    };
+                    if !matches!(self.has_blob_local(&cid).await, Ok(false)) {
+                        return;
+                    }
+                    // The earlier snapshot can outlive many network attempts.
+                    // Do not start another CID using a registration paused or
+                    // removed while this round was waiting for a slot.
+                    let mut active = false;
+                    let mut providers: Vec<PeerInfo> = Vec::new();
+                    for (owner, database) in registrations {
+                        match self.registration_sync_enabled(owner, database).await {
+                            Ok(Some(true)) => active = true,
+                            Ok(_) => continue,
+                            Err(e) => {
+                                tracing::debug!(%database, error = %e, "Skipping unreadable blob registration");
+                                continue;
+                            }
+                        }
+                        for provider in &providers_by_database[database] {
+                            if !providers.iter().any(|p| p.id == provider.id) {
+                                providers.push(provider.clone());
+                            }
+                        }
+                    }
+                    if !active {
                         return;
                     }
                     let (bytes, mut attempt) = sync
@@ -427,16 +533,15 @@ impl Instance {
                             Ok(()) => published = true,
                             Err(e) => {
                                 tracing::warn!(%cid, error = %e, "Fetched blob failed to publish");
-                                attempt.invalid += 1;
+                                attempt.failed += 1;
                             }
                         }
                     }
                     let mut state = self.inner.blob_fetch.lock().unwrap();
-                    state.in_flight.remove(&cid);
                     if published {
                         state.outcomes.remove(&cid);
                     } else {
-                        state.outcomes.insert(cid, attempt);
+                        state.outcomes.insert(cid.clone(), attempt);
                     }
                 }
             })
@@ -459,6 +564,77 @@ mod blob_ownership_tests {
 
     fn owner_of(account: &AccountSession) -> BlobOwner {
         BlobOwner::new(account.login_id(), account.account().id()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn blob_status_bounds_duplicate_rows() -> Result<()> {
+        let (_, mut account) = instance_with_account().await?;
+        let key = account.get_default_key()?;
+        let database = account.create_database(Doc::new(), &key).await?;
+        let cid = ID::from_bytes(b"duplicated status row");
+        assert!(
+            matches!(database.blob_status(&vec![cid; MAX_WANTED_BLOBS + 1]).await,
+                Err(Error::Account(e)) if matches!(*e, AccountError::TooManyWantedBlobs { .. })
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn blob_set_stops_consuming_after_capacity() -> Result<()> {
+        let (_, mut account) = instance_with_account().await?;
+        let key = account.get_default_key()?;
+        let database = account.create_database(Doc::new(), &key).await?;
+        let over_limit = (0..=MAX_WANTED_BLOBS + 1).map(|i| {
+            assert!(
+                i <= MAX_WANTED_BLOBS,
+                "consumed input after rejecting the set"
+            );
+            ID::from_bytes(i.to_le_bytes())
+        });
+        assert!(matches!(database.set_wanted_blobs(over_limit).await,
+            Err(Error::Account(e)) if matches!(*e, AccountError::TooManyWantedBlobs { .. })
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn blob_interrupted_untrack_does_not_keep_pins_without_sync() -> Result<()> {
+        let (instance, mut account) = instance_with_account().await?;
+        let key = account.get_default_key()?;
+        let database = account.create_database(Doc::new(), &key).await?;
+        let cid = instance.put_blob(vec![1]).await?;
+        database.set_wanted_blobs([cid]).await?;
+        remove_row_only(&instance, &account, database.root_id()).await;
+        assert!(account.wanted_blobs(database.root_id()).await?.is_empty());
+        let report = instance
+            .gc_blobs(GcOptions {
+                min_age_ms: 0,
+                ..Default::default()
+            })
+            .await?;
+        assert_eq!(report.evicted_count, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn blob_retrack_does_not_inherit_interrupted_untracks_set() -> Result<()> {
+        let (instance, mut account) = instance_with_account().await?;
+        let key = account.get_default_key()?;
+        let database = account.create_database(Doc::new(), &key).await?;
+        database
+            .set_wanted_blobs([ID::from_bytes(b"old set")])
+            .await?;
+        remove_row_only(&instance, &account, database.root_id()).await;
+        account
+            .track_database(
+                database.root_id(),
+                &key,
+                crate::account::SyncSettings::disabled(),
+            )
+            .await?;
+        assert!(database.wanted_blobs().await?.is_empty());
+        Ok(())
     }
 
     /// Remove a registration row without the untrack's blob release, as an
@@ -494,9 +670,9 @@ mod blob_ownership_tests {
         let owner = owner_of(&account);
         assert_eq!(
             instance
-                .wanted_blobs_local(&owner, removed_db.root_id())
+                .registration_wanted(&owner, removed_db.root_id())
                 .await?,
-            vec![orphaned.clone()],
+            BTreeSet::from([orphaned.clone()]),
             "the interrupted untrack left its records"
         );
 
@@ -574,7 +750,7 @@ mod blob_ownership_tests {
         let impostor = BlobOwner::new(account.login_id(), database.root_id())?;
         assert!(
             instance
-                .set_wanted_blobs_local(&impostor, database.root_id(), std::slice::from_ref(&blob))
+                .set_wanted_blobs_local(&impostor, database.root_id(), BTreeSet::from([blob]))
                 .await
                 .is_err()
         );
