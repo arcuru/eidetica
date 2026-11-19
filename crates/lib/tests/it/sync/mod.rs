@@ -10,6 +10,7 @@ mod auto_sync_tests;
 mod basic_operations;
 mod bidirectional_sync_test;
 mod blob_transfer;
+mod blob_wanted;
 mod bootstrap_concurrency_tests;
 mod bootstrap_failure_tests;
 mod bootstrap_metadata_tests;

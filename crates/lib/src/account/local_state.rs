@@ -90,6 +90,9 @@ pub(crate) async fn refresh_sync(
 ) -> Result<()> {
     if let Some(sync) = instance.sync() {
         sync.sync_account(login_id, account_id).await?;
+        // Resumed or newly tracked registrations fetch their wanted blobs
+        // without waiting for periodic reconciliation.
+        instance.spawn_login_blob_fetch(login_id, account_id);
     }
     Ok(())
 }

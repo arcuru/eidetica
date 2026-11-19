@@ -785,6 +785,23 @@ fn require_local_login(state: &ConnectionState, requested: &str) -> crate::Resul
     }
 }
 
+/// The registration owner for the authenticated login's wanted blob sets.
+async fn local_blob_owner(
+    instance: &Instance,
+    state: &ConnectionState,
+    login_id: &str,
+) -> crate::Result<crate::instance::wanted_blobs::BlobOwner> {
+    require_local_login(state, login_id)?;
+    let ConnectionState::Authenticated { username, .. } = state else {
+        unreachable!("require_local_login accepts only authenticated logins");
+    };
+    let (recorded, info) = lookup_account_record(&instance.users_db().await?, username).await?;
+    if recorded != login_id {
+        return Err(crate::account::AccountError::InsufficientPermissions.into());
+    }
+    crate::instance::wanted_blobs::BlobOwner::new(login_id, &info.account_id)
+}
+
 /// Inner dispatch that returns Result for ergonomic error handling.
 async fn dispatch_inner(
     instance: &Instance,
@@ -937,6 +954,45 @@ async fn dispatch_inner(
             require_authenticated(state, "GcBlobs")?;
             let report = instance.gc_blobs(opts).await?;
             Ok(ServiceResponse::GcReport(report))
+        }
+
+        // === Post-auth: the authenticated login's wanted blob sets ===
+        //
+        // A wanted set is part of a login's Database registration, so these
+        // carry the same login scope as `LocalAccountState`: a connection can
+        // only read or change its own login's registrations.
+        ServiceRequest::SetWantedBlobs {
+            login_id,
+            database,
+            cids,
+        } => {
+            let owner = local_blob_owner(instance, state, &login_id).await?;
+            instance
+                .set_wanted_blobs_local(&owner, &database, &cids)
+                .await?;
+            Ok(ServiceResponse::Ok)
+        }
+        ServiceRequest::WantedBlobs { login_id, database } => {
+            let owner = local_blob_owner(instance, state, &login_id).await?;
+            Ok(ServiceResponse::Cids(
+                instance.wanted_blobs_local(&owner, &database).await?,
+            ))
+        }
+        ServiceRequest::FetchWantedBlobs { login_id, database } => {
+            let owner = local_blob_owner(instance, state, &login_id).await?;
+            instance.fetch_registration_blobs(&owner, &database).await?;
+            Ok(ServiceResponse::Ok)
+        }
+        ServiceRequest::ReleaseUntrackedBlobs { login_id, database } => {
+            let owner = local_blob_owner(instance, state, &login_id).await?;
+            instance.release_if_unregistered(&owner, &database).await?;
+            Ok(ServiceResponse::Ok)
+        }
+        ServiceRequest::BlobStatus { cids } => {
+            require_authenticated(state, "BlobStatus")?;
+            Ok(ServiceResponse::BlobStatus(
+                instance.blob_status_local(&cids).await?,
+            ))
         }
 
         // === Authenticated storage operations ===

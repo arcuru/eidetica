@@ -40,6 +40,9 @@ pub enum AccountError {
     #[error("Database not tracked: {database_id}")]
     DatabaseNotTracked { database_id: ID },
 
+    #[error("Blob set names {count} blobs; at most {max} are allowed")]
+    TooManyWantedBlobs { count: usize, max: usize },
+
     #[error("This account is not sharing database: {database_id}")]
     DatabaseNotShared { database_id: ID },
 

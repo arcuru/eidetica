@@ -34,10 +34,10 @@ use tokio::{net::TcpListener, task::JoinHandle};
 
 use crate::helpers::test_backend;
 
-const WAIT: Duration = Duration::from_secs(20);
+pub(super) const WAIT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Copy, Debug)]
-enum Transport {
+pub(super) enum Transport {
     Http,
     Iroh,
 }
@@ -70,15 +70,15 @@ impl Transport {
     }
 }
 
-struct Node {
-    instance: Instance,
-    account: AccountSession,
-    sync: Arc<Sync>,
-    address: Address,
+pub(super) struct Node {
+    pub(super) instance: Instance,
+    pub(super) account: AccountSession,
+    pub(super) sync: Arc<Sync>,
+    pub(super) address: Address,
 }
 
 impl Node {
-    async fn new(name: &str, transport: Transport) -> Self {
+    pub(super) async fn new(name: &str, transport: Transport) -> Self {
         let (instance, account) =
             Instance::create_backend(test_backend().await, NewAccount::passwordless(name))
                 .await
@@ -111,19 +111,19 @@ impl Node {
             address,
         }
     }
-    async fn database(&mut self) -> Database {
+    pub(super) async fn database(&mut self) -> Database {
         let key = self.account.get_default_key().unwrap();
         self.account
             .create_database(Doc::new(), &key)
             .await
             .unwrap()
     }
-    fn pubkey(&self) -> PublicKey {
+    pub(super) fn pubkey(&self) -> PublicKey {
         self.sync.get_device_pubkey().unwrap()
     }
 }
 
-async fn link(sync: &Sync, peer: &PublicKey, address: Address, database: Option<&ID>) {
+pub(super) async fn link(sync: &Sync, peer: &PublicKey, address: Address, database: Option<&ID>) {
     sync.register_peer(peer, None).await.unwrap();
     sync.add_peer_address(peer, address).await.unwrap();
     if let Some(database) = database {
@@ -293,9 +293,9 @@ async fn blob_iroh_daemon_whole_and_range() {
     transfer_scenario(Transport::Iroh, true).await;
 }
 
-struct FakePeer {
-    address: Address,
-    hits: Arc<AtomicUsize>,
+pub(super) struct FakePeer {
+    pub(super) address: Address,
+    pub(super) hits: Arc<AtomicUsize>,
     task: JoinHandle<()>,
 }
 impl Drop for FakePeer {
@@ -303,7 +303,7 @@ impl Drop for FakePeer {
         self.task.abort();
     }
 }
-async fn fake_peer(status: StatusCode, body: Vec<u8>) -> FakePeer {
+pub(super) async fn fake_peer(status: StatusCode, body: Vec<u8>) -> FakePeer {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = Address::http(listener.local_addr().unwrap().to_string());
     let hits = Arc::new(AtomicUsize::new(0));

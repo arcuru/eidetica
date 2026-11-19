@@ -528,3 +528,14 @@ Neither operation publishes received bytes, changes registration ownership, expo
 The request/response classifiers recognize these variants explicitly.
 Current v0 readers refuse unknown operations or responses, so an older daemon cannot silently turn a peer fetch into a local read or a failed fetch into absence.
 This adds no persisted record format; connect clients and daemons with blob protocol support to use the new read.
+
+## Wanted blob sets
+
+`SetWantedBlobs`, `WantedBlobs`, `FetchWantedBlobs` and `ReleaseUntrackedBlobs` carry a `login_id` and a Database ID, and use the same login scope as `LocalAccountState`: the connection must be authenticated as that login.
+The daemon derives the registration owner from the authenticated login's record and its Account root, so a client can read or change only its own registrations.
+`SetWantedBlobs` refuses a non-empty set for a Database the login does not track; the registration is re-read under the blob/GC lock.
+`ReleaseUntrackedBlobs` follows an untrack and releases the set only if the registration is still absent under that lock, so a registration tracked again in the meantime keeps its new set.
+`BlobStatus { cids }` reports daemon-local availability and the daemon's latest unsuccessful fetch outcome for named CIDs; it needs only an authenticated session, like other by-CID blob operations.
+Responses are `Ok`, `Cids` and `BlobStatus`.
+Wanted sets are stored as daemon-local engine retention records, not in the replicated Account, and no operation lists other registrations or hosted CIDs.
+These variants are new to the classifiers; older daemons refuse them rather than silently dropping intent.
