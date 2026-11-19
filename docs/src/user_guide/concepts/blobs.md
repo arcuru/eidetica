@@ -168,7 +168,7 @@ A Database stays usable under its normal sync guarantees while wanted blobs are 
 `blob_status(cids)` and `wanted_blob_status()` report whole-blob availability after verified local publication, without rehashing stored bytes; byte reads verify their results.
 An absent backing file for a recorded blob is an error rather than `Available` or `Pending`.
 `Pending` carries the most recent recorded unsuccessful fetch round's `BlobFetchAttempt`, if any.
-`fetch_wanted_blobs()` runs one round now, and does nothing while the registration is paused.
+`fetch_wanted_blobs()` runs one round now, and does nothing while the registration is paused; it skips, rather than waits for, a CID another round is already fetching.
 `wait_for_blobs(cids)` polls local status for the fixed set it was given, with backoff from 200 ms to 5 s.
 It does not occupy the daemon connection with a network fetch round; automatic fetching runs independently.
 Changing the wanted set later does not change what the wait observes, and cancelling it releases nothing.

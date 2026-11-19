@@ -64,6 +64,26 @@ async fn status(database: &Database, cid: &ID) -> WantedBlobStatus {
         .remove(0)
 }
 
+/// Run explicit rounds until the CID's recorded outcome satisfies `check`.
+async fn fetched_outcome(
+    database: &Database,
+    cid: &ID,
+    check: impl Fn(&eidetica::blob::BlobFetchAttempt) -> bool,
+) {
+    let check = &check;
+    eventually("the expected fetch outcome", || async move {
+        database.fetch_wanted_blobs().await.unwrap();
+        match status(database, cid).await.state {
+            WantedBlobState::Pending {
+                last_fetch: Some(attempt),
+            } => check(&attempt),
+            WantedBlobState::Pending { last_fetch: None } => false,
+            other => panic!("{other:?}"),
+        }
+    })
+    .await;
+}
+
 /// An explicitly connected daemon whose clients can disconnect and reconnect.
 #[cfg(all(unix, feature = "service"))]
 struct Daemon {
@@ -417,13 +437,9 @@ async fn blob_wanted_fetch_asks_only_database_peers() {
     .await;
 
     database.set_wanted_blobs([cid.clone()]).await.unwrap();
-    database.fetch_wanted_blobs().await.unwrap();
-    match status(&database, &cid).await.state {
-        WantedBlobState::Pending {
-            last_fetch: Some(attempt),
-        } => assert!(attempt.had_no_providers(), "{attempt:?}"),
-        other => panic!("{other:?}"),
-    }
+    // Declaring the set starts its own round, and an explicit round skips a
+    // CID already in flight, so wait for the recorded outcome.
+    fetched_outcome(&database, &cid, |attempt| attempt.had_no_providers()).await;
     // A Database peer that answers "absent" is the only one asked.
     let absent = fake_peer(StatusCode::NOT_FOUND, Vec::new()).await;
     link(
@@ -433,13 +449,7 @@ async fn blob_wanted_fetch_asks_only_database_peers() {
         Some(database.root_id()),
     )
     .await;
-    database.fetch_wanted_blobs().await.unwrap();
-    match status(&database, &cid).await.state {
-        WantedBlobState::Pending {
-            last_fetch: Some(attempt),
-        } => assert!(attempt.absent_from_all_queried(), "{attempt:?}"),
-        other => panic!("{other:?}"),
-    }
+    fetched_outcome(&database, &cid, |attempt| attempt.absent_from_all_queried()).await;
     assert!(absent.hits.load(Ordering::SeqCst) >= 1);
     assert_eq!(
         unrelated.hits.load(Ordering::SeqCst),
@@ -452,11 +462,12 @@ async fn blob_wanted_fetch_asks_only_database_peers() {
         .add_tree_sync(&unrelated_key, database.root_id())
         .await
         .unwrap();
-    database.fetch_wanted_blobs().await.unwrap();
-    tokio::time::timeout(WAIT, database.wait_for_blobs(std::slice::from_ref(&cid)))
-        .await
-        .unwrap()
-        .unwrap();
+    let (db, wanted) = (&database, &cid);
+    eventually("the associated peer to supply X", || async move {
+        db.fetch_wanted_blobs().await.unwrap();
+        status(db, wanted).await.is_available()
+    })
+    .await;
     assert!(unrelated.hits.load(Ordering::SeqCst) >= 1);
     assert_eq!(
         receiver.instance.get_blob(&cid).await.unwrap().as_deref(),

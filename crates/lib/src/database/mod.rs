@@ -1265,7 +1265,8 @@ impl Database {
     /// Run one fetch round for this registration's missing wanted blobs now.
     ///
     /// Does nothing while this registration is not sharing. Returns when the
-    /// round ends; outcomes are reported by [`Self::wanted_blob_status`]. On
+    /// round ends; outcomes are reported by [`Self::wanted_blob_status`]. A
+    /// CID that another round is already fetching is skipped, not awaited. On
     /// a connected Instance this occupies the service connection until the
     /// round returns.
     pub async fn fetch_wanted_blobs(&self) -> Result<()> {
