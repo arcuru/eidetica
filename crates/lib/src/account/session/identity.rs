@@ -70,6 +70,7 @@ impl AccountSession {
     /// after rotation. Only the currently selected key needs to be owned and an
     /// active direct member. This updates local tracking without using ticket addresses.
     ///
+    /// A new name is not reserved by a ticket with no peer address hints.
     /// Initial network errors remove only newly provisional local tracking; an
     /// accepted/pending exchange retains state through mapping/activation failures.
     /// The Account reference is organizational and may remain after failure.
@@ -103,6 +104,16 @@ impl AccountSession {
             }
             .into());
         }
+        // Keep the embedded exchange off the caller's stack while polling
+        // verified history and routing.
+        let bootstrap =
+            || Box::pin(self.bootstrap_access(ticket, key_id, requested_permission, None, true));
+        let preflight = previous.is_none() && reference.is_none() && ticket.addresses().is_empty();
+        if preflight {
+            // Both bootstrap paths require a route, even for existing members.
+            // Let the normal path report its error before reserving the name.
+            bootstrap().await?;
+        }
         // The reference is not a membership grant or a key selection on another
         // installation. Do not overwrite a present, different reference.
         let original_database = self.tracked_database(ticket.database_id()).await?;
@@ -129,10 +140,7 @@ impl AccountSession {
         };
         self.replace_tracked_identity(name, previous.clone(), Some(tracked.clone()))
             .await?;
-        // The embedded exchange carries transfer and transaction futures. Keep
-        // it off the caller's stack while polling verified history and routing.
-        let result =
-            Box::pin(self.bootstrap_access(ticket, key_id, requested_permission, None, true)).await;
+        let result = if preflight { Ok(()) } else { bootstrap().await };
         let pending = matches!(&result, Err(Error::Sync(error)) if matches!(error.as_ref(), SyncError::BootstrapPending { .. }));
         if !pending && let Err(error) = result {
             if previous.is_none()
