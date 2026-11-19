@@ -48,17 +48,22 @@ pub(crate) async fn exchange_raw(
             .exchange_local_account_state(login_id, expected, value)
             .await;
     }
-    let before: LocalAccountState = expected
-        .map(serde_json::from_slice)
-        .transpose()
-        .map_err(|_| invalid_state())?
-        .unwrap_or_default();
-    let added: BTreeSet<&str> = after
-        .databases
-        .keys()
-        .filter(|db| !before.databases.contains_key(*db))
-        .map(String::as_str)
-        .collect();
+    // Persisted state is always valid, so unparsable expected bytes cannot
+    // match it: they add no registration and the exchange below reports a
+    // mismatch rather than an error.
+    let before: Option<LocalAccountState> = match expected {
+        None => Some(LocalAccountState::default()),
+        Some(bytes) => serde_json::from_slice(bytes).ok(),
+    };
+    let added: BTreeSet<&str> = match &before {
+        Some(before) => after
+            .databases
+            .keys()
+            .filter(|db| !before.databases.contains_key(*db))
+            .map(String::as_str)
+            .collect(),
+        None => BTreeSet::new(),
+    };
     let _blob_guard = if added.is_empty() {
         None
     } else {
