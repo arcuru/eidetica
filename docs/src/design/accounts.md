@@ -141,7 +141,7 @@ See [Bootstrapping](bootstrap.md) for request, transfer, approval, and retry beh
 
 ### Identity references and activation
 
-The `identities` Account reference namespace names Identity roots, not grants. Account Auth and the Auth on each referenced Identity are independent. A local `TrackedIdentity` record binds the name, root, selected key, original request key and permission, sync preferences, and Pending/Active state. The original request tuple remains stable when the selected signer changes. Keys and local tracking are not part of the reference; caller-held sessions retain tracking in memory.
+The `identities` Account reference namespace names Identity roots, not grants. Account Auth and the Auth on each referenced Identity are independent. A local `TrackedIdentity` record binds the name, root, selected key, original request key and permission, enrollment preferences, and Pending/Active state. Pending enrollment exposes the requested preferences; the database tracking record is authoritative for current preferences. The original request tuple remains stable when the selected signer changes. Keys and local tracking are not part of the reference; caller-held sessions retain tracking in memory.
 
 Each Identity is an ordinary globally readable database at creation. An explicit active member is needed for local activation; public Read is not enough. Activation of a pending selection checks the exact requested permission against verified local Auth. Key selection produces a new handle, and neither selection nor forgetting revokes or rebinds older handles. An Identity delegation supplies the chosen root and verified snapshot, not a shortcut around the target's `PermissionBounds` or causal Auth rules.
 

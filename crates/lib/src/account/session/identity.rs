@@ -64,11 +64,12 @@ impl AccountSession {
 
     /// Request membership using the shared ticket/bootstrap machinery.
     /// The same name/root/request key/permission resumes; changed request parameters
-    /// conflict. Sync preferences may change independently. Connected clients sign
+    /// conflict. Settings are for enrollment, not for updating an active database. Connected clients sign
     /// proofs locally and use the daemon's Sync, never a client-side local engine.
     /// For an Active Identity, pass the original request key and permission even
     /// after rotation. Only the currently selected key needs to be owned and an
-    /// active direct member. This updates local tracking without using ticket addresses.
+    /// active direct member. A retry repairs tracking without using ticket addresses
+    /// or replacing the database's current preferences with the enrollment settings.
     ///
     /// A new name is not reserved by a ticket with no peer address hints.
     /// Initial network errors remove only newly provisional local tracking; an
@@ -123,7 +124,7 @@ impl AccountSession {
         }
         if let Some(previous) = active {
             return self
-                .refresh_active_identity(name, previous, sync_settings, original_database)
+                .refresh_active_identity(name, previous, original_database)
                 .await
                 .map(IdentityRegistration::Active);
         }
@@ -177,7 +178,6 @@ impl AccountSession {
         &mut self,
         name: &str,
         previous: &TrackedIdentity,
-        sync_settings: SyncSettings,
         original_database: Option<TrackedDatabase>,
     ) -> Result<Identity> {
         let identity = self.open_tracked_identity(name, previous).await?;
@@ -186,13 +186,13 @@ impl AccountSession {
         let database_key = root.to_string();
         let result = self
             .update_local_state(|state| {
-                // Do not refresh preferences or track a signer superseded while opening it.
-                let current = state.identities.get_mut(name).filter(|t| *t == previous);
-                let current =
-                    current.ok_or_else(|| AccountError::IdentityRegistrationConflict {
+                // Do not track a signer superseded while opening it.
+                if state.identities.get(name) != Some(previous) {
+                    return Err(AccountError::IdentityRegistrationConflict {
                         name: name.to_owned(),
-                    })?;
-                current.sync_settings = sync_settings.clone();
+                    }
+                    .into());
+                }
                 Self::map_key_in_state(state, key_id, root, SigKey::from_pubkey(key_id))?;
                 if state.databases.get(&database_key) == original_database.as_ref() {
                     state.databases.insert(
@@ -200,7 +200,10 @@ impl AccountSession {
                         TrackedDatabase {
                             database_id: root.clone(),
                             key_id: key_id.clone(),
-                            sync_settings: sync_settings.clone(),
+                            sync_settings: original_database.as_ref().map_or_else(
+                                || previous.sync_settings.clone(),
+                                |db| db.sync_settings.clone(),
+                            ),
                         },
                     );
                 }
