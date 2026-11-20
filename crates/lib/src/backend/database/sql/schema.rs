@@ -3,11 +3,10 @@
 //! This module contains the database schema used by SQL backends.
 //! The schema is designed to be portable between SQLite and Postgres.
 //!
-//! Mainline v0 migrates directly to v4 in one transaction. v2 adds cache
-//! accounting without verification repair. Version 1
-//! belonged to an unsupported prefix-tracking candidate and is refused before
-//! schema writes. Opening v3 adds empty local account storage; current opens neither
-//! backfill nor reconstruct verification history.
+//! Mainline v0 migrates directly to v5 in one transaction. v2 adds cache
+//! accounting without verification repair. v4 adds native local accounts;
+//! v5 adds blob tables. Unsupported experimental blob layouts are refused
+//! before schema writes. Current opens neither backfill nor repair history.
 
 use crate::Result;
 use crate::backend::errors::BackendError;
@@ -20,7 +19,7 @@ mod tests;
 /// Internal SQL format revision counter, independent of release versions and
 /// the InMemory persistence counter. Increment for changes requiring migration,
 /// with an explicit forward path from each supported stored format.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub(super) const CREATE_STORE_STATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
@@ -138,6 +137,47 @@ pub const CREATE_TABLES: &[&str] = &[
         singleton BIGINT PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
         data TEXT NOT NULL
     )",
+    // Content-addressed blob storage (durable, out-of-band from the entry DAG).
+    //
+    // A blob is keyed by `cid` (the raw-codec `0x55` BLAKE3 CIDv1 of its
+    // bytes), giving global dedup for free. `size` caches the byte length so
+    // callers don't have to materialize the blob to learn how big it is.
+    // `location` is the hybrid inline/disk split: `location = 0` keeps
+    // the bytes inline in `data`; `location = 1` means `data` is NULL and the
+    // bytes live in a content-addressed file under the backend's blob dir (the
+    // tier is enabled per-backend via `with_blob_dir`, for SQLite and Postgres
+    // alike). See `BlobLocation` in `storage.rs` for the encoding.
+    //
+    // `last_accessed` (epoch ms) drives LRU eviction in `gc_blobs`. It is
+    // stamped on Instance puts and successful reads. Blob bytes are removed
+    // only by an explicit GC pass, and even then
+    // only when it is not pinned (see `blob_pins`). This column is part of the
+    // v5 additive blob tables; earlier supported layouts gain them atomically.
+    //
+    // `outboard` holds the pre-order bao hash tree — the interior BLAKE3
+    // nodes, ~0.4% of `size` at the 16 KiB block size. Persisting it means a
+    // verified range *serve* reads only the requested window of `data` (via a
+    // ranged read) plus this small sidecar, instead of whole-loading and
+    // re-hashing the blob. The blob's CID is the bao root, so `outboard` needs
+    // no address of its own. Created with the blob table in v5.
+    "CREATE TABLE IF NOT EXISTS blobs (
+        cid           TEXT PRIMARY KEY,
+        size          BIGINT NOT NULL,
+        location      BIGINT NOT NULL,
+        last_accessed BIGINT NOT NULL DEFAULT 0,
+        data          BLOB,
+        outboard      BLOB NOT NULL
+    )",
+    // Trusted engine retention roots; not a separate application registry.
+    // Any row naming a CID keeps it alive. The legacy `user_id` column is an
+    // opaque owner key, not a login label. Empty database_id denotes a root
+    // without a database (PostgreSQL disallows NULL in a primary key).
+    "CREATE TABLE IF NOT EXISTS blob_pins (
+        user_id      TEXT NOT NULL,
+        database_id  TEXT NOT NULL DEFAULT '',
+        blob_cid     TEXT NOT NULL,
+        PRIMARY KEY (user_id, database_id, blob_cid)
+    )",
 ];
 
 /// SQL statements to create indexes.
@@ -157,6 +197,9 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_store_parents_child ON store_parents(store_name, child_id)",
     // Tip lookups
     "CREATE INDEX IF NOT EXISTS idx_tips_tree_store ON tips(tree_id, store_name)",
+    // Blob pin reverse lookups (DISTINCT blob_cid for the GC root set; the
+    // PK prefix already covers per-user queries).
+    "CREATE INDEX IF NOT EXISTS idx_blob_pins_cid ON blob_pins(blob_cid)",
 ];
 
 /// Initialize the database schema.
@@ -242,6 +285,23 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
         }
     }
 
+    // Earlier experimental blob builds reused mainline version markers. Refuse
+    // their authoritative tables, including empty ones, before any migration DDL.
+    if row != Some((SCHEMA_VERSION,)) {
+        let query = if backend.is_sqlite() {
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('blobs', 'blob_pins')"
+        } else {
+            "SELECT COUNT(*) FROM pg_catalog.pg_class WHERE oid IN (to_regclass('blobs'), to_regclass('blob_pins'))"
+        };
+        let (blob_tables,): (i64,) = sqlx::query_as(query)
+            .fetch_one(pool)
+            .await
+            .sql_context("Failed to inspect experimental blob storage")?;
+        if blob_tables != 0 {
+            return Err(malformed("unsupported experimental blob layout"));
+        }
+    }
+
     validate_layout(backend, row.map(|(v,)| v)).await?;
 
     // Schema, repair, cache-column backfill, and version publication roll back
@@ -285,7 +345,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             super::verified::repair_in_tx(&mut tx, &crate::entry::ID::parse(&tree)?).await?;
         }
     }
-    if matches!(row, Some((0 | 2 | 3,))) {
+    if matches!(row, Some((0 | 2 | 3 | 4,))) {
         sqlx::query("UPDATE schema_version SET version = $1")
             .bind(SCHEMA_VERSION)
             .execute(&mut *tx)
@@ -370,6 +430,18 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
             "store_state_records",
             &["namespace_id", "record_key", "record_value"],
         ),
+        (
+            "blobs",
+            &[
+                "cid",
+                "size",
+                "location",
+                "last_accessed",
+                "data",
+                "outboard",
+            ],
+        ),
+        ("blob_pins", &["user_id", "database_id", "blob_cid"]),
     ];
     for (table, required) in tables {
         let existing = columns(backend, table).await?;
@@ -382,6 +454,9 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
         // Earlier supported formats have no local account records. Adding an
         // empty native table does not migrate or delete their legacy keys.
         if *table == "local_accounts" && version.is_some_and(|v| v < 4) {
+            continue;
+        }
+        if matches!(*table, "blobs" | "blob_pins") && version.is_some_and(|v| v < 5) {
             continue;
         }
         if version == Some(0)

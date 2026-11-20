@@ -144,8 +144,8 @@ pub(super) async fn initialize(backend: &SqlxBackend) -> Result<()> {
             .sql_context("SQLite cache initialization commit outcome uncertain")?;
     }
     // Legacy single-file Derived values are reconstructible. Keep the H tables
-    // and version so supported v4 readers remain compatible; retain every
-    // Authoritative value, credential and verification row.
+    // for Authoritative state; schema initialization owns the format revision.
+    // Retain every Authoritative value, credential and verification row.
     sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle IN (0, 2)")
         .execute(backend.pool())
         .await

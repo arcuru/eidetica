@@ -8,6 +8,8 @@
 
 use std::{
     any::Any,
+    collections::HashSet,
+    ops::Range,
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering},
@@ -19,8 +21,8 @@ use eidetica::{
     auth::crypto::generate_keypair,
     backend::database::InMemory,
     backend::{
-        BackendError, BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage,
-        RecordRange, RecordView, StagingToken, StoreStateRequest, VerificationStatus,
+        BackendError, BackendImpl, BlobMeta, InstanceMetadata, InstanceSecrets, RecordMutations,
+        RecordPage, RecordRange, RecordView, StagingToken, StoreStateRequest, VerificationStatus,
     },
     crdt::Doc,
     entry::{Entry, ID},
@@ -129,6 +131,58 @@ impl<B: BackendImpl> BackendImpl for Recordless<B> {
 
     fn as_any(&self) -> &dyn Any {
         self.0.as_any()
+    }
+
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        self.0.put_blob(cid, data).await
+    }
+
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        self.0.get_blob(cid).await
+    }
+
+    async fn get_blob_range(&self, cid: &ID, range: Range<u64>) -> Result<Option<Vec<u8>>> {
+        self.0.get_blob_range(cid, range).await
+    }
+
+    async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
+        self.0.get_blob_header(cid).await
+    }
+
+    async fn has_blob(&self, cid: &ID) -> Result<bool> {
+        self.0.has_blob(cid).await
+    }
+
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> Result<()> {
+        self.0.touch_blob_accessed(cid, now_ms).await
+    }
+
+    async fn delete_blob(&self, cid: &ID) -> Result<bool> {
+        self.0.delete_blob(cid).await
+    }
+
+    async fn all_blob_meta(&self) -> Result<Vec<BlobMeta>> {
+        self.0.all_blob_meta().await
+    }
+
+    async fn pin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<()> {
+        self.0.pin_blob(user_id, database_id, blob_cid).await
+    }
+
+    async fn unpin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<bool> {
+        self.0.unpin_blob(user_id, database_id, blob_cid).await
+    }
+
+    async fn pinned_cids(&self) -> Result<HashSet<ID>> {
+        self.0.pinned_cids().await
+    }
+
+    async fn all_blob_pins(&self) -> Result<Vec<(String, String, ID)>> {
+        self.0.all_blob_pins().await
+    }
+
+    async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64> {
+        self.0.pinned_size_by_user(user_id).await
     }
 
     async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {

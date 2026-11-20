@@ -963,3 +963,96 @@ async fn test_sqlite_in_memory_url_round_trip() -> Result<(), Error> {
     assert_eq!(alice2.username(), "alice");
     Ok(())
 }
+
+/// GC must exclude pin/access changes and disk publication until its snapshot
+/// has been consumed. Polling under the sweep's guard makes each boundary
+/// deterministic without timing a backend's I/O.
+#[tokio::test]
+async fn test_blob_gc_guard_serializes_retention_operations() {
+    let (instance, _admin) = instance_with_admin().await.unwrap();
+    let cid = instance.put_blob(b"retained".to_vec()).await.unwrap();
+    let guard = instance.inner.blob_lock.lock().await;
+    macro_rules! waits_for_gc {
+        ($operation:expr) => {{
+            let mut operation = Box::pin($operation);
+            assert!(
+                std::future::Future::poll(
+                    operation.as_mut(),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop())
+                )
+                .is_pending(),
+                "{} must wait for GC",
+                stringify!($operation)
+            );
+        }};
+    }
+    waits_for_gc!(instance.put_blob(b"retained".to_vec()));
+    waits_for_gc!(instance.get_blob_local(&cid));
+    waits_for_gc!(instance.get_blob_range(&cid, 1..3));
+    waits_for_gc!(instance.gc_blobs(GcOptions {
+        min_age_ms: 0,
+        ..Default::default()
+    }));
+    drop(guard);
+    instance.put_blob(b"retained".to_vec()).await.unwrap();
+    assert_eq!(
+        instance.get_blob_local(&cid).await.unwrap(),
+        Some(b"retained".to_vec())
+    );
+    assert_eq!(
+        instance.get_blob_range(&cid, 1..3).await.unwrap(),
+        Some(b"et".to_vec())
+    );
+    assert_eq!(
+        instance
+            .gc_blobs(GcOptions {
+                min_age_ms: 0,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .evicted_count,
+        1
+    );
+}
+
+#[tokio::test]
+async fn test_blob_gc_retention_union_at_engine_level() {
+    let (instance, _admin) = instance_with_admin().await.unwrap();
+    let cid = instance
+        .put_blob(b"two local roots".to_vec())
+        .await
+        .unwrap();
+    let engine = instance.local_blob_engine().unwrap();
+    engine
+        .pin_blob("owner-a", "database-a", &cid)
+        .await
+        .unwrap();
+    engine
+        .pin_blob("owner-b", "database-b", &cid)
+        .await
+        .unwrap();
+    engine
+        .pin_blob("owner-a", "database-a", &cid)
+        .await
+        .unwrap();
+    let collect = || {
+        instance.gc_blobs(GcOptions {
+            min_age_ms: 0,
+            ..Default::default()
+        })
+    };
+    assert_eq!(collect().await.unwrap().pinned_bytes, 15);
+    engine
+        .unpin_blob("owner-a", "database-a", &cid)
+        .await
+        .unwrap();
+    assert_eq!(collect().await.unwrap().evicted_count, 0);
+    assert_eq!(engine.pinned_size_by_user("owner-b").await.unwrap(), 15);
+    engine
+        .unpin_blob("owner-b", "database-b", &cid)
+        .await
+        .unwrap();
+    assert_eq!(collect().await.unwrap().evicted_count, 1);
+    assert!(instance.get_blob(&cid).await.unwrap().is_none());
+}

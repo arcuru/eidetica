@@ -759,6 +759,62 @@ impl BackendImpl for GatedBackend {
         self.pass().await?;
         self.inner.clear_derived_store_state().await
     }
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        self.pass().await?;
+        self.inner.put_blob(cid, data).await
+    }
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        self.pass().await?;
+        self.inner.get_blob(cid).await
+    }
+    async fn get_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        self.pass().await?;
+        self.inner.get_blob_range(cid, range).await
+    }
+    async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
+        self.pass().await?;
+        self.inner.get_blob_header(cid).await
+    }
+    async fn has_blob(&self, cid: &ID) -> Result<bool> {
+        self.pass().await?;
+        self.inner.has_blob(cid).await
+    }
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> Result<()> {
+        self.pass().await?;
+        self.inner.touch_blob_accessed(cid, now_ms).await
+    }
+    async fn delete_blob(&self, cid: &ID) -> Result<bool> {
+        self.pass().await?;
+        self.inner.delete_blob(cid).await
+    }
+    async fn all_blob_meta(&self) -> Result<Vec<crate::backend::BlobMeta>> {
+        self.pass().await?;
+        self.inner.all_blob_meta().await
+    }
+    async fn pin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<()> {
+        self.pass().await?;
+        self.inner.pin_blob(user_id, database_id, blob_cid).await
+    }
+    async fn unpin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<bool> {
+        self.pass().await?;
+        self.inner.unpin_blob(user_id, database_id, blob_cid).await
+    }
+    async fn pinned_cids(&self) -> Result<std::collections::HashSet<ID>> {
+        self.pass().await?;
+        self.inner.pinned_cids().await
+    }
+    async fn all_blob_pins(&self) -> Result<Vec<(String, String, ID)>> {
+        self.pass().await?;
+        self.inner.all_blob_pins().await
+    }
+    async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64> {
+        self.pass().await?;
+        self.inner.pinned_size_by_user(user_id).await
+    }
 }
 
 /// Run `initialize` until its persistence step reaches the gate.

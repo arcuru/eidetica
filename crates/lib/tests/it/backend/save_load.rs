@@ -3,7 +3,7 @@ use std::{fs, io::Write, path::Path, sync::Arc};
 use tempfile::TempDir;
 
 use eidetica::{
-    Entry, Result,
+    Entry, ID, Result,
     backend::{BackendImpl, database::InMemory},
 };
 
@@ -188,7 +188,7 @@ async fn test_load_wrong_version_fails() {
         .await
         .unwrap();
     let mut value = serde_json::to_value(&backend).unwrap();
-    for version in [1, 4, 99] {
+    for version in [1, 5, 99] {
         value["_v"] = version.into();
         let original = serde_json::to_vec(&value).unwrap();
         fs::write(&path, &original).unwrap();
@@ -253,6 +253,9 @@ async fn test_v0_migration_preserves_entries_and_instance_state_across_save() {
     let mut legacy = serde_json::to_value(&backend).unwrap();
     legacy["instance_secrets"] = serde_json::json!({"signing_key": signing_key});
     legacy.as_object_mut().unwrap().remove("verified");
+    for field in ["blobs", "blob_accessed", "blob_pins", "local_accounts"] {
+        legacy.as_object_mut().unwrap().remove(field);
+    }
     legacy["verification_status"][child.id().to_string()] = "Verified".into();
     legacy["cache"] = serde_json::json!({"legacy": "disposable"});
     let directory = TempDir::new().unwrap();
@@ -293,7 +296,7 @@ async fn test_v0_migration_preserves_entries_and_instance_state_across_save() {
         }
         save_backend(&loaded, &path).unwrap();
         let current: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(current["_v"], 3);
+        assert_eq!(current["_v"], 4);
         for field in ["entries", "instance_metadata", "instance_secrets"] {
             assert_eq!(current[field], legacy[field], "preserve {field}");
         }
@@ -416,4 +419,191 @@ async fn failed_persisted_reset_write_leaves_old_snapshot_retryable() {
         VerificationStatus::Unverified
     );
     assert_eq!(reopened.get(&id).await.unwrap(), entry);
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
+async fn test_in_memory_blobs_survive_save_and_load() {
+    use eidetica::entry::ID;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test_backend_blobs.json");
+
+    let data = b"durable blob bytes that must persist".to_vec();
+    let cid = ID::from_bytes(&data);
+
+    // Store a blob, then snapshot the backend to disk.
+    {
+        let backend = Arc::new(InMemory::new());
+        backend.put_blob(&cid, data.clone()).await.unwrap();
+        save_backend(&backend, &file_path).unwrap();
+    }
+
+    // Reload: blobs are durable owned content, so they must round-trip
+    // (unlike the recomputable CRDT cache, which is intentionally dropped).
+    let loaded = load_backend(&file_path).await.unwrap();
+    assert!(loaded.has_blob(&cid).await.unwrap(), "blob should persist");
+    assert_eq!(
+        loaded.get_blob(&cid).await.unwrap(),
+        Some(data),
+        "persisted blob bytes should match"
+    );
+}
+
+#[tokio::test]
+async fn test_blob_supported_v2_snapshot_reopen() {
+    let backend = InMemory::new();
+    let entry = Entry::root_builder().build().unwrap();
+    backend.put_verified(entry.clone()).await.unwrap();
+    let mut old = serde_json::to_value(&backend).unwrap();
+    old["_v"] = 2.into();
+    for field in ["blobs", "blob_accessed", "blob_pins"] {
+        old.as_object_mut().unwrap().remove(field);
+    }
+    let restored: InMemory = serde_json::from_value(old).unwrap();
+    assert_eq!(
+        restored
+            .verified_snapshot(&entry.id())
+            .await
+            .unwrap()
+            .tips(),
+        &[entry.id()]
+    );
+    let bytes = b"new snapshot blob".to_vec();
+    let cid = ID::from_bytes(&bytes);
+    restored.put_blob(&cid, bytes.clone()).await.unwrap();
+    let current = serde_json::to_value(&restored).unwrap();
+    assert_eq!(current["_v"], 4);
+    let reopened: InMemory = serde_json::from_value(current).unwrap();
+    assert_eq!(reopened.get_blob(&cid).await.unwrap(), Some(bytes));
+    assert_eq!(
+        reopened
+            .verified_snapshot(&entry.id())
+            .await
+            .unwrap()
+            .tips(),
+        &[entry.id()]
+    );
+}
+
+#[tokio::test]
+async fn test_blob_mainline_v3_snapshot_preserves_native_credentials() {
+    use eidetica::auth::crypto::PrivateKey;
+    use eidetica::backend::{InstanceMetadata, VerificationStatus};
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("mainline-v3.json");
+    let root = Entry::root_builder().build().unwrap();
+    let id = root.id();
+    let key = PrivateKey::generate();
+    // Literal mainline JSON3 fields, independent of the new serializer. Native
+    // records are opaque bytes here, just as they are to the storage layer.
+    let fixture = serde_json::json!({
+        "_v": 3,
+        "entries": {id.to_string(): root},
+        "verification_status": {id.to_string(): VerificationStatus::Verified},
+        "instance_metadata": InstanceMetadata { id: key.public_key(), users_db: id.clone(), databases_db: id.clone(), sync_db: None },
+        "instance_secrets": {"signing_key": key},
+        "local_accounts": {"account-state:mainline": b"opaque mainline encrypted bundle".to_vec()},
+        "tips": {},
+        "verified": {}
+    });
+    let original = serde_json::to_vec(&fixture).unwrap();
+    fs::write(&path, &original).unwrap();
+    let loaded = InMemory::try_load_from_file(&path).await.unwrap().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), original);
+    // No implicit repair of persisted empty retained tips in v3.
+    assert!(loaded.verified_snapshot(&id).await.unwrap().is_empty());
+    assert_eq!(
+        loaded.get(&id).await.unwrap().to_dagcbor().unwrap(),
+        root.to_dagcbor().unwrap()
+    );
+    loaded.clear_derived_store_state().await.unwrap();
+    assert_eq!(
+        loaded
+            .local_account_record("account-state:mainline")
+            .await
+            .unwrap(),
+        Some(b"opaque mainline encrypted bundle".to_vec())
+    );
+    let cid = ID::from_bytes(b"new blob after migration");
+    loaded
+        .put_blob(&cid, b"new blob after migration".to_vec())
+        .await
+        .unwrap();
+    loaded.save_to_file(&path).unwrap();
+    let current: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(current["_v"], 4);
+    for field in [
+        "entries",
+        "verification_status",
+        "instance_metadata",
+        "instance_secrets",
+        "local_accounts",
+        "verified",
+        "tips",
+    ] {
+        assert_eq!(
+            current[field], fixture[field],
+            "migration preserves {field}"
+        );
+    }
+    let reopened = InMemory::try_load_from_file(&path).await.unwrap().unwrap();
+    assert_eq!(
+        reopened.get_blob(&cid).await.unwrap(),
+        Some(b"new blob after migration".to_vec())
+    );
+    assert_eq!(
+        reopened
+            .local_account_record("account-state:mainline")
+            .await
+            .unwrap(),
+        Some(b"opaque mainline encrypted bundle".to_vec())
+    );
+}
+
+#[tokio::test]
+async fn test_blob_experimental_v3_snapshot_refused_without_file_mutation() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("experimental-v3.json");
+    let cid = ID::from_bytes(b"experimental bytes");
+    let candidate = serde_json::json!({
+        "_v": 3, "entries": {}, "verification_status": {},
+        "instance_metadata": null, "instance_secrets": null,
+        "tips": {}, "verified": {},
+        "blobs": {cid.to_string(): b"experimental bytes".to_vec()},
+        "blob_accessed": {cid.to_string(): 1234},
+        "blob_pins": [["owner", "database", cid]]
+    });
+    let original = serde_json::to_vec(&candidate).unwrap();
+    fs::write(&path, &original).unwrap();
+    let error = InMemory::try_load_from_file(&path).await.unwrap_err();
+    let eidetica::Error::Backend(error) = error else {
+        panic!("expected backend error");
+    };
+    let eidetica::backend::BackendError::DeserializationFailed { source } = *error else {
+        panic!("expected deserialization refusal");
+    };
+    assert!(
+        source
+            .to_string()
+            .contains("unsupported experimental blob snapshot"),
+        "{source}"
+    );
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert!(!path.with_extension("json.tmp").exists());
+    // Even an empty candidate field must not bypass the collision check; a
+    // current-format file missing durable fields is corruption, not old data.
+    for field in ["blobs", "blob_accessed", "blob_pins"] {
+        let empty = if field == "blob_pins" {
+            serde_json::json!([])
+        } else {
+            serde_json::json!({})
+        };
+        let mut value = serde_json::json!({"_v": 3, "entries": {}, "local_accounts": {}});
+        value[field] = empty;
+        assert!(serde_json::from_value::<InMemory>(value).is_err());
+    }
+    assert!(
+        serde_json::from_value::<InMemory>(serde_json::json!({"_v": 4, "entries": {}})).is_err()
+    );
 }
