@@ -72,3 +72,32 @@ The sync system is currently simple and 1:1. Each peer connection requires manua
 - Multi-peer sync orchestration
 
 See [Bootstrap System](bootstrap.md) for the key exchange flow when joining a database.
+
+## Named blob protocol
+
+Blob bytes do not travel in the Entry sync JSON protocol.
+HTTP uses `POST /api/v0/blob` with `BlobRangeRequest { cid, start, end }` and an octet-stream Bao response.
+A 404 with `x-eidetica-blob: 0` means absent; an unmarked 404 is an unsupported blob endpoint, not evidence about local possession.
+Other errors remain errors.
+`POST /api/v0/blob/has` accepts `BlobAvailabilityRequest { cids }` and returns `BlobAvailabilityResponse { available }` in request order.
+A batch contains at most 64 explicit raw-codec BLAKE3 CIDv1 addresses, never prefixes or an inventory query.
+Clients reject an answer with a different number of results and bound its body to 64 KiB.
+
+Iroh uses a separate `eidetica/blob/v0` ALPN, leaving `eidetica/v0` Entry sync unchanged.
+Each bidirectional stream carries one JSON `BlobWireRequest` (Availability or Range), capped at 64 KiB, followed by FIN.
+Responses start with one status byte: 0 absent, 1 success with payload, 2 invalid request, or 3 server failure.
+Successful availability payloads use the same JSON response as HTTP; successful ranges carry the same Bao encoding.
+Unknown status values, missing status and malformed payloads fail the read.
+A peer on an older version without the blob endpoint or ALPN reports an error, not absence through a fallback JSON fetch operation.
+
+A range payload starts with an eight-byte little-endian logical blob size, followed by the Bao proof and chunk-aligned bytes.
+The receiver validates the CID envelope, the 64 MiB logical-size cap and the proof before returning the requested window.
+Empty and past-EOF ranges of a nonempty blob carry its last leaf to authenticate the claimed EOF; a zero-size blob must match the empty-content CID.
+Each transport bounds received bytes to the capped requested length plus 1 MiB of Bao alignment/proof overhead.
+HTTP reuses its shared connect/read-timeout client; Iroh bounds connection establishment and the request exchange.
+The handler serves only local bytes under the existing blob read/GC lock and cannot induce a fetch or retention request.
+
+Explicit `Sync` commands select the transport by the supplied address.
+Database reads select active peers from the existing Database/peer relation, not the Instance peer inventory, and try bounded address fallback.
+At most four outbound blob commands execute concurrently; admission refuses excess work rather than waiting inside the engine loop or accumulating background tasks.
+They run separately from Database synchronization and create no retry service or automatic publication path.

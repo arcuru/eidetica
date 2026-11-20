@@ -15,7 +15,6 @@ use tokio::net::UnixListener;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
-use crate::Instance;
 use crate::account::system_databases::lookup_account_record;
 use crate::auth::crypto::{PublicKey, generate_challenge, verify_challenge_response};
 use crate::auth::errors::AuthError;
@@ -34,6 +33,7 @@ use crate::service::protocol::{
     TicketBootstrapRequest, read_frame, write_frame,
 };
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
+use crate::{Error, Instance};
 
 /// Connection identifier. Monotonic per server-run; reused only after
 /// `AtomicU64` wraps (effectively never on a real daemon). Purely
@@ -1027,9 +1027,10 @@ async fn dispatch_inner(
 
             // Per-tree permission gate. Unconditional for every op *except*
             // submit (verification in the handler is its boundary) and
-            // set-metadata (gated against `_databases` below). Create-flow
-            // passthrough (false) for the rest, so a not-yet-propagated tree is
-            // waved through and database creation works.
+            // set-metadata (gated against `_databases` below). Blob fetch is
+            // never a creation flow: a made-up root must not authorize local
+            // bytes or peer selection. Other ops retain create-flow passthrough
+            // so a not-yet-propagated tree can be created.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -1047,7 +1048,7 @@ async fn dispatch_inner(
                     &identity,
                     &root_id,
                     op.required_permission(),
-                    false,
+                    matches!(op, DatabaseOp::FetchBlobRange { .. }),
                 )
                 .await?;
             }
@@ -1611,6 +1612,23 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Ok)
         }
 
+        DatabaseOp::FetchBlobRange { cid, start, end } => {
+            let blob = match instance
+                .fetch_blob_range_for_database(&root_id, &cid, start..end)
+                .await
+            {
+                Ok(blob) => blob,
+                Err(Error::Sync(error)) => match *error {
+                    SyncError::BlobUnavailable { cid, attempt } => {
+                        return Ok(ServiceResponse::BlobUnavailable { cid, attempt });
+                    }
+                    error => return Err(error.into()),
+                },
+                Err(error) => return Err(error),
+            };
+            ensure_blob_fits(blob.as_deref())?;
+            Ok(ServiceResponse::Blob(blob))
+        }
         DatabaseOp::CreateTicket => Ok(ServiceResponse::DatabaseTicket(
             crate::account::ticket_locator(instance, &root_id).await?,
         )),

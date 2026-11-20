@@ -572,6 +572,146 @@ impl Sync {
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
+    /// Most providers asked for one blob in one fetch round.
+    const MAX_BLOB_PROVIDERS: usize = 16;
+
+    /// Most usable addresses attempted for one provider in a blob read.
+    const MAX_BLOB_ADDRESSES: usize = 16;
+
+    /// Candidate blob providers for a Database: its existing sync peers.
+    ///
+    /// Blob fetching reuses the Database/peer relationship rather than asking
+    /// every peer this Instance knows or consulting any content directory.
+    /// Peers are returned with their full address lists so a fetch can respect
+    /// transport capability instead of trying only the first address.
+    pub(crate) async fn blob_providers(&self, database: &ID) -> Result<Vec<peer_types::PeerInfo>> {
+        let mut providers = Vec::new();
+        for peer in self.get_tree_peers(database).await? {
+            if let Some(info) = self.get_peer_info(peer.public_key()).await?
+                && info.status == crate::sync::peer_types::PeerStatus::Active
+            {
+                providers.push(info);
+            }
+        }
+        Ok(providers)
+    }
+
+    /// Send one blob command to the background engine and await its answer.
+    async fn blob_command<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<Result<T>>) -> SyncCommand,
+    ) -> Result<T> {
+        let (tx, rx) = oneshot::channel();
+        self.background_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
+            .send(command(tx))
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Ask one peer address which of the named blobs it holds.
+    ///
+    /// A blind, bounded query: the answer covers exactly `cids`, in order, and
+    /// is advisory. Errors are reported as errors, never as "absent".
+    pub async fn query_blob_availability(
+        &self,
+        address: &Address,
+        cids: &[ID],
+    ) -> Result<Vec<bool>> {
+        crate::sync::handler::check_blob_availability_request(cids)?;
+        let address = address.clone();
+        let cids = cids.to_vec();
+        self.blob_command(|response| SyncCommand::QueryBlobs {
+            address,
+            cids,
+            response,
+        })
+        .await
+    }
+
+    /// Receive a verified byte range of a blob from one peer address.
+    ///
+    /// Returns `Ok(None)` when the peer answers that it does not hold the
+    /// blob. The stream is verified against `cid` while decoding and bounded
+    /// to the requested range, so bytes that do not belong to the CID never
+    /// escape. A partial range is not a whole blob and is never stored.
+    pub async fn fetch_blob_range_from_peer(
+        &self,
+        address: &Address,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        crate::backend::validate_blob_cid(cid)?;
+        let address = address.clone();
+        let cid = cid.clone();
+        self.blob_command(|response| SyncCommand::FetchBlobRange {
+            address,
+            cid,
+            range,
+            response,
+        })
+        .await
+    }
+
+    /// Fetch `range` of `cid` from a bounded list of candidate providers.
+    ///
+    /// At most 16 providers and 16 usable addresses per provider are tried, in
+    /// order, until one gives a definite answer (bytes or "absent"). Addresses
+    /// without a registered transport consume no network-attempt budget. A
+    /// provider whose usable addresses all fail counts once, under its last
+    /// failure. Stops at the first verified answer. The
+    /// attempt summary keeps "absent" distinct from unreachable, stalled,
+    /// unsupported and invalid outcomes so a failure is never reported as an
+    /// authoritative "no".
+    pub(crate) async fn fetch_blob_from_providers(
+        &self,
+        providers: &[peer_types::PeerInfo],
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> (Option<Vec<u8>>, crate::blob::BlobFetchAttempt) {
+        let mut attempt = crate::blob::BlobFetchAttempt::default();
+        for provider in providers.iter().take(Self::MAX_BLOB_PROVIDERS) {
+            attempt.providers += 1;
+            let mut outcome = BlobOutcome::Unsupported;
+            let mut usable_attempts = 0;
+            for address in &provider.addresses {
+                if usable_attempts == Self::MAX_BLOB_ADDRESSES {
+                    break;
+                }
+                match self
+                    .fetch_blob_range_from_peer(address, cid, range.clone())
+                    .await
+                {
+                    Ok(Some(bytes)) => return (Some(bytes), attempt),
+                    Ok(None) => {
+                        outcome = BlobOutcome::Absent;
+                        break;
+                    }
+                    Err(e) => {
+                        debug!(peer = %provider.id, address = %address.address, error = %e, "Blob fetch attempt failed");
+                        if !matches!(&e, crate::Error::Sync(error) if matches!(**error, SyncError::NoTransportForAddress { .. }))
+                        {
+                            usable_attempts += 1;
+                            outcome = BlobOutcome::classify(&e);
+                        }
+                    }
+                }
+            }
+            match outcome {
+                BlobOutcome::Absent => attempt.absent += 1,
+                BlobOutcome::Unreachable => attempt.unreachable += 1,
+                BlobOutcome::Stalled => attempt.stalled += 1,
+                BlobOutcome::Invalid => attempt.invalid += 1,
+                BlobOutcome::Unsupported => attempt.unsupported += 1,
+                BlobOutcome::Failed => attempt.failed += 1,
+            }
+        }
+        (None, attempt)
+    }
+
     /// Discover available trees from a peer (simplified API).
     ///
     /// This method connects to a peer and retrieves the list of trees they're willing to sync.
@@ -1273,5 +1413,97 @@ mod orphan_bootstrap_tests {
             "once the root arrives normal incremental tips resume"
         );
         Ok(())
+    }
+}
+
+/// How one provider's blob fetch ended.
+enum BlobOutcome {
+    Absent,
+    Unreachable,
+    Stalled,
+    Invalid,
+    Unsupported,
+    Failed,
+}
+
+impl BlobOutcome {
+    fn classify(error: &crate::Error) -> Self {
+        use crate::backend::errors::BackendError;
+        match error {
+            crate::Error::Sync(e) => match **e {
+                SyncError::Timeout { phase, .. } if phase.peer_reachable() => Self::Stalled,
+                SyncError::Timeout { .. } | SyncError::ConnectionFailed { .. } => Self::Unreachable,
+                SyncError::UnsupportedTransport { .. }
+                | SyncError::NoTransportForAddress { .. } => Self::Unsupported,
+                _ => Self::Failed,
+            },
+            crate::Error::Backend(e) => match **e {
+                // A stream declaring more than the cap is a bad response,
+                // like one that fails verification.
+                BackendError::BlobStreamInvalid { .. }
+                | BackendError::BlobHashMismatch { .. }
+                | BackendError::BlobSizeMismatch { .. }
+                | BackendError::BlobTooLarge { .. } => Self::Invalid,
+                _ => Self::Failed,
+            },
+            _ => Self::Failed,
+        }
+    }
+}
+
+#[cfg(test)]
+mod blob_outcome_tests {
+    use std::time::Duration;
+
+    use super::BlobOutcome;
+    use crate::{
+        backend::errors::BackendError,
+        entry::ID,
+        sync::{SyncError, error::TimeoutPhase},
+    };
+
+    fn classify(error: impl Into<crate::Error>) -> &'static str {
+        match BlobOutcome::classify(&error.into()) {
+            BlobOutcome::Absent => "absent",
+            BlobOutcome::Unreachable => "unreachable",
+            BlobOutcome::Stalled => "stalled",
+            BlobOutcome::Invalid => "invalid",
+            BlobOutcome::Unsupported => "unsupported",
+            BlobOutcome::Failed => "failed",
+        }
+    }
+
+    #[test]
+    fn transport_failures_keep_their_meaning() {
+        let timeout = |phase| SyncError::Timeout {
+            address: "peer".into(),
+            phase,
+            elapsed: Duration::from_secs(1),
+        };
+        assert_eq!(classify(timeout(TimeoutPhase::Connect)), "unreachable");
+        assert_eq!(classify(timeout(TimeoutPhase::Request)), "stalled");
+        assert_eq!(
+            classify(SyncError::ConnectionFailed {
+                address: "peer".into(),
+                reason: "refused".into()
+            }),
+            "unreachable"
+        );
+        assert_eq!(
+            classify(SyncError::UnsupportedTransport {
+                transport_type: "x".into()
+            }),
+            "unsupported"
+        );
+        let cid = ID::from_bytes(b"blob");
+        assert_eq!(
+            classify(BackendError::BlobStreamInvalid { cid: cid.clone() }),
+            "invalid"
+        );
+        assert_eq!(
+            classify(BackendError::BlobTooLarge { size: 1, max: 0 }),
+            "invalid"
+        );
+        assert_eq!(classify(SyncError::Network("500".into())), "failed");
     }
 }

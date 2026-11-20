@@ -65,18 +65,29 @@ pub(crate) fn compute_outboard(data: &[u8]) -> Vec<u8> {
 /// bao reads whole [`BLOCK_SIZE`]-aligned leaves, so serving an arbitrary byte
 /// range needs the data snapped out to block boundaries (and clamped to the
 /// blob `size`). The caller reads exactly this window from storage — not the
-/// whole blob — and hands it back in. Returns an empty window for an empty or
-/// past-the-end range.
+/// whole blob — and hands it back in. Empty and past-EOF reads of a nonempty
+/// blob carry its last leaf, authenticating the size before returning no bytes.
 pub(crate) fn serve_window(size: u64, range: Range<u64>) -> Range<u64> {
     let block = BLOCK_SIZE.bytes() as u64;
-    let start = range.start.min(size);
-    let end = range.end.clamp(start, size);
+    let Range { start, end } = proof_range(size, range);
     if start == end {
         return start..start;
     }
     let win_start = (start / block) * block;
     let win_end = end.div_ceil(block).saturating_mul(block).min(size);
     win_start..win_end
+}
+
+/// An empty result still needs proof that the peer's claimed EOF belongs to
+/// this CID. Authenticate the last byte rather than trusting a bare size prefix.
+fn proof_range(size: u64, range: Range<u64>) -> Range<u64> {
+    let start = range.start.min(size);
+    let end = range.end.clamp(start, size);
+    if start == end {
+        size.saturating_sub(1)..size
+    } else {
+        start..end
+    }
 }
 
 /// A [`ReadAt`] over a single in-memory window of a blob, mapping the blob's
@@ -145,9 +156,7 @@ pub(crate) fn encode_range_with_outboard(
         data: outboard,
     };
 
-    let start = range.start.min(size);
-    let end = range.end.clamp(start, size);
-    let ranges = byte_chunks(start..end);
+    let ranges = byte_chunks(proof_range(size, range));
 
     let reader = WindowReader {
         base: window_start,
@@ -207,23 +216,24 @@ pub(crate) fn decode_range(cid: &ID, range: Range<u64>, encoded: &[u8]) -> Resul
     // Clamp the request to the real blob size before snapping to chunks.
     let start = range.start.min(size);
     let end = range.end.clamp(start, size);
-    // An empty or past-EOF request covers no leaves, so the stream carries
-    // nothing to verify; return empty bytes to match the local-slice paths
-    // (`Instance::get_blob_range`, the SQL/disk readers) rather than tripping the
-    // "did not cover the requested range" guard below.
-    if start >= end {
-        return Ok(Vec::new());
+    // The empty blob has no leaf to prove, but its CID is known. A forged zero
+    // size must not turn a nonempty CID into a successful empty whole receive.
+    if size == 0 {
+        return if root == bao_tree::blake3::hash(&[]) && body.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(BackendError::BlobStreamInvalid { cid: cid.clone() }.into())
+        };
     }
-    let ranges = byte_chunks(start..end);
+    let proof = proof_range(size, range);
+    let ranges = byte_chunks(proof.clone());
 
     let iter = DecodeResponseIter::new(root, tree, std::io::Cursor::new(body), &ranges);
 
-    // Collect the verified leaves covering the requested window. Leaves arrive
-    // chunk-aligned, so we assemble from the first chunk boundary at/below
-    // `start` and slice the exact range out at the end. Only the requested
-    // window's leaves are buffered — memory is bounded by the range, not the
-    // blob.
-    let window_start = chunk_floor(start);
+    // Collect the verified proof window, then slice out the requested bytes.
+    // Empty reads authenticate one final leaf; other reads buffer only the
+    // chunk-aligned requested window, never the whole blob unnecessarily.
+    let window_start = chunk_floor(proof.start);
     let mut window: Vec<u8> = Vec::new();
     for item in iter {
         let item = item.map_err(|_| BackendError::BlobStreamInvalid { cid: cid.clone() })?;
@@ -243,12 +253,15 @@ pub(crate) fn decode_range(cid: &ID, range: Range<u64>, encoded: &[u8]) -> Resul
         }
     }
 
-    let lo = (start - window_start) as usize;
-    let hi = (end - window_start) as usize;
-    if window.len() < hi {
-        // The stream did not actually cover the requested range.
+    if window.len() < (proof.end - window_start) as usize {
+        // The stream did not actually cover the requested proof range.
         return Err(BackendError::BlobStreamInvalid { cid: cid.clone() }.into());
     }
+    if start == end {
+        return Ok(Vec::new());
+    }
+    let lo = (start - window_start) as usize;
+    let hi = (end - window_start) as usize;
     Ok(window[lo..hi].to_vec())
 }
 
@@ -309,23 +322,28 @@ mod tests {
     fn empty_and_past_eof_ranges_decode_to_empty() {
         let data = blob(100_000);
         let cid = ID::from_bytes(&data);
-        let encoded = encode_range(&data, 0..data.len() as u64);
         let n = data.len() as u64;
 
-        // Empty interior ranges match local-slice readers.
+        // Empty, reversed and past-EOF ranges return no bytes, but authenticate
+        // the claimed EOF using the last leaf rather than an unproved size.
+        for range in [10..10, Range { start: 8, end: 4 }, n..n, n + 100..n + 200] {
+            let encoded = encode_range(&data, range.clone());
+            assert_eq!(
+                decode_range(&cid, range.clone(), &encoded).unwrap(),
+                Vec::<u8>::new()
+            );
+            assert!(decode_range(&cid, range.clone(), &encoded[..8]).is_err());
+            let mut tampered = encoded;
+            *tampered.last_mut().unwrap() ^= 1;
+            assert!(decode_range(&cid, range, &tampered).is_err());
+        }
+        let cid = ID::from_bytes([]);
+        let encoded = encode_range(&[], 0..u64::MAX);
         assert_eq!(
-            decode_range(&cid, 10..10, &encoded).unwrap(),
+            decode_range(&cid, 0..u64::MAX, &encoded).unwrap(),
             Vec::<u8>::new()
         );
-        // A range at or past EOF clamps to empty rather than erroring.
-        assert_eq!(
-            decode_range(&cid, n..n, &encoded).unwrap(),
-            Vec::<u8>::new()
-        );
-        assert_eq!(
-            decode_range(&cid, n + 100..n + 200, &encoded).unwrap(),
-            Vec::<u8>::new()
-        );
+        assert!(decode_range(&ID::from_bytes(&data), 0..u64::MAX, &encoded).is_err());
     }
 
     #[test]

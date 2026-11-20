@@ -29,11 +29,38 @@ use crate::{
         error::{SyncError, TimeoutPhase},
         handler::SyncHandler,
         peer_types::Address,
-        protocol::{RequestContext, SyncRequest, SyncResponse},
+        protocol::{
+            BlobAvailabilityRequest, BlobAvailabilityResponse, BlobRangeRequest, BlobWireRequest,
+            RequestContext, SyncRequest, SyncResponse,
+        },
     },
 };
 
 const SYNC_ALPN: &[u8] = b"eidetica/v0";
+
+/// Separate protocol for blob availability and verified range transfer.
+///
+/// Blob responses are raw bao streams rather than JSON, so they ride their
+/// own ALPN instead of the JSON request/response stream.
+const BLOB_ALPN: &[u8] = b"eidetica/blob/v0";
+
+/// Largest blob-protocol request accepted: a bounded availability batch.
+const MAX_BLOB_REQUEST_BYTES: usize = 64 * 1024;
+
+/// Error message for a blob response larger than its receive budget.
+const BLOB_RESPONSE_OVER_BUDGET: &str = "blob response exceeded its receive budget";
+
+/// Status byte that prefixes every blob-protocol response.
+mod blob_status {
+    /// The payload follows.
+    pub const OK: u8 = 1;
+    /// The peer does not hold the requested blob.
+    pub const ABSENT: u8 = 0;
+    /// The request was malformed or out of bounds.
+    pub const INVALID_REQUEST: u8 = 2;
+    /// The peer failed while answering.
+    pub const FAILED: u8 = 3;
+}
 
 /// Maximum time spent establishing a connection to a peer.
 ///
@@ -552,7 +579,8 @@ impl IrohTransport {
 
     /// Configure the endpoint without binding sockets or starting discovery.
     fn endpoint_builder(&self) -> EndpointBuilder {
-        let mut builder = Endpoint::builder(presets::N0).alpns(vec![SYNC_ALPN.to_vec()]);
+        let mut builder =
+            Endpoint::builder(presets::N0).alpns(vec![SYNC_ALPN.to_vec(), BLOB_ALPN.to_vec()]);
 
         if let Some(relay_mode) = &self.runtime_config.relay_mode {
             builder = builder.relay_mode(relay_mode.clone());
@@ -646,6 +674,12 @@ impl IrohTransport {
     async fn handle_connection(conn: Connection, handler: Arc<dyn SyncHandler>) {
         // Get the remote peer node ID for context
         let remote_endpoint_id = conn.remote_id();
+        if conn.alpn() == BLOB_ALPN {
+            while let Ok((send_stream, recv_stream)) = conn.accept_bi().await {
+                Self::handle_blob_stream(send_stream, recv_stream, handler.clone()).await;
+            }
+            return;
+        }
         let remote_address = Address {
             transport_type: Self::TRANSPORT_TYPE.to_string(),
             address: remote_endpoint_id.to_string(),
@@ -663,6 +697,139 @@ impl IrohTransport {
             )
             .await;
         }
+    }
+
+    /// Answer one blob-protocol request from local storage only.
+    async fn handle_blob_stream(
+        mut send_stream: SendStream,
+        mut recv_stream: RecvStream,
+        handler: Arc<dyn SyncHandler>,
+    ) {
+        let (status, payload) = match recv_stream.read_to_end(MAX_BLOB_REQUEST_BYTES).await {
+            Err(e) => {
+                tracing::debug!("Failed to read blob request: {e}");
+                (blob_status::INVALID_REQUEST, Vec::new())
+            }
+            Ok(buffer) => match serde_json::from_slice::<BlobWireRequest>(&buffer) {
+                Err(_) => (blob_status::INVALID_REQUEST, Vec::new()),
+                Ok(BlobWireRequest::Availability(req)) => {
+                    if crate::sync::handler::check_blob_availability_request(&req.cids).is_err() {
+                        (blob_status::INVALID_REQUEST, Vec::new())
+                    } else {
+                        match handler.blob_availability(&req.cids).await {
+                            Ok(available) => {
+                                match serde_json::to_vec(&BlobAvailabilityResponse { available }) {
+                                    Ok(bytes) => (blob_status::OK, bytes),
+                                    Err(_) => (blob_status::FAILED, Vec::new()),
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to answer blob availability");
+                                (blob_status::FAILED, Vec::new())
+                            }
+                        }
+                    }
+                }
+                Ok(BlobWireRequest::Range(req)) => {
+                    match handler.serve_blob_range(&req.cid, req.start..req.end).await {
+                        Ok(Some(stream)) => (blob_status::OK, stream),
+                        Ok(None) => (blob_status::ABSENT, Vec::new()),
+                        Err(e) => {
+                            tracing::warn!(cid = %req.cid, error = %e, "Failed to serve blob range");
+                            (blob_status::FAILED, Vec::new())
+                        }
+                    }
+                }
+            },
+        };
+        if send_stream.write_all(&[status]).await.is_err()
+            || send_stream.write_all(&payload).await.is_err()
+        {
+            return;
+        }
+        let _ = send_stream.finish();
+    }
+
+    /// Connect to a peer's endpoint over `alpn`, bounded by [`CONNECT_TIMEOUT`].
+    async fn connect(&self, address: &Address, alpn: &[u8]) -> Result<Connection> {
+        if !self.can_handle_address(address) {
+            return Err(SyncError::UnsupportedTransport {
+                transport_type: address.transport_type.clone(),
+            }
+            .into());
+        }
+        let endpoint = self.ensure_endpoint().await?;
+        let endpoint_ticket =
+            <EndpointTicket as Ticket>::decode_string(&address.address).map_err(|e| {
+                SyncError::SerializationError(format!(
+                    "Failed to parse EndpointTicket '{}': {e}",
+                    address.address
+                ))
+            })?;
+        let endpoint_addr = endpoint_ticket.endpoint_addr().clone();
+        Ok(
+            timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, alpn))
+                .await
+                .map_err(|_| SyncError::Timeout {
+                    address: address.address.clone(),
+                    phase: TimeoutPhase::Connect,
+                    elapsed: CONNECT_TIMEOUT,
+                })?
+                .map_err(|e| SyncError::ConnectionFailed {
+                    address: address.address.clone(),
+                    reason: e.to_string(),
+                })?,
+        )
+    }
+
+    /// Send one blob-protocol request and read at most `limit` payload bytes.
+    ///
+    /// Returns the status byte and payload. One deadline covers the exchange,
+    /// so a peer that stalls mid-stream is reported as a request timeout.
+    async fn blob_exchange(
+        &self,
+        address: &Address,
+        request: &BlobWireRequest,
+        limit: u64,
+    ) -> Result<(u8, Vec<u8>)> {
+        let conn = self.connect(address, BLOB_ALPN).await?;
+        let request_bytes = serde_json::to_vec(request)
+            .map_err(|e| SyncError::SerializationError(e.to_string()))?;
+        let read_limit = usize::try_from(limit.saturating_add(1)).unwrap_or(usize::MAX);
+        let exchange = timeout(REQUEST_TIMEOUT, async {
+            let (mut send_stream, mut recv_stream) = conn
+                .open_bi()
+                .await
+                .map_err(|e| SyncError::Network(format!("Failed to open stream: {e}")))?;
+            send_stream
+                .write_all(&request_bytes)
+                .await
+                .map_err(|e| SyncError::Network(format!("Failed to write request: {e}")))?;
+            send_stream
+                .finish()
+                .map_err(|e| SyncError::Network(format!("Failed to finish send stream: {e}")))?;
+            recv_stream
+                .read_to_end(read_limit)
+                .await
+                .map_err(|e| match e {
+                    iroh::endpoint::ReadToEndError::TooLong => {
+                        SyncError::Network(BLOB_RESPONSE_OVER_BUDGET.to_string())
+                    }
+                    e => SyncError::Network(format!("Failed to read blob response: {e}")),
+                })
+        })
+        .await;
+        conn.close(0u32.into(), b"done");
+        let mut response = exchange.map_err(|_| SyncError::Timeout {
+            address: address.address.clone(),
+            phase: TimeoutPhase::Request,
+            elapsed: REQUEST_TIMEOUT,
+        })??;
+        if response.is_empty() {
+            return Err(SyncError::Network("empty blob response".to_string()).into());
+        }
+        let status = response.remove(0);
+        Ok((status, response))
     }
 
     /// Handle an incoming bidirectional stream.
@@ -777,38 +944,7 @@ impl SyncTransport for IrohTransport {
     }
 
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
-        if !self.can_handle_address(address) {
-            return Err(SyncError::UnsupportedTransport {
-                transport_type: address.transport_type.clone(),
-            }
-            .into());
-        }
-
-        // Ensure we have an endpoint (lazy initialization)
-        let endpoint = self.ensure_endpoint().await?;
-
-        // Deserialize the EndpointTicket address
-        let endpoint_ticket =
-            <EndpointTicket as Ticket>::decode_string(&address.address).map_err(|e| {
-                SyncError::SerializationError(format!(
-                    "Failed to parse EndpointTicket '{}': {e}",
-                    address.address
-                ))
-            })?;
-        let endpoint_addr = endpoint_ticket.endpoint_addr().clone();
-
-        // Connect to the peer, bounding how long an unreachable one can cost.
-        let conn = timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, SYNC_ALPN))
-            .await
-            .map_err(|_| SyncError::Timeout {
-                address: address.address.clone(),
-                phase: TimeoutPhase::Connect,
-                elapsed: CONNECT_TIMEOUT,
-            })?
-            .map_err(|e| SyncError::ConnectionFailed {
-                address: address.address.clone(),
-                reason: e.to_string(),
-            })?;
+        let conn = self.connect(address, SYNC_ALPN).await?;
 
         // Serialize the request before starting the exchange clock.
         let request_bytes = JsonHandler::serialize_request(request)?;
@@ -855,12 +991,70 @@ impl SyncTransport for IrohTransport {
         Ok(response)
     }
 
+    async fn fetch_blob_range(
+        &self,
+        address: &Address,
+        cid: &crate::entry::ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        crate::backend::validate_blob_cid(cid)?;
+        let budget = super::http::blob_stream_budget(&range);
+        let request = BlobWireRequest::Range(BlobRangeRequest {
+            cid: cid.clone(),
+            start: range.start,
+            end: range.end,
+        });
+        // An over-budget stream fails the bounded read, which is reported the
+        // same way as a stream that does not verify.
+        let (status, stream) = match self.blob_exchange(address, &request, budget).await {
+            Err(crate::Error::Sync(e)) if matches!(*e, SyncError::Network(ref m) if *m == BLOB_RESPONSE_OVER_BUDGET) =>
+            {
+                return Err(crate::backend::errors::BackendError::BlobStreamInvalid {
+                    cid: cid.clone(),
+                }
+                .into());
+            }
+            other => other?,
+        };
+        match status {
+            blob_status::OK => Ok(Some(crate::blob::bao::decode_range(cid, range, &stream)?)),
+            blob_status::ABSENT => Ok(None),
+            other => Err(blob_status_error(other)),
+        }
+    }
+
+    async fn query_blobs(&self, address: &Address, cids: &[crate::entry::ID]) -> Result<Vec<bool>> {
+        crate::sync::handler::check_blob_availability_request(cids)?;
+        let request = BlobWireRequest::Availability(BlobAvailabilityRequest {
+            cids: cids.to_vec(),
+        });
+        let (status, payload) = self
+            .blob_exchange(address, &request, MAX_BLOB_REQUEST_BYTES as u64)
+            .await?;
+        if status != blob_status::OK {
+            return Err(blob_status_error(status));
+        }
+        let answer: BlobAvailabilityResponse = serde_json::from_slice(&payload)
+            .map_err(|e| SyncError::SerializationError(e.to_string()))?;
+        super::http::check_availability_answer(cids, answer)
+    }
+
     fn is_server_running(&self) -> bool {
         self.server_state.is_running()
     }
 
     fn get_server_address(&self) -> Result<String> {
         self.server_state.get_address().map_err(|e| e.into())
+    }
+}
+
+/// The error for a non-success blob-protocol status byte.
+fn blob_status_error(status: u8) -> crate::Error {
+    match status {
+        blob_status::INVALID_REQUEST => {
+            SyncError::InvalidData("peer rejected the blob request".to_string()).into()
+        }
+        _ => SyncError::Network(format!("peer failed the blob request (status {status})")).into(),
     }
 }
 
@@ -874,7 +1068,10 @@ mod tests {
     fn assert_endpoint_portmapper(transport: &IrohTransport, expected: PortmapperConfig) {
         let config = format!("{:?}", transport.endpoint_builder());
         assert!(config.contains(&format!("portmapper_config: {expected:?}")));
-        assert!(config.contains(&format!("alpn_protocols: {:?}", vec![SYNC_ALPN.to_vec()])));
+        assert!(config.contains(&format!(
+            "alpn_protocols: {:?}",
+            vec![SYNC_ALPN.to_vec(), BLOB_ALPN.to_vec()]
+        )));
     }
 
     #[tokio::test]

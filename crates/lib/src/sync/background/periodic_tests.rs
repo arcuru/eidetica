@@ -34,6 +34,7 @@ impl LocalPeer {
             peer_state: Arc::clone(&sync.peer_state),
             retry_queue: Vec::new(),
             command_rx,
+            blob_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BLOB_COMMANDS)),
         };
         engine.transport_manager.add(
             "http",
