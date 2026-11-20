@@ -42,6 +42,7 @@ use crate::backend::{InstanceMetadata, RecordPage, RecordRange, StoreStateReques
 use crate::entry::{Entry, ID};
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
+pub use crate::state::ReadScope;
 use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
@@ -91,19 +92,6 @@ pub struct HandshakeAck {
 // frontier are server-side by construction, and every op is intrinsically
 // (tree, store, identity)-scoped. Carried in `ServiceRequest::AuthenticatedDb`.
 // ===========================================================================
-
-/// Which snapshot of the DAG an op observes. Mirrors the `Database`
-/// read posture: a write's parent tips are the tips of the *same* snapshot
-/// the caller reads (see the Verification Model design doc).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ReadScope {
-    /// Default-safe: only the maximal all-`Verified` ancestor-closed prefix.
-    #[default]
-    Verified,
-    /// Also include `Unverified` entries (`Failed` always dropped). The
-    /// caller explicitly opted in via `Database::allow_unverified()`.
-    AllowUnverified,
-}
 
 /// A CRDT store's materialized state on the wire. Concrete `Store<T>` typing
 /// stays client-side sugar over this; the cache path already ships
@@ -192,8 +180,8 @@ pub enum DatabaseOp {
     /// The selected frontier (server runs `Database::snapshot` in `scope`).
     /// Gate Read; no client-supplied verification labels.
     GetSnapshot { scope: ReadScope },
-    /// Server-materialized merged state of an **unencrypted** store, against
-    /// the server's own Verified frontier. Gate Read.
+    /// Server-materialized Doc projection of a supported plaintext Store,
+    /// against the server's own Verified frontier. Gate Read; subject to refusal.
     GetStoreState { store: String },
     /// Ordered (by subtree height), verified, opaque store entries reachable
     /// from `tips` in `scope` — the universal primitive, incl. encrypted

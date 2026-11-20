@@ -424,6 +424,136 @@ fn remote_conn(instance: &Instance) -> eidetica::service::client::RemoteConnecti
         .expect("test server always creates Remote backend")
 }
 
+#[tokio::test]
+async fn snapshot_first_service_signer_state_without_credentials() -> eidetica::Result<()> {
+    use eidetica::{
+        Database, Error,
+        account::AccountSigner,
+        auth::types::AuthKey,
+        crdt::Codec,
+        state::{StateError, StateOperation},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let dir = tempfile::tempdir()?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    let socket = dir.path().join("state.sock");
+    let instance = crate::helpers::test_local_instance().await;
+    let (owner, _) = generate_keypair();
+    let (reader_key, reader_pubkey) = generate_keypair();
+    let db = Database::create(&instance, owner.clone(), Doc::new()).await?;
+    let root = db.root_id().clone();
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?
+            .set_auth_key(&reader_pubkey, AuthKey::active(None, Permission::Read))
+            .await
+    })
+    .await?;
+
+    let refuse = Arc::new(AtomicBool::new(false));
+    let running_policy = refuse.clone();
+    let service = ServiceServer::bind(instance.clone(), &socket)
+        .await?
+        .without_credentials()
+        .with_state_admission(Arc::new(move |_, op| {
+            !(matches!(op, StateOperation::ReadDoc { store: "_index" })
+                && running_policy.load(Ordering::Relaxed))
+        }));
+    let (shutdown, rx) = watch::channel(());
+    let task = tokio::spawn(service.run(rx));
+
+    let url = format!("unix://{}", socket.display());
+    let unauthenticated = Instance::connect(&url).await?;
+    assert!(unauthenticated.login_account("admin", "").await.is_err());
+    let reader = AccountSigner::new(root.clone(), reader_key);
+    let identity = reader.identity().clone();
+    assert!(matches!(
+        remote_conn(&unauthenticated)
+            .get_store_state(root.clone(), identity.clone(), "_index".into())
+            .await,
+        Err(Error::State(StateError::Denied))
+    ));
+    let client = reader.connect(&url).await?;
+    let conn = remote_conn(&client);
+    let read_index = || conn.get_store_state(root.clone(), identity.clone(), "_index".into());
+    assert!(serde_json::from_value::<Doc>(read_index().await?)?.is_empty());
+    refuse.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        read_index().await,
+        Err(Error::State(StateError::Refused))
+    ));
+    refuse.store(false, Ordering::Relaxed);
+    assert!(serde_json::from_value::<Doc>(read_index().await?)?.is_empty());
+
+    // Even a writer session's own ready projection must not become engine
+    // output. First prove the private projection really exists and is readable.
+    let writer = AccountSigner::new(root.clone(), owner);
+    let writer_client = writer.connect(&url).await?;
+    let writer_conn = remote_conn(&writer_client);
+    let writer_identity = writer.identity().clone();
+    let mut private = Doc::new();
+    private.set("not-engine-state", "private projection");
+    db.with_transaction(|tx| async move {
+        tx.get_store::<DocStore>("data")
+            .await?
+            .set("key", "from history")
+            .await
+    })
+    .await?;
+    let mut request = derived_request(&root, "data");
+    request.projection.name = "eidetica/opaque".into();
+    request.source_key = instance
+        .backend()
+        .store_snapshot_at(&root, "data", &db.snapshot().await?)
+        .await?
+        .cache_key_bytes();
+    let bytes = private.encode()?;
+    publish_remote_state(
+        &writer_conn,
+        &writer_identity,
+        request.clone(),
+        bytes.clone(),
+    )
+    .await;
+    let view = writer_conn
+        .resolve_store_state(writer_identity.clone(), request)
+        .await?
+        .unwrap();
+    assert_eq!(
+        writer_conn
+            .store_state_record_get(root.clone(), writer_identity.clone(), view, vec![0])
+            .await?,
+        Some(bytes)
+    );
+    let computed = writer_conn
+        .get_store_state(root.clone(), writer_identity.clone(), "data".into())
+        .await?;
+    let computed = serde_json::from_value::<Doc>(computed)?;
+    assert_eq!(
+        computed.get("key").and_then(|v| v.as_text()),
+        Some("from history")
+    );
+    assert!(computed.get("not-engine-state").is_none());
+    assert!(
+        matches!(
+            conn.get_store_state(root.clone(), writer_identity, "_index".into())
+                .await,
+            Err(Error::State(StateError::Denied))
+        ),
+        "a different session cannot borrow the writer identity"
+    );
+
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap()?;
+    Ok(())
+}
+
 /// Exercise `DatabaseOp::BeginTransaction` end-to-end over the wire.
 #[tokio::test]
 async fn test_database_begin_transaction() {
@@ -2006,9 +2136,11 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
         .unwrap()
         .0;
     let client = login_client(&socket_path, "alice").await;
-    let remote = eidetica::Database::open_remote(&client, remote_conn(&client), &root_id, identity)
-        .await
-        .unwrap();
+    let connection = remote_conn(&client);
+    let remote =
+        eidetica::Database::open_remote(&client, connection.clone(), &root_id, identity.clone())
+            .await
+            .unwrap();
 
     // First use publishes the encrypted row projection into this session's
     // cache. A fresh transaction below proves the already-published path.
@@ -2039,6 +2171,14 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
         memory.store_state_record_count(&root_id, "encrypted_rows"),
         4
     );
+    assert!(matches!(
+        connection
+            .get_store_state(root_id.clone(), identity, "encrypted_rows".into())
+            .await,
+        Err(eidetica::Error::State(
+            eidetica::state::StateError::UnsupportedProjection
+        ))
+    ));
     let tx = remote.new_transaction().await.unwrap();
     let mut encrypted = tx
         .get_store::<PasswordStore<Table<ServiceTodo>>>("encrypted_rows")

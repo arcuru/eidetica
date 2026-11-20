@@ -26,6 +26,16 @@ The server wraps a full `Instance` (not just a backend) so it can handle both st
 
 Historical Store state is served through the shared Store-state record substrate rather than a service-layer cache module; every request is bound to the authenticated session (see [Store state](#store-state)).
 
+### Snapshot-bound State
+
+`StateReader::capture` authorizes Read from the engine's retained Verified frontier and returns a `ReadContext` with the database, root Snapshot and read scope. It does not run verification, enumerate Stores or prepare signing data. Reading authority can require Settings I/O. A local transaction can start at that Snapshot with `Database::new_transaction_at`; its staged Store, index and settings changes remain local to the transaction and cannot grant signing authority.
+
+`StateReader::read_doc` rechecks current Read and computes one supported plaintext Doc projection at the supplied Verified root cut. It folds that Store's history, and looks up the named Store's type at the same cut when needed. It does not use client-uploaded projections, decrypt Stores or silently substitute latest. Diagnostic boundaries can be captured, but cannot be used for this projection. A `ComputedDoc` carries its source context, not a claim of independent verification by its recipient. A transport that sends it must also bind the producer's identity before its consumer can make a trust decision. Raw signed Entry exchange is separate.
+
+`ServiceServer::without_credentials` disables hosted-login and native login-record commands for this socket; it does not disable signer possession proof or change the socket's trust model. `ServiceServer::with_state_admission` lets the engine decline a computation separately from Read authorization and login configuration. A typed `Refused` is neither denial nor successful empty state. An eligible signer needs no daemon login record.
+
+The legacy `GetStoreState` JSON operation uses the same authorization and projection at one captured cut, but its response still omits context. `BeginTransaction` remains a legacy write-preparation bundle. Neither defines a new State wire protocol.
+
 ## Wire Protocol
 
 The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
