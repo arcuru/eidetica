@@ -164,16 +164,19 @@ async fn selected_key_changes_identity_and_target_signatures() -> Result<()> {
     ));
 
     let root = identity.root_id().clone();
+    identity.database().share().await?;
+    let preferences = identity.database().sync_settings().await?;
+    assert!(preferences.sync_enabled);
+    assert_eq!(user.database(&root).await?.sync_settings, preferences);
     let before_retry = identity.database().snapshot().await?;
     // No peer addresses: succeeding must not depend on replaying bootstrap.
     let ticket = DatabaseTicket::new(root.clone());
-    let preferences = SyncSettings::disabled().with_interval(456);
     let IdentityRegistration::Active(retried) = Box::pin(user.register_identity(
         "personal",
         &ticket,
         &old_key,
         Permission::Admin(0),
-        preferences.clone(),
+        SyncSettings::disabled().with_interval(456),
     ))
     .await?
     else {
@@ -222,7 +225,7 @@ async fn selected_key_changes_identity_and_target_signatures() -> Result<()> {
     let tracked = user.tracked_identity("personal").await?.unwrap();
     assert_eq!(tracked.status, IdentityStatus::Active);
     assert_eq!(tracked.requested_key_id, old_key);
-    assert_eq!(tracked.sync_settings, preferences);
+    assert!(tracked.pending_sync_settings().is_none());
     let database = user.database(&root).await?;
     assert_eq!(database.key_id, new_key);
     assert_eq!(database.sync_settings, preferences);

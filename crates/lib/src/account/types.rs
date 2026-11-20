@@ -290,6 +290,15 @@ pub struct TrackedIdentity {
     pub requested_key_id: PublicKey,
     /// Permission requested when registering (initial membership for a created identity).
     pub requested_permission: crate::auth::Permission,
-    /// Local replication preferences, including while approval is pending.
-    pub sync_settings: SyncSettings,
+    // Enrollment settings, not the database's current sharing preference.
+    pub(crate) sync_settings: SyncSettings,
+}
+
+impl TrackedIdentity {
+    /// Preferences requested for a pending enrollment. Once active, use
+    /// [`AccountSession::tracked_database`](crate::AccountSession::tracked_database)
+    /// or the Identity's database handle to read the current preferences.
+    pub fn pending_sync_settings(&self) -> Option<&SyncSettings> {
+        (self.status == IdentityStatus::Pending).then_some(&self.sync_settings)
+    }
 }

@@ -337,8 +337,8 @@ async fn identity_membership_round_trip(connected: bool, replicated: bool) -> ei
             .tracked_identity("team")
             .await?
             .unwrap()
-            .sync_settings,
-        settings
+            .pending_sync_settings(),
+        Some(&settings)
     );
 
     // Keep the separate rejection scenario's future out of this already large
