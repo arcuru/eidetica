@@ -57,6 +57,113 @@ restart-safe completion. An interrupted or failed call can still leave peer
 requests, replicated data, routing, or a committed Account update; retry rather
 than assuming rollback.
 
+## Try it with two local daemons
+
+From the repository root, build both binaries. Use a Rust development
+shell (`nix develop` if you use Nix) and Bash with GNU `timeout`.
+
+```bash
+cargo build --locked --target-dir target -p eidetica-bin -p shistory
+```
+
+Run the block below on a trusted machine and network. Both daemons use their
+normal Iroh peer networking, but their clients connect over separate private
+Unix sockets. This uses passwordless demo accounts and the default **global
+Write** grant: reachable peers do not need separate approval to join and write.
+Use only fake command text. The demo does not load shell hooks, read your
+history, or use an existing daemon.
+
+```bash
+env -i PATH="$PATH" bash <<'BASH'
+set -euo pipefail
+
+eidetica="$PWD/target/debug/eidetica"
+history_bin="$PWD/target/debug/shistory"
+demo=$(mktemp -d /tmp/shistory.XXXXXX)
+pids=()
+cleanup() {
+    local status=$? pid
+    for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+    wait
+    if ((status != 0)); then tail -n 15 "$demo"/*.log >&2 || true; fi
+    rm -rf -- "$demo"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+start_daemon() {
+    local peer=$1
+    local data="$demo/$peer" i
+    mkdir -p "$data"
+    timeout 20s "$eidetica" daemon --data-dir "$data" --cache-dir "$data/cache" \
+        init --username "$peer" --passwordless </dev/null
+    "$eidetica" daemon --data-dir "$data" --cache-dir "$data/cache" \
+        --socket "$demo/$peer.sock" </dev/null >"$demo/$peer.log" 2>&1 &
+    pids+=("$!")
+    for ((i=0; i<50; i++)); do
+        if grep -Fxq "Eidetica daemon listening on $demo/$peer.sock" "$demo/$peer.log"; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "$peer daemon did not report readiness" >&2
+    return 1
+}
+shistory() {
+    local peer=$1
+    shift
+    EIDETICA_SOCKET="$demo/$peer.sock" timeout 20s "$history_bin" --user "$peer" "$@"
+}
+
+start_daemon alice
+start_daemon bob
+alice=$(shistory alice setup --name laptop </dev/null)
+ticket=$(shistory alice ticket </dev/null)
+bob=$(shistory bob setup "$ticket" --name server </dev/null)
+printf 'laptop setup:\n%s\nserver setup:\n%s\n' "$alice" "$bob"
+
+laptop_id=$(sed -n 's/^host id: //p' <<<"$alice")
+server_id=$(sed -n 's/^host id: //p' <<<"$bob")
+if [[ -z $laptop_id || -z $server_id || $laptop_id == "$server_id" ||
+      ${alice%%$'\n'*} != "${bob%%$'\n'*}" ]]; then
+    echo 'Expected distinct host UUIDs on the same history database' >&2
+    exit 1
+fi
+
+marker='echo shistory-demo'
+record=$(printf '%s' "$marker" | shistory bob --host-id "$server_id" start \
+    --session demo --cwd /demo --started-at 2026-01-01T12:00:00Z)
+shistory bob --host-id "$server_id" finish "$record" --duration-ms 4 --exit-status 0 </dev/null
+
+expected=$(printf '2026-01-01T12:00:00+00:00\tserver\t0\t4\t/demo\t%s' "$marker")
+deadline=$((SECONDS + 30))
+while ((SECONDS < deadline)); do
+    rows=$(shistory alice search "$marker" --all-hosts </dev/null)
+    if grep -Fxq "$expected" <<<"$rows"; then
+        printf 'laptop query:\n%s\n' "$rows"
+        exit 0
+    fi
+    sleep 1
+done
+echo 'The completed server record did not reach the laptop' >&2
+exit 1
+BASH
+```
+
+The two `history database:` lines should match and the two `host id:` lines
+should differ. The laptop query should show the `server` row for
+`echo shistory-demo`, with exit status `0` and duration `4` ms. The command
+text is recorded through stdin; it is not executed. The script polls for the
+completed row for 30 seconds, with a timeout on each query. The header alone
+is not evidence of replication.
+
+If setup, capture, or replication fails, check the CLI error and the daemon
+log tails printed by the script. Check that both daemons reached readiness
+and that local peer traffic is allowed. The script stops its two daemons and
+removes the temporary sockets, data, caches, and logs when it exits. Rerun the
+whole block to retry from fresh state.
+
 ## Database selection and upgrades
 
 Setup remembers the history database root ID in the Account as the `history`
