@@ -333,20 +333,18 @@ in {
     # correctly over the real Unix socket protocol.
     service =
       pkgs.runCommand "integration-service" {
-        nativeBuildInputs = [eidetica-bin pkgs.cargo-nextest pkgs.curl pkgs.jq];
+        nativeBuildInputs = [eidetica-bin pkgs.cargo-nextest pkgs.curl];
       } ''
         SOCKET="$TMPDIR/test.sock"
         DATA="$TMPDIR/data"
         export EIDETICA_CACHE_DIR="$TMPDIR/cache"
 
-        # Use the separate device key store on fresh, disposable state. Init
-        # and both daemon starts below are separate processes.
-        export EIDETICA_INSTANCE_CREDENTIALS_DIR="$TMPDIR/credentials"
-        install -d -m 0700 "$EIDETICA_INSTANCE_CREDENTIALS_DIR"
+        # The daemon refuses to run an uninitialised backend, so initialise a
+        # fresh sqlite instance first, then start the daemon against the same
+        # data dir. (inmemory can't be used here: init and daemon are separate
+        # processes and an in-memory backend wouldn't persist between them.)
         eidetica daemon --backend sqlite --data-dir "$DATA" init \
-          --username admin --passwordless >"$TMPDIR/init.log" 2>&1
-        DEVICE_ID=$(sed -n 's/^  Device ID:    //p' "$TMPDIR/init.log")
-        test -n "$DEVICE_ID"
+          --username admin --passwordless
         DAEMON_LOG="$TMPDIR/daemon.log"
         eidetica daemon --backend sqlite --data-dir "$DATA" --socket "$SOCKET" \
           --dashboard --dashboard-port 0 \
@@ -396,7 +394,6 @@ in {
           -H "Origin: http://127.0.0.1:$PORT" -d 'ticket=invalid&permission=read' \
           "http://127.0.0.1:$PORT/dashboard/track")" = 400
 
-        grep -Fq "Instance initialized (device ID: $DEVICE_ID)" "$DAEMON_LOG"
         echo "Daemon started (pid=$DAEMON_PID, socket=$SOCKET)"
 
         # Copy source to a writable location (nextest creates target/nextest/ in the workspace)
@@ -476,16 +473,64 @@ in {
         wait "$DAEMON_PID"
         DAEMON_PID=""
 
-        grep -Fq "Instance initialized (device ID: $DEVICE_ID)" "$DAEMON_LOG"
-        jq -e --rawfile init "$TMPDIR/init.log" \
-          --rawfile first "$TMPDIR/daemon.log" --rawfile restart "$DAEMON_LOG" \
-          '.signing_key | select(type == "string" and length > 0) as $secret
-           | all([$init, $first, $restart][]; contains($secret) | not)' \
-          "$EIDETICA_INSTANCE_CREDENTIALS_DIR/instance-secrets.json" >/dev/null
-
-        echo "Service integration test passed (same device ID from separate credential store across both daemon starts)"
+        echo "Service integration test passed"
         mkdir -p $out
         echo "passed" > $out/result
+      '';
+
+    # Exercise the opt-in store with the packaged daemon, without repeating
+    # the default service smoke test's socket and dashboard workloads.
+    device-key-restart =
+      pkgs.runCommand "integration-device-key-restart" {
+        nativeBuildInputs = [eidetica-bin pkgs.jq];
+      } ''
+        export EIDETICA_CACHE_DIR="$TMPDIR/cache"
+        export RUST_LOG=eidetica=debug
+        KEY_DIR="$TMPDIR/device-key"
+        install -d -m 0700 "$KEY_DIR"
+        DAEMON=(eidetica daemon --backend sqlite --data-dir "$TMPDIR/data")
+        "''${DAEMON[@]}" --device-key-dir "$KEY_DIR" init \
+          --username admin --passwordless >"$TMPDIR/init.log" 2>&1 || {
+          echo "Opt-in daemon init failed"
+          exit 1
+        }
+        DEVICE_ID=$(sed -n 's/^  Device ID:    //p' "$TMPDIR/init.log")
+        test -n "$DEVICE_ID"
+
+        DAEMON_PID=""
+        trap 'if [ -n "$DAEMON_PID" ]; then kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; fi' EXIT
+        export EIDETICA_DEVICE_KEY_DIR="$KEY_DIR"
+        for start in 1 2; do
+          SOCKET="$TMPDIR/device-key-$start.sock"
+          LOG="$TMPDIR/start-$start.log"
+          "''${DAEMON[@]}" --socket "$SOCKET" >"$LOG" 2>&1 &
+          DAEMON_PID=$!
+          for attempt in $(seq 1 100); do
+            if [ -S "$SOCKET" ] && grep -q 'Daemon sync listener started' "$LOG"; then
+              break
+            fi
+            kill -0 "$DAEMON_PID" 2>/dev/null || break
+            sleep 0.1
+          done
+          if [ ! -S "$SOCKET" ] || ! grep -q 'Daemon sync listener started' "$LOG"; then
+            echo "Opt-in daemon start $start did not become ready"
+            exit 1
+          fi
+          kill -TERM "$DAEMON_PID"
+          wait "$DAEMON_PID"
+          DAEMON_PID=""
+          grep -Fq "Instance initialized (device ID: $DEVICE_ID)" "$LOG"
+        done
+
+        # Never pass the key in argv or echo the captured logs on failure.
+        jq -e --rawfile init "$TMPDIR/init.log" \
+          --rawfile first "$TMPDIR/start-1.log" --rawfile restart "$TMPDIR/start-2.log" \
+          '.signing_key | select(type == "string" and length > 0) as $key
+           | all([$init, $first, $restart][]; contains($key) | not)' \
+          "$KEY_DIR/instance-secrets.json" >/dev/null
+        echo "Device key restart test passed (same device ID; no key in init or daemon logs)"
+        mkdir -p "$out"
+        echo "passed" > "$out/result"
       '';
 
     # OCI container integration test
