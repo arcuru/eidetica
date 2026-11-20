@@ -128,6 +128,10 @@ impl<D: CRDT + 'static> StoreStateModel<D> {
 mod errors;
 pub use errors::StoreError;
 
+pub mod schema;
+mod structured;
+pub use structured::StructuredStore;
+
 mod docstore;
 pub use docstore::{DocStore, DocStoreInit};
 

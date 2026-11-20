@@ -389,6 +389,7 @@ impl DerivedKey {
 /// Caches the derived key to avoid expensive re-derivation on every operation.
 struct PasswordEncryptor {
     password: Password,
+    verified_store_type: Option<&'static str>,
     subtree_name: String,
     store_identity: Vec<u8>,
     /// Cached derived key (zeroized on drop, thread-safe)
@@ -418,10 +419,16 @@ impl PasswordEncryptor {
         store_identity.extend_from_slice(subtree_name.as_bytes());
         Self {
             password,
+            verified_store_type: None,
             subtree_name,
             store_identity,
             derived_key: Arc::new(Mutex::new(DerivedKey::new())),
         }
+    }
+
+    fn for_store(mut self, type_id: &'static str) -> Self {
+        self.verified_store_type = Some(type_id);
+        self
     }
 
     /// Execute a function with access to the encryption key (with caching)
@@ -540,6 +547,10 @@ impl PasswordEncryptor {
 }
 
 impl Encryptor for PasswordEncryptor {
+    fn supports_store_type(&self, type_id: &str) -> bool {
+        self.verified_store_type == Some(type_id)
+    }
+
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         // Wire format: nonce (12 bytes) || ciphertext
         if ciphertext.len() < AES_GCM_NONCE_SIZE {
@@ -1055,11 +1066,14 @@ impl<S: Store> PasswordStore<S> {
         self.set_config(config.clone().into()).await?;
 
         // Register encryptor with transaction (store is now unlocked)
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password.clone(),
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
+        let encryptor = Box::new(
+            PasswordEncryptor::new(
+                password.clone(),
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )
+            .for_store(S::type_id()),
+        );
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         // Update internal state
@@ -1227,11 +1241,14 @@ impl<S: Store> PasswordStore<S> {
         self.cached_password = Some(password.clone());
 
         // Register encryptor with the transaction for transparent encryption
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password,
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
+        let encryptor = Box::new(
+            PasswordEncryptor::new(
+                password,
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )
+            .for_store(S::type_id()),
+        );
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         Ok(())
