@@ -445,3 +445,27 @@ fn test_assert_value_content_helper() {
     let expected_int = Value::Int(42);
     assert_value_content(&int_value, "int", Some(&expected_int));
 }
+
+#[test]
+fn test_u64_conversion_is_checked() {
+    use eidetica::crdt::{CRDTError, Codec};
+
+    // In-range values convert exactly and keep the existing `Int` wire bytes.
+    for (n, bytes) in [
+        (0u64, br#"{"Int":0}"#.as_slice()),
+        (i64::MAX as u64, br#"{"Int":9223372036854775807}"#),
+    ] {
+        let value = Value::try_from(n).unwrap();
+        assert_eq!(value, Value::Int(n as i64));
+        assert_eq!(value.encode().unwrap(), bytes);
+        assert_eq!(Value::decode(bytes).unwrap(), value);
+    }
+
+    // Values above i64::MAX are rejected rather than wrapped.
+    for n in [i64::MAX as u64 + 1, u64::MAX] {
+        assert!(matches!(
+            Value::try_from(n),
+            Err(CRDTError::InvalidValue { .. })
+        ));
+    }
+}

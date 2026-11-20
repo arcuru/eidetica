@@ -494,7 +494,7 @@ fn test_serde_json_round_trip_map() {
     original_map.set("name", "Alice");
     original_map.set("age", 30);
     original_map.set("active", true);
-    original_map.set("score", 95.5); // Will be converted to int
+    original_map.set("score", 95);
 
     let mut nested_map = Doc::new();
     nested_map.set("city", "NYC");

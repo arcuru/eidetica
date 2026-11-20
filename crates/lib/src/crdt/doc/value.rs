@@ -340,17 +340,33 @@ impl From<i64> for Value {
     }
 }
 
-impl From<u64> for Value {
-    fn from(value: u64) -> Self {
-        // Convert to i64, clamping if necessary
-        Value::Int(value as i64)
-    }
-}
+/// Converts a `u64` losslessly, rejecting values above `i64::MAX` instead of
+/// wrapping them into `Value::Int`.
+///
+/// ```
+/// # use eidetica::crdt::doc::Value;
+/// assert_eq!(Value::try_from(42u64).unwrap(), Value::Int(42));
+/// assert!(Value::try_from(u64::MAX).is_err());
+/// ```
+///
+/// `Value` has no floating-point representation, so there is deliberately no
+/// conversion from `f32`/`f64`: truncating, saturating or mapping NaN to zero
+/// would silently change the stored number. Applications must choose their own
+/// representation for such values.
+///
+/// ```compile_fail
+/// # use eidetica::crdt::doc::Value;
+/// let _ = Value::from(1.5f64);
+/// ```
+impl TryFrom<u64> for Value {
+    type Error = CRDTError;
 
-impl From<f64> for Value {
-    fn from(value: f64) -> Self {
-        // Convert to i64, truncating the fractional part
-        Value::Int(value as i64)
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        i64::try_from(value)
+            .map(Value::Int)
+            .map_err(|_| CRDTError::InvalidValue {
+                reason: format!("integer {value} exceeds the i64 range of Value::Int"),
+            })
     }
 }
 
@@ -362,12 +378,6 @@ impl From<i32> for Value {
 
 impl From<u32> for Value {
     fn from(value: u32) -> Self {
-        Value::Int(value as i64)
-    }
-}
-
-impl From<f32> for Value {
-    fn from(value: f32) -> Self {
         Value::Int(value as i64)
     }
 }
