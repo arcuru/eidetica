@@ -567,6 +567,36 @@ async fn cache_path_rejects_sqlite_sidecars_before_creating_history() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn cache_path_rejects_symlinked_sqlite_sidecars() {
+    let dir = tempfile::tempdir().unwrap();
+    let history = dir.path().join("history.db");
+    let cache = dir.path().join("cache.db");
+    std::os::unix::fs::symlink(&cache, dir.path().join("history.db-wal")).unwrap();
+
+    let open = || Sqlite::open_with_cache_path(&history, &cache, DerivedCachePolicy::persistent());
+    let error = open()
+        .await
+        .err()
+        .expect("a dangling sidecar must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("Failed to resolve SQLite sidecar paths")
+    );
+    assert!(!history.exists() && !cache.exists());
+
+    std::fs::write(&cache, b"unchanged").unwrap();
+    let error = open()
+        .await
+        .err()
+        .expect("a sidecar alias must be rejected");
+    assert!(error.to_string().contains("paths or sidecars collide"));
+    assert!(!history.exists());
+    assert_eq!(std::fs::read(&cache).unwrap(), b"unchanged");
+}
+
 #[tokio::test]
 async fn parsed_url_cache_suffix_and_file_backed_budget_reopen() {
     let dir = tempfile::tempdir().unwrap();
