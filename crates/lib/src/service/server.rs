@@ -997,15 +997,31 @@ async fn dispatch_inner(
                 )
                 .await?;
             } else if !is_submit {
-                gate_tree_permission(
+                let required = op.required_permission();
+                let gate = check_tree_permission(
                     instance,
                     &acting_pubkey,
                     &identity,
                     &root_id,
-                    op.required_permission(),
+                    required,
                     false,
                 )
                 .await?;
+                if gate == TreeGate::Insufficient {
+                    // Store-state staging only publishes an optional cache of
+                    // state the caller can already derive from history. A
+                    // caller whose identity resolved (so it holds Read) but
+                    // lacks Write is refused the staging itself, with the
+                    // optional-miss shape so its read falls back to history
+                    // instead of failing. Every other refusal stays opaque.
+                    if is_store_state_staging(&op) {
+                        return Err(crate::backend::BackendError::StoreStateNotRetained {
+                            reason: "store-state staging requires Write".into(),
+                        }
+                        .into());
+                    }
+                    return Err(tree_permission_denied(&root_id, &acting_pubkey, required));
+                }
             }
 
             dispatch_database_op(
@@ -1020,6 +1036,17 @@ async fn dispatch_inner(
             .await
         }
     }
+}
+
+/// Whether `op` writes into the optional derived Store-state cache.
+fn is_store_state_staging(op: &DatabaseOp) -> bool {
+    matches!(
+        op,
+        DatabaseOp::BeginStoreStateStaging { .. }
+            | DatabaseOp::StageStoreStateRecords { .. }
+            | DatabaseOp::PublishStoreState { .. }
+            | DatabaseOp::AbortStoreState { .. }
+    )
 }
 
 /// Resolve the *acting* pubkey for a session-gated op.
@@ -1965,17 +1992,58 @@ async fn gate_tree_permission(
     required: Permission,
     require_existing: bool,
 ) -> crate::Result<()> {
-    let denied = || {
-        crate::Error::Auth(Box::new(AuthError::PermissionDenied {
-            reason: format!("tree {tree_id}: pubkey {pubkey} not permitted for {required:?}"),
-        }))
-    };
+    match check_tree_permission(
+        instance,
+        pubkey,
+        identity,
+        tree_id,
+        required,
+        require_existing,
+    )
+    .await?
+    {
+        TreeGate::Allowed => Ok(()),
+        TreeGate::Insufficient => Err(tree_permission_denied(tree_id, pubkey, required)),
+    }
+}
+
+/// Outcome of a per-tree gate check that did not fail outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TreeGate {
+    /// The caller holds `required`, or the tree is absent and the
+    /// create-flow passthrough applies.
+    Allowed,
+    /// The caller's identity resolved on the tree, so it holds at least
+    /// Read, but its level does not cover `required`.
+    Insufficient,
+}
+
+/// The opaque per-tree denial, identical for every refusal reason.
+fn tree_permission_denied(tree_id: &ID, pubkey: &PublicKey, required: Permission) -> crate::Error {
+    crate::Error::Auth(Box::new(AuthError::PermissionDenied {
+        reason: format!("tree {tree_id}: pubkey {pubkey} not permitted for {required:?}"),
+    }))
+}
+
+/// [`gate_tree_permission`], reporting a
+/// resolved-but-insufficient level as [`TreeGate::Insufficient`] instead of
+/// the denial. Every other refusal (unreadable settings, unknown or revoked
+/// identity) is still the opaque denial.
+async fn check_tree_permission(
+    instance: &Instance,
+    pubkey: &PublicKey,
+    identity: &SigKey,
+    tree_id: &ID,
+    required: Permission,
+    require_existing: bool,
+) -> crate::Result<TreeGate> {
+    let denied = || tree_permission_denied(tree_id, pubkey, required);
 
     if !instance.has_database(tree_id).await {
         return if require_existing {
             Err(denied())
         } else {
-            Ok(())
+            Ok(TreeGate::Allowed)
         };
     }
 
@@ -1997,11 +2065,11 @@ async fn gate_tree_permission(
         Permission::Admin(_) => resolved.can_admin(),
     };
 
-    if !allowed {
-        return Err(denied());
-    }
-
-    Ok(())
+    Ok(if allowed {
+        TreeGate::Allowed
+    } else {
+        TreeGate::Insufficient
+    })
 }
 
 /// Per-tree read gate for ops keyed by a raw entry id, which therefore

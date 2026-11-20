@@ -1962,6 +1962,179 @@ async fn test_historical_table_service_reads_use_row_record_set() {
     assert!(second.next.is_none());
 }
 
+/// A cold `Table` query by a Read-only session returns its rows from history.
+/// Staging the optional derived cache stays refused (as an optional miss), a
+/// caller without Read or with revoked Read keeps the opaque denial, and the
+/// rows match the embedded Read path and a Write-capable service caller.
+#[tokio::test]
+async fn test_read_only_service_table_query_falls_back_to_history() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    for user in ["alice", "bob", "carol", "dave", "erin"] {
+        create_user_via_admin(&server, user).await;
+    }
+    let mut owner = server.login_account("alice", "").await.unwrap();
+    let owner_key = owner.get_default_key().unwrap();
+    let database = owner.create_database(Doc::new(), &owner_key).await.unwrap();
+    let root_id = database.root_id().clone();
+    database
+        .with_transaction(|transaction| async move {
+            let table = transaction.get_store::<Table<ServiceTodo>>("rows").await?;
+            for (key, title) in [("a", "first"), ("b", "second")] {
+                table
+                    .set(
+                        key,
+                        ServiceTodo {
+                            title: title.into(),
+                            done: false,
+                        },
+                    )
+                    .await?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let mut keys = std::collections::HashMap::new();
+    let txn = database.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    for (user, permission) in [
+        ("bob", Some(Permission::Read)),
+        ("carol", None),
+        ("dave", Some(Permission::Read)),
+        ("erin", Some(Permission::Write(10))),
+    ] {
+        let key = server
+            .login_account(user, "")
+            .await
+            .unwrap()
+            .get_default_key()
+            .unwrap();
+        if let Some(permission) = permission {
+            settings
+                .set_auth_key(
+                    &key,
+                    eidetica::auth::types::AuthKey::active(Some(user), permission),
+                )
+                .await
+                .unwrap();
+        }
+        keys.insert(user, key);
+    }
+    txn.commit().await.unwrap();
+    let txn = database.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .revoke_auth_key(&keys["dave"])
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+
+    async fn search(database: &eidetica::Database) -> eidetica::Result<Vec<(String, String)>> {
+        let mut rows: Vec<_> = database
+            .new_transaction()
+            .await?
+            .get_store::<Table<ServiceTodo>>("rows")
+            .await?
+            .search(|_: &ServiceTodo| true)
+            .await?
+            .into_iter()
+            .map(|(key, row)| (key, row.title))
+            .collect();
+        rows.sort();
+        Ok(rows)
+    }
+    let open = |user: &'static str| {
+        let socket_path = socket_path.clone();
+        let root_id = root_id.clone();
+        let key = keys[user].clone();
+        async move {
+            let client = login_client(&socket_path, user).await;
+            let conn = remote_conn(&client);
+            let identity = SigKey::from_pubkey(&key);
+            let remote =
+                eidetica::Database::open_remote(&client, conn.clone(), &root_id, identity.clone())
+                    .await
+                    .unwrap();
+            (client, conn, identity, remote)
+        }
+    };
+    let expected = vec![
+        ("a".to_string(), "first".to_string()),
+        ("b".to_string(), "second".to_string()),
+    ];
+
+    // Read-only: a cold search and a viewer read both return the rows.
+    let (_bob, conn, identity, reader) = open("bob").await;
+    assert_eq!(search(&reader).await.unwrap(), expected);
+    let viewer = reader
+        .get_store_viewer::<Table<ServiceTodo>>("rows")
+        .await
+        .unwrap();
+    assert_eq!(viewer.get("b").await.unwrap().title, "second");
+    let staging = conn
+        .begin_store_state_staging(identity.clone(), derived_request(&root_id, "rows"))
+        .await
+        .unwrap_err();
+    assert!(
+        staging.is_store_state_not_retained(),
+        "Read-only staging must be refused as an optional miss: {staging}"
+    );
+    let engine = server.backend().local_engine().unwrap();
+    let memory = engine
+        .as_any()
+        .downcast_ref::<InMemory>()
+        .expect("test server is always InMemory");
+    assert_eq!(
+        memory.store_state_record_count(&root_id, "rows"),
+        0,
+        "a Read-only caller must not publish cached rows"
+    );
+
+    // Write control over the service: the search agrees and staging is
+    // permitted, so the writer's read publishes its row record set.
+    let (_erin, conn, identity, writer) = open("erin").await;
+    assert_eq!(search(&writer).await.unwrap(), expected);
+    assert_eq!(memory.store_state_record_count(&root_id, "rows"), 2);
+    let token = conn
+        .begin_store_state_staging(identity.clone(), derived_request(&root_id, "rows"))
+        .await
+        .unwrap();
+    conn.abort_store_state(root_id.clone(), identity, token)
+        .await
+        .unwrap();
+
+    // Embedded Read on the daemon's own instance returns the same rows.
+    let mut local_reader = server.login_account("bob", "").await.unwrap();
+    local_reader
+        .map_key(&keys["bob"], &root_id, SigKey::from_pubkey(&keys["bob"]))
+        .await
+        .unwrap();
+    let local = local_reader
+        .open_database_with_key(&root_id, &keys["bob"])
+        .await
+        .unwrap();
+    assert_eq!(search(&local).await.unwrap(), expected);
+
+    // No Read (never granted, or revoked): staging keeps the opaque denial.
+    for user in ["carol", "dave"] {
+        let client = login_client(&socket_path, user).await;
+        let conn = remote_conn(&client);
+        let error = conn
+            .begin_store_state_staging(
+                SigKey::from_pubkey(&keys[user]),
+                derived_request(&root_id, "rows"),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            !error.is_optional_store_state_unavailable()
+                && error.to_string().contains("PermissionDenied"),
+            "{user}: a caller without Read must stay denied: {error}"
+        );
+    }
+}
+
 /// A warm encrypted `Table` point read stays on the service's point-record
 /// path: it neither scans the published row set nor reconstructs Store history.
 #[tokio::test]
