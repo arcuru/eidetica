@@ -4,7 +4,9 @@ use std::{env, fs, path::PathBuf};
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let docs_dir = manifest_dir.join("../../docs/src");
+    let docs_dir = env::var_os("EIDETICA_BOOK_DOCS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("../../docs/src"));
 
     println!("cargo::rerun-if-changed={}", docs_dir.display());
 
