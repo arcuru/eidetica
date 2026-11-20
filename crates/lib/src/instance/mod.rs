@@ -612,17 +612,18 @@ impl Instance {
     /// Errors with [`InstanceError::NotInitialized`] if the backend has no
     /// instance metadata; use [`Instance::connect_or_create_backend`] when you want
     /// to bootstrap on an empty backend. This uses the backend's own device key;
-    /// use [`Instance::open_backend_with_credential_store`] if the key was stored
+    /// use [`Instance::open_backend_with_device_key_dir`] if the key was stored
     /// separately.
     pub async fn open_backend(backend: Box<dyn BackendImpl>) -> Result<Self> {
         Self::open_impl(backend, Arc::new(SystemClock)).await
     }
 
-    /// Open a local instance initialised with a separate credential store.
+    /// Open a local instance initialised with a separate device-key directory.
     ///
-    /// The same Unix-private directory used during creation is required. This
-    /// never imports legacy credentials or provisions a missing key.
-    pub async fn open_backend_with_credential_store(
+    /// Use the same Unix-private directory and trusted path required by
+    /// [`Instance::create_backend_with_device_key_dir`]. Opening never imports
+    /// legacy credentials or provisions a missing key.
+    pub async fn open_backend_with_device_key_dir(
         backend: Box<dyn BackendImpl>,
         directory: &Path,
     ) -> Result<Self> {
@@ -672,7 +673,7 @@ impl Instance {
     /// The key is written once before initialising the backend. If subsequent
     /// bootstrap fails, the file is retained; there is no automatic retry with
     /// a new identity. This trial does not migrate existing databases.
-    pub async fn create_backend_with_credential_store(
+    pub async fn create_backend_with_device_key_dir(
         backend: Box<dyn BackendImpl>,
         initial: NewAccount,
         directory: &Path,
@@ -1079,7 +1080,7 @@ impl Instance {
         backend: Arc<dyn BackendImpl>,
         clock: Arc<dyn Clock>,
         initial: NewAccount,
-        credential_directory: Option<&Path>,
+        device_key_dir: Option<&Path>,
     ) -> Result<(Self, AccountSession)> {
         use crate::account::system_databases::{
             create_accounts_database, create_databases_tracking,
@@ -1091,7 +1092,7 @@ impl Instance {
             signing_key: PrivateKey::generate(),
         };
         let device_id = secrets.signing_key.public_key();
-        if let Some(directory) = credential_directory {
+        if let Some(directory) = device_key_dir {
             credential_store::create(directory, secrets.clone()).await?;
         }
 
@@ -1129,7 +1130,7 @@ impl Instance {
 
         // 3. Publish metadata only once the device key has been saved. In
         // separate-store mode no key material is written to the backend.
-        if credential_directory.is_none() {
+        if device_key_dir.is_none() {
             backend.set_instance_secrets(&secrets).await?;
         }
 

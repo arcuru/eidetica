@@ -104,8 +104,8 @@ pub async fn open_instance(
     config: &BackendConfig,
     backend: Box<dyn BackendImpl>,
 ) -> eidetica::Result<Instance> {
-    match config.instance_credentials_dir.as_deref() {
-        Some(directory) => Instance::open_backend_with_credential_store(backend, directory).await,
+    match config.device_key_dir.as_deref() {
+        Some(directory) => Instance::open_backend_with_device_key_dir(backend, directory).await,
         None => Instance::open_backend(backend).await,
     }
 }
@@ -114,8 +114,8 @@ pub async fn open_instance(
 pub async fn create_backend(
     config: &BackendConfig,
 ) -> Result<Box<dyn BackendImpl>, Box<dyn std::error::Error>> {
-    if config.instance_credentials_dir.is_some() && !matches!(config.backend, Backend::Sqlite) {
-        return Err("--instance-credentials-dir is only supported for SQLite trials".into());
+    if config.device_key_dir.is_some() && !matches!(config.backend, Backend::Sqlite) {
+        return Err("--device-key-dir is only supported for SQLite trials".into());
     }
     let data_dir = config
         .data_dir

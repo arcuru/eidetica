@@ -80,8 +80,8 @@ pub struct BackendConfig {
 
     /// Opt-in device-key store for disposable SQLite trials. Use the same existing
     /// private directory for initialisation and subsequent opens.
-    #[arg(long, env = "EIDETICA_INSTANCE_CREDENTIALS_DIR")]
-    pub instance_credentials_dir: Option<PathBuf>,
+    #[arg(long, env = "EIDETICA_DEVICE_KEY_DIR")]
+    pub device_key_dir: Option<PathBuf>,
 
     /// PostgreSQL connection URL (required when backend=postgres)
     #[arg(long, env = "EIDETICA_POSTGRES_URL")]

@@ -72,7 +72,7 @@ url = { workspace = true }
 normal = ["time", "postcard", "postcard-derive", "z32", "instability"]
 
 [target.'cfg(unix)'.dependencies]
-tempfile = { workspace = true }
+rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

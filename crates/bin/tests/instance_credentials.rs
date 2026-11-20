@@ -20,7 +20,7 @@ fn command(root: &Path, data: &str) -> Command {
         .env("EIDETICA_DATA_DIR", root.join(data))
         .env("EIDETICA_CACHE_BACKEND", "inmemory")
         .env("EIDETICA_CACHE_DIR", root.join("cache"))
-        .env_remove("EIDETICA_INSTANCE_CREDENTIALS_DIR")
+        .env_remove("EIDETICA_DEVICE_KEY_DIR")
         .env("RUST_LOG", "eidetica=debug");
     cmd
 }
@@ -46,7 +46,7 @@ async fn protected_credentials_survive_cli_restart_without_writing_history() {
     let path = credentials.join("instance-secrets.json");
     let cli = || {
         let mut cmd = command(root.path(), "history");
-        cmd.env("EIDETICA_INSTANCE_CREDENTIALS_DIR", &credentials);
+        cmd.env("EIDETICA_DEVICE_KEY_DIR", &credentials);
         cmd
     };
     let init = cli()
@@ -93,7 +93,7 @@ async fn protected_credentials_survive_cli_restart_without_writing_history() {
     assert!(!String::from_utf8_lossy(&fs::read(db).unwrap()).contains(secret));
 
     let stale = command(root.path(), "other-history")
-        .env("EIDETICA_INSTANCE_CREDENTIALS_DIR", &credentials)
+        .env("EIDETICA_DEVICE_KEY_DIR", &credentials)
         .args(["daemon", "init", "--username", "trial", "--passwordless"])
         .output()
         .unwrap();
@@ -105,6 +105,11 @@ async fn protected_credentials_survive_cli_restart_without_writing_history() {
     assert!(
         fs::read(&path).unwrap() == saved,
         "init changed the original device key"
+    );
+    assert_eq!(
+        fs::read_dir(&credentials).unwrap().count(),
+        1,
+        "refused init left a staging file"
     );
     let other = SqlxBackend::open_sqlite_with_memory_cache(
         &root.path().join("other-history/eidetica.db"),
@@ -168,7 +173,7 @@ async fn trial_does_not_import_or_overwrite_legacy_credentials() {
     let before = fs::read(&db).unwrap();
     let refused = command(root.path(), "legacy")
         .arg("info")
-        .arg("--instance-credentials-dir")
+        .arg("--device-key-dir")
         .arg(&credentials)
         .output()
         .unwrap();

@@ -42,7 +42,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
             if let eidetica::Error::Instance(boxed) = &e
                 && matches!(boxed.as_ref(), InstanceError::NotInitialized)
             {
-                if args.backend_config.instance_credentials_dir.is_some() {
+                if args.backend_config.device_key_dir.is_some() {
                     return Err("Trial database has no instance metadata. Run `eidetica daemon init` only for a fresh disposable pair. If initialisation was interrupted, preserve both stores for inspection.".into());
                 }
                 return Err(format!(
@@ -230,9 +230,9 @@ pub async fn run_init(
     };
 
     let backend = create_backend(backend_args).await?;
-    let initialized = match backend_args.instance_credentials_dir.as_deref() {
+    let initialized = match backend_args.device_key_dir.as_deref() {
         Some(directory) => {
-            Instance::create_backend_with_credential_store(backend, new_account, directory).await
+            Instance::create_backend_with_device_key_dir(backend, new_account, directory).await
         }
         None => Instance::create_backend(backend, new_account).await,
     };
@@ -259,8 +259,8 @@ pub async fn run_init(
     println!("  Device ID:    {}", instance.id());
     println!("  Initial user: {}", args.username);
     println!();
-    if backend_args.instance_credentials_dir.is_some() {
-        println!("Start `eidetica daemon` with the same instance credential directory.");
+    if backend_args.device_key_dir.is_some() {
+        println!("Start `eidetica daemon` with the same --device-key-dir.");
     } else {
         println!("Start the daemon with: `eidetica daemon`");
     }
@@ -298,7 +298,7 @@ mod tests {
                 backend: Backend::Inmemory,
                 data_dir: Some(data_dir.to_path_buf()),
                 postgres_url: None,
-                instance_credentials_dir: None,
+                device_key_dir: None,
                 cache_bytes: None,
                 cache_namespaces: 1024,
             },
@@ -320,7 +320,7 @@ mod tests {
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,
-            instance_credentials_dir: None,
+            device_key_dir: None,
             cache_bytes: None,
             cache_namespaces: 1024,
         })
@@ -351,7 +351,7 @@ mod tests {
             backend: Backend::Inmemory,
             data_dir: Some(dir.path().into()),
             postgres_url: None,
-            instance_credentials_dir: None,
+            device_key_dir: None,
             cache_bytes: None,
             cache_namespaces: 1024,
         })
@@ -389,7 +389,7 @@ mod tests {
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,
-            instance_credentials_dir: None,
+            device_key_dir: None,
             cache_bytes: None,
             cache_namespaces: 1024,
         })
