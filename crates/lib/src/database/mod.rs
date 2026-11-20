@@ -613,7 +613,11 @@ impl Database {
             }
             None => self.snapshot().await?, // The service returns its Verified frontier.
         };
-        self.new_transaction_at(&snapshot)
+        self.auth_settings_at(&snapshot).await
+    }
+
+    pub(crate) async fn auth_settings_at(&self, snapshot: &Snapshot) -> Result<AuthSettings> {
+        self.new_transaction_at(snapshot)
             .await?
             .get_settings()?
             .auth_snapshot()
@@ -1214,6 +1218,10 @@ impl Database {
         Ok(txn)
     }
 
+    /// Legacy write-preparation bundle for the JSON service.
+    /// For a lightweight, authorized boundary with no prepared write data,
+    /// use [`crate::state::StateReader::capture`] instead.
+    ///
     /// Gather everything a client needs to build and sign a transaction
     /// locally for the given stores, with parents drawn from `scope`'s
     /// projection.
@@ -1288,14 +1296,14 @@ impl Database {
         })
     }
 
-    /// Server-materialized merged state of an **unencrypted** store, as a
+    /// Legacy trusted-engine helper for merged state of an **unencrypted** store, as a
     /// `serde_json::Value` against the database's Verified frontier.
+    /// This assumes a Doc-encoded Store. For authorized, checked projection
+    /// reads use [`crate::state::StateReader::read_doc`] instead.
     ///
     /// Creates an ephemeral transaction, deserializes every entry's
     /// store data as [`Doc`], and merges them via Doc's LWW merge —
-    /// the same merge `Store<T>` would perform client-side. All current
-    /// store types (DocStore, Table, Settings) serialize their data as
-    /// JSON, so `Doc`-typed deserialization works universally.
+    /// the same merge Doc-backed Stores perform client-side.
     ///
     /// # Encrypted stores
     ///
@@ -1551,7 +1559,7 @@ impl Database {
     }
 
     /// Keep every tip except `Failed` ones.
-    async fn drop_failed(&self, tips: &[ID]) -> Result<Snapshot> {
+    pub(crate) async fn drop_failed(&self, tips: &[ID]) -> Result<Snapshot> {
         let instance = self.instance()?;
         let backend = instance.require_local_engine()?;
         let mut visible = Vec::with_capacity(tips.len());

@@ -30,6 +30,7 @@ pub mod instance;
 #[cfg(all(unix, feature = "service"))]
 pub mod service;
 pub mod snapshot;
+pub mod state;
 pub mod store;
 pub mod sync;
 #[cfg(any(test, feature = "testing"))]
@@ -116,6 +117,10 @@ pub enum Error {
     #[error(transparent)]
     Transaction(Box<transaction::TransactionError>),
 
+    /// Serving a snapshot-bound State request failed.
+    #[error(transparent)]
+    State(state::StateError),
+
     /// Structured synchronization errors from the sync module
     #[error(transparent)]
     Sync(Box<sync::SyncError>),
@@ -187,6 +192,7 @@ impl Error {
             Error::CRDT(_) => "crdt",
             Error::Store(_) => "store",
             Error::Transaction(_) => "transaction",
+            Error::State(_) => "state",
             Error::Sync(_) => "sync",
             Error::Entry(_) => "entry",
             Error::Id(_) => "id",
@@ -224,6 +230,7 @@ impl Error {
         match self {
             Error::Auth(auth_err) => auth_err.is_permission_denied(),
             Error::Transaction(transaction_err) => transaction_err.is_authentication_error(),
+            Error::State(state::StateError::Denied) => true,
             _ => false,
         }
     }
@@ -240,6 +247,7 @@ impl Error {
     pub fn is_authentication_error(&self) -> bool {
         match self {
             Error::Auth(_) => true,
+            Error::State(state::StateError::Denied) => true,
             Error::Instance(base_err) => base_err.is_authentication_error(),
             Error::Transaction(transaction_err) => transaction_err.is_authentication_error(),
             _ => false,
