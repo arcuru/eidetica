@@ -51,11 +51,16 @@ async fn run_io<T: Send + 'static>(op: impl FnOnce() -> Result<T> + Send + 'stat
 #[cfg(unix)]
 mod platform {
     use std::{
-        fs::{File, Metadata, OpenOptions},
+        fs::{File, Metadata},
         io::{self, Read},
-        os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        os::unix::fs::MetadataExt,
     };
 
+    use rustix::{
+        fs::{AtFlags, Mode, OFlags, linkat, open, openat, unlinkat},
+        io::Errno,
+        process::geteuid,
+    };
     use zeroize::Zeroizing;
 
     use super::{InstanceSecrets, Path, Result, failure};
@@ -63,21 +68,23 @@ mod platform {
     const FILE_NAME: &str = "instance-secrets.json";
     const MAX_SIZE: u64 = 1024;
 
-    fn io_error(action: &str, error: io::Error) -> crate::Error {
-        failure(format!("{action}: {error}"))
+    fn io_error(action: &str, error: impl Into<io::Error>) -> crate::Error {
+        failure(format!("{action}: {}", error.into()))
     }
 
     fn owned_with_mode(metadata: &Metadata, mode: u32) -> bool {
-        // SAFETY: geteuid has no preconditions or pointers.
-        metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o7777 == mode
+        metadata.uid() == geteuid().as_raw() && metadata.mode() & 0o7777 == mode
     }
 
     fn open_directory(path: &Path) -> Result<File> {
-        let dir = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(path)
-            .map_err(|e| io_error("cannot open credential directory", e))?;
+        let dir = File::from(
+            open(
+                path,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| io_error("cannot open credential directory", e))?,
+        );
         let metadata = dir
             .metadata()
             .map_err(|e| io_error("cannot inspect credential directory", e))?;
@@ -102,13 +109,17 @@ mod platform {
     }
 
     pub(super) fn load(directory: &Path) -> Result<InstanceSecrets> {
-        open_directory(directory)?;
-        let file = OpenOptions::new()
-            .read(true)
-            // Refuse symlinks, and don't block opening a FIFO before fstat.
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(directory.join(FILE_NAME))
-            .map_err(|e| io_error("cannot open existing credential file", e))?;
+        let dir = open_directory(directory)?;
+        let file = File::from(
+            openat(
+                &dir,
+                FILE_NAME,
+                // Don't block opening a FIFO before the regular-file check.
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| io_error("cannot open existing credential file", e))?,
+        );
         check_file(&file)?;
         let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_SIZE as usize + 1));
         file.take(MAX_SIZE + 1)
@@ -123,26 +134,35 @@ mod platform {
 
     pub(super) fn create(directory: &Path, secrets: &InstanceSecrets) -> Result<()> {
         let dir = open_directory(directory)?;
-        let staging = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o600))
-            .tempfile_in(directory)
-            .map_err(|e| io_error("cannot stage credential file", e))?;
-        check_file(staging.as_file())?;
-        serde_json::to_writer(staging.as_file(), secrets)
-            .map_err(|_| failure("cannot write credential file"))?;
-        staging
-            .as_file()
-            .sync_all()
-            .map_err(|e| io_error("cannot sync credential file", e))?;
-        staging
-            .persist_noclobber(directory.join(FILE_NAME))
-            .map_err(|e| {
-                if e.error.kind() == io::ErrorKind::AlreadyExists {
+        let name = format!(".device-key-{}.tmp", uuid::Uuid::new_v4());
+        let staging = File::from(
+            openat(
+                &dir,
+                name.as_str(),
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(|e| io_error("cannot stage credential file", e))?,
+        );
+        let published = (|| {
+            check_file(&staging)?;
+            serde_json::to_writer(&staging, secrets)
+                .map_err(|_| failure("cannot write credential file"))?;
+            staging
+                .sync_all()
+                .map_err(|e| io_error("cannot sync credential file", e))?;
+            // Link the synced file into place without replacing any existing entry.
+            linkat(&dir, name.as_str(), &dir, FILE_NAME, AtFlags::empty()).map_err(|e| {
+                if e == Errno::EXIST {
                     failure("credential file already exists; refusing to replace it")
                 } else {
-                    io_error("cannot publish credential file", e.error)
+                    io_error("cannot publish credential file", e)
                 }
-            })?;
+            })
+        })();
+        unlinkat(&dir, name.as_str(), AtFlags::empty())
+            .map_err(|e| io_error("cannot remove staged credential file", e))?;
+        published?;
         // Credentials must be durable before the history publishes an instance
         // identity. An uncertain write leaves the file in place for inspection.
         dir.sync_all()

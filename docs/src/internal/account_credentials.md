@@ -38,20 +38,20 @@ The separate credential store is an opt-in Unix trial for fresh, disposable
 instances. It moves only `InstanceSecrets` (the device signing key); public
 `InstanceMetadata`, encrypted login bundles, and Iroh transport settings keep
 their existing storage. No key moves across the service socket. Embedded callers
-pass the configured directory to `Instance::create_backend_with_credential_store`
-and `Instance::open_backend_with_credential_store`. The CLI exposes the same mode
+pass the configured directory to `Instance::create_backend_with_device_key_dir`
+and `Instance::open_backend_with_device_key_dir`. The CLI exposes the same mode
 for SQLite. Without it, valid legacy instances still use their existing
 `instance_secrets` row or snapshot field. A local open with metadata but no key
 now fails, rather than returning a partially usable instance. Remote clients
 continue to open without a local device key.
 
 The configured directory must already be owned by the effective user with mode
-`0700`, under a path the operator trusts. The key is plaintext in an owner-only
-`0600` file, `instance-secrets.json`. This is filesystem isolation, not encryption
-at rest or protection against another process running as that user. No mode
-changes apply to the ordinary database or snapshot. Use a dedicated directory
-outside cache paths; cache clear, eviction, and trust reset do not use the credential
-store.
+`0700`, under a path the operator trusts. All key file operations use the opened
+directory handle rather than resolving the path again. The plaintext key is in
+`instance-secrets.json`, an owner-only `0600` file. This does not encrypt the key
+at rest or protect it from other processes running as that user. The database and
+snapshot permissions do not change. Keep the key directory outside cache paths;
+cache clear, eviction, and trust reset do not touch the store.
 
 Creation refuses legacy credentials and existing instance metadata or history
 roots. It durably publishes the key without replacing a file before writing

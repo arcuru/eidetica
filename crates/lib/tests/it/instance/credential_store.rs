@@ -15,7 +15,7 @@ use crate::helpers::TestVerify;
 
 async fn open(snapshot: &Path, directory: &Path) -> eidetica::Result<Instance> {
     let backend = InMemory::try_load_from_file(snapshot).await?.unwrap();
-    Instance::open_backend_with_credential_store(Box::new(backend), directory).await
+    Instance::open_backend_with_device_key_dir(Box::new(backend), directory).await
 }
 
 #[tokio::test]
@@ -31,7 +31,7 @@ async fn test_credential_store_embedded_snapshot_reopen() {
     let snapshot = root.path().join("history.json");
     let message = b"test signing after reload";
     let (id, signature, saved) = {
-        let (instance, _) = Instance::create_backend_with_credential_store(
+        let (instance, _) = Instance::create_backend_with_device_key_dir(
             Box::new(InMemory::new()),
             NewAccount::passwordless("trial"),
             &directory,
@@ -124,7 +124,7 @@ async fn test_credential_store_refuses_partial_history() {
         .await
         .unwrap();
 
-    let result = Instance::create_backend_with_credential_store(
+    let result = Instance::create_backend_with_device_key_dir(
         Box::new(backend),
         NewAccount::passwordless("trial"),
         &directory,

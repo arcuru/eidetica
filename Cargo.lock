@@ -1345,6 +1345,7 @@ dependencies = [
  "postcard-derive",
  "rand 0.8.7",
  "reqwest 0.12.28",
+ "rustix",
  "serde",
  "serde_bytes",
  "serde_ipld_dagcbor",
