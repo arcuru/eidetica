@@ -176,15 +176,16 @@ fn prepare_sqlite(url: &str) -> Result<Option<StorageOwner>> {
         return Ok(None);
     }
 
-    let database_path = canonical_database_path(options.get_filename()).map_err(|error| {
-        BackendError::SqlxError {
-            reason: format!(
-                "Failed to identify SQLite database `{}`: {error}",
-                options.get_filename().display()
-            ),
-            source: None,
-        }
-    })?;
+    let database_path =
+        canonical_database_path(options.get_filename(), false).map_err(|error| {
+            BackendError::SqlxError {
+                reason: format!(
+                    "Failed to identify SQLite database `{}`: {error}",
+                    options.get_filename().display()
+                ),
+                source: None,
+            }
+        })?;
     let lock_path = sqlite_owner_lock_path(&database_path);
     let lock = OpenOptions::new()
         .read(true)
@@ -230,10 +231,11 @@ fn sqlite_paths_overlap(history: &Path, cache: &Path) -> io::Result<bool> {
     let paths = |database: &Path| -> io::Result<Vec<PathBuf>> {
         ["", "-wal", "-shm", "-journal", ".eidetica-owner"]
             .iter()
-            .map(|suffix| {
+            .map(|&suffix| {
                 let mut path = database.as_os_str().to_owned();
                 path.push(suffix);
-                canonical_database_path(Path::new(&path))
+                let transient = matches!(suffix, "-wal" | "-shm" | "-journal");
+                canonical_database_path(Path::new(&path), transient)
             })
             .collect()
     };
@@ -287,7 +289,7 @@ fn sqlite_file_mode(url: &str) -> bool {
 }
 
 #[cfg(feature = "sqlite")]
-fn canonical_database_path(path: &Path) -> io::Result<PathBuf> {
+fn canonical_database_path(path: &Path, transient: bool) -> io::Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_owned()
     } else {
@@ -295,7 +297,18 @@ fn canonical_database_path(path: &Path) -> io::Result<PathBuf> {
     };
 
     match absolute.symlink_metadata() {
-        Ok(_) => return absolute.canonicalize(),
+        Ok(metadata) => match absolute.canonicalize() {
+            // SQLite's last connection can unlink a sidecar after its owner
+            // releases the lock. Treat only a now-absent regular sidecar as
+            // missing, not a dangling symlink or a stable ownership path.
+            Err(error)
+                if transient
+                    && metadata.is_file()
+                    && error.kind() == io::ErrorKind::NotFound
+                    && matches!(absolute.symlink_metadata(), Err(e) if e.kind() == io::ErrorKind::NotFound) =>
+                {}
+            result => return result,
+        },
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
