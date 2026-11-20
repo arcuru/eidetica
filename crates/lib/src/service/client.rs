@@ -1695,6 +1695,79 @@ impl RemoteConnection {
         }
     }
 
+    /// Replace the authenticated login's wanted set for `database`.
+    pub(crate) async fn set_wanted_blobs_remote(
+        &self,
+        login_id: &str,
+        database: ID,
+        cids: Vec<ID>,
+    ) -> crate::Result<()> {
+        self.request_ok(ServiceRequest::SetWantedBlobs {
+            login_id: login_id.to_owned(),
+            database,
+            cids,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Read the authenticated login's wanted set for `database`.
+    pub(crate) async fn wanted_blobs_remote(
+        &self,
+        login_id: &str,
+        database: ID,
+    ) -> crate::Result<Vec<ID>> {
+        match self
+            .request_ok(ServiceRequest::WantedBlobs {
+                login_id: login_id.to_owned(),
+                database,
+            })
+            .await?
+        {
+            ServiceResponse::Cids(cids) => Ok(cids),
+            other => Err(unexpected_response("Cids", &other)),
+        }
+    }
+
+    /// Run one daemon fetch round for the login's registration of `database`.
+    pub(crate) async fn fetch_wanted_blobs_remote(
+        &self,
+        login_id: &str,
+        database: ID,
+    ) -> crate::Result<()> {
+        self.request_ok(ServiceRequest::FetchWantedBlobs {
+            login_id: login_id.to_owned(),
+            database,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Release the login's wanted set for `database` if it is untracked.
+    pub(crate) async fn release_untracked_blobs_remote(
+        &self,
+        login_id: &str,
+        database: ID,
+    ) -> crate::Result<()> {
+        self.request_ok(ServiceRequest::ReleaseUntrackedBlobs {
+            login_id: login_id.to_owned(),
+            database,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Local status of named blobs on the daemon.
+    pub(crate) async fn blob_status_remote(
+        &self,
+        cids: Vec<ID>,
+    ) -> crate::Result<Vec<crate::blob::WantedBlobStatus>> {
+        match self.request_ok(ServiceRequest::BlobStatus { cids }).await? {
+            ServiceResponse::BlobStatus(statuses) => Ok(statuses),
+            other => Err(unexpected_response("BlobStatus", &other)),
+        }
+    }
+
     /// Run a blob GC pass on the daemon (`GcBlobs`).
     pub(crate) async fn gc_blobs_remote(
         &self,

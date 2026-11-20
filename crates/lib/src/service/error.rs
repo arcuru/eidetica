@@ -61,6 +61,12 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
             encoded_bytes: 0,
         }
         .into(),
+        ("account", "DatabaseNotTracked") => {
+            if let Some(database_id) = extract_id_from_message(&err.message) {
+                return crate::account::AccountError::DatabaseNotTracked { database_id }.into();
+            }
+            unrecognized_service_error(err)
+        }
         ("backend", "EntryNotFound") => BackendError::EntryNotFound {
             id: extract_id_from_message(&err.message).unwrap_or_default(),
         }
@@ -97,14 +103,15 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
         ("transaction", "EntryValidationFailed") => {
             crate::transaction::TransactionError::EntryValidationFailed.into()
         }
-        _ => {
-            // Fall back to an IO error carrying the original message
-            crate::Error::Io(std::io::Error::other(format!(
-                "[{}::{}] {}",
-                err.module, err.kind, err.message
-            )))
-        }
+        _ => unrecognized_service_error(err),
     }
+}
+
+fn unrecognized_service_error(err: ServiceError) -> crate::Error {
+    crate::Error::Io(std::io::Error::other(format!(
+        "[{}::{}] {}",
+        err.module, err.kind, err.message
+    )))
 }
 
 /// Extract an ID from an error message like "Entry not found: <id>".

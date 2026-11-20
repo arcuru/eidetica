@@ -101,3 +101,16 @@ Explicit `Sync` commands select the transport by the supplied address.
 Database reads select active peers from the existing Database/peer relation, not the Instance peer inventory, and try bounded address fallback.
 At most four outbound blob commands execute concurrently; admission refuses excess work rather than waiting inside the engine loop or accumulating background tasks.
 They run separately from Database synchronization and create no retry service or automatic publication path.
+
+## Wanted blob reconciliation
+
+Registration-owned wanted sets are engine retention records keyed by the registration owner (Account root and local login record) and Database.
+On the 30-second retry tick the background engine spawns at most one reconciliation round off its command loop.
+A round releases records whose registration no longer exists, such as after an interrupted untrack, and fetches missing blobs for registrations that are sharing; paused or unreadable registrations keep their records.
+Explicit GC also prunes absent registrations even with sync disabled, and creating a registration drops abandoned pins from its previous lifetime before publishing the new registration.
+Each missing CID is fetched at most once per round from the deduplicated peers of sharing Databases that wanted it when the round was planned, with at most four wanted fetches in flight across rounds and a CID already in flight skipped.
+Each CID fetch checks that its candidate registrations are still sharing before starting; a fetch already started can finish after a pause or replacement.
+Fetches use the bounded Database-peer read above and publish only bytes that re-verify as the whole blob.
+They never add retention records, so a late completion cannot restore a released CID.
+Declaring a set and every local preference change also start a round for the affected login without waiting for the tick.
+Fetch outcomes are kept in memory only and describe observations, not ownership.

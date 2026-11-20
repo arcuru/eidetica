@@ -4,6 +4,7 @@ Blobs are content-addressed bytes stored outside the Entry DAG.
 Use them for binary content and embed an optional `BlobRef { cid, size }` or a bare CID in an ordinary Store value.
 There is no separate blob Store type.
 Committing a reference does not copy the bytes into the DAG or retain them against garbage collection.
+To keep bytes, an application names them in its Database registration's [wanted set](#wanted-blobs).
 
 ## Local byte access
 
@@ -47,9 +48,8 @@ Clearing derived Store-state caches does not delete blobs or Entry data.
 ## Explicit cache collection
 
 A local put creates unowned cache bytes.
-There is no application retention API: storing a reference in a Store does not pin the content.
-Trusted backend retention records are internal GC substrate, not another application ownership registry.
-GC keeps the union of those backend roots and recently accessed blobs.
+Storing a reference in a Store does not retain the content.
+GC keeps every blob wanted by at least one registration, plus recently accessed blobs.
 
 ```rust,no_run
 # async fn example(instance: &eidetica::Instance) -> eidetica::Result<()> {
@@ -73,7 +73,8 @@ Collection is explicit; it does not scan for or remove orphan files left by inte
 
 Authenticated Unix-socket clients can put, read whole bytes or ranges, and run GC through the same Instance methods.
 These operations are by CID and have no Database scope or per-blob authorization.
-The existing authenticated-session requirement remains; no blob inventory or retention mutation is exposed over the socket.
+The existing authenticated-session requirement remains; no blob inventory is exposed over the socket.
+Retention changes only through a login's own [wanted sets](#wanted-blobs).
 The service frame limit remains 64 MiB, independently of the blob limit.
 JSON encoding can make a blob below the byte cap too large for one frame: such a response returns an error without hanging or closing the connection.
 Read smaller ranges when a whole response does not fit.
@@ -115,4 +116,59 @@ Naming a CID needs no peer-side blob or Database authorization; Database and Ent
 Blob commands run outside the Database sync command loop, with at most four active outbound blob commands per Instance.
 Capacity exhaustion is an error, not absence; a stalled transfer does not hold the sync engine.
 Transport connect and read deadlines and bounded response buffers remain in force.
-There is no automatic fetching, wanted-set declaration, application retention, provider advertisement or inventory discovery API.
+Only [wanted sets](#wanted-blobs) fetch automatically; there is no provider advertisement or inventory discovery API.
+
+## Wanted blobs
+
+An application keeps blobs by naming them in its existing Database registration: the Account's local login record and a Database it tracks.
+There is no separate blob owner, claim name or reference scanning; the application updates the set as its own references change.
+
+```rust,no_run
+# async fn example(
+#     account: &eidetica::AccountSession,
+#     database: &eidetica::Database,
+#     x: eidetica::entry::ID,
+#     y: eidetica::entry::ID,
+# ) -> eidetica::Result<()> {
+// Declare the set for a tracked Database, without opening it...
+account.set_wanted_blobs(database.root_id(), [x.clone()]).await?;
+// ...or replace it through the Database handle.
+database.set_wanted_blobs([x.clone(), y.clone()]).await?;
+assert_eq!(database.wanted_blobs().await?.len(), 2);
+
+for status in database.wanted_blob_status().await? {
+    println!("{}: available={}", status.cid, status.is_available());
+}
+// Wait for an explicitly chosen set; wrap long waits in a timeout.
+database.wait_for_blobs(&[x, y]).await?;
+# Ok(())
+# }
+```
+
+Each call replaces the registration's whole set; duplicates are ignored and a set holds at most `MAX_WANTED_BLOBS` (4096) raw-codec CIDs.
+Naming bytes that no Instance holds yet is valid: success records durable intent, not that the bytes have arrived.
+The set is stored on the Instance holding the registration (the daemon, for a connected Account) and survives app exit, reconnect and restart.
+It is local operational state and does not replicate with the Account.
+Caller-held sessions keep no registration on the Instance and cannot declare wanted blobs.
+Use `AccountSession::track_database_with_wanted_blobs` to track and declare together; the registration is recorded before the wanted set, so inspect both if the call fails.
+
+A blob is retained while at least one registration wants it, so the same bytes can be shared by several Accounts and Databases.
+Replacing a set records additions before removing dropped CIDs, so a CID in both sets stays retained throughout.
+Changing or clearing one registration's set releases only that registration's CIDs.
+`AccountSession::untrack_database` releases the registration's whole set.
+Released bytes that no other registration wants become eligible for the next explicit GC; release itself deletes nothing.
+
+While the registration is sharing, the Instance fetches missing wanted blobs from that Database's peers, exactly as `Database::get_blob_range` selects them, and publishes verified whole bytes locally.
+Fetching runs when a set is declared, when sharing is enabled and on the sync engine's 30-second retry cadence, at most four blobs at a time.
+Pausing sharing with `stop_sharing` stops new fetches for that registration but keeps the set and the held bytes for offline use; a fetch already started may finish.
+A fetch never records ownership: bytes that arrive after their CID was removed from the set are ordinary unowned cache bytes.
+
+Requested-blob status is separate from Database synchronization.
+A Database stays usable under its normal sync guarantees while wanted blobs are missing.
+`blob_status(cids)` and `wanted_blob_status()` report whole-blob availability after verified local publication, without rehashing stored bytes; byte reads verify their results.
+An absent backing file for a recorded blob is an error rather than `Available` or `Pending`.
+`Pending` carries the most recent recorded unsuccessful fetch round's `BlobFetchAttempt`, if any.
+`fetch_wanted_blobs()` runs one round now, and does nothing while the registration is paused; it skips, rather than waits for, a CID another round is already fetching.
+`wait_for_blobs(cids)` polls local status for the fixed set it was given, with backoff from 200 ms to 5 s.
+It does not occupy the daemon connection with a network fetch round; automatic fetching runs independently.
+Changing the wanted set later does not change what the wait observes, and cancelling it releases nothing.

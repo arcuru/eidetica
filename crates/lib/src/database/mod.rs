@@ -1171,6 +1171,147 @@ impl Database {
             .await
     }
 
+    // === Wanted blobs ===
+    //
+    // Part of this handle owner's registration of the Database, like its
+    // sharing preference. The set is kept on the Instance that holds the
+    // registration (the daemon, for a connected handle) and does not
+    // replicate with the Account.
+
+    /// The registration owner of this handle's wanted blobs.
+    fn blob_owner(&self) -> Result<crate::instance::wanted_blobs::BlobOwner> {
+        let (login_id, account_id) = self.account()?;
+        crate::instance::wanted_blobs::BlobOwner::new(login_id, account_id)
+    }
+
+    /// Replace the set of blobs this registration wants the Instance to keep.
+    ///
+    /// The Instance retains every named blob while this (or any other)
+    /// registration wants it and, while this registration is sharing,
+    /// fetches missing ones from this Database's peers. Naming blobs that are
+    /// not yet available is valid: success records durable intent, not that
+    /// the bytes are local; observe that with [`Self::wanted_blob_status`].
+    /// CIDs dropped from the set are released by this registration only.
+    /// Pausing sharing keeps the set and any held bytes. Untracking the
+    /// Database releases the whole set.
+    ///
+    /// Duplicates are ignored. Every CID must be a raw-codec blob address,
+    /// and the set holds at most [`MAX_WANTED_BLOBS`](crate::blob::MAX_WANTED_BLOBS).
+    /// Requires a handle opened through an
+    /// [`AccountSession`](crate::account::AccountSession) whose registration is
+    /// stored on the Instance.
+    pub async fn set_wanted_blobs(&self, cids: impl IntoIterator<Item = ID>) -> Result<()> {
+        self.authorize_sharing().await?;
+        let wanted = crate::instance::wanted_blobs::normalize_wanted(cids)?;
+        let owner = self.blob_owner()?;
+        let instance = self.instance()?;
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = instance.remote_connection() {
+            let (login_id, _) = self.account()?;
+            return conn
+                .set_wanted_blobs_remote(
+                    login_id,
+                    self.root_id().clone(),
+                    wanted.into_iter().collect(),
+                )
+                .await;
+        }
+        instance
+            .set_wanted_blobs_local(&owner, self.root_id(), wanted)
+            .await
+    }
+
+    /// The blobs this registration currently wants, sorted.
+    pub async fn wanted_blobs(&self) -> Result<Vec<ID>> {
+        self.authorize_sharing().await?;
+        let owner = self.blob_owner()?;
+        let instance = self.instance()?;
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = instance.remote_connection() {
+            let (login_id, _) = self.account()?;
+            return conn
+                .wanted_blobs_remote(login_id, self.root_id().clone())
+                .await;
+        }
+        instance.wanted_blobs_local(&owner, self.root_id()).await
+    }
+
+    /// Local status of every blob this registration wants.
+    ///
+    /// Independent of Database synchronization: the Database is usable while
+    /// wanted blobs are pending, and its sync state says nothing about them.
+    pub async fn wanted_blob_status(&self) -> Result<Vec<crate::blob::WantedBlobStatus>> {
+        let wanted = self.wanted_blobs().await?;
+        self.blob_status(&wanted).await
+    }
+
+    /// Local status of explicitly named blobs, in the given order.
+    ///
+    /// A blob is [`Available`](crate::blob::WantedBlobState::Available) only
+    /// after verified whole publication; partial ranges never count. This
+    /// observation does not rehash stored payloads. A backing file recorded
+    /// but missing is an error, not an availability result.
+    /// Naming a blob here neither requests nor retains it.
+    pub async fn blob_status(&self, cids: &[ID]) -> Result<Vec<crate::blob::WantedBlobStatus>> {
+        crate::instance::wanted_blobs::validate_status_cids(cids)?;
+        let instance = self.instance()?;
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = instance.remote_connection() {
+            return conn.blob_status_remote(cids.to_vec()).await;
+        }
+        instance.blob_status_local(cids).await
+    }
+
+    /// Run one fetch round for this registration's missing wanted blobs now.
+    ///
+    /// Does nothing while this registration is not sharing. Returns when the
+    /// round ends; outcomes are reported by [`Self::wanted_blob_status`]. A
+    /// CID that another round is already fetching is skipped, not awaited. On
+    /// a connected Instance this occupies the service connection until the
+    /// round returns.
+    pub async fn fetch_wanted_blobs(&self) -> Result<()> {
+        self.authorize_sharing().await?;
+        let owner = self.blob_owner()?;
+        let instance = self.instance()?;
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = instance.remote_connection() {
+            let (login_id, _) = self.account()?;
+            return conn
+                .fetch_wanted_blobs_remote(login_id, self.root_id().clone())
+                .await;
+        }
+        instance
+            .fetch_registration_blobs(&owner, self.root_id())
+            .await
+    }
+
+    /// Wait until every named blob is reported available as a whole blob.
+    ///
+    /// The set is fixed by the caller: changing the wanted set later does not
+    /// change what this call waits for. This polls local status with backoff
+    /// from 200ms to 5s, without driving network fetches. Automatic fetches
+    /// continue independently for wanted blobs of sharing registrations.
+    /// This waits indefinitely; wrap it in a timeout. Cancelling it releases
+    /// nothing.
+    pub async fn wait_for_blobs(&self, cids: &[ID]) -> Result<()> {
+        const FIRST_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+        const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+        crate::instance::wanted_blobs::validate_status_cids(cids)?;
+        let mut delay = FIRST_DELAY;
+        loop {
+            if self
+                .blob_status(cids)
+                .await?
+                .iter()
+                .all(|status| status.is_available())
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(MAX_DELAY);
+        }
+    }
+
     fn account(&self) -> Result<(&str, &ID)> {
         self.local_account
             .as_ref()

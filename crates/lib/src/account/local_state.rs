@@ -3,7 +3,7 @@
 use super::{AccountKey, TrackedDatabase};
 use crate::{ID, Instance, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,13 +41,44 @@ pub(crate) async fn exchange_raw(
 ) -> Result<bool> {
     // Refuse malformed state before enabling a durable writer. No old DAG data
     // is imported or deleted; missing native state starts empty.
-    let _: LocalAccountState = serde_json::from_slice(value).map_err(|_| invalid_state())?;
+    let after: LocalAccountState = serde_json::from_slice(value).map_err(|_| invalid_state())?;
     #[cfg(all(unix, feature = "service"))]
     if let Some(connection) = instance.remote_connection() {
         return connection
             .exchange_local_account_state(login_id, expected, value)
             .await;
     }
+    // Persisted state is always valid, so unparsable expected bytes cannot
+    // match it: they add no registration and the exchange below reports a
+    // mismatch rather than an error.
+    let before: Option<LocalAccountState> = match expected {
+        None => Some(LocalAccountState::default()),
+        Some(bytes) => serde_json::from_slice(bytes).ok(),
+    };
+    let added: BTreeSet<&str> = match &before {
+        Some(before) => after
+            .databases
+            .keys()
+            .filter(|db| !before.databases.contains_key(*db))
+            .map(String::as_str)
+            .collect(),
+        None => BTreeSet::new(),
+    };
+    let _blob_guard = if added.is_empty() {
+        None
+    } else {
+        // Creating a registration, setting its pins, and releasing stale
+        // pins must serialize. Before pruning, prove it is an addition to
+        // the persisted state and not to a stale CAS attempt.
+        let guard = instance.blob_lock().lock().await;
+        if read_raw(instance, login_id).await?.as_deref() != expected {
+            return Ok(false);
+        }
+        instance
+            .clear_retracked_blob_pins_locked(login_id, &added)
+            .await?;
+        Some(guard)
+    };
     instance
         .require_local_engine()?
         .compare_exchange_local_account_record(&record_name(login_id), expected, value)
@@ -90,6 +121,9 @@ pub(crate) async fn refresh_sync(
 ) -> Result<()> {
     if let Some(sync) = instance.sync() {
         sync.sync_account(login_id, account_id).await?;
+        // Resumed or newly tracked registrations fetch their wanted blobs
+        // without waiting for periodic reconciliation.
+        instance.spawn_login_blob_fetch(login_id, account_id);
     }
     Ok(())
 }

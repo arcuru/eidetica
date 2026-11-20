@@ -33,6 +33,7 @@ pub mod errors;
 pub mod new_account;
 pub mod settings_merge;
 pub mod url;
+pub(crate) mod wanted_blobs;
 
 #[cfg(test)]
 mod tests;
@@ -326,6 +327,9 @@ pub(crate) struct InstanceInternal {
     /// its pin/access snapshot stays valid until deletion (including unlink).
     /// coding: global lock; use per-CID locking if blob throughput warrants it.
     blob_lock: tokio::sync::Mutex<()>,
+    /// What this running Instance observed while fetching wanted blobs.
+    blob_fetch: std::sync::Mutex<wanted_blobs::BlobFetchState>,
+    blob_fetch_slots: tokio::sync::Semaphore,
 }
 
 impl std::fmt::Debug for InstanceInternal {
@@ -865,6 +869,10 @@ impl Instance {
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
             blob_lock: tokio::sync::Mutex::new(()),
+            blob_fetch: std::sync::Mutex::new(wanted_blobs::BlobFetchState::default()),
+            blob_fetch_slots: tokio::sync::Semaphore::new(
+                wanted_blobs::MAX_CONCURRENT_BLOB_FETCHES,
+            ),
         });
         let instance = Self { inner };
         // Hand the reader task a Weak reference so it can dispatch
@@ -1043,6 +1051,10 @@ impl Instance {
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
             blob_lock: tokio::sync::Mutex::new(()),
+            blob_fetch: std::sync::Mutex::new(wanted_blobs::BlobFetchState::default()),
+            blob_fetch_slots: tokio::sync::Semaphore::new(
+                wanted_blobs::MAX_CONCURRENT_BLOB_FETCHES,
+            ),
         });
         Ok(Self { inner })
     }
@@ -1076,6 +1088,10 @@ impl Instance {
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
             blob_lock: tokio::sync::Mutex::new(()),
+            blob_fetch: std::sync::Mutex::new(wanted_blobs::BlobFetchState::default()),
+            blob_fetch_slots: tokio::sync::Semaphore::new(
+                wanted_blobs::MAX_CONCURRENT_BLOB_FETCHES,
+            ),
         });
         Ok(Self { inner })
     }
@@ -1126,6 +1142,10 @@ impl Instance {
                 next_callback_id: AtomicU64::new(0),
                 tree_locks: Mutex::new(HashMap::new()),
                 blob_lock: tokio::sync::Mutex::new(()),
+                blob_fetch: std::sync::Mutex::new(wanted_blobs::BlobFetchState::default()),
+                blob_fetch_slots: tokio::sync::Semaphore::new(
+                    wanted_blobs::MAX_CONCURRENT_BLOB_FETCHES,
+                ),
             }),
         };
         let users_db = create_accounts_database(&temp_instance, &device_key).await?;
@@ -1160,6 +1180,10 @@ impl Instance {
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
             blob_lock: tokio::sync::Mutex::new(()),
+            blob_fetch: std::sync::Mutex::new(wanted_blobs::BlobFetchState::default()),
+            blob_fetch_slots: tokio::sync::Semaphore::new(
+                wanted_blobs::MAX_CONCURRENT_BLOB_FETCHES,
+            ),
         });
 
         let instance = Self { inner };
@@ -1522,7 +1546,7 @@ impl Instance {
 
     /// Garbage-collect unowned locally-held cache bytes.
     ///
-    /// Backend retention roots are never evicted, nor are
+    /// Blobs wanted by any Database registration are never evicted, nor are
     /// blobs accessed within [`GcOptions::min_age_ms`] (the grace window that
     /// protects a just-written but not-yet-pinned blob from a concurrent
     /// sweep). Among the remaining (unpinned, aged-out) blobs, eviction is
@@ -1545,6 +1569,7 @@ impl Instance {
         let engine = self.local_blob_engine()?;
         let now = self.inner.clock.now_millis() as i64;
 
+        self.prune_unregistered_blob_pins_locked().await?;
         let pinned = engine.pinned_cids().await?;
         let metas = engine.all_blob_meta().await?;
 

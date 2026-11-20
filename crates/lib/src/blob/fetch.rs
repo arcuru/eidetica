@@ -21,7 +21,8 @@ pub struct BlobFetchAttempt {
     pub invalid: u32,
     /// Providers with no address this Instance has a transport for.
     pub unsupported: u32,
-    /// Providers that failed for another reason.
+    /// Attempts that failed for another reason, including local publication
+    /// failure when reconciling wanted blobs.
     pub failed: u32,
 }
 

@@ -31,6 +31,7 @@
 //! - **`set_sync_preferences()`** - Update preferences without changing tracking or key mappings
 //! - **`untrack_database()`** - Remove a database from your tracked list
 //! - **`is_sync_enabled()`** - Check this account's sync preference for a database
+//! - **`set_wanted_blobs()`** / **`wanted_blobs()`** - Declare and read the blobs a tracked database's registration wants kept
 //!
 //! ## Key-Database Mappings
 //!
@@ -43,7 +44,7 @@
 //! This explicit approach ensures predictable behavior and avoids ambiguity about which
 //! keys have access to which databases.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use std::sync::Arc;
 
@@ -1541,6 +1542,28 @@ impl AccountSession {
             .await
     }
 
+    /// Track a database and declare its wanted blob set in one call.
+    ///
+    /// The set is validated before tracking. The registration is recorded
+    /// before its wanted set, so a later error can leave the database tracked;
+    /// retry this call or inspect the registration and its wanted set.
+    /// Caller-held sessions cannot declare wanted blobs.
+    pub async fn track_database_with_wanted_blobs(
+        &mut self,
+        database_id: impl Into<ID>,
+        key_id: &PublicKey,
+        sync_settings: SyncSettings,
+        cids: impl IntoIterator<Item = ID>,
+    ) -> Result<()> {
+        let database_id = database_id.into();
+        let owner = self.blob_owner(&database_id)?;
+        let wanted = crate::instance::wanted_blobs::normalize_wanted(cids)?;
+        self.track_database(&database_id, key_id, sync_settings)
+            .await?;
+        self.set_registration_wanted_blobs(&owner, &database_id, wanted)
+            .await
+    }
+
     async fn track_database_with_expected(
         &mut self,
         database_id: ID,
@@ -1682,10 +1705,82 @@ impl AccountSession {
         Ok(())
     }
 
+    /// The registration owner of this session's wanted blobs. Caller-held
+    /// sessions keep no registration on the Instance, so they own none.
+    fn blob_owner(&self, database_id: &ID) -> Result<crate::instance::wanted_blobs::BlobOwner> {
+        if self.caller_state.is_some() {
+            return Err(AccountError::MissingDatabaseCapability {
+                database_id: database_id.clone(),
+            }
+            .into());
+        }
+        crate::instance::wanted_blobs::BlobOwner::new(&self.login_id, self.account.id())
+    }
+
+    /// Replace the blobs this account's registration of a tracked database
+    /// wants the Instance to keep.
+    ///
+    /// The registration-level form of
+    /// [`Database::set_wanted_blobs`](crate::Database::set_wanted_blobs), for
+    /// declaring wanted blobs without opening the database. To track and
+    /// declare in one call, use [`Self::track_database_with_wanted_blobs`].
+    /// Success records durable intent, not that the bytes are local.
+    ///
+    /// # Errors
+    /// Returns `DatabaseNotTracked` if the database is not in the account's
+    /// list, and `MissingDatabaseCapability` for a caller-held session.
+    pub async fn set_wanted_blobs(
+        &self,
+        database_id: &ID,
+        cids: impl IntoIterator<Item = ID>,
+    ) -> Result<()> {
+        let owner = self.blob_owner(database_id)?;
+        let wanted = crate::instance::wanted_blobs::normalize_wanted(cids)?;
+        self.set_registration_wanted_blobs(&owner, database_id, wanted)
+            .await
+    }
+
+    async fn set_registration_wanted_blobs(
+        &self,
+        owner: &crate::instance::wanted_blobs::BlobOwner,
+        database_id: &ID,
+        wanted: BTreeSet<ID>,
+    ) -> Result<()> {
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.instance.remote_connection() {
+            return conn
+                .set_wanted_blobs_remote(
+                    &self.login_id,
+                    database_id.clone(),
+                    wanted.into_iter().collect(),
+                )
+                .await;
+        }
+        self.instance
+            .set_wanted_blobs_local(owner, database_id, wanted)
+            .await
+    }
+
+    /// The blobs this account's registration of a database wants, sorted.
+    ///
+    /// Empty when nothing is wanted, including for an untracked database.
+    pub async fn wanted_blobs(&self, database_id: &ID) -> Result<Vec<ID>> {
+        let owner = self.blob_owner(database_id)?;
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.instance.remote_connection() {
+            return conn
+                .wanted_blobs_remote(&self.login_id, database_id.clone())
+                .await;
+        }
+        self.instance.wanted_blobs_local(&owner, database_id).await
+    }
+
     /// Stop tracking a database.
     ///
-    /// This removes the database from the account's tracked list.
-    /// It does not delete the database itself, remove key mappings, or delete any data.
+    /// This removes the database from the account's tracked list and releases
+    /// this registration's wanted blobs. It does not delete the database
+    /// itself, remove key mappings, or delete any data: released blobs that no
+    /// other registration wants become eligible for garbage collection.
     ///
     /// # Arguments
     /// * `database_id` - The ID of the database to stop tracking
@@ -1703,6 +1798,22 @@ impl AccountSession {
             Ok(())
         })
         .await?;
+        if self.caller_state.is_none() {
+            // Release only this registration's blob ownership, re-checked
+            // under the blob lock so a registration tracked again meanwhile
+            // keeps its set. If this step is interrupted, reconciliation
+            // releases records whose registration no longer exists.
+            #[cfg(all(unix, feature = "service"))]
+            if let Some(conn) = self.instance.remote_connection() {
+                return conn
+                    .release_untracked_blobs_remote(&self.login_id, database_id.clone())
+                    .await;
+            }
+            let owner = self.blob_owner(database_id)?;
+            self.instance
+                .release_if_unregistered(&owner, database_id)
+                .await?;
+        }
         self.refresh_local_sync().await?;
         Ok(())
     }

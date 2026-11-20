@@ -219,6 +219,9 @@ pub struct BackgroundSync {
 
     // Blob tasks leave the command loop immediately but cannot grow without bound.
     blob_slots: Arc<tokio::sync::Semaphore>,
+
+    // The running wanted-blob reconciliation round, if any.
+    blob_reconciliation: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// How many peers may be synced at once, and so how many outbound connections a
@@ -258,6 +261,7 @@ impl BackgroundSync {
             retry_queue: Vec::new(),
             command_rx: rx,
             blob_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BLOB_COMMANDS)),
+            blob_reconciliation: None,
         };
 
         // Spawn background sync as a regular tokio task
@@ -402,6 +406,7 @@ impl BackgroundSync {
                     // Process retry queue
                     _ = retry_check.tick() => {
                         self.process_retry_queue().await;
+                        self.spawn_blob_reconciliation();
                     }
 
                     // Check and reconnect disconnected peers
@@ -966,6 +971,32 @@ impl BackgroundSync {
         let failed_count = still_failed.len();
         self.retry_queue = still_failed;
         failed_count
+    }
+
+    /// Reconcile wanted blobs on the retry cadence, off the engine loop.
+    ///
+    /// Retries missing wanted blobs and releases ownership left by an
+    /// interrupted untrack. A round still running from the previous tick is
+    /// not doubled up.
+    fn spawn_blob_reconciliation(&mut self) {
+        if self
+            .blob_reconciliation
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+        {
+            return;
+        }
+        let Ok(instance) = self.instance() else {
+            return;
+        };
+        if instance.backend().local_engine().is_none() {
+            return;
+        }
+        self.blob_reconciliation = Some(tokio::spawn(async move {
+            if let Err(e) = instance.reconcile_wanted_blobs().await {
+                tracing::debug!(error = %e, "Wanted blob reconciliation failed");
+            }
+        }));
     }
 
     /// Perform periodic sync with all active peers

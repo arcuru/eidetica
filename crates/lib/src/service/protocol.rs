@@ -430,6 +430,25 @@ pub enum ServiceRequest {
         expected: Option<Vec<u8>>,
         value: Vec<u8>,
     },
+    /// Replace the wanted blob set of that same login's registration of
+    /// `database`. Recorded on the daemon, which owns the registration.
+    SetWantedBlobs {
+        login_id: String,
+        database: ID,
+        cids: Vec<ID>,
+    },
+    /// Read that login's wanted blob set for `database`.
+    WantedBlobs { login_id: String, database: ID },
+    /// Run one fetch round for that login's registration of `database`, if it
+    /// is syncing.
+    FetchWantedBlobs { login_id: String, database: ID },
+    /// Release that login's wanted set for `database` if the registration no
+    /// longer exists. Sent after an untrack; a registration tracked again in
+    /// the meantime keeps its set.
+    ReleaseUntrackedBlobs { login_id: String, database: ID },
+    /// Local availability of explicitly named blobs on the daemon, with its
+    /// latest fetch outcome for each missing one.
+    BlobStatus { cids: Vec<ID> },
 
     // === Post-auth: ticket bootstrap through the daemon's sync engine ===
     /// Step 1 of joining a database from a ticket. The daemon races the
@@ -607,6 +626,10 @@ pub enum ServiceResponse {
     /// Aggregate outcome of a blob GC pass (response to
     /// `ServiceRequest::GcBlobs`). Counts only — never the swept CID list.
     GcReport(GcReport),
+    /// A registration's wanted blob set (response to `WantedBlobs`).
+    Cids(Vec<ID>),
+    /// Local status of named blobs (response to `BlobStatus`).
+    BlobStatus(Vec<crate::blob::WantedBlobStatus>),
     /// Error response
     Error(ServiceError),
     /// Point-in-time locator for one authorized database.
@@ -665,6 +688,11 @@ const REQUEST_VARIANTS: &[&str] = &[
     "ListLocalAccounts",
     "LocalAccountState",
     "ExchangeLocalAccountState",
+    "SetWantedBlobs",
+    "WantedBlobs",
+    "FetchWantedBlobs",
+    "ReleaseUntrackedBlobs",
+    "BlobStatus",
     "SignerChallenge",
     "GetBlob",
     "PutBlob",
@@ -710,6 +738,8 @@ const RESPONSE_VARIANTS: &[&str] = &[
     "Blob",
     "BlobUnavailable",
     "GcReport",
+    "Cids",
+    "BlobStatus",
     "Entry",
     "Entries",
     "Ids",
@@ -1484,6 +1514,26 @@ mod blob_compatibility_tests {
             ServiceRequest::GcBlobs {
                 opts: GcOptions::default(),
             },
+            ServiceRequest::SetWantedBlobs {
+                login_id: "login".into(),
+                database: ID::from_dagcbor_bytes(b"database"),
+                cids: vec![cid.clone()],
+            },
+            ServiceRequest::WantedBlobs {
+                login_id: "login".into(),
+                database: ID::from_dagcbor_bytes(b"database"),
+            },
+            ServiceRequest::FetchWantedBlobs {
+                login_id: "login".into(),
+                database: ID::from_dagcbor_bytes(b"database"),
+            },
+            ServiceRequest::ReleaseUntrackedBlobs {
+                login_id: "login".into(),
+                database: ID::from_dagcbor_bytes(b"database"),
+            },
+            ServiceRequest::BlobStatus {
+                cids: vec![cid.clone()],
+            },
         ] {
             let json = serde_json::to_string(&request).unwrap();
             assert!(matches!(
@@ -1497,6 +1547,11 @@ mod blob_compatibility_tests {
                 attempt: crate::blob::BlobFetchAttempt::default(),
             },
             ServiceResponse::Blob(Some(vec![1, 2, 3])),
+            ServiceResponse::Cids(vec![cid.clone()]),
+            ServiceResponse::BlobStatus(vec![crate::blob::WantedBlobStatus {
+                cid: cid.clone(),
+                state: crate::blob::WantedBlobState::Pending { last_fetch: None },
+            }]),
             ServiceResponse::GcReport(GcReport {
                 evicted_count: 1,
                 reclaimed_bytes: 3,

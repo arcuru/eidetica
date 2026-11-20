@@ -35,6 +35,7 @@ impl LocalPeer {
             retry_queue: Vec::new(),
             command_rx,
             blob_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BLOB_COMMANDS)),
+            blob_reconciliation: None,
         };
         engine.transport_manager.add(
             "http",
