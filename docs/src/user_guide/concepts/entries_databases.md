@@ -12,7 +12,13 @@ Entries are the fundamental building blocks in Eidetica. An Entry represents an 
 - **Database association**: Each entry belongs to a database and can reference parent entries within both the main database and stores.
 - **Store data**: Entries can contain data for one or more stores, representing different aspects or types of data.
 
-Entries function similar to commits in Git - they represent a point-in-time snapshot of data with links to previous states, enabling history tracking.
+Entries function similarly to commits in Git: they record deltas and links to
+previous states, not a replacement for every observed Store contribution.
+Main parents define causal ancestry; Store parents select consumption. For main
+`A(X) -> B(X) -> C(X)` where B.X and C.X both parent A.X, both remain Store tips
+and both contribute to reads. A later explicit Store join may replace them.
+See [Store history and tips](stores.md#store-history-and-tips) for the distinct
+ordinary-parent and strict `_settings` rules.
 
 ## Databases
 
@@ -149,6 +155,6 @@ While a Database is the logical container, the actual data is organized into Sto
 - Different types of data structures within a single Database
 - Type-safe access to different parts of your data
 - Fine-grained history tracking by store
-- Efficient partial replication and synchronization
+- Whole-Entry replication and incremental synchronization (not Store-only sparse verification)
 
 See [Stores](stores.md) for more details on how data is structured within a Database.
