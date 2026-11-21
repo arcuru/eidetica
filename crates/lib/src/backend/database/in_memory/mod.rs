@@ -26,7 +26,7 @@ use crate::{
     backend::{
         BackendImpl, DerivedCachePolicy, InstanceMetadata, InstanceSecrets, RecordMutations,
         RecordPage, RecordRange, RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest,
-        VerificationStatus, errors::BackendError,
+        VerificationStatus, errors::BackendError, private_cache,
     },
     entry::{Entry, ID},
     snapshot::Snapshot,
@@ -415,8 +415,49 @@ impl Default for InMemory {
     }
 }
 
+fn check_private_staging(
+    inner: &InMemoryInner,
+    login: &str,
+    new_count: usize,
+    charge: u64,
+) -> Result<()> {
+    let (mut count, mut bytes) = (new_count, charge);
+    let (mut login_count, mut login_bytes) = (new_count, charge);
+    for ns in inner.store_state_namespaces.values().filter(|ns| !ns.ready) {
+        if let Some(scope) = ns
+            .request
+            .scope
+            .storage_key()
+            .filter(|scope| !scope.is_empty())
+        {
+            count += 1;
+            bytes += ns.size_bytes;
+            if private_cache::bucket(scope) == login {
+                login_count += 1;
+                login_bytes += ns.size_bytes;
+            }
+        }
+    }
+    private_cache::check(
+        private_cache::STAGING_TOTAL,
+        count,
+        bytes,
+        "daemon private staging budget",
+    )?;
+    private_cache::check(
+        private_cache::STAGING_PER_LOGIN,
+        login_count,
+        login_bytes,
+        "login private staging budget",
+    )
+}
+
 #[async_trait]
 impl BackendImpl for InMemory {
+    fn supports_private_cache_admission(&self) -> bool {
+        true
+    }
+
     async fn resolve_store_state(&self, request: &StoreStateRequest) -> Result<Option<RecordView>> {
         let view = {
             let inner = self.inner.read().unwrap();
@@ -456,10 +497,15 @@ impl BackendImpl for InMemory {
             }
             .into());
         }
+        let mut inner = self.inner.write().unwrap();
+        if let Some(login) = private_cache::login(&request) {
+            private_cache::check_target(&request)?;
+            check_private_staging(&inner, login, 1, 0)?;
+        }
         let target = request.clone();
         request.lifecycle = StoreStateLifecycle::Staging;
         let namespace_id = uuid::Uuid::new_v4().to_string();
-        self.inner.write().unwrap().store_state_namespaces.insert(
+        inner.store_state_namespaces.insert(
             namespace_id.clone(),
             RecordNamespace {
                 request,
@@ -484,11 +530,23 @@ impl BackendImpl for InMemory {
         let mut inner = self.inner.write().unwrap();
         let namespace = inner
             .store_state_namespaces
-            .get_mut(&token.namespace_id)
+            .get(&token.namespace_id)
             .ok_or(BackendError::InvalidStoreStateStagingToken)?;
         if namespace.ready || namespace.request.lifecycle != StoreStateLifecycle::Staging {
             return Err(BackendError::StoreStateNamespaceImmutable.into());
         }
+        let charge = if let Some(login) = private_cache::login(&token.target) {
+            let charge = private_cache::chunk_charge(&records);
+            check_private_staging(&inner, login, 0, charge)?;
+            charge
+        } else {
+            0
+        };
+        let namespace = inner
+            .store_state_namespaces
+            .get_mut(&token.namespace_id)
+            .unwrap();
+        namespace.size_bytes += charge;
         namespace.records.extend(records);
         Ok(())
     }
@@ -560,6 +618,26 @@ impl BackendImpl for InMemory {
                 reason: "disabled or oversized materialization".into(),
             }
             .into());
+        }
+        if let Some(login) = private_cache::login(&namespace.request) {
+            let (count, bytes) = inner
+                .store_state_namespaces
+                .values()
+                .filter(|ns| {
+                    ns.ready
+                        && !ns.unlinked
+                        && !ns.evicted
+                        && private_cache::login(&ns.request) == Some(login)
+                })
+                .fold((1, namespace.size_bytes), |(count, bytes), ns| {
+                    (count + 1, bytes + ns.size_bytes)
+                });
+            private_cache::check(
+                private_cache::RETAINED,
+                count,
+                bytes,
+                "private cache retention budget",
+            )?;
         }
         let namespace_id = token.namespace_id.clone();
         inner

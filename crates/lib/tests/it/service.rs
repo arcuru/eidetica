@@ -33,6 +33,7 @@ use crate::helpers::LocalBackendTestExt;
 
 mod compatibility;
 mod notifications;
+mod private_cache;
 mod retirement;
 
 /// Read the next server frame and unwrap it as a `ServiceResponse`. Tests

@@ -4,7 +4,7 @@
 //! Evicted and clear-unlinked generations retain their separate lifetimes.
 
 use crate::Result;
-use crate::backend::StoreStateLifecycle;
+use crate::backend::{StoreStateLifecycle, private_cache};
 
 use super::{SqlxBackend, SqlxResultExt};
 
@@ -161,6 +161,67 @@ pub(crate) async fn lock_maintenance(
             .sql_context("Failed to lock Store-state admission")?;
     }
     Ok(())
+}
+
+// Count across connections and databases under the storage-maintenance lock.
+// The scope key is distinct from the admission bucket for proof-only sessions.
+async fn private_usage(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    lifecycle: StoreStateLifecycle,
+    status: i64,
+    login: Option<&str>,
+) -> Result<(usize, u64)> {
+    let (count, bytes): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), CAST(COALESCE(SUM(size_bytes), 0) AS BIGINT)
+         FROM store_state_namespaces WHERE lifecycle = $1 AND status = $2
+         AND scope_user_uuid <> '' AND (CAST($3 AS TEXT) IS NULL OR scope_user_uuid = $3
+             OR ($3 = $4 AND scope_user_uuid LIKE $5))",
+    )
+    .bind(lifecycle.as_db_int())
+    .bind(status)
+    .bind(login)
+    .bind(private_cache::SIGNER_SCOPE_PREFIX)
+    .bind(format!("{}%", private_cache::SIGNER_SCOPE_PREFIX))
+    .fetch_one(&mut **tx)
+    .await
+    .sql_context("Failed to measure private Store-state usage")?;
+    Ok((count as usize, bytes as u64))
+}
+
+pub(super) async fn check_private_staging(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    login: &str,
+    new_count: usize,
+    charge: u64,
+) -> Result<()> {
+    let (count, bytes) = private_usage(tx, StoreStateLifecycle::Staging, 0, None).await?;
+    private_cache::check(
+        private_cache::STAGING_TOTAL,
+        count + new_count,
+        bytes + charge,
+        "daemon private staging budget",
+    )?;
+    let (count, bytes) = private_usage(tx, StoreStateLifecycle::Staging, 0, Some(login)).await?;
+    private_cache::check(
+        private_cache::STAGING_PER_LOGIN,
+        count + new_count,
+        bytes + charge,
+        "login private staging budget",
+    )
+}
+
+pub(super) async fn check_private_retention(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    login: &str,
+    size: u64,
+) -> Result<()> {
+    let (count, bytes) = private_usage(tx, StoreStateLifecycle::Derived, 1, Some(login)).await?;
+    private_cache::check(
+        private_cache::RETAINED,
+        count + 1,
+        bytes + size,
+        "private cache retention budget",
+    )
 }
 
 /// Copied recency and reclaimed IDs to acknowledge only after commit.
@@ -322,6 +383,29 @@ pub(crate) async fn startup(backend: &SqlxBackend) -> Result<()> {
         .bind(StoreStateLifecycle::Staging.as_db_int())
         .bind(StoreStateLifecycle::Derived.as_db_int())
         .execute(&mut *tx).await.sql_context("Failed to reclaim abandoned Store state")?;
+    // Exclusive startup has no readers to preserve. Trim pre-limit private
+    // state in recency order without changing Shared or Authoritative rows.
+    sqlx::query(
+        "DELETE FROM store_state_namespaces WHERE namespace_id IN (
+            SELECT namespace_id FROM (
+                SELECT namespace_id, ROW_NUMBER() OVER bucket AS namespaces,
+                       SUM(size_bytes) OVER bucket AS payload
+                FROM store_state_namespaces WHERE lifecycle = $1 AND status = 1 AND scope_user_uuid <> ''
+                WINDOW bucket AS (
+                    PARTITION BY CASE WHEN scope_user_uuid LIKE $2 THEN $3 ELSE scope_user_uuid END
+                    ORDER BY last_access_tick DESC, namespace_id DESC ROWS UNBOUNDED PRECEDING
+                )
+            ) AS ranked WHERE namespaces > $4 OR payload > $5
+        )",
+    )
+    .bind(StoreStateLifecycle::Derived.as_db_int())
+    .bind(format!("{}%", private_cache::SIGNER_SCOPE_PREFIX))
+    .bind(private_cache::SIGNER_SCOPE_PREFIX)
+    .bind(private_cache::RETAINED.max_namespaces as i64)
+    .bind(private_cache::RETAINED.max_bytes as i64)
+    .execute(&mut *tx)
+    .await
+    .sql_context("Failed to trim private Store-state cache")?;
     let maintenance = evict_in_tx(backend, &mut tx, None).await?;
     sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 AND status = 3")
         .bind(StoreStateLifecycle::Derived.as_db_int())

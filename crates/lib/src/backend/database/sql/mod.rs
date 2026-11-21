@@ -1269,6 +1269,10 @@ impl SqlxBackend {
 
 #[async_trait]
 impl BackendImpl for SqlxBackend {
+    fn supports_private_cache_admission(&self) -> bool {
+        true
+    }
+
     async fn resolve_store_state(&self, request: &StoreStateRequest) -> Result<Option<RecordView>> {
         storage::resolve_store_state(self, request).await
     }

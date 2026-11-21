@@ -36,6 +36,10 @@ shared-scope request to the session user, refuses a foreign scope, and falls
 back to shared cached state on a user-scope miss. Encrypted materializations are
 client-computed and user-scoped; a warm encrypted Table point read uses point-record
 requests without scanning the generation or reconstructing history.
+Sessions with live Read access can build and publish private Derived state.
+They cannot publish into another login's scope or into Shared or Authoritative
+state. Tokens for unpublished builds remain bound to the connection, login,
+and database; published state can be resolved after reconnect.
 
 ## Retention and verification boundaries
 
@@ -57,6 +61,20 @@ The owning daemon selects its policy before opening storage; clients cannot
 raise it. A zero bound disables retention. A candidate larger than the byte
 budget is not published and does not evict useful state. All derived state,
 including the current frontier, is evictable.
+
+Client-built caches also have fixed admission bounds. A login can retain up to
+128 live namespaces and 64 MiB of live key/value payload across databases, within
+the daemon's overall retention policy. A login can stage up to 8 builds and
+64 MiB of cumulative record charges; all logins together can stage up to 64
+builds and 256 MiB of charges. Each applied mutation charges its key, value,
+and 32 bytes for record overhead; replacements and delete markers do not
+refund staging capacity. A build accepts up to 4096 distinct chunks and 16 KiB
+of combined Store name, projection name and source key. Proof-only connections
+keep separate cache scopes but share one admission bucket. The storage owner
+counts in-flight builds until it actually publishes or reclaims them, including
+across reconnects. Out-of-budget uploads are optional cache refusals. Existing
+entries are neither overwritten nor evicted merely to admit more entries from
+a login at its own limit.
 
 SQL publication, sizing, admission and eviction commit in one transaction.
 A successful commit has no later fallible maintenance step. A confirmed
