@@ -29,18 +29,30 @@ Genesis validates its actual signer against the initial Auth and complete locall
 There is no automatic personal parent, new app principal or distinct ownership ACL.
 Identity creation remains separate and optional, and an organizational reference grants no authority.
 
-This primitive is reusable by Account and Identity constructors; it does not by itself provide linked-account provisioning, app login registration or device enrollment.
-The existing `NewAccount` convenience flow still creates its ordinary default root-key grant.
+`Account::create` uses this primitive with an explicit `AuthSettings` and descriptive name. It creates no login and does not require an Identity.
+The separate `NewAccount` convenience flow still creates its ordinary default root-key grant.
 Applications using explicit authority must supply every target's intended Auth rather than assume a reference conveys the owner's grants.
 Credential bundles and immutable acting handles remain separate from replicated authority.
 No live data, existing Auth, old history or local verification labels are migrated or deleted.
 See the [tested direct/delegation/mixed examples](../user_guide/authentication_guide.md#creating-with-explicit-authority) and [genesis invariants](authentication.md#explicit-genesis-authority).
 
-## Follow-up: linked Accounts and second installations
+## Owned apps and other linked Accounts
 
-Identity membership and explicit genesis authority are building blocks, not a linked-Account provisioning API. The planned app setup creates one app Account that its installations share. The personal Account references the app Account, the chosen owner Identity retains stronger administration through delegation, and the app receives a separate local credential bundle with only its scoped key. The app key does not become a member of the owner's Identity. Each downstream database still needs its own direct grants or explicit delegation.
+`accounts` is a reference namespace for a person, group or app to organize other Accounts by name. An Account can contain zero, one or many `identities` references, including references to Identities used by other Accounts. No reference implies ownership; a group may delegate to an existing Identity without making its members administrators of the personal Account. There is no recursive activation, inherited permission, or mandatory Identity per Account.
 
-The initial second-installation flow is manual: generate a fresh local key, use a ticket to the same Account root, and have an existing authorized installation approve the request. Request membership separately for each Identity the new installation needs and is not already authorized to use. Neither a copied reference nor replicated public history is a grant. This does not require copying private keys, polished onboarding, or background-device enrollment.
+`InstanceAdmin::provision_owned_app` creates one app Account for all installations. The selected Identity's active administrator signs genesis through a verified snapshot of that Identity. Genesis delegates to the Identity, bounded by `Admin(0)` with no minimum, and gives a fresh installation key direct `Admin(20)`. The selected member must be stronger than the app grant. The app key is not added to the Identity and the app does not receive the selected member's private key. Local login registration precedes the forward reference write in the organizing Account. There is no required reverse link.
+
+Use one setup writer per alias. Genesis, login registration and reference publication do not share a commit; the root and phase of a known partial result let a caller repair the original setup. `remove_reference` changes only the current view of one alias, not the history or authority. Forgetting local tracking and authoring a revocation on a target are separate operations.
+
+Each downstream database has its own Auth. Direct grants target a key; another installation key on the same app Account does not inherit them. A database can instead delegate to the app Account, with explicit bounds that apply to the entire path through that Account. A later member needs a current enough verified snapshot to prove its grant; a reference cannot substitute for acquisition and verification of that proof. Use a separate stronger owner path on a downstream database if the app delegation would clamp the owner's authority. Existing causal revocation and public-floor semantics still apply.
+
+Another installation uses its own key, an approved grant on the **same** app Account and local registration of that existing root. The registration API consumes an already authorized direct key; it does not create a new root, obtain approval, request Identity membership or configure background authority. Ticket-based enrollment and any separately needed Identity memberships are distinct steps. See the [setup guide](../user_guide/linked_accounts.md).
+
+### Independent personas
+
+An ordinary owned app deliberately exposes the owner Identity path to anyone with its Auth history. For a public persona that should not reveal the private organizer, create its own key and authority chain instead. Do not reuse organizer keys, delegate from a private parent, or put private root IDs in outward metadata. The organizing Account can link to the persona in one direction. Its controller can discover or unlink that reference, but cannot use it to sign as the persona or recover its keys.
+
+This is separation of histories and proof dependencies, not anonymity. Readers of the organizer see the links. A cohost, peer with access to both histories, or observer of common endpoints and profile details may still correlate them. The public-proof test in `linked_accounts_tests` verifies the public history on an instance given only its public trees; it does not model network anonymity or erase prior disclosures.
 
 ## Current custody and security boundary
 
@@ -57,15 +69,16 @@ No historical key deletion, compatibility import, live migration or deployment o
 Old histories can still contain credentials and must not be advertised as scrubbed.
 Trusted Unix-socket clients still unlock and sign in-process; the optional dashboard is the documented daemon-process exception.
 See [local record formats and lifetimes](../internal/account_credentials.md).
-Distinct-key two-installation regressions preload independently authorized registrations; they do not implement the separate enrollment or linked-account management workflow.
+The linked-account tests transfer public Auth/Entry history between isolated instances and register distinct keys. They demonstrate shared-root login, not ticket enrollment.
 
 ## Application-owned root references
 
-Applications store direct database IDs in their Account under a namespace and name they choose, through the session:
+Applications store direct database IDs in their Account under a namespace and name through the session:
 
 - `AccountSession::set_reference(namespace, name, id)` writes a reference.
 - `AccountSession::reference(namespace, name)` reads it as `Option<ID>`.
 - `AccountSession::open_reference(namespace, name)` reads it and opens the target with `open_database`.
+- `AccountSession::remove_reference(namespace, name)` unlinks it without changing target Auth or local tracking.
 
 The namespace separates applications that share one Account; the name is an application alias.
 Reference names must be nonempty and contain no dots; invalid names are rejected before reading or writing.

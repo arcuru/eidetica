@@ -8,7 +8,7 @@ use super::{
     AccountSession,
     errors::AccountError,
     key_manager::AccountKeyManager,
-    types::{AccountCredentials, AccountInfo, AccountKey, AccountStatus, KeyStorage},
+    types::{AccountInfo, AccountKey},
 };
 use crate::{
     Database, Instance, Result,
@@ -150,11 +150,10 @@ pub async fn create_databases_tracking(
 /// Create a new account
 ///
 /// This function:
-/// 1. Optionally hashes the account's password (if provided)
-/// 2. Generates a device keypair for the account
-/// 3. Creates the portable Account database (no private keys)
-/// 4. Registers AccountInfo in native local storage with a login UUID
-/// 5. **First-admin bootstrap**: if no instance admin exists yet in `_users.auth_settings`,
+/// 1. Generates a keypair for the account
+/// 2. Creates the portable Account database (no private keys)
+/// 3. Wraps the key with the password and registers AccountInfo in native local storage
+/// 4. **First-admin bootstrap**: if no instance admin exists yet in `_users.auth_settings`,
 ///    promotes this account by adding their pubkey as `Admin(0)` to the
 ///    instance-admin system DBs (`_users` and `_databases`). Subsequent
 ///    accounts land as non-admins.
@@ -194,8 +193,6 @@ pub async fn create_account(
 
     // 1. Generate default keypair for this account
     let (user_private_key, user_public_key) = generate_keypair();
-    // Return an independent signer clone; persisted credentials are encrypted.
-    let returned_private_key = user_private_key.clone();
 
     // 2. Create account database with the account's key as owner (Admin(0))
     let mut user_db_settings = Doc::new();
@@ -205,43 +202,27 @@ pub async fn create_account(
 
     let account_database =
         Database::create(instance, user_private_key.clone(), user_db_settings).await?;
-    let account_id = account_database.root_id().clone();
+    let (login_id, account_info) = super::local_logins::register_key(
+        instance,
+        account_database.root_id(),
+        username,
+        password,
+        user_private_key.clone(),
+    )
+    .await?;
 
-    // First login grants the existing daemon device Read access to AccountDB.
-    // It also initializes native key metadata from this local root credential;
-    // neither root nor additional private keys are authored into AccountDB.
-    let device_pubkey = instance.id();
-
-    // One authenticated locator/key payload, shared with caller-held bundles.
-    let credentials = AccountCredentials {
-        root_key_id: user_public_key.clone(),
-        bundle: KeyStorage::seal(&account_id, &[user_private_key], password)?,
-    };
-
-    // 4. Create AccountInfo
-    let account_info = AccountInfo {
-        username: username.to_string(),
-        account_id,
-        credentials,
-        created_at: instance.clock().now_secs(),
-        status: AccountStatus::Active,
-    };
-
-    let login_id = uuid::Uuid::new_v4().to_string();
-    super::local_logins::register(instance, &login_id, &account_info).await?;
-
-    // 6. First-admin bootstrap: if no instance admin exists yet, promote this
+    // First-admin bootstrap: if no instance admin exists yet, promote this
     // account. Registration and genesis are already durable if this later step
     // fails; callers must reconcile that partial result. The write uses the device
     // key (the only Admin on the system DBs at bootstrap time); opening
     // `databases_db()` here mirrors the `users_db` argument passed in and
     // keeps the device-key signing detail inside `Instance`.
-    if !has_instance_admin(users_db, &device_pubkey).await? {
+    if !has_instance_admin(users_db, &instance.id()).await? {
         let databases_db = instance.databases_db().await?;
         grant_admin_on_system_dbs(users_db, &databases_db, &user_public_key).await?;
     }
 
-    Ok((login_id, account_info, returned_private_key))
+    Ok((login_id, account_info, user_private_key))
 }
 
 /// Login an account
@@ -427,10 +408,13 @@ pub async fn list_accounts(users_db: &Database) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Instance;
     use crate::backend::database::InMemory;
     use crate::store::DocStore;
     use crate::store::SettingsStore;
+    use crate::{
+        Instance,
+        account::{AccountStatus, KeyStorage},
+    };
 
     use std::sync::Arc;
 

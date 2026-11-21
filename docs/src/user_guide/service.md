@@ -129,6 +129,7 @@ The login and registration pages explain that the operator creates the initial
 account with `eidetica daemon init`; further accounts require an administrator
 through the existing Account administration API.
 The web interface does not provide an account-creation form.
+Use the [linked Account API](linked_accounts.md#provision-an-owned-app-and-log-in) to provision an app and give it a separate ordinary daemon login.
 
 ### Dashboard sync preferences
 
