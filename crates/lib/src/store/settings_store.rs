@@ -11,6 +11,7 @@ use crate::{
         settings::AuthSettings,
         types::{AuthKey, DelegatedTreeRef, KeyStatus},
     },
+    constants::ENTRY_TIMESTAMPS,
     crdt::{CRDTError, Doc, doc},
     height::HeightStrategy,
     store::DocStore,
@@ -141,6 +142,26 @@ impl SettingsStore {
         self.inner
             .set("height_strategy", doc::Value::Text(json))
             .await
+    }
+
+    /// Whether automatic commit timestamps are enabled in this settings view.
+    ///
+    /// Only an explicit boolean `true` enables timestamps. Missing settings and
+    /// values of other types are treated as disabled.
+    pub async fn entry_timestamps_enabled(&self) -> Result<bool> {
+        Ok(matches!(
+            self.inner.try_get(ENTRY_TIMESTAMPS).await?,
+            Some(doc::Value::Bool(true))
+        ))
+    }
+
+    /// Set whether new entries carry an advisory author-clock timestamp.
+    ///
+    /// This takes effect on the commit that writes the setting and on commits
+    /// that inherit it. Timestamps are visible to peers even for encrypted data;
+    /// changing this setting does not change any existing entry.
+    pub async fn set_entry_timestamps(&self, enabled: bool) -> Result<()> {
+        self.inner.set(ENTRY_TIMESTAMPS, enabled).await
     }
 
     /// Get a snapshot of the current authentication settings

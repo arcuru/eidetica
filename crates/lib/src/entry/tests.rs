@@ -4,6 +4,31 @@ use super::*;
 use crate::auth::types::{AuthInfo, DelegationStep, KeyHint, SigKey};
 
 #[test]
+fn test_committed_at_ms_reads_only_unsigned_integer_timestamps() {
+    let entry = Entry::root_builder().build().unwrap();
+    assert_eq!(entry.committed_at_ms(), None);
+    for (json, expected) in [
+        (r#"{"settings_tips":[],"entropy":123}"#, None),
+        (r#"{"settings_tips":[],"ts":0}"#, Some(0)),
+        (
+            r#"{"settings_tips":[],"ts":18446744073709551615}"#,
+            Some(u64::MAX),
+        ),
+        (r#"{"settings_tips":[],"ts":18446744073709551616}"#, None),
+        (r#"{"settings_tips":[],"ts":-1}"#, None),
+        (r#"{"settings_tips":[],"ts":"42"}"#, None),
+        (r#"{"settings_tips":[],"ts":1.5}"#, None),
+        (r#"{"settings_tips":[],"ts":null}"#, None),
+        (r#"{"settings_tips":[],"ts":1,"ts":2}"#, None),
+        (r#"{"settings_tips":[],"ts":1"#, None),
+        ("[42]", None),
+    ] {
+        let entry = Entry::root_builder().set_metadata(json).build().unwrap();
+        assert_eq!(entry.committed_at_ms(), expected, "{json}");
+    }
+}
+
+#[test]
 fn test_builder_genesis_requires_marker_no_main_parents_and_no_root() {
     let root = Entry::root_builder();
     assert!(root.is_root());

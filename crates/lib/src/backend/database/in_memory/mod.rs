@@ -939,6 +939,25 @@ impl BackendImpl for InMemory {
             .map(Snapshot::new)
     }
 
+    async fn try_verified_store_snapshot(
+        &self,
+        tree: &ID,
+        store: &str,
+    ) -> Result<Option<Snapshot>> {
+        let inner = self.inner.read().unwrap();
+        let Some((raw, verified)) = inner.tips.get(tree).zip(inner.verified.get(tree)) else {
+            return Ok(None);
+        };
+        if raw.tree_tips.is_empty() || raw.tree_tips != verified.frontier {
+            return Ok(None);
+        }
+        Ok(raw
+            .subtree_tips
+            .get(store)
+            .filter(|tips| !tips.is_empty())
+            .map(|tips| Snapshot::new(tips.iter().cloned().collect())))
+    }
+
     /// Retrieves the IDs of all top-level root entries stored in the database.
     ///
     /// Top-level roots are entries that are themselves roots of a tree

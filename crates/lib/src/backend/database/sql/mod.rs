@@ -1372,6 +1372,14 @@ impl BackendImpl for SqlxBackend {
             .map(Snapshot::new)
     }
 
+    async fn try_verified_store_snapshot(
+        &self,
+        tree: &ID,
+        store: &str,
+    ) -> Result<Option<Snapshot>> {
+        traversal::try_verified_store_snapshot(self, tree, store).await
+    }
+
     async fn store_snapshot_at(
         &self,
         tree: &ID,

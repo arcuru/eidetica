@@ -206,6 +206,9 @@ pub enum DatabaseOp {
     /// Subtree tips reachable from given main-tree entry IDs.
     /// Used by Transaction internals to discover store entries.
     GetStoreTipsUpToEntries { store: String, up_to: Vec<ID> },
+    /// Indexed, fully verified Store tips. Returns `Ok` with no data if unavailable.
+    /// Gate Read; never falls back to history to compute the Store tips.
+    TryVerifiedStoreSnapshot { store: String },
 
     /// Lowest common ancestor + path to tip entries in a store DAG.
     /// Fused to one RPC so base and path resolve against a single server
@@ -264,6 +267,7 @@ impl DatabaseOp {
             | DatabaseOp::GetStoreState { .. }
             | DatabaseOp::GetStoreEntries { .. }
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
+            | DatabaseOp::TryVerifiedStoreSnapshot { .. }
             | DatabaseOp::ComputeMergeState { .. }
             | DatabaseOp::GetEntry { .. }
             | DatabaseOp::VerifyEntrySignature { .. }
@@ -605,6 +609,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "GetStoreState",
     "GetStoreEntries",
     "GetStoreTipsUpToEntries",
+    "TryVerifiedStoreSnapshot",
     "ComputeMergeState",
     "GetEntry",
     "VerifyEntrySignature",

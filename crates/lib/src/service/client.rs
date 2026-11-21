@@ -1208,6 +1208,26 @@ impl RemoteConnection {
         }
     }
 
+    pub(crate) async fn try_verified_store_snapshot(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+    ) -> crate::Result<Option<Snapshot>> {
+        let resp = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::TryVerifiedStoreSnapshot { store },
+            )
+            .await?;
+        match resp {
+            ServiceResponse::Ids(ids) => Ok(Some(ids)),
+            ServiceResponse::Ok => Ok(None),
+            other => Err(unexpected_response("Ids or Ok", &other)),
+        }
+    }
+
     /// Compute merge state: lowest common ancestor + path to tip entries.
     pub async fn compute_merge_state(
         &self,

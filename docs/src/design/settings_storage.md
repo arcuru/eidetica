@@ -71,6 +71,8 @@ struct EntryMetadata {
     settings_tips: Vec<ID>,
     /// Random entropy for ensuring unique IDs for root entries
     entropy: Option<u64>,
+    /// Advisory author-clock Unix milliseconds, omitted when stamping is off
+    ts: Option<u64>,
 }
 ```
 
@@ -101,6 +103,12 @@ merged settings are a separate post-write state used for delegation transitions;
 they cannot grant the same non-genesis entry authority. See the canonical
 [causal authorization rules](authentication.md#causal-snapshot-validation) and
 [snapshot boundaries](authentication.md#local-state-and-snapshot-boundaries).
+
+`ts` is independent of the pin: verification does not interpret it.
+The author writes it when the transaction's resulting settings contain
+`entry_timestamps: true`. Older readers ignore the unknown field. Because the
+field is inside the signed Entry metadata, replicas preserve it without using
+it as a clock-skew check or for ordering. See [Optional commit timestamps](../user_guide/transactions.md#optional-commit-timestamps).
 
 ## SettingsStore API
 

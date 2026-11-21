@@ -97,13 +97,22 @@ async fn test_sync_with_ticket_happy_path() {
     let (_server_instance, _server_user, _server_key_id, server_database, tree_id, server_sync) =
         setup_public_sync_enabled_server("server_user", "server_key", "test_database").await;
 
-    // Add test data
-    {
+    // Sync must preserve the signed author-clock time and the rest of the entry.
+    let authored = {
         let tx = server_database.new_transaction().await.unwrap();
+        tx.get_settings()
+            .unwrap()
+            .set_entry_timestamps(true)
+            .await
+            .unwrap();
         let store = tx.get_store::<DocStore>("messages").await.unwrap();
         store.set("msg1", "Hello via ticket!").await.unwrap();
-        tx.commit().await.unwrap();
-    }
+        server_database
+            .get_entry(tx.commit().await.unwrap())
+            .await
+            .unwrap()
+    };
+    assert!(authored.committed_at_ms().is_some());
 
     // Start server and create ticket
     let _server_addr = start_sync_server(&server_sync).await;
@@ -142,6 +151,24 @@ async fn test_sync_with_ticket_happy_path() {
         .await
         .expect("Client should have the root entry after sync");
     assert_eq!(root.id(), tree_id);
+
+    let replica = eidetica::Database::open(&client_instance, &tree_id)
+        .await
+        .unwrap();
+    assert!(
+        replica
+            .snapshot()
+            .await
+            .unwrap()
+            .tips()
+            .contains(&authored.id())
+    );
+    let received = replica.get_entry(authored.id()).await.unwrap();
+    assert_eq!(received.committed_at_ms(), authored.committed_at_ms());
+    assert_eq!(
+        received.canonical_bytes().unwrap(),
+        authored.canonical_bytes().unwrap()
+    );
 
     // Verify tips are non-empty
     let tips = client_instance

@@ -44,7 +44,7 @@ use crate::{
         validation::AuthValidator,
     },
     backend::{RecordMutations, RecordRange, RecordView, VerificationStatus},
-    constants::{INDEX, ROOT, SETTINGS},
+    constants::{ENTRY_TIMESTAMPS, INDEX, ROOT, SETTINGS},
     crdt::{CRDT, Codec, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
     height::HeightStrategy,
@@ -149,6 +149,9 @@ pub(crate) struct EntryMetadata {
     pub(crate) settings_snapshot: Snapshot,
     /// Random entropy for ensuring unique IDs for root entries
     pub(crate) entropy: Option<u64>,
+    // Read only via Entry::committed_at_ms. Verification must not interpret it.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    ts: Option<u64>,
 }
 
 /// Represents a single, atomic transaction for modifying a `Database`.
@@ -506,6 +509,7 @@ impl Transaction {
             .unwrap_or(EntryMetadata {
                 settings_snapshot: Snapshot::EMPTY,
                 entropy: None,
+                ts: None,
             });
 
         // Set entropy
@@ -1514,7 +1518,7 @@ impl Transaction {
 
         // VALIDATION: Ensure that the new settings state (after this transaction) doesn't corrupt auth
         // This prevents committing entries that would corrupt the database's auth configuration
-        if has_settings_update {
+        let post_write_settings = if has_settings_update {
             // Compute what the new settings state will be after merging local changes
             let local_settings = self.get_local_data::<Doc>(SETTINGS)?.unwrap_or_default();
             let new_settings = effective_settings_for_validation.merge(&local_settings)?;
@@ -1531,7 +1535,10 @@ impl Transaction {
                 }
             }
             // If auth is None (not configured), that's fine - we allow empty auth
-        }
+            Some(new_settings)
+        } else {
+            None
+        };
 
         // Ensure _index constraint: subtrees referenced in _index must appear in Entry.
         // This adds subtrees with None data if they're referenced in _index but not yet in builder.
@@ -1601,24 +1608,6 @@ impl Transaction {
             builder_from_cell.clone()
         };
 
-        // Parse existing metadata if present, or create new
-        let mut metadata = builder
-            .metadata()
-            .and_then(|m| serde_json::from_slice::<EntryMetadata>(m).ok())
-            .unwrap_or(EntryMetadata {
-                settings_snapshot: Snapshot::EMPTY,
-                entropy: None,
-            });
-
-        // Update settings snapshot
-        metadata.settings_snapshot = settings_snapshot;
-
-        // Serialize the metadata
-        let metadata_json = serde_json::to_vec(&metadata)?;
-
-        // Add metadata to the entry builder
-        builder.set_metadata_mut(metadata_json);
-
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured
 
@@ -1654,22 +1643,18 @@ impl Transaction {
             }
         }
 
-        // Extract height strategy from settings (defaults to Incremental)
-        // If this transaction includes settings updates, merge them to get the effective strategy
-        let settings_for_height = if has_settings_update {
-            let local_settings = self.get_local_data::<Doc>(SETTINGS)?.unwrap_or_default();
-            effective_settings_for_validation.merge(&local_settings)?
-        } else {
-            effective_settings_for_validation.clone()
-        };
-        let height_strategy: HeightStrategy = settings_for_height
+        // Unlike auth, authoring policy includes this transaction's staged settings.
+        let authoring_settings = post_write_settings
+            .as_ref()
+            .unwrap_or(&effective_settings_for_validation);
+        let height_strategy: HeightStrategy = authoring_settings
             .get_json("height_strategy")
             .unwrap_or_default();
+        let instance = self.db.instance()?;
 
         // Compute heights from parent entries using the configured strategy
         {
             let backend = self.db.ops();
-            let instance = self.db.instance()?;
             let calculator = height_strategy.into_calculator(instance.clock_arc());
 
             // Compute main tree height using the height strategy
@@ -1741,6 +1726,23 @@ impl Transaction {
             builder.set_height_mut(calculator.calculate_height(max_parent_height));
         }
 
+        let entropy = builder
+            .metadata()
+            .and_then(|m| serde_json::from_slice::<EntryMetadata>(m).ok())
+            .and_then(|md| md.entropy);
+        // Read the clock after height calculation so this additional read cannot
+        // affect the height of the entry being authored.
+        let ts = matches!(
+            authoring_settings.get(ENTRY_TIMESTAMPS),
+            Some(Value::Bool(true))
+        )
+        .then(|| instance.clock().now_millis());
+        builder.set_metadata_mut(serde_json::to_vec(&EntryMetadata {
+            settings_snapshot,
+            entropy,
+            ts,
+        })?);
+
         // Build the final immutable Entry
         let mut entry = builder.build()?;
 
@@ -1800,8 +1802,6 @@ impl Transaction {
             }
         };
 
-        let instance = self.db.instance()?;
-
         // Connected clients have no local engine for delegated proof resolution.
         // SubmitSignedEntry verifies on the daemon and acknowledges only Verified
         // entries. Keep direct-key client validation as an additional early check.
@@ -1830,7 +1830,6 @@ impl Transaction {
         let id = entry.id();
 
         // Write entry through Instance which handles backend storage and callback dispatch
-        let instance = self.db.instance()?;
         if let Some(guard) = guard {
             instance
                 .put_entry_under_tree_lock(

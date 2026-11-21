@@ -1468,6 +1468,26 @@ impl Database {
         Ok(entries)
     }
 
+    /// Try to read the indexed tips of one named Store without walking its history.
+    ///
+    /// `None` means no indexed verified tips are available, for example when
+    /// the Store is absent or the raw and verified database frontiers differ.
+    /// It does not prove the Store is empty.
+    /// This lookup only returns verified tips, even on a handle that permits
+    /// unverified reads. An empty Store name returns `None`.
+    ///
+    /// Use [`Self::get_entry`] to read a returned tip's metadata. This loads
+    /// the whole Entry, not just its metadata. A tip may participate in the
+    /// Store without changing its data; see [`Entry::data`].
+    pub async fn try_verified_store_snapshot(&self, store: &str) -> Result<Option<Snapshot>> {
+        if store.is_empty() {
+            return Ok(None);
+        }
+        self.ops()
+            .try_verified_store_snapshot(self.root_id(), store)
+            .await
+    }
+
     /// Get a single entry by ID from this database.
     ///
     /// This is the primary method for retrieving entries after commit operations.

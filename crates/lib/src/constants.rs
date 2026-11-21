@@ -6,6 +6,9 @@
 /// Reserved subtree name for storing tree settings.
 pub const SETTINGS: &str = "_settings";
 
+/// Database setting for automatic author-clock entry timestamps.
+pub(crate) const ENTRY_TIMESTAMPS: &str = "entry_timestamps";
+
 /// Reserved subtree name for the subtree index/registry.
 pub const INDEX: &str = "_index";
 

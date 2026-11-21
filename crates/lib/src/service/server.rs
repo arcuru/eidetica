@@ -1010,7 +1010,8 @@ async fn dispatch_inner(
             // Cancellation only drops a handle bound to this connection,
             // root and proven identity. It neither reads the tree nor requires
             // the original Read grant to still be active. Private cache staging
-            // requires real Read access, not create-flow passthrough.
+            // and indexed Store reads require real Read access, not create-flow
+            // passthrough.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -1028,6 +1029,7 @@ async fn dispatch_inner(
                         | DatabaseOp::StageStoreStateRecords { .. }
                         | DatabaseOp::PublishStoreState { .. }
                         | DatabaseOp::AbortStoreState { .. }
+                        | DatabaseOp::TryVerifiedStoreSnapshot { .. }
                 );
                 gate_tree_permission(
                     instance,
@@ -1440,6 +1442,12 @@ async fn dispatch_database_op(
                 .store_snapshot_at(&root_id, &store, &boundary)
                 .await?;
             Ok(ServiceResponse::Ids(snapshot))
+        }
+
+        DatabaseOp::TryVerifiedStoreSnapshot { store } => {
+            let db = Database::open(instance, &root_id).await?;
+            let tips = db.try_verified_store_snapshot(&store).await?;
+            Ok(tips.map_or(ServiceResponse::Ok, ServiceResponse::Ids))
         }
 
         DatabaseOp::ComputeMergeState { store, entry_ids } => {

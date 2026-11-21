@@ -719,6 +719,17 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `store` - The name of the store for which to find tips.
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot>;
 
+    /// Read the indexed tips of a named Store only when the raw main frontier
+    /// and the retained verified main frontier agree in the same backend view.
+    /// Return `None` if unavailable; never reconstruct either frontier here.
+    async fn try_verified_store_snapshot(
+        &self,
+        _tree: &ID,
+        _store: &str,
+    ) -> Result<Option<Snapshot>> {
+        Ok(None)
+    }
+
     /// Returns the store snapshot as of a specific main-tree snapshot.
     ///
     /// Finds Store contributions in the boundary's main ancestry, then removes

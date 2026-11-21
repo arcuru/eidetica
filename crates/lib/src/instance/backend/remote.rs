@@ -284,6 +284,16 @@ impl Backend for RemoteBackend {
         }
     }
 
+    async fn try_verified_store_snapshot(
+        &self,
+        tree: &ID,
+        store: &str,
+    ) -> Result<Option<Snapshot>> {
+        self.conn
+            .try_verified_store_snapshot(tree.clone(), self.identity(), store.to_owned())
+            .await
+    }
+
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
         self.conn
             .get_store_entries(
