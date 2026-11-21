@@ -22,7 +22,8 @@ use crate::auth::errors::AuthError;
 use crate::auth::types::{Permission, SigKey};
 use crate::auth::validation::permissions::resolve_identity_permission;
 use crate::backend::{
-    CacheScope, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
+    BackendError, CacheScope, StagingToken, StoreStateLifecycle, StoreStateRequest,
+    VerificationStatus, private_cache::SIGNER_SCOPE_PREFIX,
 };
 use crate::database::Database;
 use crate::entry::ID;
@@ -41,9 +42,10 @@ use crate::sync::{SyncError, protocol::SyncTreeRequest};
 /// callback refactor.
 type ConnectionId = u64;
 
-/// How long an idle session token survives before the next dispatch reclaims
-/// its backend resources.
+/// How long idle session tokens survive.
 const TOKEN_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
+/// Bound retry bookkeeping even for empty chunks, which cost no record bytes.
+const MAX_STAGING_CHUNKS: usize = 4096;
 
 /// One server-issued Store-state capability, bound to the session that minted
 /// it. `published` distinguishes a readable view from a staging namespace that
@@ -53,7 +55,7 @@ struct SessionStaging {
     login_id: String,
     database: ID,
     published: bool,
-    chunks: HashMap<u64, Vec<u8>>,
+    chunks: HashMap<u64, blake3::Hash>,
     last_used: Instant,
 }
 
@@ -91,9 +93,18 @@ impl ConnectionContext {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Drop session tokens that have gone idle, returning the backend staging
-    /// tokens whose namespaces the caller must abort.
-    fn cleanup_expired(&self) -> Vec<StagingToken> {
+    fn next_staging_expiry(&self) -> Option<Instant> {
+        self.staging
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|value| !value.published)
+            .map(|value| value.last_used + self.staging_idle_ttl)
+            .min()
+    }
+
+    /// Drop idle capabilities and reclaim their underlying private builds.
+    async fn cleanup_expired(&self) {
         let now = Instant::now();
         let mut expired = Vec::new();
         self.staging.lock().unwrap().retain(|_, value| {
@@ -102,13 +113,15 @@ impl ConnectionContext {
             } else {
                 self.staging_idle_ttl
             };
-            let keep = now.duration_since(value.last_used) <= ttl;
+            let keep = now.duration_since(value.last_used) < ttl;
             if !keep && !value.published {
                 expired.push(value.backend.clone());
             }
             keep
         });
-        expired
+        for token in expired {
+            let _ = self.instance.backend().abort_store_state(token).await;
+        }
     }
 }
 
@@ -686,7 +699,20 @@ async fn handle_connection(
     let mut state = ConnectionState::PreAuth;
     let loop_result: crate::Result<()> = async {
         loop {
-            let request: IncomingRequest = match read_frame(&mut reader).await? {
+            // Keep a partially read frame across the expiry timer; restarting
+            // read_frame on a timer tick would lose its framing boundary.
+            let frame = async {
+                let read = read_frame(&mut reader);
+                tokio::pin!(read);
+                while let Some(deadline) = ctx.next_staging_expiry() {
+                    tokio::select! {
+                        frame = &mut read => return frame,
+                        _ = tokio::time::sleep_until(deadline.into()) => ctx.cleanup_expired().await,
+                    }
+                }
+                read.await
+            }.await?;
+            let request: IncomingRequest = match frame {
                 Some(req) => req,
                 None => break, // Clean EOF
             };
@@ -777,7 +803,7 @@ async fn gate_local_login_admin(instance: &Instance, state: &ConnectionState) ->
 fn require_local_login(state: &ConnectionState, requested: &str) -> crate::Result<()> {
     match state {
         ConnectionState::Authenticated { login_id, .. }
-            if login_id == requested && !login_id.starts_with("signer:") =>
+            if login_id == requested && !login_id.starts_with(SIGNER_SCOPE_PREFIX) =>
         {
             Ok(())
         }
@@ -792,9 +818,7 @@ async fn dispatch_inner(
     ctx: &ConnectionContext,
     request: ServiceRequest,
 ) -> crate::Result<ServiceResponse> {
-    for token in ctx.cleanup_expired() {
-        let _ = instance.backend().abort_store_state(token).await;
-    }
+    ctx.cleanup_expired().await;
     match request {
         // === Pre-auth: login handshake ===
         ServiceRequest::TrustedLoginAccount { username } => {
@@ -810,7 +834,7 @@ async fn dispatch_inner(
                 username: String::new(),
                 // Cache scope only, never a daemon login record. UUID login
                 // records and this prefix occupy distinct namespaces.
-                login_id: format!("signer:{}", uuid::Uuid::new_v4()),
+                login_id: format!("{SIGNER_SCOPE_PREFIX}{}", uuid::Uuid::new_v4()),
                 challenge: challenge.clone(),
                 expected_pubkey: pubkey,
             };
@@ -870,7 +894,7 @@ async fn dispatch_inner(
             account_info,
         } => {
             gate_local_login_admin(instance, state).await?;
-            if login_id.is_empty() || login_id.starts_with("signer:") {
+            if login_id.is_empty() || login_id.starts_with(SIGNER_SCOPE_PREFIX) {
                 return Err(crate::account::AccountError::InvalidLocalState.into());
             }
             crate::account::local_logins::register(instance, &login_id, &account_info).await?;
@@ -1002,9 +1026,8 @@ async fn dispatch_inner(
 
             // Per-tree permission gate. Unconditional for every op *except*
             // submit (verification in the handler is its boundary) and
-            // set-metadata (gated against `_databases` below). Create-flow
-            // passthrough (false) for the rest, so a not-yet-propagated tree is
-            // waved through and database creation works.
+            // set-metadata (gated against `_databases` below). Private cache
+            // staging requires real Read access, not create-flow passthrough.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -1016,13 +1039,20 @@ async fn dispatch_inner(
                 )
                 .await?;
             } else if !is_submit {
+                let require_existing = matches!(
+                    &op,
+                    DatabaseOp::BeginStoreStateStaging { .. }
+                        | DatabaseOp::StageStoreStateRecords { .. }
+                        | DatabaseOp::PublishStoreState { .. }
+                        | DatabaseOp::AbortStoreState { .. }
+                );
                 gate_tree_permission(
                     instance,
                     &acting_pubkey,
                     &identity,
                     &root_id,
                     op.required_permission(),
-                    false,
+                    require_existing,
                 )
                 .await?;
             }
@@ -1137,6 +1167,13 @@ async fn dispatch_database_op(
         }
         DatabaseOp::BeginStoreStateStaging { request } => {
             let request = session_store_state_request(request, login_id, &root_id)?;
+            if !instance
+                .backend()
+                .local_engine()
+                .is_some_and(|engine| engine.supports_private_cache_admission())
+            {
+                return Err(BackendError::StoreStateStorageUnsupported.into());
+            }
             let backend = instance
                 .backend()
                 .begin_store_state_staging(request.clone())
@@ -1160,18 +1197,20 @@ async fn dispatch_database_op(
             chunk_id,
             records,
         } => {
-            let digest = serde_json::to_vec(&records)?;
-            if digest.len() > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
+            let encoded = serde_json::to_vec(&records)?;
+            if encoded.len() > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
                 return Err(crate::backend::BackendError::RecordTooLarge {
-                    encoded_bytes: digest.len(),
+                    encoded_bytes: encoded.len(),
                 }
                 .into());
             }
+            let digest = blake3::hash(&encoded);
+            drop(encoded);
             let records = records
                 .into_iter()
                 .collect::<crate::backend::RecordMutations>();
             let (backend, duplicate) =
-                session_staging(ctx, login_id, &root_id, &token, chunk_id, &digest)?;
+                session_staging(ctx, login_id, &root_id, &token, chunk_id, digest)?;
             if duplicate {
                 return Ok(ServiceResponse::Ok);
             }
@@ -1188,13 +1227,8 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Ok)
         }
         DatabaseOp::PublishStoreState { token } => {
-            let staged = ctx
-                .staging
-                .lock()
-                .unwrap()
-                .remove(&token)
-                .filter(|value| value.login_id == login_id && value.database == root_id)
-                .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
+            let staged = take_staging(ctx, login_id, &root_id, &token)?
+                .ok_or(BackendError::InvalidStoreStateStagingToken)?;
             let backend_token = staged.backend;
             let view = match instance
                 .backend()
@@ -1236,17 +1270,7 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::RecordView(Some(view_token)))
         }
         DatabaseOp::AbortStoreState { token } => {
-            let staged = {
-                let mut staging = ctx.staging.lock().unwrap();
-                if staging
-                    .get(&token)
-                    .is_some_and(|value| value.login_id != login_id || value.database != root_id)
-                {
-                    return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
-                }
-                staging.remove(&token)
-            };
-            if let Some(staged) = staged {
+            if let Some(staged) = take_staging(ctx, login_id, &root_id, &token)? {
                 instance.backend().abort_store_state(staged.backend).await?;
             }
             Ok(ServiceResponse::Ok)
@@ -1688,22 +1712,45 @@ fn session_staging(
     database: &ID,
     token: &str,
     chunk_id: u64,
-    digest: &[u8],
+    digest: blake3::Hash,
 ) -> crate::Result<(StagingToken, bool)> {
     let mut staging = ctx.staging.lock().unwrap();
     let value = staging
         .get_mut(token)
-        .filter(|value| value.login_id == login_id && value.database == *database)
+        .filter(|value| {
+            !value.published && value.login_id == login_id && value.database == *database
+        })
         .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
     if let Some(existing) = value.chunks.get(&chunk_id) {
-        if existing != digest {
+        if *existing != digest {
             return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
         }
         return Ok((value.backend.clone(), true));
     }
-    value.chunks.insert(chunk_id, digest.to_vec());
+    if value.chunks.len() >= MAX_STAGING_CHUNKS {
+        return Err(BackendError::StoreStateNotRetained {
+            reason: "private cache chunk budget".into(),
+        }
+        .into());
+    }
+    value.chunks.insert(chunk_id, digest);
     value.last_used = Instant::now();
     Ok((value.backend.clone(), false))
+}
+
+fn take_staging(
+    ctx: &ConnectionContext,
+    login_id: &str,
+    database: &ID,
+    token: &str,
+) -> crate::Result<Option<SessionStaging>> {
+    let mut staging = ctx.staging.lock().unwrap();
+    if staging.get(token).is_some_and(|value| {
+        value.published || value.login_id != login_id || value.database != *database
+    }) {
+        return Err(BackendError::InvalidStoreStateStagingToken.into());
+    }
+    Ok(staging.remove(token))
 }
 
 /// Handle `ServiceRequest::TrustedLoginAccount`: look up the user's full record,
@@ -1971,11 +2018,8 @@ async fn handle_ticket_bootstrap(
 ///
 /// `require_existing = true` flips that to **fail closed**: an absent
 /// target is denied rather than waved through. Used for the
-/// `SetInstanceMetadata` admin gate (D8) — `_databases` always exists on an
-/// initialized daemon and that op is never a creation flow, so the
-/// create-flow passthrough there would only ever be a fail-open hole that
-/// lets any authenticated user rewrite the daemon's system-DB pointers if
-/// `_databases` were ever unreadable.
+/// `SetInstanceMetadata` admin gate and private cache staging; neither is
+/// part of database creation.
 ///
 /// When the gate does fire, the denial error is the same shape regardless
 /// of which sub-check failed (key not in auth_settings, mismatched hint,
@@ -1998,9 +2042,14 @@ async fn gate_tree_permission(
     required: Permission,
     require_existing: bool,
 ) -> crate::Result<()> {
+    let role = match required {
+        Permission::Read => "Read",
+        Permission::Write(_) => "Write",
+        Permission::Admin(_) => "Admin",
+    };
     let denied = || {
         crate::Error::Auth(Box::new(AuthError::PermissionDenied {
-            reason: format!("tree {tree_id}: pubkey {pubkey} not permitted for {required:?}"),
+            reason: format!("tree {tree_id}: pubkey {pubkey} not permitted for {role}"),
         }))
     };
 

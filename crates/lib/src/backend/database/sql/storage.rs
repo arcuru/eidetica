@@ -7,6 +7,7 @@ use crate::backend::errors::BackendError;
 use crate::backend::{
     CacheScope, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
     RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
+    private_cache,
 };
 use crate::entry::{Entry, ID};
 
@@ -113,6 +114,38 @@ pub async fn begin_store_state_staging(
     } else {
         namespace_id
     };
+    if let Some(login) = private_cache::login(&request) {
+        private_cache::check_target(&request)?;
+        let mut tx = pool
+            .begin()
+            .await
+            .sql_context("Failed to begin private staging transaction")?;
+        if backend.is_sqlite() {
+            sqlx::query("COMMIT; BEGIN IMMEDIATE")
+                .execute(&mut *tx)
+                .await
+                .sql_context("Failed to lock private staging transaction")?;
+        }
+        super::cache::lock_maintenance(backend, &mut tx).await?;
+        super::cache::check_private_staging(&mut tx, login, 1, 0).await?;
+        insert_staging(&mut *tx, &request, &namespace_id).await?;
+        tx.commit()
+            .await
+            .sql_context("Failed to commit private staging transaction")?;
+    } else {
+        insert_staging(pool, &request, &namespace_id).await?;
+    }
+    Ok(StagingToken {
+        namespace_id,
+        target: request,
+    })
+}
+
+async fn insert_staging<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    request: &StoreStateRequest,
+    namespace_id: &str,
+) -> Result<()> {
     let staging_source = namespace_id.as_bytes();
     sqlx::query(
         "INSERT INTO store_state_namespaces
@@ -120,7 +153,7 @@ pub async fn begin_store_state_staging(
           projection_name, projection_version, source_key, created_revision)
          VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8, NULL)",
     )
-    .bind(&namespace_id)
+    .bind(namespace_id)
     .bind(request.database.to_string())
     .bind(&request.store)
     .bind(StoreStateLifecycle::Staging.as_db_int())
@@ -128,13 +161,10 @@ pub async fn begin_store_state_staging(
     .bind(&request.projection.name)
     .bind(i64::from(request.projection.version))
     .bind(staging_source)
-    .execute(pool)
+    .execute(executor)
     .await
     .sql_context("Failed to begin Store-state staging")?;
-    Ok(StagingToken {
-        namespace_id,
-        target: request,
-    })
+    Ok(())
 }
 
 pub async fn stage_store_state_records(
@@ -153,6 +183,10 @@ pub async fn stage_store_state_records(
             .await
             .sql_context("Failed to lock Store-state staging transaction")?;
     }
+    let private_login = private_cache::login(&token.target);
+    if private_login.is_some() {
+        super::cache::lock_maintenance(backend, &mut tx).await?;
+    }
     lock_store_state_namespace(backend, &mut tx, &token.target, &token.namespace_id).await?;
     let staging: Option<(i64,)> = sqlx::query_as(
         "SELECT lifecycle FROM store_state_namespaces WHERE namespace_id = $1 AND status = 0
@@ -170,6 +204,21 @@ pub async fn stage_store_state_records(
     .sql_context("Failed to validate Store-state staging token")?;
     if staging != Some((StoreStateLifecycle::Staging.as_db_int(),)) {
         return Err(BackendError::InvalidStoreStateStagingToken.into());
+    }
+    if let Some(login) = private_login {
+        let charge = private_cache::chunk_charge(&records);
+        super::cache::check_private_staging(&mut tx, login, 0, charge).await?;
+        // The charge and its records share a commit; disconnected/uncertain
+        // builds stay charged until storage actually reclaims the namespace.
+        sqlx::query(
+            "UPDATE store_state_namespaces SET size_bytes = size_bytes + $2
+                     WHERE namespace_id = $1 AND status = 0",
+        )
+        .bind(&token.namespace_id)
+        .bind(charge as i64)
+        .execute(&mut *tx)
+        .await
+        .sql_context("Failed to charge private staged records")?;
     }
     #[cfg(feature = "testing")]
     super::fire_store_state_stage_pause(&token.namespace_id).await;
@@ -351,6 +400,9 @@ pub(super) async fn prepare_publication(
             reason: "disabled or oversized materialization".into(),
         }
         .into());
+    }
+    if let Some(login) = private_cache::login(&token.target) {
+        super::cache::check_private_retention(tx, login, size as u64).await?;
     }
     let tick = if token.target.lifecycle == StoreStateLifecycle::Derived {
         super::cache::assign_publish_tick(backend).await?

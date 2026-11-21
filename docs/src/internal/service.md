@@ -203,7 +203,7 @@ Every storage operation rides a single `DatabaseOp` enum carried in `Authenticat
 | `GetEntry { id }`                               | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                  |
 | `VerifyEntrySignature { id }`                   | Re-run native historical authentication for one Entry; target and delegated-proof Read gates apply.                                                                              |
 | `CreateTicket`                                  | Build a point-in-time database locator after the request is gated for Read on the target database.                                                                               |
-| Store-state resolve / staging / record get/scan | Resolve, build, and lazily read cached state through opaque server-issued views onto published record sets. Read for reads, Write for staging.                                   |
+| Store-state resolve / staging / record get/scan | Read permission. Resolve and lazily read published records; only build or publish private Derived state, subject to admission.                                                   |
 | `SetInstanceMetadata { metadata }`              | Rewrite daemon-level pointers to its own system DBs. Special-cased server-side to gate `Admin` on `_databases` (a daemon-global system tree) instead of the request's `root_id`. |
 
 `VerifyEntrySignature` runs the existing historical validator on the daemon, preserving pinned settings, inherited floors, permission bounds and incomplete-evidence errors.
@@ -216,7 +216,7 @@ Operations deliberately **not** exposed over the wire — `update_verification_s
 
 `update_verification_status` is off-wire **by design, not just for tidiness**: verification is a local trust decision. If a client could set it over the socket, a client (or anything that reached the socket) could assert "this entry is `Verified`" without the server having validated it — exactly the caller-asserted-status hole the storage API was hardened to close. So the daemon's Instance owns verification: it stores everything `Unverified` and runs `Database::verify()` itself. The frontier/`allow_unverified` distinction is applied by the daemon-side `Database`, and every client connected to the same daemon therefore observes the same verified view.
 
-`DatabaseOp::required_permission() -> Permission` returns `Write(0)` for `SubmitSignedEntry` (advisory only — the per-tree gate is skipped for submit) and for the Store-state staging operations, `Admin(0)` for `SetInstanceMetadata` (advisory — gated against `_databases` instead of `root_id`), and `Read` for every other variant. The match is exhaustive, so a new operation cannot inherit `Read` by falling through.
+`DatabaseOp::required_permission()` reports roles: Write for `SubmitSignedEntry` (advisory; the server verifies the signed Entry instead), Admin for `SetInstanceMetadata` (gated against `_databases` instead of `root_id`), and Read for every other variant. The tree gate checks capability classes, not permission priority. The match is exhaustive, so a new operation cannot inherit Read by falling through.
 
 Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The unchanged 64 MiB frame cap is enforced per request and response, so multi-record state is paged or chunked and a single record that cannot fit is refused with `RecordTooLarge`.
 
@@ -374,9 +374,15 @@ Historical current state is materialized into derived record sets in the shared 
 Cached state is scoped by [`CacheScope`](crate::backend::CacheScope):
 
 - `CacheScope::Shared` — daemon-computed state (visible to every authorized user; the bytes were produced by the trusted server-side merge).
-- `CacheScope::AccountSession(uuid)` — client-computed state (scoped to the submitting user's uuid; only that user can poison their own future reads).
+- `CacheScope::Login(uuid)` — client-computed state (visible only within the submitting login's scope).
 
 Every client-supplied `StoreStateRequest` is rebound to the session before it reaches the backend: its database must be the one the request was gated against, a shared-scope request is narrowed to the session user, and a request naming another user's scope is refused. Resolution then falls back from the user scope to the shared one, so a daemon materialization is reused instead of rebuilt per user, while a client can never publish into shared cached state or another user's cached state.
+
+Begin, Stage, Publish, and Abort each recheck live Read on an existing database.
+Storage enforces [private cache admission](cache.md#retention-and-verification-boundaries)
+independently of the reader's role. If the storage engine cannot provide those
+bounds, the service declines uploads rather than permitting unbounded staging.
+Client materializations supply neither daemon authorization nor Entry verification.
 
 ## Database-Level Wire API
 
@@ -438,7 +444,7 @@ The encrypted-store-over-service tests cover both paths: `test_database_encrypte
 
 ### Gate scope for `AuthenticatedDb`
 
-Every `DatabaseOp` variant is intrinsically tree-scoped via `root_id` — there are no tree-less operations to gate. Permission follows the `required_permission()` pattern: `Read` for queries (`GetVerifiedTips`, `GetStoreState`, `GetStoreEntries`, `GetEntry`, `BeginTransaction`, `GetStoreTipsUpToEntries`, `ComputeMergeState`), `Write` for mutation. The per-tree permission gate (Gate 2) always fires for non-submit `AuthenticatedDb` requests because the tree identity is known before dispatch.
+Every `DatabaseOp` variant carries `root_id`. Gate 2 checks Read for queries and private Derived staging, with the instance metadata exception described above. Signed writes use the Entry's own verification and write authorization, not the connection's cache permissions.
 
 `SubmitSignedEntry` is the exception — verification-gated, not session-gated, as covered in [Access Control](#access-control-the-three-gates) above.
 

@@ -33,6 +33,11 @@ use crate::{
 /// owns its handles; it holds no authoritative or verification state.
 #[async_trait]
 pub trait DerivedCacheStorage: Send + Sync {
+    /// Whether this cache provides [`BackendImpl::supports_private_cache_admission`].
+    fn supports_private_cache_admission(&self) -> bool {
+        false
+    }
+
     async fn resolve_store_state(&self, request: &StoreStateRequest) -> Result<Option<RecordView>>;
     async fn begin_store_state_staging(&self, request: StoreStateRequest) -> Result<StagingToken>;
     async fn stage_store_state_records(
@@ -69,6 +74,11 @@ macro_rules! derived_cache_storage_via {
     ($ty:ty, |$this:ident| $inner:expr) => {
         #[async_trait::async_trait]
         impl $crate::backend::DerivedCacheStorage for $ty {
+            fn supports_private_cache_admission(&self) -> bool {
+                let $this = self;
+                $crate::backend::BackendImpl::supports_private_cache_admission($inner)
+            }
+
             async fn resolve_store_state(
                 &self,
                 request: &$crate::backend::StoreStateRequest,
@@ -242,6 +252,10 @@ impl SplitBackend {
 
 #[async_trait]
 impl BackendImpl for SplitBackend {
+    fn supports_private_cache_admission(&self) -> bool {
+        self.cache.supports_private_cache_admission()
+    }
+
     async fn local_account_record(&self, name: &str) -> Result<Option<Vec<u8>>> {
         self.primary.local_account_record(name).await
     }
