@@ -256,6 +256,7 @@ pub struct InstanceSecrets {
 // Category modules
 pub mod database;
 pub mod errors;
+pub(crate) mod private_cache;
 mod split;
 
 // Re-export main types for easier access
@@ -396,6 +397,13 @@ impl VerificationStatus {
 /// signature, causal-settings and delegation checks.
 #[async_trait]
 pub trait BackendImpl: Send + Sync + Any {
+    /// Whether login-scoped Derived builds have storage-owned per-login and
+    /// aggregate admission across Begin, Stage and Publish. The service refuses
+    /// optional uploads on engines that do not provide this boundary.
+    fn supports_private_cache_admission(&self) -> bool {
+        false
+    }
+
     /// Read installation-local account data. These bytes are not Entries, Store
     /// state, or part of any sync/export tree. Callers encrypt credentials before
     /// persistence; backend-file access remains a trusted boundary.

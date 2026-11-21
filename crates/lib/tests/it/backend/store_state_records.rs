@@ -94,6 +94,112 @@ async fn publish(
 }
 
 #[tokio::test]
+async fn private_cache_admission_is_shared_by_all_builds() {
+    let backend = test_backend().await;
+    let target = |scope: &str, n: usize| StoreStateRequest {
+        scope: CacheScope::Login(scope.into()),
+        ..request("db", &format!("private-{n}"), StoreStateLifecycle::Derived)
+    };
+
+    let mut builds = Vec::new();
+    for login in 0..8 {
+        for n in 0..8 {
+            let scope = if login == 0 {
+                format!("signer:{n}") // ephemeral scopes share one budget
+            } else {
+                format!("login-{login}")
+            };
+            builds.push(
+                backend
+                    .begin_store_state_staging(target(&scope, n))
+                    .await
+                    .unwrap(),
+            );
+        }
+    }
+    let error = backend
+        .begin_store_state_staging(target("another-login", 0))
+        .await
+        .unwrap_err();
+    assert!(error.is_store_state_not_retained(), "{error}");
+    assert!(
+        error.to_string().contains("daemon private staging budget"),
+        "{error}"
+    );
+    backend
+        .abort_store_state(builds.pop().unwrap())
+        .await
+        .unwrap();
+    let error = backend
+        .begin_store_state_staging(target("signer:fresh", 0))
+        .await
+        .unwrap_err();
+    assert!(error.is_store_state_not_retained(), "{error}");
+    assert!(
+        error.to_string().contains("login private staging budget"),
+        "{error}"
+    );
+    let extra = backend
+        .begin_store_state_staging(target("another-login", 0))
+        .await
+        .unwrap();
+
+    // Replacing one key still consumes private staging budget: cumulative
+    // upload accounting cannot be bypassed with a small final record set.
+    let chunk = BTreeMap::from([(vec![0], Some(vec![1; 4 * 1024 * 1024 - 33]))]);
+    for _ in 0..16 {
+        backend
+            .stage_store_state_records(&extra, chunk.clone())
+            .await
+            .unwrap();
+    }
+    assert!(
+        backend
+            .stage_store_state_records(&extra, [(vec![1], None)].into())
+            .await
+            .unwrap_err()
+            .is_store_state_not_retained()
+    );
+    backend.abort_store_state(extra).await.unwrap();
+    for token in builds {
+        backend.abort_store_state(token).await.unwrap();
+    }
+
+    // Private retention covers all targets in the login's scope, not just
+    // the active connection or staging reservation. Another login still fits.
+    for n in 0..128 {
+        publish(backend.as_ref(), target("login-1", n), []).await;
+    }
+    let refused = target("login-1", 128);
+    let token = backend
+        .begin_store_state_staging(refused.clone())
+        .await
+        .unwrap();
+    assert!(
+        backend
+            .publish_store_state(token)
+            .await
+            .unwrap_err()
+            .is_store_state_not_retained()
+    );
+    assert!(
+        backend
+            .resolve_store_state(&refused)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        backend
+            .resolve_store_state(&target("login-1", 0))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    publish(backend.as_ref(), target("login-2", 128), []).await;
+}
+
+#[tokio::test]
 async fn point_lookup_namespace_separation_and_staging_invisibility() {
     let backend = test_backend().await;
     let derived = request("db", "store", StoreStateLifecycle::Derived);

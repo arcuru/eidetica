@@ -141,8 +141,8 @@ pub type WireRecordMutations = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 ///
 /// The target database (`root_id`) and identity claim travel in
 /// [`AuthenticatedDbRequest`]; the per-tree gate runs against `root_id`
-/// (Read for begin/get*, Write for submit, Admin-on-`_databases` for
-/// set-metadata) before dispatch.
+/// before dispatch, except when the server verifies the signed Entry itself
+/// (submit) or checks Admin on `_databases` (set-metadata).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DatabaseOp {
     /// Resolve cached state through an opaque view onto one published record set.
@@ -262,20 +262,12 @@ pub enum DatabaseOp {
 impl DatabaseOp {
     /// Minimum permission the caller needs against the target database.
     ///
-    /// Only `SubmitSignedEntry` mutates; everything else is a read. Every
-    /// read variant is tree-scoped via the request's `root_id`, so the
-    /// per-tree gate always runs for reads — there is no tree-less
-    /// fall-through. `SubmitSignedEntry` is the exception: the server skips
-    /// the per-tree gate for submit and relies on its own verification pass,
-    /// so the `Write(0)` returned here is advisory only for that variant
-    /// (kept for completeness / non-submit callers that inspect it).
+    /// Private Derived staging needs Read, not authority to mutate the
+    /// database. Submit relies on verification of the signed Entry rather
+    /// than the session's role, so its Write value here is advisory.
     pub fn required_permission(&self) -> Permission {
         match self {
-            DatabaseOp::SubmitSignedEntry { .. }
-            | DatabaseOp::BeginStoreStateStaging { .. }
-            | DatabaseOp::StageStoreStateRecords { .. }
-            | DatabaseOp::PublishStoreState { .. }
-            | DatabaseOp::AbortStoreState { .. } => Permission::Write(0),
+            DatabaseOp::SubmitSignedEntry { .. } => Permission::Write(0),
             // Gated against `_databases`, not the request's `root_id`; the
             // dispatcher special-cases this so the value here is advisory.
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
@@ -288,6 +280,10 @@ impl DatabaseOp {
             | DatabaseOp::GetEntry { .. }
             | DatabaseOp::VerifyEntrySignature { .. }
             | DatabaseOp::ResolveStoreState { .. }
+            | DatabaseOp::BeginStoreStateStaging { .. }
+            | DatabaseOp::StageStoreStateRecords { .. }
+            | DatabaseOp::PublishStoreState { .. }
+            | DatabaseOp::AbortStoreState { .. }
             | DatabaseOp::StoreStateRecordGet { .. }
             | DatabaseOp::StoreStateRecordScan { .. }
             | DatabaseOp::SubscribeWrites { .. }
