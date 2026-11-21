@@ -7,7 +7,7 @@ use crate::{
     Database, Result,
     account::AccountSigner,
     auth::{
-        crypto::PublicKey,
+        crypto::{PrivateKey, PublicKey},
         settings::AuthSettings,
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, PermissionBounds, SigKey, TreeReference,
@@ -121,13 +121,21 @@ impl Identity {
 
     /// Build the exact signing identity rooted at this identity database.
     pub async fn delegation_key(&self) -> Result<SigKey> {
-        Ok(SigKey::Delegation {
+        Ok(self.delegation_key_at(self.database.snapshot().await?.into_tips()))
+    }
+
+    pub(crate) fn delegation_key_at(&self, tips: Vec<ID>) -> SigKey {
+        SigKey::Delegation {
             path: vec![DelegationStep {
                 tree: self.root_id().clone(),
-                tips: self.database.snapshot().await?.into_tips(),
+                tips,
             }],
             hint: crate::auth::types::KeyHint::from_pubkey(&self.key_id),
-        })
+        }
+    }
+
+    pub(crate) fn signing_key(&self) -> &PrivateKey {
+        self.signer.signing_key()
     }
 
     /// Retrieve the ordinary ticket locator after enabling sharing on this handle.

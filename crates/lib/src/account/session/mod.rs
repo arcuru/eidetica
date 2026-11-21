@@ -49,7 +49,7 @@ use std::sync::Arc;
 
 use super::{Account, AccountKeyManager, admin::InstanceAdmin, types::AccountInfo};
 use crate::{
-    Database, Error, Instance, Result, Transaction,
+    Database, Error, Instance, Result, Store, Transaction,
     account::{AccountError, SyncSettings, TrackedDatabase},
     auth::{Permission, SigKey, crypto::PublicKey},
     crdt::Doc,
@@ -873,6 +873,26 @@ impl AccountSession {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Unlink a name in the Account. Returns `false` if it was already absent.
+    /// This only writes a reference tombstone: it does not remove the target,
+    /// change local tracking, revoke any key, or erase old history.
+    pub async fn remove_reference(&self, namespace: &str, name: &str) -> Result<bool> {
+        let store = Self::reference_store(namespace);
+        Self::validate_reference_name(&store, name)?;
+        let tx = self.account.database().new_transaction().await?;
+        // As in reference(), use the underlying Doc, not the typed Table
+        // projection. An explicit unlink can remove a malformed value too.
+        if !DocStore::load(&tx, store)
+            .await?
+            .delete_literal(name)
+            .await?
+        {
+            return Ok(false);
+        }
+        tx.commit().await?;
+        Ok(true)
     }
 
     /// Read a reference stored with [`Self::set_reference`].

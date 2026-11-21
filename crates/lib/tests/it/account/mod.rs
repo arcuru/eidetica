@@ -21,3 +21,5 @@ mod signer_tests;
 mod local_state_tests;
 
 mod identity_tests;
+
+mod linked_accounts_tests;

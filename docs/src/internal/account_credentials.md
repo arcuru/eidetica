@@ -134,6 +134,14 @@ No operation exposes arbitrary native record names or general backend secrets.
 The unchanged frame-size limit bounds each request/response; oversize state is refused rather than split into partially applied writes.
 Updated clients require matching support for these operations; older peers may return Unsupported, with no replicated-store fallback.
 
+## Linked Account provisioning
+
+An Account holds a descriptive `name` and ordinary Auth in `_settings`. Named references use the existing `refs:<namespace>` stores; each alias maps to a serialized root ID. `refs:accounts` is the convention for other Accounts, `refs:identities` holds Identity references, and applications choose their own namespaces for data. Unlink writes a tombstone in the same store. There is no link graph to traverse on login, no back pointer, and no activation or Auth state in these stores.
+
+Provisioning reads the selected Identity member and proof tips at the same snapshot. The selected private key and explicit `SigKey::Delegation` sign the app genesis; its initial Auth gives the Identity stronger administration and the fresh app key lower direct administration. The embedded backend or service verifies the signed Entry using the same explicit-genesis path as other databases. Local registration then wraps only the app Account ID and its fresh key, using the existing `RegisterLocalAccount` path. The parent reference is the final ordinary Account transaction. A later error is not rollback: a created root, login, or both can remain. No RPC, Entry encoding or native local record format changes.
+
+The app logs in over a separate connection with its own password. Its `AccountSession` starts with the app key, not keys from the parent or from any referenced Identity. Additional local activation and key mappings remain scoped to that login, and a new `AccountSigner` freezes the actual key and optional delegation path for its own operations. Reference discovery reads only the ID. A caller must use the target's real authorization or see a denial; no alternative path is tried by an explicit acting handle. The linked-account tests exercise these boundaries on embedded instances and Unix sockets, including first login, returning login, direct and delegated writes, and an existing-root login on a second instance.
+
 ## Bundle format and key lifetimes
 
 The v1 encrypted bundle's logical JSON payload has only `account_id` and an explicit ordered, nonempty, unique list of private keys.
