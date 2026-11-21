@@ -7,7 +7,7 @@
 use std::{
     collections::HashMap,
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{
         Arc, Mutex, Weak,
@@ -29,6 +29,7 @@ use crate::{auth::SigKey, service::client::RemoteConnection};
 use handle_trait::Handle;
 
 pub mod backend;
+mod credential_store;
 pub mod errors;
 pub mod new_account;
 pub mod settings_merge;
@@ -610,9 +611,30 @@ impl Instance {
     ///
     /// Errors with [`InstanceError::NotInitialized`] if the backend has no
     /// instance metadata; use [`Instance::connect_or_create_backend`] when you want
-    /// to bootstrap on an empty backend.
+    /// to bootstrap on an empty backend. This uses the backend's own device key;
+    /// use [`Instance::open_backend_with_device_key_dir`] if the key was stored
+    /// separately.
     pub async fn open_backend(backend: Box<dyn BackendImpl>) -> Result<Self> {
         Self::open_impl(backend, Arc::new(SystemClock)).await
+    }
+
+    /// Open a local instance initialised with a separate device-key directory.
+    ///
+    /// Use the same Unix-private directory and trusted path required by
+    /// [`Instance::create_backend_with_device_key_dir`]. Opening never imports
+    /// legacy credentials or provisions a missing key.
+    pub async fn open_backend_with_device_key_dir(
+        backend: Box<dyn BackendImpl>,
+        directory: &Path,
+    ) -> Result<Self> {
+        let backend: Arc<dyn BackendImpl> = Arc::from(backend);
+        credential_store::reject_legacy(&*backend).await?;
+        let metadata = backend
+            .get_instance_metadata()
+            .await?
+            .ok_or(InstanceError::NotInitialized)?;
+        let secrets = credential_store::load(directory).await?;
+        Self::from_local(backend, Arc::new(SystemClock), metadata, secrets)
     }
 
     /// Test variant of [`Instance::open_backend`] with an injectable clock.
@@ -641,6 +663,34 @@ impl Instance {
         Self::create_backend_impl(backend, initial, Arc::new(SystemClock)).await
     }
 
+    /// Initialise a fresh, disposable backend with a separate device-key store.
+    ///
+    /// On Unix, `directory` must already exist, be owned by the effective user
+    /// and have mode 0700. Its path and ancestors must be controlled by the
+    /// caller or trusted system users. Keep it outside any directory subject to
+    /// cache cleanup. Use the backend's ordinary exclusive ownership rules.
+    ///
+    /// The key is written once before initialising the backend. If subsequent
+    /// bootstrap fails, the file is retained; there is no automatic retry with
+    /// a new identity. This trial does not migrate existing databases.
+    pub async fn create_backend_with_device_key_dir(
+        backend: Box<dyn BackendImpl>,
+        initial: NewAccount,
+        directory: &Path,
+    ) -> Result<(Self, AccountSession)> {
+        let backend: Arc<dyn BackendImpl> = Arc::from(backend);
+        credential_store::reject_legacy(&*backend).await?;
+        if backend.get_instance_metadata().await?.is_some() {
+            return Err(InstanceError::InstanceAlreadyExists.into());
+        }
+        if !backend.all_roots().await?.is_empty() {
+            return Err(credential_store::failure(
+                "database contains roots without instance metadata; preserve both stores for inspection",
+            ));
+        }
+        Self::create_internal(backend, Arc::new(SystemClock), initial, Some(directory)).await
+    }
+
     /// Test variant of [`Instance::create_backend`] with an injectable clock.
     ///
     /// Arg order: backend, clock, initial — clock goes in the middle so
@@ -667,7 +717,7 @@ impl Instance {
         if backend.get_instance_metadata().await?.is_some() {
             return Err(InstanceError::InstanceAlreadyExists.into());
         }
-        Self::create_internal(backend, clock, initial).await
+        Self::create_internal(backend, clock, initial, None).await
     }
 
     // Clock injection is exposed only through the pre-built-backend
@@ -789,7 +839,7 @@ impl Instance {
             instance.set_snapshot_path(snapshot_path);
             Ok((instance, None))
         } else {
-            let (instance, user) = Self::create_internal(backend, clock, initial).await?;
+            let (instance, user) = Self::create_internal(backend, clock, initial, None).await?;
             instance.set_snapshot_path(snapshot_path);
             Ok((instance, Some(user)))
         }
@@ -979,31 +1029,7 @@ impl Instance {
             .await?
             .ok_or(InstanceError::NotInitialized)?;
 
-        // Load secrets (contains the private key)
-        let secrets = backend.get_instance_secrets().await?;
-
-        // If secrets are present, verify they match the metadata
-        if let Some(ref secrets) = secrets {
-            let derived_id = secrets.signing_key.public_key();
-            if derived_id != metadata.id {
-                return Err(InstanceError::DeviceKeyMismatch.into());
-            }
-        }
-
-        // Existing backend: load from metadata + secrets
-        let inner = Arc::new(InstanceInternal {
-            backend: Arc::new(LocalBackend::new(backend)),
-            clock,
-            sync: std::sync::OnceLock::new(),
-            metadata,
-            secrets,
-            snapshot_path: Mutex::new(None),
-            write_callbacks: Mutex::new(HashMap::new()),
-            global_write_callbacks: Mutex::new(Vec::new()),
-            next_callback_id: AtomicU64::new(0),
-            tree_locks: Mutex::new(HashMap::new()),
-        });
-        Ok(Self { inner })
+        Self::open_impl_arc_with_metadata(backend, clock, metadata).await
     }
 
     /// Load-only helper that accepts an already-arc'd backend and the
@@ -1016,19 +1042,28 @@ impl Instance {
         clock: Arc<dyn Clock>,
         metadata: InstanceMetadata,
     ) -> Result<Self> {
-        let secrets = backend.get_instance_secrets().await?;
-        if let Some(ref secrets) = secrets {
-            let derived_id = secrets.signing_key.public_key();
-            if derived_id != metadata.id {
-                return Err(InstanceError::DeviceKeyMismatch.into());
-            }
+        let secrets = backend
+            .get_instance_secrets()
+            .await?
+            .ok_or(InstanceError::MissingLocalDeviceKey)?;
+        Self::from_local(backend, clock, metadata, secrets)
+    }
+
+    fn from_local(
+        backend: Arc<dyn BackendImpl>,
+        clock: Arc<dyn Clock>,
+        metadata: InstanceMetadata,
+        secrets: InstanceSecrets,
+    ) -> Result<Self> {
+        if secrets.signing_key.public_key() != metadata.id {
+            return Err(InstanceError::DeviceKeyMismatch.into());
         }
         let inner = Arc::new(InstanceInternal {
             backend: Arc::new(LocalBackend::new(backend)),
             clock,
             sync: std::sync::OnceLock::new(),
             metadata,
-            secrets,
+            secrets: Some(secrets),
             snapshot_path: Mutex::new(None),
             write_callbacks: Mutex::new(HashMap::new()),
             global_write_callbacks: Mutex::new(Vec::new()),
@@ -1041,18 +1076,25 @@ impl Instance {
     /// Internal create implementation. Returns the new `Instance` along with
     /// the just-bootstrapped initial `AccountSession`, materialised directly from the
     /// keys we generated (no redundant login round-trip).
-    pub(crate) async fn create_internal(
+    async fn create_internal(
         backend: Arc<dyn BackendImpl>,
         clock: Arc<dyn Clock>,
         initial: NewAccount,
+        device_key_dir: Option<&Path>,
     ) -> Result<(Self, AccountSession)> {
         use crate::account::system_databases::{
             create_accounts_database, create_databases_tracking,
         };
 
-        // 1. Generate device key
-        let device_key = PrivateKey::generate();
-        let device_id = device_key.public_key();
+        // 1. Reserve the separate credential store before any bootstrap writes.
+        // A stale or unavailable store must not leave new system roots behind.
+        let secrets = InstanceSecrets {
+            signing_key: PrivateKey::generate(),
+        };
+        let device_id = secrets.signing_key.public_key();
+        if let Some(directory) = device_key_dir {
+            credential_store::create(directory, secrets.clone()).await?;
+        }
 
         // 2. Create system databases with device_key passed directly
         // Create a temporary Instance for database creation (databases will store full IDs later)
@@ -1075,9 +1117,7 @@ impl Instance {
                     databases_db: ID::default(), // Placeholder - system DBs don't exist yet
                     sync_db: None,
                 },
-                secrets: Some(InstanceSecrets {
-                    signing_key: device_key.clone(),
-                }),
+                secrets: Some(secrets.clone()),
                 snapshot_path: Mutex::new(None),
                 write_callbacks: Mutex::new(HashMap::new()),
                 global_write_callbacks: Mutex::new(Vec::new()),
@@ -1085,16 +1125,14 @@ impl Instance {
                 tree_locks: Mutex::new(HashMap::new()),
             }),
         };
-        let users_db = create_accounts_database(&temp_instance, &device_key).await?;
-        let databases_db = create_databases_tracking(&temp_instance, &device_key).await?;
+        let users_db = create_accounts_database(&temp_instance, &secrets.signing_key).await?;
+        let databases_db = create_databases_tracking(&temp_instance, &secrets.signing_key).await?;
 
-        // 3. Save metadata and secrets (marks instance as initialized)
-        // NB: Ordering matters. Secrets are stored first, then Metadata.
-        // The presence of the Metadata indicates the instance is fully initialized.
-        let secrets = InstanceSecrets {
-            signing_key: device_key,
-        };
-        backend.set_instance_secrets(&secrets).await?;
+        // 3. Publish metadata only once the device key has been saved. In
+        // separate-store mode no key material is written to the backend.
+        if device_key_dir.is_none() {
+            backend.set_instance_secrets(&secrets).await?;
+        }
 
         let metadata = InstanceMetadata {
             id: device_id,

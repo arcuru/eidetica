@@ -78,6 +78,11 @@ pub struct BackendConfig {
     #[arg(long, env = "EIDETICA_CACHE_DIR")]
     pub cache_dir: Option<PathBuf>,
 
+    /// Opt-in device-key store for disposable SQLite trials. Use the same existing
+    /// private directory for initialisation and subsequent opens.
+    #[arg(long, env = "EIDETICA_DEVICE_KEY_DIR")]
+    pub device_key_dir: Option<PathBuf>,
+
     /// PostgreSQL connection URL (required when backend=postgres)
     #[arg(long, env = "EIDETICA_POSTGRES_URL")]
     pub postgres_url: Option<String>,

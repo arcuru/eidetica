@@ -187,16 +187,39 @@ The `--json` flag works with `info` and `db list`.
 | `postgres` | PostgreSQL database             | Specified by `--postgres-url`     |
 | `inmemory` | In-memory with JSON persistence | `eidetica.json` in data directory |
 
+### Disposable device-key store trial
+
+On Unix, `--device-key-dir` (or `EIDETICA_DEVICE_KEY_DIR`)
+keeps the SQLite instance's device signing key in a separate file. Leave the option
+unset for an existing instance. This is an opt-in trial for fresh, disposable data:
+
+```bash
+trial=$(mktemp -d)
+install -d -m 0700 "$trial/credentials"
+export EIDETICA_DATA_DIR="$trial/data"
+export EIDETICA_CACHE_DIR="$trial/cache"
+export EIDETICA_DEVICE_KEY_DIR="$trial/credentials"
+eidetica daemon --backend sqlite init --username trial --passwordless
+eidetica daemon --backend sqlite --socket "$trial/service.sock"
+```
+
+Use the same device-key directory on each start and when running `info` or
+`db list`. The daemon refuses a missing, invalid or mismatched key. Do not put the
+credential file in the cache directory or delete it to retry startup. See
+[Device signing key trial](../internal/account_credentials.md#device-signing-key-trial)
+for scope and recovery limits.
+
 ## Environment Variables
 
-| Variable                | Description                                        | Default           |
-| ----------------------- | -------------------------------------------------- | ----------------- |
-| `EIDETICA_SOCKET`       | Unix socket path for daemon mode (`daemon`)        | auto-detected     |
-| `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `5942`            |
-| `EIDETICA_HOST`         | Bind address (`serve`)                             | `0.0.0.0`         |
-| `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`) | `sqlite`          |
-| `EIDETICA_DATA_DIR`     | Directory for database and data files              | current directory |
-| `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL                          | —                 |
+| Variable                  | Description                                                 | Default           |
+| ------------------------- | ----------------------------------------------------------- | ----------------- |
+| `EIDETICA_SOCKET`         | Unix socket path for daemon mode (`daemon`)                 | auto-detected     |
+| `EIDETICA_PORT`           | Port for the HTTP server (`serve`)                          | `5942`            |
+| `EIDETICA_HOST`           | Bind address (`serve`)                                      | `0.0.0.0`         |
+| `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)          | `sqlite`          |
+| `EIDETICA_DATA_DIR`       | Directory for database and data files                       | current directory |
+| `EIDETICA_DEVICE_KEY_DIR` | Separate device-key directory for a disposable SQLite trial | unset             |
+| `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL                                   | —                 |
 
 Command-line flags take precedence over environment variables.
 

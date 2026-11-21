@@ -1,16 +1,15 @@
 //! Instance info command - shows device ID, backend, and database count.
 
-use eidetica::Instance;
 use eidetica::instance::InstanceError;
 
-use crate::backend::{backend_label, create_backend};
+use crate::backend::{backend_label, create_backend, open_instance};
 use crate::cli::InfoArgs;
 use crate::output::OutputFormat;
 
 /// Run the info command
 pub async fn run(args: &InfoArgs, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
     let backend = create_backend(&args.backend_config).await?;
-    let instance = match Instance::open_backend(backend).await {
+    let instance = match open_instance(&args.backend_config, backend).await {
         Ok(instance) => instance,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e

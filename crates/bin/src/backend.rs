@@ -2,9 +2,12 @@
 
 use std::path::PathBuf;
 
-use eidetica::backend::{
-    BackendImpl, DerivedCachePolicy, DerivedCacheStorage, SplitBackend,
-    database::{InMemory, Postgres, SqliteCache, SqlxBackend},
+use eidetica::{
+    Instance,
+    backend::{
+        BackendImpl, DerivedCachePolicy, DerivedCacheStorage, SplitBackend,
+        database::{InMemory, Postgres, SqliteCache, SqlxBackend},
+    },
 };
 
 use crate::cli::{Backend, BackendConfig, CacheBackend};
@@ -96,10 +99,24 @@ fn native_cache_dir(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<
     root.map(|root| root.join("eidetica"))
 }
 
+/// Open an instance without falling back from the host's selected credential store.
+pub async fn open_instance(
+    config: &BackendConfig,
+    backend: Box<dyn BackendImpl>,
+) -> eidetica::Result<Instance> {
+    match config.device_key_dir.as_deref() {
+        Some(directory) => Instance::open_backend_with_device_key_dir(backend, directory).await,
+        None => Instance::open_backend(backend).await,
+    }
+}
+
 /// Create the appropriate backend based on configuration
 pub async fn create_backend(
     config: &BackendConfig,
 ) -> Result<Box<dyn BackendImpl>, Box<dyn std::error::Error>> {
+    if config.device_key_dir.is_some() && !matches!(config.backend, Backend::Sqlite) {
+        return Err("--device-key-dir is only supported for SQLite trials".into());
+    }
     let data_dir = config
         .data_dir
         .clone()

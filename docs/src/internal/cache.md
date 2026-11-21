@@ -100,8 +100,10 @@ these local storage changes.
 ## SQLite physical storage
 
 Only Derived namespaces/builds and their records use the separately owned cache
-pool. Authoritative namespaces/builds, Entries, metadata, secrets, local accounts
-and verification remain in history. Opaque namespace prefixes route handles to
+pool. Authoritative namespaces/builds, Entries, metadata, local accounts and
+verification remain in history. Device secrets are never cache data; by default
+they stay in history, with a separate [device signing key trial](account_credentials.md#device-signing-key-trial).
+Opaque namespace prefixes route handles to
 the correct pool; token lifecycle and destination must agree. Unknown prefix
 versions are rejected. Publication, admission, eviction and recency writes commit
 inside C, with no history witness or write-triggered invalidation.

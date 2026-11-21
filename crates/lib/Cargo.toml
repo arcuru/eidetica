@@ -71,6 +71,9 @@ url = { workspace = true }
 [package.metadata.cargo-udeps.ignore]
 normal = ["time", "postcard", "postcard-derive", "z32", "instability"]
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs", "process"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { workspace = true }
