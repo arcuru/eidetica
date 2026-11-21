@@ -1367,7 +1367,9 @@ impl RemoteConnection {
         }
     }
 
-    /// Fetch the server-materialized merged state of an unencrypted store.
+    /// Fetch the server-materialized Doc projection at its current Verified cut.
+    /// The legacy response does not carry the cut. Unsupported or encrypted
+    /// projections and computation refusal are errors, not empty documents.
     pub async fn get_store_state(
         &self,
         root_id: ID,

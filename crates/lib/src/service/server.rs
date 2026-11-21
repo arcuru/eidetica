@@ -33,6 +33,7 @@ use crate::service::protocol::{
     PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, TicketBootstrapOutcome,
     TicketBootstrapRequest, read_frame, write_frame,
 };
+use crate::state::{StateAdmission, StateError, StateReader};
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
 
 /// Connection identifier. Monotonic per server-run; reused only after
@@ -82,6 +83,7 @@ struct ConnectionContext {
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
+    capabilities: Capabilities,
 }
 
 impl ConnectionContext {
@@ -214,7 +216,14 @@ pub struct ServiceServer {
     socket_identity: SocketIdentity,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
+    capabilities: Capabilities,
     _lock_file: File,
+}
+
+#[derive(Clone)]
+struct Capabilities {
+    credentials: bool,
+    state_admission: Option<Arc<StateAdmission>>,
 }
 
 #[derive(Clone, Copy)]
@@ -290,8 +299,27 @@ impl ServiceServer {
             socket_identity,
             staging_idle_ttl,
             published_view_idle_ttl,
+            capabilities: Capabilities {
+                credentials: true,
+                state_admission: None,
+            },
             _lock_file: lock_file,
         })
+    }
+
+    /// Disable the installation-local credential and login-record commands.
+    /// Signer challenge/response, database Auth, and ordinary State eligibility
+    /// remain available. This is not a change to the local socket trust model.
+    pub fn without_credentials(mut self) -> Self {
+        self.capabilities.credentials = false;
+        self
+    }
+
+    /// Install a nonblocking State admission predicate. Returning false is
+    /// a typed refusal, independent of possession proof and database Auth.
+    pub fn with_state_admission(mut self, admission: Arc<StateAdmission>) -> Self {
+        self.capabilities.state_admission = Some(admission);
+        self
     }
 
     /// Get the socket path.
@@ -327,9 +355,10 @@ impl ServiceServer {
                             let instance = self.instance.clone();
                             let staging_idle_ttl = self.staging_idle_ttl;
                             let published_view_idle_ttl = self.published_view_idle_ttl;
+                            let capabilities = self.capabilities.clone();
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl, capabilities).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -602,6 +631,7 @@ async fn handle_connection(
     conn_id: ConnectionId,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
+    capabilities: Capabilities,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
@@ -678,6 +708,7 @@ async fn handle_connection(
         staging: std::sync::Mutex::new(HashMap::new()),
         staging_idle_ttl,
         published_view_idle_ttl,
+        capabilities,
     });
     let guard = ConnectionGuard { ctx: ctx.clone() };
 
@@ -792,6 +823,20 @@ async fn dispatch_inner(
     ctx: &ConnectionContext,
     request: ServiceRequest,
 ) -> crate::Result<ServiceResponse> {
+    if !ctx.capabilities.credentials
+        && matches!(
+            request,
+            ServiceRequest::TrustedLoginAccount { .. }
+                | ServiceRequest::RegisterLocalAccount { .. }
+                | ServiceRequest::ListLocalAccounts
+                | ServiceRequest::LocalAccountState { .. }
+                | ServiceRequest::ExchangeLocalAccountState { .. }
+        )
+    {
+        // TrustedLoginProve completes signer proof too. Disable the hosted
+        // challenge (and bundle lookup) rather than the shared proof step.
+        return Ok(ServiceResponse::Unsupported);
+    }
     for token in ctx.cleanup_expired() {
         let _ = instance.backend().abort_store_state(token).await;
     }
@@ -916,14 +961,10 @@ async fn dispatch_inner(
 
         // === Authenticated storage operations ===
         //
-        // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
-        // the per-tree permission gate. Native login operations above are separate.
-        // Every `DatabaseOp` carries its target
-        // `root_id` explicitly, so the gate is *unconditional* — there is no
-        // tree-less op to fall through it — with two exceptions handled below
-        // (`SubmitSignedEntry`, verification-gated; `SetInstanceMetadata`,
-        // gated against the server-known `_databases`, not the request root).
+        // Require possession proof, then apply the operation's authorization.
+        // Native login commands above are separate from both checks.
         ServiceRequest::AuthenticatedDb(inner) => {
+            let is_computed_state = matches!(inner.op, DatabaseOp::GetStoreState { .. });
             let (login_pubkey, keyset_snapshot, session_user_uuid) = match state {
                 ConnectionState::Authenticated {
                     login_pubkey,
@@ -935,6 +976,7 @@ async fn dispatch_inner(
                     session_keyset.clone(),
                     login_id.clone(),
                 ),
+                _ if is_computed_state => return Err(StateError::Denied.into()),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
                         AuthError::InvalidAuthConfiguration {
@@ -997,14 +1039,15 @@ async fn dispatch_inner(
                     .clone()
                     .unwrap_or_else(|| login_pubkey.clone())
             } else {
-                resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?
+                match resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot) {
+                    Err(_) if is_computed_state => return Err(StateError::Denied.into()),
+                    result => result?,
+                }
             };
 
-            // Per-tree permission gate. Unconditional for every op *except*
-            // submit (verification in the handler is its boundary) and
-            // set-metadata (gated against `_databases` below). Create-flow
-            // passthrough (false) for the rest, so a not-yet-propagated tree is
-            // waved through and database creation works.
+            // Signed submit is verification-gated; computed State uses its own
+            // fail-closed Read check. For legacy backend operations allow a
+            // missing tree through so database creation still works.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -1015,7 +1058,7 @@ async fn dispatch_inner(
                     true,
                 )
                 .await?;
-            } else if !is_submit {
+            } else if !is_submit && !is_computed_state {
                 gate_tree_permission(
                     instance,
                     &acting_pubkey,
@@ -1086,10 +1129,8 @@ fn resolve_acting_pubkey(
 
 /// Dispatch a Database-level op against the server's local `Database`.
 ///
-/// Additive sibling of `dispatch_backend_op`. The caller has already verified
-/// the session identity and run the unconditional per-tree permission gate on
-/// `root_id`. Because the server runs the `Database` layer here, verify-on-read
-/// and the Verified frontier are server-side **by construction**.
+/// The caller verified the session identity and applied the operation's gate,
+/// except where submit verification or computed State authorization runs here.
 async fn dispatch_database_op(
     instance: &Instance,
     ctx: &ConnectionContext,
@@ -1413,13 +1454,15 @@ async fn dispatch_database_op(
         }
 
         DatabaseOp::GetStoreState { store } => {
-            // Server-materialized merged state (unencrypted stores only).
-            // Encrypted stores must use GetStoreEntries instead — the
-            // ephemeral transaction here has no encryptor, and Doc
-            // deserialization would fail on ciphertext.
-            let db = Database::open(instance, &root_id).await?;
-            let value = db.get_store_state(&store).await?;
-            Ok(ServiceResponse::CrdtValue(value))
+            // The legacy response omits context; the State domain result does
+            // not. This is not the snapshot-explicit State transport.
+            let state = StateReader::from_proven_signer(instance, acting_pubkey.clone(), identity)
+                .with_admission(ctx.capabilities.state_admission.as_deref())
+                .read_current_doc(&root_id, &store)
+                .await?;
+            Ok(ServiceResponse::CrdtValue(serde_json::to_value(
+                state.value,
+            )?))
         }
 
         DatabaseOp::GetStoreEntries { store, tips, scope } => {
