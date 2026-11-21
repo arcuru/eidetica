@@ -200,8 +200,23 @@ impl Fixture {
             "entropy": serde_json::Value::Null,
         }))
         .unwrap();
+        let data_parents = match self
+            .engine()
+            .store_snapshot_at(
+                self.target.root_id(),
+                "data",
+                &crate::Snapshot::from(parents.to_vec()),
+            )
+            .await
+        {
+            Ok(snapshot) => snapshot.into_tips(),
+            // Some auth-only probes intentionally name missing ancestry.
+            Err(e) if e.is_not_found() => vec![],
+            Err(e) => panic!("fixture Store frontier: {e}"),
+        };
         Entry::builder(self.target.root_id().clone())
             .set_parents(parents.to_vec())
+            .set_subtree_parents("data", data_parents)
             .set_subtree_data("data", format!("{{\"n\":{n}}}").into_bytes())
             .set_metadata(metadata)
             .set_height(height)

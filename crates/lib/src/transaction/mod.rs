@@ -11,9 +11,13 @@
 //! in a transaction, the system must determine the correct parent entries for that subtree.
 //! This involves:
 //!
-//! 1. Checking for existing subtree tips (leaf nodes)
-//! 2. If no tips exist, traversing the DAG to find reachable subtree entries
-//! 3. Setting appropriate parent relationships (empty for first entry, or proper parents)
+//! 1. Fixing the main-parent boundary at transaction creation
+//! 2. Finding all unconsumed Store contributions in that main ancestry
+//! 3. Selecting those Store tips as the authored parents (empty for no history)
+//!
+//! This selection default is not ordinary Store validation: a received write
+//! may omit observed tips or start an independent Store branch. `_settings`
+//! writes and signed pins retain exact causal-frontier validation.
 
 pub mod errors;
 
@@ -135,8 +139,9 @@ pub(crate) trait Encryptor: Send + Sync {
 pub(crate) struct EntryMetadata {
     /// Snapshot of the `_settings` subtree at the time this entry was created.
     /// This is the entry's **pin**: the exact `_settings` state its
-    /// signature must be validated against. Used for sync performance,
-    /// sparse-checkout validation, and deferred re-verification.
+    /// signature must be validated against. It must equal the independently
+    /// derived causal pre-write settings frontier, not a signer-selected subset.
+    /// Verification still requires whole Entries and complete main ancestry.
     ///
     /// Wire name remains `settings_tips` for on-disk stability — `Snapshot`
     /// serializes as a bare ID array, identical to the legacy `Vec<ID>` shape.
@@ -1669,7 +1674,7 @@ impl Transaction {
 
             // Compute main tree height using the height strategy
             let main_parents = builder.parents().unwrap_or_default();
-            let max_parent_height = if main_parents.is_empty() {
+            let mut max_parent_height = if main_parents.is_empty() {
                 None
             } else {
                 let mut max_height = 0u64;
@@ -1680,8 +1685,6 @@ impl Transaction {
                 }
                 Some(max_height)
             };
-            let tree_height = calculator.calculate_height(max_parent_height);
-            builder.set_height_mut(tree_height);
 
             // Compute subtree heights based on per-subtree settings from _index
             // System subtrees (prefixed with _) always inherit from tree.
@@ -1707,35 +1710,35 @@ impl Transaction {
                     None
                 };
 
+                let subtree_parents = builder.subtree_parents(&subtree_name)?;
+                let mut max_subtree_parent_height: Option<u64> = None;
+                for parent_id in &subtree_parents {
+                    let height = backend
+                        .get(parent_id)
+                        .await?
+                        .subtree_height(&subtree_name)?;
+                    max_subtree_parent_height =
+                        Some(max_subtree_parent_height.map_or(height, |h| h.max(height)));
+                }
                 match subtree_strategy {
                     None => {
-                        // Inherit from tree - height stays None (default)
-                        // Entry.subtree_height() will return tree height
+                        // Returning to inheritance must still exceed the previous
+                        // effective Store height, even after an independent override.
+                        if let Some(height) = max_subtree_parent_height {
+                            max_parent_height =
+                                Some(max_parent_height.map_or(height, |h| h.max(height)));
+                        }
+                        builder.set_subtree_height_mut(&subtree_name, None);
                     }
                     Some(strategy) => {
-                        // Calculate independent height from subtree parents
                         let subtree_calculator = strategy.into_calculator(instance.clock_arc());
-                        let subtree_parents =
-                            builder.subtree_parents(&subtree_name).unwrap_or_default();
-                        let max_subtree_parent_height = if subtree_parents.is_empty() {
-                            None
-                        } else {
-                            let mut max_height = 0u64;
-                            for parent_id in &subtree_parents {
-                                if let Ok(parent) = backend.get(parent_id).await
-                                    && let Ok(height) = parent.subtree_height(&subtree_name)
-                                {
-                                    max_height = max_height.max(height);
-                                }
-                            }
-                            Some(max_height)
-                        };
                         let subtree_height =
                             subtree_calculator.calculate_height(max_subtree_parent_height);
                         builder.set_subtree_height_mut(&subtree_name, Some(subtree_height));
                     }
                 }
             }
+            builder.set_height_mut(calculator.calculate_height(max_parent_height));
         }
 
         // Build the final immutable Entry
@@ -1756,6 +1759,9 @@ impl Transaction {
         // This catches any issues early in the transaction, providing clear error
         // messages before the entry is signed or reaches the backend storage layer.
         entry.validate()?;
+        if !self.db.validate_entry_parents(&entry).await? {
+            return Err(TransactionError::EntryValidationFailed.into());
+        }
 
         // Sign the entry if we have a signing key
         if let Some(signing_key) = signing_key {
