@@ -89,6 +89,15 @@ pub enum AccountError {
     #[error("Identity not found: {name}")]
     IdentityNotFound { name: String },
 
+    #[error("Account reference already exists: {name}")]
+    AccountLinkAlreadyExists { name: String },
+
+    #[error("Owned-app {step} failed: {source}")]
+    OwnedAppSetup {
+        step: &'static str,
+        source: Box<crate::Error>,
+    },
+
     #[error("Identity registration conflicts with the tracked root, key, or permission: {name}")]
     IdentityRegistrationConflict { name: String },
 

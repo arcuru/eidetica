@@ -12,6 +12,7 @@
   - [Stores](user_guide/concepts/stores.md)
   - [Transactions](user_guide/transactions.md)
 - [Authentication and Database Creation](user_guide/authentication_guide.md)
+- [Linked Accounts and App Login](user_guide/linked_accounts.md)
 - [Explicit Credentials and Signers](user_guide/account_credentials.md)
 - [Identity Membership](user_guide/identity_guide.md)
 - [Encryption Guide](user_guide/encryption_guide.md)

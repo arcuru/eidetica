@@ -8,6 +8,7 @@ Don't put secrets in an Identity.
 An Account can refer to zero or more Identities by name. `identity_id(name)` reads that portable reference without opening the Identity, importing keys or granting access to it.
 `tracked_identity(name)` and `identities()` read this installation's choices; `get_identity(name)` opens an already active selection, never activates or creates one.
 Use an Identity only when you want its explicit signing context. `acting_as(&key_id, None)` is still the direct-key path.
+An existing Identity can be reused as the owner of an [app or group Account](linked_accounts.md); an app's own login key need not be an Identity member.
 
 ## Create and select an Identity
 

@@ -1,6 +1,6 @@
 //! Native installation login directory. Nothing here is an Entry or sync input.
-use super::{AccountError, AccountInfo, AccountStatus};
-use crate::{Database, Instance, Result};
+use super::{AccountCredentials, AccountError, AccountInfo, AccountStatus, KeyStorage};
+use crate::{Database, ID, Instance, Result, auth::crypto::PrivateKey};
 use serde::{Deserialize, Serialize};
 
 const PREFIX: &str = "login:";
@@ -10,6 +10,29 @@ const PREFIX: &str = "login:";
 struct LoginRecord {
     login_id: String,
     info: AccountInfo,
+}
+
+/// Wrap exactly one installation key for the ordinary login path.
+pub(crate) async fn register_key(
+    instance: &Instance,
+    account_id: &ID,
+    username: &str,
+    password: &str,
+    key: PrivateKey,
+) -> Result<(String, AccountInfo)> {
+    let info = AccountInfo {
+        username: username.to_owned(),
+        account_id: account_id.clone(),
+        credentials: AccountCredentials {
+            root_key_id: key.public_key(),
+            bundle: KeyStorage::seal(account_id, &[key], password)?,
+        },
+        created_at: instance.clock().now_secs(),
+        status: AccountStatus::Active,
+    };
+    let login_id = uuid::Uuid::new_v4().to_string();
+    register(instance, &login_id, &info).await?;
+    Ok((login_id, info))
 }
 
 pub(crate) async fn register(

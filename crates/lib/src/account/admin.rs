@@ -19,8 +19,23 @@
 //! registration/listing use instance-admin-gated RPC on connected instances;
 //! passwords and plaintext signing keys remain client-side.
 
-use super::{session::AccountSession, system_databases};
-use crate::{Database, NewAccount, Result, auth::crypto::PublicKey, entry::ID};
+use super::{
+    Account, AccountError, AccountSigner, Identity, local_logins, session::AccountSession,
+    system_databases,
+};
+use crate::{
+    Database, NewAccount, Result,
+    auth::{
+        AuthKey, AuthSettings, Permission,
+        crypto::{PrivateKey, PublicKey},
+        types::{DelegatedTreeRef, PermissionBounds, TreeReference},
+    },
+    database::DatabaseKey,
+    entry::ID,
+};
+
+const ACCOUNT_REFERENCES: &str = "accounts";
+const APP_ADMIN: Permission = Permission::Admin(20);
 
 /// Instance-admin capability view over an [`AccountSession`] session.
 ///
@@ -72,6 +87,134 @@ impl<'a> InstanceAdmin<'a> {
         )
         .await?;
         Ok(login_id)
+    }
+
+    /// Register a normal local login for an existing Account and an already
+    /// authorized direct key from this installation. This creates no Account,
+    /// grants no Auth, and refuses to replace a login of the same name.
+    /// Public readability or a delegated grant alone is not a direct key grant.
+    /// Password wrapping stays client-side, including on a daemon connection.
+    /// Returns the installation-local login ID, not the Account root ID.
+    pub async fn register_account_login(
+        &self,
+        account_id: &ID,
+        key: PrivateKey,
+        login: NewAccount,
+    ) -> Result<String> {
+        let instance = self.user.instance();
+        let signer = AccountSigner::new(account_id.clone(), key.clone());
+        let account = signer.open_account(instance).await?;
+        let direct = account.database().live_auth_settings().await?;
+        if !direct
+            .get_key_by_pubkey(&signer.key_id())
+            .is_ok_and(|entry| entry.is_active())
+        {
+            return Err(AccountError::InsufficientPermissions.into());
+        }
+        let (login_id, _) =
+            local_logins::register_key(instance, account_id, &login.username, &login.password, key)
+                .await?;
+        Ok(login_id)
+    }
+
+    /// Provision one owned app Account, a fresh scoped key and its ordinary
+    /// local login. The chosen Identity must have an active member stronger
+    /// than the app's `Admin(20)` grant; that exact member signs genesis through
+    /// the Identity. The app key is not enrolled in the Identity.
+    ///
+    /// On success the administering Account remembers the root in `accounts`
+    /// under `alias`. Serialize setup for this alias: reference writes are
+    /// ordinary CRDT writes, not distributed create-if-absent. Reuse this root
+    /// on later installations rather than calling this method again.
+    ///
+    /// Genesis, local login registration and linking are separate writes. If a
+    /// later step fails, [`crate::Error::created_database_id`] identifies the
+    /// known created root. A link error means login registration succeeded;
+    /// after a transport error, read back login/reference state before retrying.
+    pub async fn provision_owned_app(
+        &self,
+        alias: &str,
+        owner: &Identity,
+        login: NewAccount,
+    ) -> Result<ID> {
+        if self
+            .user
+            .reference(ACCOUNT_REFERENCES, alias)
+            .await?
+            .is_some()
+        {
+            return Err(AccountError::AccountLinkAlreadyExists {
+                name: alias.to_owned(),
+            }
+            .into());
+        }
+        if self.list_accounts().await?.contains(&login.username) {
+            return Err(AccountError::LoginNameAlreadyExists {
+                username: login.username,
+            }
+            .into());
+        }
+
+        let snapshot = owner.database().snapshot().await?;
+        // Read membership and build the grant and signing path from one cut.
+        // Do not select a different key if the supplied member lacks priority.
+        let membership = owner
+            .database()
+            .new_transaction_at(&snapshot)
+            .await?
+            .get_settings()?
+            .auth_snapshot()
+            .await?;
+        if !membership
+            .get_key_by_pubkey(owner.key_id())
+            .is_ok_and(|entry| entry.is_active() && *entry.permissions() > APP_ADMIN)
+        {
+            return Err(AccountError::InsufficientPermissions.into());
+        }
+        let tips = snapshot.into_tips();
+        let signer = DatabaseKey::with_identity(
+            owner.signing_key().clone(),
+            owner.delegation_key_at(tips.clone()),
+        );
+        let app_key = PrivateKey::generate();
+        let mut auth = AuthSettings::new();
+        auth.add_delegated_tree(DelegatedTreeRef {
+            tree: TreeReference {
+                root: owner.root_id().clone(),
+                tips,
+            },
+            permission_bounds: PermissionBounds {
+                max: Permission::Admin(0),
+                min: None,
+            },
+        })?;
+        auth.add_key(&app_key.public_key(), AuthKey::active(None, APP_ADMIN))?;
+        let account = Account::create(self.user.instance(), signer, alias, auth).await?;
+        let id = account.id();
+
+        let post_genesis = |step, source| {
+            crate::Error::from(AccountError::OwnedAppSetup {
+                step,
+                source: Box::new(source),
+            })
+            .after_database_creation(id)
+        };
+        // The key is already explicitly present in the verified genesis we just
+        // created. Register it without transferring the owner's Identity key.
+        local_logins::register_key(
+            self.user.instance(),
+            id,
+            &login.username,
+            &login.password,
+            app_key,
+        )
+        .await
+        .map_err(|source| post_genesis("login registration", source))?;
+        self.user
+            .set_reference(ACCOUNT_REFERENCES, alias, id)
+            .await
+            .map_err(|source| post_genesis("Account link", source))?;
+        Ok(id.clone())
     }
 
     /// List the login names of all accounts registered on this instance.
