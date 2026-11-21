@@ -377,6 +377,25 @@ impl Entry {
         self.tree.metadata.as_ref()
     }
 
+    /// The author's claimed commit time in milliseconds since the Unix epoch.
+    ///
+    /// `None` means unknown: the timestamp may be absent or malformed. Peers
+    /// can read it even when Store data is encrypted. It is signed with the
+    /// entry but is advisory, not a receipt time or a basis for ordering or
+    /// authorization. Authors' clocks can disagree or go backwards.
+    pub fn committed_at_ms(&self) -> Option<u64> {
+        #[derive(Deserialize)]
+        struct Timestamp {
+            ts: Option<u64>,
+        }
+
+        let metadata = self.metadata()?;
+        if !metadata.trim_ascii_start().starts_with(b"{") {
+            return None;
+        }
+        serde_json::from_slice::<Timestamp>(metadata).ok()?.ts
+    }
+
     /// Get the `RawData` for a specific named subtree within this entry.
     ///
     /// Returns an error if the subtree is not found or if the subtree exists but has no data (`None`).

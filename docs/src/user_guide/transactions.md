@@ -6,6 +6,34 @@ In Eidetica, all modifications to the data stored within a `Database`'s `Store`s
 
 A `Transaction` bundles multiple Store operations (which affect individual subtrees) into a single atomic Entry that gets committed to the database.
 
+## Optional commit timestamps
+
+Automatic commit timestamps are off unless a database explicitly enables them.
+For a database you can administer, change the setting in a transaction:
+
+```rust
+# async fn enable_timestamps(database: &eidetica::Database) -> eidetica::Result<()> {
+let txn = database.new_transaction().await?;
+txn.get_settings()?.set_entry_timestamps(true).await?;
+let entry = database.get_entry(txn.commit().await?).await?;
+let _committed_at = entry.committed_at_ms();
+# Ok(())
+# }
+```
+
+The setting applies to the transaction that writes it and to transactions that inherit it.
+A transaction started from an older snapshot still uses that snapshot's settings plus any changes it stages itself.
+Setting the value to `false` stops stamping new entries; it does not erase timestamps from existing entries, and enabling it does not fill in old ones.
+
+`Entry::committed_at_ms()` returns the signing instance's clock reading in Unix milliseconds, or `None` when the time is unknown (including absent or malformed metadata).
+A daemon client signs with its own clock, and sync preserves the original timestamp.
+The value is advisory: it is not event or receipt time, clocks may disagree or go backwards, and it does not determine Entry height, merge order, or authorization.
+Peers can see the timestamp even when Store data is encrypted.
+
+For a view scoped to one Store, use `Database::try_verified_store_snapshot()` and read only the returned tips with `Database::get_entry()`.
+This uses the existing tip indexes instead of scanning the Store's history. It can return `None` if the index cannot provide verified tips, such as when verification is behind; do not fall back to a history scan just to display a time.
+Each tip read still loads a whole Entry. A tip can participate in the Store without changing its data, and clock skew means tip timestamps need not include the largest timestamp in the history.
+
 ## Why Transactions?
 
 Transactions provide several key benefits:

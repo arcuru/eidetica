@@ -91,6 +91,14 @@ impl Backend for LocalBackend {
         self.0.store_snapshot(tree, store).await
     }
 
+    async fn try_verified_store_snapshot(
+        &self,
+        tree: &ID,
+        store: &str,
+    ) -> Result<Option<Snapshot>> {
+        self.0.try_verified_store_snapshot(tree, store).await
+    }
+
     async fn store_snapshot_at(
         &self,
         tree: &ID,

@@ -5,9 +5,9 @@
 
 use std::collections::HashSet;
 
-use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::entry::{Entry, ID};
+use crate::{Result, Snapshot};
 
 use super::{SqlxBackend, SqlxResultExt};
 use crate::backend::database::sorting;
@@ -70,6 +70,48 @@ pub async fn store_snapshot(backend: &SqlxBackend, tree: &ID, store: &str) -> Re
             .sql_context("Failed to get store tips")?;
 
     rows.into_iter().map(|(id,)| ID::parse(&id)).collect()
+}
+
+pub async fn try_verified_store_snapshot(
+    backend: &SqlxBackend,
+    tree: &ID,
+    store: &str,
+) -> Result<Option<Snapshot>> {
+    // One statement snapshot covers both main frontiers and the named Store.
+    // Separate reads could accept tips added while verification is behind.
+    let rows: Vec<(i32, String)> = sqlx::query_as(
+        "SELECT 0, entry_id FROM tips WHERE tree_id = $1 AND store_name = ''
+         UNION ALL
+         SELECT 1, entry_id FROM verified_tips WHERE tree_id = $1
+         UNION ALL
+         SELECT 2, entry_id FROM tips WHERE tree_id = $1 AND store_name = $2",
+    )
+    .bind(tree.to_string())
+    .bind(store)
+    .fetch_all(backend.pool())
+    .await
+    .sql_context("Failed to read indexed verified Store tips")?;
+    let (mut raw, mut verified, mut store_tips) = (HashSet::new(), HashSet::new(), Vec::new());
+    for (kind, id) in rows {
+        match kind {
+            0 => {
+                raw.insert(id);
+            }
+            1 => {
+                verified.insert(id);
+            }
+            _ => store_tips.push(id),
+        }
+    }
+    if raw.is_empty() || raw != verified || store_tips.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Snapshot::new(
+        store_tips
+            .into_iter()
+            .map(|id| ID::parse(&id))
+            .collect::<Result<_>>()?,
+    )))
 }
 
 /// Get store tips that are reachable from the given main tree entries.

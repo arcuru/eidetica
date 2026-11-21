@@ -116,6 +116,15 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     /// Raw [`Snapshot`] of `store` within `tree`.
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot>;
 
+    /// An indexed Store frontier, available only for a fully verified main frontier.
+    async fn try_verified_store_snapshot(
+        &self,
+        _tree: &ID,
+        _store: &str,
+    ) -> Result<Option<Snapshot>> {
+        Ok(None)
+    }
+
     /// Store snapshot reachable as of a specific main-tree snapshot.
     async fn store_snapshot_at(
         &self,

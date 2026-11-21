@@ -93,6 +93,65 @@ async fn test_new_database() {
     assert_eq!(database.get_name().await.unwrap(), "test_db");
 }
 
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Unix sockets
+async fn test_service_commit_uses_signing_client_clock() -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::{FixedClock, service::ServiceServer};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("timestamp.sock");
+    let server_clock = Arc::new(FixedClock::new(8_000));
+    let _server_hold = server_clock.hold();
+    let (server, _) = Instance::create_backend_with_clock(
+        Box::new(InMemory::new()),
+        server_clock.clone(),
+        NewAccount::passwordless("admin"),
+    )
+    .await?;
+    let daemon = ServiceServer::bind(server.clone(), socket.clone()).await?;
+    let (shutdown, wait) = tokio::sync::watch::channel(());
+    let server_task = tokio::spawn(daemon.run(wait));
+
+    let clock = Arc::new(FixedClock::new(2_000));
+    let _hold = clock.hold();
+    let client = Instance::connect_unix_socket(socket, clock.clone()).await?;
+    let mut account = client.login_account("admin", "").await?;
+    let (db, _) = account.new_database().build().await?;
+    let tx = db.new_transaction().await?;
+    tx.get_settings()?.set_entry_timestamps(true).await?;
+    tx.get_store::<crate::store::DocStore>("content")
+        .await?
+        .set("message", "hello")
+        .await?;
+    let id = tx.commit().await?;
+    let entry = db.get_entry(&id).await?;
+    assert_eq!(entry.committed_at_ms(), Some(2_000));
+    assert_eq!(
+        server.get(&id).await?.canonical_bytes()?,
+        entry.canonical_bytes()?
+    );
+    assert_eq!(
+        server
+            .require_local_engine()?
+            .get_verification_status(&id)
+            .await?,
+        crate::backend::VerificationStatus::Verified,
+    );
+    assert_eq!(
+        db.try_verified_store_snapshot("content").await?,
+        Some(crate::Snapshot::from([id]))
+    );
+
+    drop(client);
+    let _ = shutdown.send(());
+    server_task.await.unwrap()?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_create_database_with_default_settings() {
     let (_instance, mut user) =

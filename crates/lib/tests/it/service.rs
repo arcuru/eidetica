@@ -2207,6 +2207,8 @@ async fn test_open_database_with_non_login_per_database_key() {
 /// keys.
 #[tokio::test]
 async fn test_open_database_with_unheld_key_is_rejected() {
+    use eidetica::instance::backend::{Backend, RemoteBackend};
+
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
     create_user_via_admin(&server, "mallory").await;
@@ -2215,12 +2217,18 @@ async fn test_open_database_with_unheld_key_is_rejected() {
     let alice_db_key = alice_server.add_private_key(Some("per-db")).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "alices_database");
-    let root_id = alice_server
+    let database = alice_server
         .create_database(settings, &alice_db_key)
         .await
-        .unwrap()
-        .root_id()
-        .clone();
+        .unwrap();
+    let root_id = database.root_id().clone();
+    assert_eq!(
+        database
+            .try_verified_store_snapshot("_settings")
+            .await
+            .unwrap(),
+        Some(eidetica::Snapshot::from([root_id.clone()]))
+    );
 
     let mallory_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
@@ -2235,6 +2243,15 @@ async fn test_open_database_with_unheld_key_is_rejected() {
     assert!(
         msg.contains("key") || msg.contains("permission") || msg.contains("auth"),
         "expected a key/permission error, got: {err}",
+    );
+    let remote = RemoteBackend::new(remote_conn(&mallory_inst), None);
+    let result = remote
+        .try_verified_store_snapshot(&root_id, "_settings")
+        .await;
+    assert!(
+        matches!(result, Err(eidetica::Error::Io(ref e))
+            if e.to_string().contains("[auth::PermissionDenied]")),
+        "{result:?}"
     );
 }
 
