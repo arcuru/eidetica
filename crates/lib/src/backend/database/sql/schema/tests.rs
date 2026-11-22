@@ -1422,9 +1422,17 @@ async fn non_failed_v4_migration_and_current_reopen_preserve_accounts_and_trust(
         .await
         .unwrap();
     db.pool.execute("ALTER TABLE store_state_namespaces ADD COLUMN last_access_tick BIGINT NOT NULL DEFAULT 0").await.unwrap();
-    db.pool.execute("CREATE TABLE local_accounts (name TEXT PRIMARY KEY NOT NULL, data BYTEA NOT NULL)").await.unwrap();
+    db.pool
+        .execute(
+            "CREATE TABLE local_accounts (name TEXT PRIMARY KEY NOT NULL, data BYTEA NOT NULL)",
+        )
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO local_accounts (name, data) VALUES ('app', $1)")
-        .bind(b"encrypted".as_slice()).execute(&db.pool).await.unwrap();
+        .bind(b"encrypted".as_slice())
+        .execute(&db.pool)
+        .await
+        .unwrap();
     db.pool
         .execute("UPDATE schema_version SET version = 4")
         .await
@@ -1436,30 +1444,38 @@ async fn non_failed_v4_migration_and_current_reopen_preserve_accounts_and_trust(
             .await
             .unwrap();
     let pending = crate::entry::ID::parse(&pending.0).unwrap();
-    let labels: Vec<(String, i64)> =
-        sqlx::query_as("SELECT id, verification_status FROM entries ORDER BY id")
+    // Match a mainline reopen: remove disposable retired rows, and on SQLite
+    // leave only authority in the history file (Derived state lives separately).
+    let mut before = db.content().await;
+    before.namespaces.retain(|row| row.0 != "unlinked-parent");
+    before.records.retain(|row| row.0 != "unlinked-parent");
+    if db.url.starts_with("sqlite:") {
+        before.namespaces.retain(|row| row.0 == "authority-parent");
+        before.records.retain(|row| row.0 == "authority-parent");
+    }
+    let verified_before: Vec<(String, String)> =
+        sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2")
             .fetch_all(&db.pool)
             .await
             .unwrap();
-    let verified_before: Vec<(String, String)> = sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2").fetch_all(&db.pool).await.unwrap();
     let backend = db.open().await.unwrap();
     assert_eq!(db.versions().await, [(5,)]);
-    assert_eq!(backend.local_account_record("app").await.unwrap().unwrap(), b"encrypted");
-    assert_eq!(backend.verified_snapshot(&tree).await.unwrap(), Snapshot::from([
-        crate::entry::ID::parse(&verified_before[0].1).unwrap()
-    ]));
+    assert_eq!(
+        backend.local_account_record("app").await.unwrap().unwrap(),
+        b"encrypted"
+    );
+    assert_eq!(
+        backend.verified_snapshot(&tree).await.unwrap(),
+        Snapshot::from([crate::entry::ID::parse(&verified_before[0].1).unwrap()])
+    );
     assert_eq!(
         backend.non_failed_snapshot(&tree).await.unwrap(),
         Snapshot::from([pending.clone()])
     );
-    let after: Vec<(String, i64)> =
-        sqlx::query_as("SELECT id, verification_status FROM entries ORDER BY id")
-            .fetch_all(&db.pool)
-            .await
-            .unwrap();
     assert_eq!(
-        labels, after,
-        "migration must not repair verification labels"
+        db.content().await,
+        before,
+        "migration preserves history, trust and authority"
     );
     let (size,): (i64,) = sqlx::query_as(
         "SELECT size_bytes FROM store_state_namespaces WHERE namespace_id = 'authority-parent'",

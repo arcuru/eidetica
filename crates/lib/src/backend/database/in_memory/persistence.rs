@@ -197,25 +197,7 @@ impl<'de> Deserialize<'de> for InMemory {
 /// # Returns
 /// A `Result` indicating success or an I/O or serialization error.
 pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Result<()> {
-    // Clone data under locks, then release before file I/O. Cache
-    // deliberately not persisted; see SerializableDatabase docs.
-    let serializable = {
-        let inner = backend.inner.read().unwrap();
-        SerializableDatabase {
-            version: PERSISTENCE_VERSION,
-            entries: inner.entries.clone(),
-            verification_status: inner.verification_status.clone(),
-            instance_metadata: inner.instance_metadata.clone(),
-            instance_secrets: inner.instance_secrets.clone(),
-            local_accounts: inner.local_accounts.clone(),
-            cache: None,
-            tips: inner.tips.clone(),
-            verified: inner.verified.clone(),
-            non_failed: Some(inner.non_failed.clone()),
-        }
-    };
-
-    let json = serde_json::to_string_pretty(&serializable)
+    let json = serde_json::to_string_pretty(backend)
         .map_err(|e| -> Error { BackendError::SerializationFailed { source: e }.into() })?;
 
     // Write to a sibling tempfile, then atomic rename. `<path>.tmp` is the
@@ -502,21 +484,31 @@ mod non_failed_tests {
             .build()
             .unwrap();
         backend.put(root).await.unwrap();
-        backend.update_verification_status(&tree, VerificationStatus::Verified).await.unwrap();
+        backend
+            .update_verification_status(&tree, VerificationStatus::Verified)
+            .await
+            .unwrap();
         backend.put(leaf.clone()).await.unwrap();
         backend.put(failed.clone()).await.unwrap();
         backend
             .update_verification_status(&failed.id(), VerificationStatus::Failed)
             .await
             .unwrap();
-        assert!(backend.compare_exchange_local_account_record("app", None, b"encrypted").await.unwrap());
+        assert!(
+            backend
+                .compare_exchange_local_account_record("app", None, b"encrypted")
+                .await
+                .unwrap()
+        );
         let original = serde_json::to_value(&backend).unwrap();
         for version in [2, 3, PERSISTENCE_VERSION] {
             let mut value = original.clone();
             value["_v"] = version.into();
             if version == 3 {
-                assert!(serde_json::from_value::<InMemory>(value.clone()).is_err(),
-                    "the divergent experimental v3 layout is not a mainline fixture");
+                assert!(
+                    serde_json::from_value::<InMemory>(value.clone()).is_err(),
+                    "the divergent experimental v3 layout is not a mainline fixture"
+                );
             }
             if version < PERSISTENCE_VERSION {
                 value.as_object_mut().unwrap().remove("non_failed");
@@ -530,8 +522,14 @@ mod non_failed_tests {
             for field in ["entries", "verification_status", "tips", "verified"] {
                 assert_eq!(saved[field], value[field], "preserve persisted {field}");
             }
-            assert_eq!(loaded.local_account_record("app").await.unwrap().as_deref(),
-                if version >= 3 { Some(b"encrypted".as_slice()) } else { None });
+            assert_eq!(
+                loaded.local_account_record("app").await.unwrap().as_deref(),
+                if version >= 3 {
+                    Some(b"encrypted".as_slice())
+                } else {
+                    None
+                }
+            );
             let loaded: InMemory = serde_json::from_value(saved).unwrap();
             assert_eq!(
                 loaded.non_failed_snapshot(&tree).await.unwrap(),

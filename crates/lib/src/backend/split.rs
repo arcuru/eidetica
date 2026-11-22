@@ -413,6 +413,10 @@ impl BackendImpl for SplitBackend {
         self.primary.verified_snapshot(tree).await
     }
 
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        self.primary.non_failed_snapshot(tree).await
+    }
+
     async fn repair_verification(&self, tree: &ID) -> Result<VerificationRepair> {
         self.primary.repair_verification(tree).await
     }

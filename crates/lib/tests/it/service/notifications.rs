@@ -424,6 +424,26 @@ async fn snapshot_watch_service_scope_binding_unsubscribe_and_disconnect_cleanup
     })
     .await
     .expect("disconnect retained daemon registrations");
+
+    let (instance, db) = client(&socket, owner.root_id()).await;
+    let conn = remote_conn(&instance);
+    let (_callback, mut rx) = watch(&db).await;
+    next_snapshot(&mut rx).await;
+    assert_eq!(server.write_callback_count(owner.root_id()), baseline + 1);
+    conn.retire();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        assert!(
+            rx.recv().await.is_none(),
+            "retire retained the client watch"
+        );
+        while server.write_callback_count(owner.root_id()) != baseline {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retire retained registrations with the client still alive");
+    assert!(db.on_write(|_, _| async { Ok(()) }).await.is_err());
+    assert_eq!(instance.write_callback_count(owner.root_id()), 0);
 }
 
 #[tokio::test]

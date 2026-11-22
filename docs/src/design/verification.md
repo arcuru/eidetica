@@ -391,21 +391,21 @@ advances the relevant counter and supplies an explicit supported forward path.
 Do not renumber existing data or infer a migration merely from integer ordering.
 The current supported matrix is:
 
-| Stored format | Open/load behavior |
-| --- | --- |
-| Fresh SQL database (no version row) | Initialize schema `5`. This does not repair populated unversioned databases. |
-| Mainline SQL `0` | Migrate directly to `5`, conservatively repairing Verified state and building the non-Failed frontier. |
-| SQL `2` | Add/backfill cache accounting, add empty native account storage, and build the non-Failed frontier. |
-| SQL `3` | Add empty native account storage and build the non-Failed frontier without cache backfill. |
-| Mainline SQL `4` | Build only the non-Failed frontier; preserve local accounts, cache accounting and trust state. |
-| SQL `5` | Use both persisted frontiers with no history repair or backfill. |
-| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported prefix-tracking candidate before schema initialization. |
-| SQL above `5`, or below `0` | Refuse: newer schema or unknown migration path. |
-| InMemory absent `_v` or explicit `_v: 0` | Reconstruct both frontiers, conservatively demoting inconsistent Verified regions. Next save writes `4`. |
-| InMemory `_v: 2` | Reconstruct only the non-Failed frontier and child counts; next save writes `4` with empty local-account storage. |
-| Mainline InMemory `_v: 3` | Reconstruct only the non-Failed frontier and child counts; preserve local accounts and trust state. Next save writes `4`. |
-| InMemory `_v: 4` | Use persisted labels, frontiers, child counts and local accounts without history repair. |
-| InMemory other `_v` | Refuse; includes experimental `1` and future versions. Invalid encodings also fail deserialization. |
+| Stored format                                             | Open/load behavior                                                                                                        |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Fresh SQL database (no version row)                       | Initialize schema `5`. This does not repair populated unversioned databases.                                              |
+| Mainline SQL `0`                                          | Migrate directly to `5`, conservatively repairing Verified state and building the non-Failed frontier.                    |
+| SQL `2`                                                   | Add/backfill cache accounting, add empty native account storage, and build the non-Failed frontier.                       |
+| SQL `3`                                                   | Add empty native account storage and build the non-Failed frontier without cache backfill.                                |
+| Mainline SQL `4`                                          | Build only the non-Failed frontier; preserve local accounts, cache accounting and trust state.                            |
+| SQL `5`                                                   | Use both persisted frontiers with no history repair or backfill.                                                          |
+| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported prefix-tracking candidate before schema initialization.                                            |
+| SQL above `5`, or below `0`                               | Refuse: newer schema or unknown migration path.                                                                           |
+| InMemory absent `_v` or explicit `_v: 0`                  | Reconstruct both frontiers, conservatively demoting inconsistent Verified regions. Next save writes `4`.                  |
+| InMemory `_v: 2`                                          | Reconstruct only the non-Failed frontier and child counts; next save writes `4` with empty local-account storage.         |
+| Mainline InMemory `_v: 3`                                 | Reconstruct only the non-Failed frontier and child counts; preserve local accounts and trust state. Next save writes `4`. |
+| InMemory `_v: 4`                                          | Use persisted labels, frontiers, child counts and local accounts without history repair.                                  |
+| InMemory other `_v`                                       | Refuse; includes experimental `1` and future versions. Invalid encodings also fail deserialization.                       |
 
 SQL migration preserves immutable Entry bytes, parent/subtree records, raw tips,
 instance metadata/secrets and existing Store-state namespaces/records. It changes
@@ -435,9 +435,10 @@ Keep an offline backup and follow the
 rather than editing markers or dropping tables to bypass refusal. Downgrading a
 binary does not undo persisted migrations; restore a compatible backup instead.
 
-SQLite's physical Derived separation does not allocate another H schema version:
-H remains v4 with native local accounts. Old in-history Derived rows may be
-reclaimed; all Authoritative records and local credentials stay durable. The
+SQLite's history file uses schema v5 with native local accounts and the retained
+non-Failed frontier. Separating Derived storage does not require an additional
+history schema revision. Old in-history Derived rows may be reclaimed; all
+Authoritative records and local credentials stay durable. The
 unreleased history-identity candidate layout is refused, not treated as mainline
 v4. For an offline reset, C is cleared before the H transaction resets labels and
 retained frontiers. Failure may discard reconstructible cache state without
