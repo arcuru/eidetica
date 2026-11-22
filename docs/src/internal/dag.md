@@ -100,7 +100,9 @@ historical authority evidence for each whole Entry. In the earlier four-Entry
 example, E3 is still needed to verify E4 even when reading only `table_1`.
 Missing proof leaves Entries `Unverified`, not partially accepted by Store.
 All payloads in a Verified Entry share its status; Store selection is not a
-payload-confidentiality boundary.
+payload-confidentiality boundary. See
+[why ordinary Store links are independent](../design/verification.md#why-ordinary-store-links-are-independent)
+for the selective-sync and Store-level validation motivation.
 
 ## Settings Authority
 

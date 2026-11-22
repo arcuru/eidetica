@@ -148,6 +148,22 @@ Entries. Verification is whole-Entry: every Store contribution in a Verified
 Entry is accepted; there is no contribution-local status, sparse verification,
 automatic dependency fetching or recovery/splicing policy.
 
+#### Why ordinary Store links are independent
+
+Requiring a write to consume every observed Store tip would make a complete view
+of that Store a prerequisite for writing to it. Independent links remove that
+requirement from the Store graph. A goal for future selective sync is to let an
+explicitly authorized client sync `_settings` and the Stores it reads, then append
+to a separate, large log Store without downloading all its prior contents. Such
+an append would not claim to replace unseen log tips. The client would still need
+the required causal and authority evidence; see the
+[selective sync design direction](synchronization.md#selective-sync-design-direction).
+
+The same separation leaves room for Stores or their CRDTs to define which prior
+contributions a write needs and how to validate it. It does not give them
+independent verification status today, or let Store rules bypass database
+authorization.
+
 ### Height monotonicity
 
 Before promotion, the verifier requires the main-tree height to be strictly
