@@ -49,7 +49,11 @@ This shows the branching and merging capability of the DAG structure.
 
 ## Subtree DAGs
 
-Each subtree forms its own DAG by following subtree-specific parent references. These can skip Entries that didn't modify that subtree.
+Each subtree forms its own DAG by following subtree-specific parent references.
+For ordinary Stores these links express consumption, independently of main
+causality. They can skip Entries that did not modify the Store, but may also
+leave observed contributions unconsumed. Named parents must still belong to the
+same database and Store and be reachable through main ancestry alone.
 
 **table_1 DAG** - Entry 3 is skipped (no table_1 data):
 
@@ -73,32 +77,39 @@ A Transaction creates a single Entry. This makes it the primitive for synchroniz
 
 In the example above, Entry 1 and Entry 4 modify both `table_1` and `table_2` in a single Entry. Because an Entry is atomic, you always see both edits or neither - there's no state where only one subtree's changes are visible. This enables reliable cross-subtree operations where related data must stay consistent.
 
-## Sparse Verified Checkouts
+## Independent Store Branches
 
-Because subtree DAGs are independent, you can sync and verify just one subtree without the full tree data.
+Main causality need not match the Store DAG:
 
-To verify `table_1`:
+```text
+Main:       A(X) -> B(X) -> C(X)
+X parents:  A.X: []; B.X: [A.X]; C.X: [A.X]
+```
 
-1. Fetch only Entries that contain `table_1` data (E1, E2, E4)
-2. Follow `table_1`'s parent chain to verify the complete history
-3. Entry 3 is not needed - it has no `table_1` data
+All three Entries can verify. The main frontier is `{C}`, but X's frontier is
+`{B.X, C.X}`. Reading X merges both contributions; C's main link to B does not
+consume B.X. A later D with X parents `[B.X, C.X]` explicitly joins them and
+makes `{D.X}` the Store frontier. Omitting a tip, naming an older or redundant
+ancestor, or using empty ordinary Store parents does not invalidate an Entry.
 
-This enables efficient partial sync while maintaining full cryptographic verification of the synced data.
+## Whole-Entry Verification, Not Sparse Checkouts
 
-> **Two senses of "verify".** Here "verify" means _cryptographically check the
-> integrity and signatures of a synced history_. That is distinct from an
-> entry's stored **`VerificationStatus`** (`Unverified` / `Verified` /
-> `Failed`), which records whether _this node has run that check and accepted
-> the result_. Synced entries arrive `Unverified`; `Database::verify()` (or
-> the access-time hook) performs the check above against the `_settings` each
-> entry pins and promotes accordingly, prefix-closed. See
-> [Core Concepts](../user_guide/core_concepts.md) and the
-> [authentication design](../design/authentication.md).
+Store DAG independence does not implement sparse verification or Store-only sync.
+The current validator requires complete, locally Verified main ancestry and the
+historical authority evidence for each whole Entry. In the earlier four-Entry
+example, E3 is still needed to verify E4 even when reading only `table_1`.
+Missing proof leaves Entries `Unverified`, not partially accepted by Store.
+All payloads in a Verified Entry share its status; Store selection is not a
+payload-confidentiality boundary.
 
-## Settings Example
+## Settings Authority
 
-An example of how this is used effectively is the design of settings for the Tree.
-
-The settings, including authentication, is stored in the `_settings` subtree. Each Entry in the Tree points to the latest tips of the `_settings` subtree.
-
-What this means is that you can fully verify the authentication for any Entry only by syncing the `_settings` subtree, and without needing to download any other data from the Tree.
+Authentication settings live in `_settings`. Every Entry signs `settings_tips`
+identifying its complete causal **pre-write** settings frontier, derived from
+its main parents rather than the current live head. A settings write must also
+consume that exact frontier. This stricter rule is deliberate: unlike ordinary
+Store data, authority context cannot be omitted just because the signer chose
+another Store branch. Genesis alone bootstraps its own initial settings.
+A signature protects the pin's bytes but does not prove its causal correctness.
+See the [verification contract](../design/verification.md) for membership,
+height, retry and retained-history adoption rules.

@@ -129,8 +129,8 @@ fn test_validate_subtree_with_empty_parent_id_fails() {
 }
 
 #[test]
-fn test_validate_non_root_with_empty_subtree_parents_logs_but_passes() {
-    // Non-root entries with empty subtree parents should log but pass validation
+fn test_validate_non_root_independent_subtree_root() {
+    // Empty ordinary Store parents start an independent branch
     // This is deferred to transaction layer for deeper validation
     let entry = Entry::builder(ID::from_bytes("tree"))
         .add_parent(ID::from_bytes("main_parent"))

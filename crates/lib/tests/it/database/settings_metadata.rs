@@ -512,6 +512,10 @@ async fn test_remote_historical_pin_matches_main_parent_frontier() {
         .await
         .unwrap();
     let grant = txn.commit().await.unwrap();
+    let data_frontier = engine
+        .store_snapshot_at(db.root_id(), "data", &Snapshot::from([grant.clone()]))
+        .await
+        .unwrap();
     let key = SigKey::from_pubkey(&signer.public_key());
     let signed = |parent: eidetica::entry::ID| {
         let entry = Entry::builder(root.clone())
@@ -519,6 +523,7 @@ async fn test_remote_historical_pin_matches_main_parent_frontier() {
             .set_height(3)
             .set_metadata(metadata(std::slice::from_ref(&grant)))
             .set_subtree_data("data", b"stale-key")
+            .set_subtree_parents("data", data_frontier.tips().to_vec())
             .build()
             .unwrap()
             .with_auth(|auth| auth.key = key.clone());

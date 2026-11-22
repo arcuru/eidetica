@@ -27,6 +27,13 @@ which can lag raw tips until local validation succeeds. Write-event cursors also
 remain raw boundaries. See the canonical [verification contract](../design/verification.md)
 for promotion, partial-history reads and retry limits.
 
+Main ancestry and Store consumption are distinct. For main `A(X) -> B(X) -> C(X)`
+with B.X and C.X both parenting A.X, acceptance retains both Store tips and reads
+merge both contributions. Only an explicit Store join consumes both. `_settings`
+remains an exact causal authority frontier; omitted ordinary tips do not relax
+its signed pin checks. Transfers contain whole Entries, and missing evidence
+stays pending: there is no sparse verification or contribution-local status.
+
 ## Bootstrap vs Incremental
 
 The same protocol handles both cases:
