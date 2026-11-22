@@ -326,8 +326,8 @@ and InMemory uses `4`. Mainline SQL `0` migrates directly to `5`; unversioned or
 explicit `_v: 0` InMemory files reconstruct retained state on load and write `4`
 on next save. SQL `4` and JSON `3` mainline upgrades preserve account records and
 trust state, reconstructing only the non-Failed frontier (and InMemory child counts).
-Migration reuses conservative repair, not cryptographic re-verification; SQL schema,
-version, and label/tip changes commit together. Clean current-format opens load
+The v0 upgrade reuses conservative repair, not cryptographic re-verification.
+SQL schema, version and any label/tip changes commit together. Clean current-format opens load
 persisted tips without a history scan. See the canonical
 [supported migration matrix](../design/verification.md#persistence-restart-and-forward-migration).
 The unreleased version-1 prefix-tracking format is **unsupported** and refused before

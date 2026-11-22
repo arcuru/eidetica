@@ -26,7 +26,7 @@ Custom backends that do not implement it fail with `LocalAccountStorageUnsupport
 
 InMemory JSON revision `3` persists the map; it reads supported older revisions without inventing local records.
 SQL revision `4` adds an empty native table when opening supported earlier formats, retaining existing Entries, metadata/secrets, verification and Store-state data.
-Opening v3 does not redo the v2 cache backfill.
+The JSON `3` → `4` and SQL `4` → `5` upgrades preserve existing local-account records without verification repair or cache backfill.
 Missing credential storage under a v4 marker is corruption and refuses open rather than silently recreating an empty directory.
 Older binaries refuse the new format counters instead of silently dropping credentials.
 These are tested synthetic storage transitions, not permission to open/migrate live installations.

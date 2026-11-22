@@ -960,10 +960,14 @@ impl RemoteConnection {
         scope: ReadScope,
     ) -> crate::Result<()> {
         {
-            let mut subscriptions = self.inner.subscriptions.lock().unwrap_or_else(|p| p.into_inner());
+            let mut subscriptions = self
+                .inner
+                .subscriptions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             // Retirement publishes closed before draining this registry.
             if self.inner.closed.load(Ordering::Acquire) {
-                return Err(connection_aborted().into());
+                return Err(connection_aborted());
             }
             subscriptions.insert(
                 id,
@@ -1501,7 +1505,11 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
                 .map(|id| (id, subscriptions.remove(&id).unwrap()))
                 .collect::<Vec<_>>()
         };
-        let conn = RemoteConnection { inner, _live: None, signer: None };
+        let conn = RemoteConnection {
+            inner,
+            _live: None,
+            signer: None,
+        };
         for (id, sub) in expired {
             match tokio::time::timeout(
                 UNSUBSCRIBE_RTT_TIMEOUT,

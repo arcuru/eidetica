@@ -44,7 +44,7 @@ SQLite uses a cooperative advisory lock on a stable `.eidetica-owner` sidecar ne
 
 PostgreSQL stores an ownership token in the active schema: every pooled session holds a shared namespace lock and validates that token, while takeover requires the exclusive namespace lock. A surviving old session therefore blocks takeover, and a stale pool cannot reconnect after ownership changes. The operating system or database server releases the locks when their sessions exit or crash. Dropping a PostgreSQL backend closes its sessions without waiting for the server, so an immediate reopen of the same namespace can still briefly fail with `BackendError::StorageAlreadyOwned`.
 
-Both SQL backends use an internal integer schema counter, independent of releases and the InMemory file counter. Mainline schema `0` migrates directly to current `4`; current opens reuse persisted Verified tips and local-account records. The experimental `1` prefix format is unsupported. See the [migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
+Both SQL backends use an internal integer schema counter, independent of releases and the InMemory file counter. Mainline schema `0` migrates directly to current `5`; current opens reuse both persisted frontiers and local-account records. The experimental `1` prefix format is unsupported. See the [migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
 Both SQL backends reject a stored schema version newer than the supported version before creating schema tables or indexes or running migrations.
 Refusal leaves the version marker, Entries, instance metadata and Store-state records unchanged.
 The error names both versions.
@@ -132,8 +132,8 @@ Online `clear_derived_store_state` instead preserves a generation for live reade
 its byte limit is live payload, not a physical filesystem quota. WAL/NORMAL
 synchronous defaults are unchanged for both files.
 
-Mainline H remains schema **4**, including `local_accounts`. Supported v0/v2/v3
-upgrades retain their existing migration/verification rules; SQLite discards
+The history file uses schema **5**, including `local_accounts` and the non-Failed
+frontier. The v4 upgrade preserves local records and trust decisions; SQLite discards
 legacy single-file Derived rows on open while retaining Authoritative records.
 No extra H schema bump is required. The unreleased `history_identity` H layout
 and `cache_binding` C format from an earlier candidate are unsupported and refused,
@@ -211,7 +211,7 @@ The in-process backend is intended for tests, examples, and embedded apps that d
 
 **Not for production.** Prefer `sqlite://` (file-backed) or `postgres://` for any deployed workload. Specifically:
 
-- JSON snapshots use internal integer format counter `_v` (currently `3`), not a release version or stability promise. Mainline unversioned/`0` files reconstruct Verified tips on load; version `2` loads without history repair, while experimental `1` and future formats are refused. See the [supported migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
+- JSON snapshots use internal integer format counter `_v` (currently `4`), not a release version or stability promise. Mainline unversioned/`0` files reconstruct both frontiers on load; versions `2` and `3` reconstruct only the non-Failed frontier and child counts. Experimental `1` and future formats are refused. See the [supported migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
 - The snapshot serializes the device signing key **in plaintext**. For `memory:///path.json`, that key ends up on disk in cleartext — fine for tests, unsafe for production.
 - Every `flush()` rewrites the full backend state; there's no incremental persistence, MVCC, or multi-process access.
 
