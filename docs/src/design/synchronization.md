@@ -891,6 +891,17 @@ pub struct SyncFlushConfig {
 4. **Monitoring:** Rich metrics and observability
 5. **Scalability:** Large-scale deployment support
 
+### Selective sync design direction
+
+One motivating case is a database with a large append-only log Store. A client
+could sync `_settings` and the Stores it needs to read, then, if authorized,
+append to the log without first fetching its entire history. An append that
+names no prior log tips would leave existing tips intact. This illustrates why
+[ordinary Store links do not imply consumption of every observed tip](verification.md#why-ordinary-store-links-are-independent).
+It is not supported by today's whole-Entry sync and verification. A future
+protocol must specify which causal, authority and Store dependencies a writer
+needs and how peers verify a contribution when other payloads are absent.
+
 ### Research Areas
 
 1. **Byzantine fault tolerance:** Handle malicious peers
