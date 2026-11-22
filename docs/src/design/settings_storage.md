@@ -77,7 +77,7 @@ struct EntryMetadata {
 **Metadata Properties:**
 
 - Automatically populated by `Transaction::commit()`
-- Used for efficient settings validation in sparse checkouts
+- Identifies the causal pre-write authority snapshot; it does not enable sparse verification
 - Stored in `TreeNode.metadata` field as serialized JSON
 
 **`settings_tips` is the verification pin.** Its signed value must equal the full `_settings` frontier of the entry's main parents, excluding any settings written in that entry. Only genesis can bootstrap against its own settings. An entry's signature is always
@@ -92,7 +92,10 @@ why an entry can be legitimately `Unverified` ("can't tell yet")
 as opposed to `Failed` ("checked and rejected").
 
 A settings entry's subtree parents must also equal its main parents' canonical
-settings frontier. Local historical transactions derive both that frontier and
+settings frontier. This is intentionally stricter than ordinary Stores: ordinary
+Store parents select consumption and may omit observed tips, but `_settings`
+cannot omit causal authority context. Signed metadata alone does not prove the
+pin is correct; validation derives it independently from complete main ancestry. Local historical transactions derive both that frontier and
 the metadata pin from the same fixed main-parent snapshot. The entry's resulting
 merged settings are a separate post-write state used for delegation transitions;
 they cannot grant the same non-genesis entry authority. See the canonical

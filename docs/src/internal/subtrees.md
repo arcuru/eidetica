@@ -10,6 +10,11 @@ A **subtree root** is an entry that starts a named subtree:
 - Has **empty subtree parents** (`[]`)
 - Still has normal main tree parents
 
+For ordinary Stores this may start another independent branch even when earlier
+contributions to the same Store exist in main ancestry. Empty Store parents do
+not mean the Entry has no causal history. `_settings` is different: its writes
+must consume the complete causal pre-write settings frontier.
+
 ```rust,ignore
 Entry {
     tree: TreeNode {
@@ -44,7 +49,12 @@ Transactions automatically determine subtree parents:
 2. If using custom parents → find subtree tips reachable from those parents
 3. If first subtree entry → empty tips (creates subtree root)
 
-**Always use transactions** for entry creation - they handle parent discovery automatically.
+**Use transactions** for entry creation; they handle parent discovery automatically.
+Discovery includes every unconsumed Store tip reachable through the selected
+main ancestry, not just Store contributions at main tips. It is an authoring
+default, not a requirement that every ordinary Store write consume that frontier.
+Named parents must still target the same Store and database and lie in main-only
+ancestry. See the [A/B/C example](../design/verification.md#store-parent-frontiers).
 
 ## Subtree Heights
 
@@ -61,6 +71,8 @@ The `Entry.subtree_height()` accessor handles inheritance transparently:
 let height = entry.subtree_height("messages")?;
 ```
 
+Effective height must strictly increase over every named Store-parent edge;
+positive gaps are valid. Main observation alone adds no ordinary Store edge.
 Per-subtree height strategies are configured via the `_index` registry. System subtrees (`_settings`, `_index`, `_root`) always inherit from the tree.
 
 See [Height Strategy Design](../design/height_strategy.md) for implementation details.
