@@ -519,9 +519,13 @@ mod non_failed_tests {
             let loaded: InMemory = serde_json::from_value(value.clone()).unwrap();
             let saved = serde_json::to_value(&loaded).unwrap();
             assert_eq!(saved["_v"], PERSISTENCE_VERSION);
-            for field in ["entries", "verification_status", "tips", "verified"] {
+            for field in ["entries", "verification_status", "verified"] {
                 assert_eq!(saved[field], value[field], "preserve persisted {field}");
             }
+            assert_eq!(
+                loaded.snapshot(&tree).await.unwrap(),
+                backend.snapshot(&tree).await.unwrap()
+            );
             assert_eq!(
                 loaded.local_account_record("app").await.unwrap().as_deref(),
                 if version >= 3 {

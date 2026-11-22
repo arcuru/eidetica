@@ -293,7 +293,9 @@ async fn snapshot_watch_slow_initial_latest_wins_and_caller_checkpoint() {
     assert_eq!(next_snapshot(&mut fast).await, initial);
     let mut ids = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), async {
-        for i in 0..32 {
+        // Multiple pending updates distinguish latest-wins from a queue;
+        // a long burst mostly measures SQL throughput under full-suite load.
+        for i in 0..3 {
             ids.push(commit_data_value(&db, &i.to_string()).await);
         }
     })
