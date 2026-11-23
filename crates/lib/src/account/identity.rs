@@ -5,7 +5,7 @@
 
 use crate::{
     Database, Result,
-    account::AccountSigner,
+    account::{Account, AccountSigner},
     auth::{
         crypto::{PrivateKey, PublicKey},
         settings::AuthSettings,
@@ -82,6 +82,11 @@ impl Identity {
             .with_identity(self.delegation_key().await?)
             .open_database(&instance, root_id)
             .await
+    }
+
+    /// Open a referenced Account through this exact Identity, without logging in to it.
+    pub async fn open_account(&self, root_id: &ID) -> Result<Account> {
+        self.open_database(root_id).await.map(Account::new)
     }
 
     /// Add or update a member key.

@@ -56,7 +56,7 @@ use crate::{
     database::DatabaseKey,
     entry::ID,
     instance::{InstanceError, backend::Backend},
-    store::{DocStore, StoreError, Table},
+    store::{DocStore, Table},
     sync::{BootstrapRequest, DatabaseTicket, Sync, SyncError},
 };
 
@@ -839,22 +839,6 @@ impl AccountSession {
     // namespace lives in its own replicated store. Keys and local tracking
     // are outside the DAG. A reference grants no access and activates nothing.
 
-    fn reference_store(namespace: &str) -> String {
-        format!("refs:{namespace}")
-    }
-
-    fn validate_reference_name(store: &str, name: &str) -> Result<()> {
-        if name.is_empty() || name.contains('.') {
-            return Err(StoreError::InvalidOperation {
-                store: store.to_string(),
-                operation: "reference".to_string(),
-                reason: "reference names must be nonempty and contain no dots".to_string(),
-            }
-            .into());
-        }
-        Ok(())
-    }
-
     /// Store a direct reference to a database in this Account.
     ///
     /// Names must be nonempty and contain no dots; they are aliases, not paths.
@@ -864,8 +848,8 @@ impl AccountSession {
     /// first-time initialization through one writer. To repair a partial
     /// initialization, write the ID of the target that was already created.
     pub async fn set_reference(&self, namespace: &str, name: &str, database_id: &ID) -> Result<()> {
-        let store = Self::reference_store(namespace);
-        Self::validate_reference_name(&store, name)?;
+        let store = Account::reference_store(namespace);
+        Account::validate_reference_name(&store, name)?;
         let tx = self.account.database().new_transaction().await?;
         tx.get_store::<Table<ID>>(store)
             .await?
@@ -879,8 +863,8 @@ impl AccountSession {
     /// This only writes a reference tombstone: it does not remove the target,
     /// change local tracking, revoke any key, or erase old history.
     pub async fn remove_reference(&self, namespace: &str, name: &str) -> Result<bool> {
-        let store = Self::reference_store(namespace);
-        Self::validate_reference_name(&store, name)?;
+        let store = Account::reference_store(namespace);
+        Account::validate_reference_name(&store, name)?;
         let tx = self.account.database().new_transaction().await?;
         // As in reference(), use the underlying Doc, not the typed Table
         // projection. An explicit unlink can remove a malformed value too.
@@ -903,31 +887,7 @@ impl AccountSession {
     /// error and must not be treated as permission to create a replacement.
     /// Reads only this reference; no other database is opened.
     pub async fn reference(&self, namespace: &str, name: &str) -> Result<Option<ID>> {
-        let store = Self::reference_store(namespace);
-        Self::validate_reference_name(&store, name)?;
-        // Table's projection omits non-text values; read raw data so corruption
-        // cannot masquerade as an absent reference or a stale projected ID.
-        let references = self
-            .account
-            .database()
-            .get_store_viewer::<DocStore>(store.as_str())
-            .await?;
-        match references.get_string(name).await {
-            Ok(value) => serde_json::from_str(&value).map(Some).map_err(|e| {
-                StoreError::DeserializationFailed {
-                    store: store.clone(),
-                    reason: format!("Invalid database reference '{name}': {e}"),
-                }
-                .into()
-            }),
-            Err(Error::Store(e))
-                if matches!(e.as_ref(), StoreError::KeyNotFound { store: s, key }
-                    if *s == store && key == name) =>
-            {
-                Ok(None)
-            }
-            Err(e) => Err(e),
-        }
+        self.account.reference(namespace, name).await
     }
 
     /// Open the database named by a reference.

@@ -118,6 +118,27 @@ credentials are not displayed.
 An Account is a private root database, while an Identity declares keys and
 delegation under its own Auth policy; they need not correspond one-to-one.
 
+To open an owned app, sign in with your personal login and choose **Browse
+linked Accounts** on the dashboard. The Account list shows names you have
+linked under `accounts`. Choose a locally active owner Identity, then open
+an Account reference. The signed-in user, acting Identity, and viewed Account
+are shown separately. Browsing does not log you in as the app or load its
+credentials.
+
+Follow a nested Account or choose a data reference from the viewed Account.
+Each opened target needs Read through a delegation to the selected Identity,
+even when its parent Account is readable. A missing or unreadable target is
+shown as inaccessible or unavailable. The dashboard does not sync it, try
+another signer, or follow child references automatically. Use **Back** to
+return to the previous Account or **Account list** to choose another Identity.
+
+Data previews use the first ten rows of a selected plain `Table` store. You
+can choose another store if the first one has no preview. Oversized values
+are omitted, and internal and encrypted stores are not previewed. This is a
+view of local data, not a database history browser or a guarantee of sync
+freshness. See [Linked Accounts and app login](linked_accounts.md) for setup
+and examples of separate Account and data Auth.
+
 Tracked-database list failures are reported separately from an empty list.
 A database that cannot be opened remains visible as an unavailable row.
 Failed name or Entry reads show an error rather than an empty name or zero count.
