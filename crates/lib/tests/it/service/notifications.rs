@@ -273,6 +273,9 @@ async fn snapshot_watch_service_slow_callback_initial_order_and_same_tree_indepe
 #[tokio::test]
 async fn snapshot_watch_service_keyless_remote_identity_and_revocation() {
     use eidetica::auth::{AuthKey, Permission};
+
+    eidetica::service::client::set_idle_grace_window_for_test(Duration::from_millis(20));
+    eidetica::service::client::set_sweep_interval_for_test(Duration::from_millis(5));
     let (socket, _shutdown, server, _dir) = start_test_server().await;
     let (owner, _) = server_database(&server).await;
     let (instance, session_db) = client(&socket, owner.root_id()).await;
@@ -305,10 +308,13 @@ async fn snapshot_watch_service_keyless_remote_identity_and_revocation() {
         member_db.auth_identity().is_none(),
         "read-only remote identity is in the Backend seam"
     );
-    let (_member_cb, mut member_rx) = watch(&member_db).await;
     let (_owner_cb, mut owner_rx) = watch(&session_db).await;
-    next_snapshot(&mut member_rx).await;
     next_snapshot(&mut owner_rx).await;
+    // Include the owner's live registration in the baseline.
+    let baseline = server.write_callback_count(owner.root_id());
+    let (member_cb, mut member_rx) = watch(&member_db).await;
+    next_snapshot(&mut member_rx).await;
+    assert_eq!(server.write_callback_count(owner.root_id()), baseline + 1);
     let id = commit_data_value(&owner, "both identities").await;
     assert_eq!(
         next_snapshot(&mut member_rx).await,
@@ -330,7 +336,19 @@ async fn snapshot_watch_service_keyless_remote_identity_and_revocation() {
         member_db.on_write(|_, _| async { Ok(()) }).await.is_err(),
         "another identity's subscription must not bypass a fresh Read gate"
     );
-    assert!(session_db.snapshot().await.is_ok());
+    drop(member_cb);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while server.write_callback_count(owner.root_id()) != baseline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("sweep retained a dropped watch after Read was revoked");
+
+    let id = commit_data_value(&owner, "owner watch survives revocation and sweep").await;
+    let latest = Snapshot::new(vec![id]);
+    while next_snapshot(&mut owner_rx).await != latest {}
+    assert_eq!(session_db.snapshot().await.unwrap(), latest);
 }
 
 #[tokio::test]
