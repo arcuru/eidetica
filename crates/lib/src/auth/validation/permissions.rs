@@ -40,6 +40,27 @@ pub async fn resolve_identity_permission(
     auth_settings: &AuthSettings,
     instance: Option<&crate::Instance>,
 ) -> Result<Permission> {
+    resolve_permission(pubkey, identity, auth_settings, instance, false).await
+}
+
+/// Resolve Read authority as recorded at a validated database cut. Delegated
+/// authority follows the committed pointers in those settings, not caller tips.
+pub(crate) async fn resolve_snapshot_identity_permission(
+    pubkey: &PublicKey,
+    identity: &SigKey,
+    auth_settings: &AuthSettings,
+    instance: &crate::Instance,
+) -> Result<Permission> {
+    resolve_permission(pubkey, identity, auth_settings, Some(instance), true).await
+}
+
+async fn resolve_permission(
+    pubkey: &PublicKey,
+    identity: &SigKey,
+    auth_settings: &AuthSettings,
+    instance: Option<&crate::Instance>,
+    use_committed_pointers: bool,
+) -> Result<Permission> {
     match identity {
         SigKey::Direct { hint } if hint.is_global() => {
             if let Some(embedded_pubkey) = &hint.pubkey
@@ -102,14 +123,21 @@ pub async fn resolve_identity_permission(
             let instance = instance.ok_or_else(|| AuthError::DatabaseRequired {
                 operation: "live delegated access".to_string(),
             })?;
-            let resolved_auths = DelegationResolver::new()
-                .resolve_live_delegation_path(path, hint, auth_settings, instance)
-                .await
-                .map_err(|e| {
-                    Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
-                        reason: format!("Delegation resolution failed: {e}"),
-                    }))
-                })?;
+            let mut resolver = DelegationResolver::new();
+            let resolution = if use_committed_pointers {
+                resolver
+                    .resolve_committed_delegation_path(path, hint, auth_settings, instance)
+                    .await
+            } else {
+                resolver
+                    .resolve_live_delegation_path(path, hint, auth_settings, instance)
+                    .await
+            };
+            let resolved_auths = resolution.map_err(|e| {
+                Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
+                    reason: format!("Delegation resolution failed: {e}"),
+                }))
+            })?;
 
             select_effective_permission(&resolved_auths, pubkey).ok_or_else(|| {
                 Error::Auth(Box::new(AuthError::SigningKeyMismatch {
