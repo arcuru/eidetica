@@ -58,6 +58,7 @@ async fn missing_delegation_entries(
 
 enum AuthorityState<'a> {
     ClaimedSnapshot(Option<&'a mut DerivedFloors>),
+    CommittedPointers,
     CurrentAccepted,
 }
 
@@ -128,6 +129,25 @@ impl DelegationResolver {
             auth_settings,
             instance,
             AuthorityState::CurrentAccepted,
+        )
+        .await
+    }
+
+    /// Follow each delegation at the pointer recorded by the parent cut.
+    /// Caller tips are not authority for an explicit State read.
+    pub(crate) async fn resolve_committed_delegation_path(
+        &mut self,
+        steps: &[DelegationStep],
+        final_hint: &KeyHint,
+        auth_settings: &AuthSettings,
+        instance: &Instance,
+    ) -> Result<Vec<ResolvedAuth>> {
+        self.resolve_delegation_path_inner(
+            steps,
+            final_hint,
+            auth_settings,
+            instance,
+            AuthorityState::CommittedPointers,
         )
         .await
     }
@@ -213,11 +233,12 @@ impl DelegationResolver {
                 }
                 .into());
             }
-            // Read the retained accepted frontier directly: Database::snapshot
-            // may start cross-tree verification or expose raw tips while a
-            // verification pass is on the stack.
+            let floor = Snapshot::from(delegated_tree_ref.tree.tips.to_vec());
+            // For live access, read the retained frontier directly so we never
+            // start cross-tree verification or expose raw tips.
             let snapshot = match &authority {
                 AuthorityState::ClaimedSnapshot(_) => Snapshot::from(&step.tips),
+                AuthorityState::CommittedPointers => floor.clone(),
                 AuthorityState::CurrentAccepted => {
                     current_backend.verified_snapshot(&root_id).await?
                 }
@@ -243,7 +264,6 @@ impl DelegationResolver {
             // Membership and complete locally Verified ancestry are checked
             // below. Missing and present-but-Unverified history is retryable;
             // a proven regression or foreign-tree tip is not.
-            let floor = Snapshot::from(delegated_tree_ref.tree.tips.to_vec());
             if floor.is_empty() {
                 return Err(AuthError::InvalidDelegationTips {
                     tree_id: root_id.clone(),
@@ -366,8 +386,7 @@ impl DelegationResolver {
                 DerivedFloors::proof_on(current_backend.as_ref(), &root_id, &floor).await?;
             }
 
-            // Materialize the same immutable boundary proved above: the signed
-            // claim for history, or the accepted frontier for live access.
+            // Materialize the same immutable boundary proved above.
             // Non-NotFound backend failures remain operational errors.
             current_auth_settings = match current_backend
                 .get_tree_from_tips(&root_id, &snapshot)

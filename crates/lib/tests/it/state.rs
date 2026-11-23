@@ -4,7 +4,10 @@ use eidetica::{
     Database, DatabaseKey, Error, ID, Instance, NewAccount, Snapshot,
     auth::{
         crypto::generate_keypair,
-        types::{AuthKey, Permission},
+        types::{
+            AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, Permission, PermissionBounds,
+            SigKey, TreeReference,
+        },
     },
     backend::{VerificationStatus, database::InMemory},
     crdt::Doc,
@@ -128,9 +131,9 @@ async fn snapshot_first_checks_read_at_the_requested_or_latest_cut() -> eidetica
     .await?;
     let (owner, _) = generate_keypair();
     let (member, pubkey) = generate_keypair();
-    let key = DatabaseKey::new(member);
+    let key = DatabaseKey::new(member.clone());
     let db = Database::create(&instance, owner.clone(), Doc::new()).await?;
-    let foreign = Database::create(&instance, owner.clone(), Doc::new()).await?;
+    let foreign = Database::create(&instance, member, Doc::new()).await?;
     let foreign_tips = foreign.snapshot().await?;
     let owner_key = DatabaseKey::new(owner);
     let admin = StateReader::new(&instance, &owner_key);
@@ -182,7 +185,7 @@ async fn snapshot_first_checks_read_at_the_requested_or_latest_cut() -> eidetica
     ));
     assert!(refusing.read_doc(&cut, "_settings").await.is_ok());
 
-    for invalid in [Snapshot::EMPTY, foreign_tips] {
+    for invalid in [Snapshot::EMPTY, foreign_tips.clone()] {
         let context = ReadContext::at(db.root_id().clone(), invalid, ReadScope::Verified);
         assert!(matches!(
             reader.read_doc(&context, "_index").await,
@@ -238,12 +241,86 @@ async fn snapshot_first_checks_read_at_the_requested_or_latest_cut() -> eidetica
         cut.snapshot().clone(),
         ReadScope::AllowUnverified,
     );
-    for denied in [before_joining, latest, diagnostic] {
+    let wrong_tree = ReadContext::at(db.root_id().clone(), foreign_tips, ReadScope::Verified);
+    for denied in [before_joining, latest, diagnostic, wrong_tree] {
         assert!(matches!(
             reader.read_doc(&denied, "_settings").await,
             Err(Error::State(StateError::Denied))
         ));
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn snapshot_first_delegated_read_uses_the_committed_pointer() -> eidetica::Result<()> {
+    let instance = crate::helpers::test_local_instance().await;
+    let (owner, _) = generate_keypair();
+    let (member, pubkey) = generate_keypair();
+    let db = Database::create(&instance, owner.clone(), Doc::new()).await?;
+    let delegated = Database::create(&instance, owner.clone(), Doc::new()).await?;
+    let delegated_root = delegated.root_id().clone();
+    let admin_key = DatabaseKey::new(owner);
+    let admin = StateReader::new(&instance, &admin_key);
+    let point_at = |snapshot: Snapshot| {
+        let pointer = DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                min: None,
+                max: Permission::Read,
+            },
+            tree: TreeReference {
+                root: delegated_root.clone(),
+                tips: snapshot.into_tips(),
+            },
+        };
+        db.with_transaction(
+            |tx| async move { tx.get_settings()?.add_delegated_tree(pointer).await },
+        )
+    };
+    point_at(delegated.snapshot().await?).await?;
+    let ungranted = admin.capture(db.root_id(), ReadScope::Verified).await?;
+    let member_pubkey = pubkey.clone();
+    delegated
+        .with_transaction(|tx| async move {
+            tx.get_settings()?
+                .set_auth_key(&member_pubkey, AuthKey::active(None, Permission::Read))
+                .await
+        })
+        .await?;
+    let granted_tips = delegated.snapshot().await?;
+    point_at(granted_tips.clone()).await?;
+    let granted = admin.capture(db.root_id(), ReadScope::Verified).await?;
+    let identity = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_root.clone(),
+            tips: granted_tips.into_tips(),
+        }],
+        hint: KeyHint::from_pubkey(&pubkey),
+    };
+    let key = DatabaseKey::with_identity(member, identity);
+    let reader = StateReader::new(&instance, &key);
+    // The live delegated frontier grants Read, despite no grant in the old pin.
+    assert!(
+        reader
+            .read_doc(&ungranted, "_index")
+            .await?
+            .value
+            .is_empty()
+    );
+    delegated
+        .with_transaction(|tx| async move { tx.get_settings()?.revoke_auth_key(&pubkey).await })
+        .await?;
+    point_at(delegated.snapshot().await?).await?;
+    assert!(matches!(
+        reader.capture(db.root_id(), ReadScope::Verified).await,
+        Err(Error::State(StateError::Denied))
+    ));
+    // The caller's delegation hint names a grant, but only the committed
+    // pointer of the requested cut can make that grant relevant.
+    assert!(matches!(
+        reader.read_doc(&ungranted, "_index").await,
+        Err(Error::State(StateError::Denied))
+    ));
+    assert_eq!(reader.read_doc(&granted, "_index").await?.context, granted);
     Ok(())
 }
 

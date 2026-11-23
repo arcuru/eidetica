@@ -1,12 +1,18 @@
 //! Snapshot-bound State computation for embedded and serving engines.
 //!
 //! The caller holds the signing key or the adapter proves its possession before
-//! entering this module. Credentials, current database Read, and admission to
+//! entering this module. Credentials, database Read, and admission to
 //! computation are independent. The returned boundary is not a lease or a grant.
 
 use crate::{
     Database, ID, Instance, Registered, Result, Snapshot,
-    auth::{SigKey, crypto::PublicKey, validation::permissions::resolve_identity_permission},
+    auth::{
+        SigKey,
+        crypto::PublicKey,
+        validation::permissions::{
+            resolve_identity_permission, resolve_snapshot_identity_permission,
+        },
+    },
     backend::{BackendImpl, Reachability},
     constants::{INDEX, SETTINGS},
     crdt::{CRDT, Codec, Doc, doc::Value},
@@ -108,8 +114,9 @@ pub enum StateOperation<'a> {
 /// be for any reason and does not create an enrollment or change database Auth.
 pub type StateAdmission = dyn Fn(&ID, StateOperation<'_>) -> bool + Send + Sync;
 
-/// State reads under one caller identity. Re-checks current database Read on
-/// every operation, including historical reads. It grants no Write authority.
+/// State reads under one caller identity. Discovering the latest boundary needs
+/// current Read. A requested Verified cut can also be read with Read at that cut.
+/// Neither operation grants Write authority.
 pub struct StateReader<'a> {
     instance: &'a Instance,
     pubkey: PublicKey,
@@ -167,26 +174,57 @@ impl<'a> StateReader<'a> {
     }
 
     /// Materialize one supported plaintext Store at the explicit Verified cut.
-    /// Diagnostic boundaries and encrypted or custom projections do not use
-    /// this method; authorized raw history can be consumed separately.
+    /// Require Read at that cut or the serving engine's latest Verified frontier.
+    /// Diagnostic boundaries, encrypted Stores and custom projections are not
+    /// supported; authorized raw history can be consumed separately.
     pub async fn read_doc(&self, context: &ReadContext, store: &str) -> Result<ComputedDoc> {
         self.admit(context.database(), StateOperation::ReadDoc { store })?;
-        let (_, verified) = self.authorize(context.database()).await?;
         let backend = self.instance.require_local_engine()?;
+        let (db, verified) = self.verified_database(context.database()).await?;
+        let current_read = self.authorize_current(&db, &verified).await;
         if context.scope() != ReadScope::Verified {
+            current_read?;
             return Err(StateError::UnsupportedProjection.into());
         }
-        if context.snapshot().is_empty() {
-            return Err(StateError::InvalidBoundary.into());
-        }
-        if context.snapshot() != &verified {
+
+        let boundary = if context.snapshot().is_empty() {
+            Err(StateError::InvalidBoundary.into())
+        } else if context.snapshot() != &verified {
             require_reachable(
                 &*backend,
                 context.database(),
                 &verified,
                 context.snapshot().tips(),
             )
-            .await?;
+            .await
+        } else {
+            Ok(())
+        };
+        if current_read.is_ok() {
+            boundary?;
+        } else {
+            // Without current Read, don't report boundary details until the
+            // requested cut has itself been validated and authorized.
+            boundary.map_err(|_| StateError::Denied)?;
+            let settings = fold_doc(&*backend, context, SETTINGS)
+                .await
+                .map_err(|_| StateError::Denied)?;
+            let auth = settings
+                .get("auth")
+                .and_then(Value::as_doc)
+                .cloned()
+                .unwrap_or_default()
+                .into();
+            resolve_snapshot_identity_permission(&self.pubkey, self.identity, &auth, self.instance)
+                .await
+                .map_err(|_| StateError::Denied)?;
+            if store == SETTINGS {
+                return Ok(ComputedDoc {
+                    context: context.clone(),
+                    store: store.to_owned(),
+                    value: settings,
+                });
+            }
         }
         compute_doc(&*backend, context, store).await
     }
@@ -210,6 +248,12 @@ impl<'a> StateReader<'a> {
     }
 
     async fn authorize(&self, database: &ID) -> Result<(Database, Snapshot)> {
+        let (db, verified) = self.verified_database(database).await?;
+        self.authorize_current(&db, &verified).await?;
+        Ok((db, verified))
+    }
+
+    async fn verified_database(&self, database: &ID) -> Result<(Database, Snapshot)> {
         let backend = self.instance.require_local_engine()?;
         let verified = backend.verified_snapshot(database).await?;
         if verified.is_empty() {
@@ -218,16 +262,20 @@ impl<'a> StateReader<'a> {
         let db = Database::open(self.instance, database)
             .await
             .map_err(|_| StateError::Denied)?;
+        Ok((db, verified))
+    }
+
+    async fn authorize_current(&self, db: &Database, verified: &Snapshot) -> Result<()> {
         let settings = db
-            .auth_settings_at(&verified)
+            .auth_settings_at(verified)
             .await
             .map_err(|_| StateError::Denied)?;
-        // All resolved Permission variants grant at least Read. Delegations
-        // resolve against current accepted authority, not the requested cut.
+        // Every resolved Permission grants at least Read. The live arm uses
+        // current accepted authority at every delegation hop.
         resolve_identity_permission(&self.pubkey, self.identity, &settings, Some(self.instance))
             .await
             .map_err(|_| StateError::Denied)?;
-        Ok((db, verified))
+        Ok(())
     }
 }
 
