@@ -546,6 +546,17 @@ async fn snapshot_first_service_signer_state_without_credentials() -> eidetica::
         "a different session cannot borrow the writer identity"
     );
 
+    let reader_pubkey = reader.key_id();
+    db.with_transaction(
+        |tx| async move { tx.get_settings()?.revoke_auth_key(&reader_pubkey).await },
+    )
+    .await?;
+    // This adapter only takes a Store name, so it still needs current Read.
+    assert!(matches!(
+        read_index().await,
+        Err(Error::State(StateError::Denied))
+    ));
+
     shutdown.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(10), task)
         .await

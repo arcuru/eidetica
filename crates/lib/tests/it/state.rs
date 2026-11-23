@@ -120,7 +120,7 @@ async fn snapshot_first_read_and_staged_overlays_keep_one_cut() -> eidetica::Res
 }
 
 #[tokio::test]
-async fn snapshot_first_rechecks_permission_and_preserves_error_kinds() -> eidetica::Result<()> {
+async fn snapshot_first_checks_read_at_the_requested_or_latest_cut() -> eidetica::Result<()> {
     let (instance, _) = Instance::create_backend(
         crate::helpers::test_backend().await,
         NewAccount::passwordless("admin"),
@@ -135,6 +135,7 @@ async fn snapshot_first_rechecks_permission_and_preserves_error_kinds() -> eidet
     let owner_key = DatabaseKey::new(owner);
     let admin = StateReader::new(&instance, &owner_key);
     let reader = StateReader::new(&instance, &key);
+    let before_joining = admin.capture(db.root_id(), ReadScope::Verified).await?;
     assert!(matches!(
         reader.capture(db.root_id(), ReadScope::Verified).await,
         Err(Error::State(StateError::Denied))
@@ -146,14 +147,23 @@ async fn snapshot_first_rechecks_permission_and_preserves_error_kinds() -> eidet
         Err(Error::State(StateError::Denied))
     ));
     db.with_transaction(|tx| async move {
-        tx.get_settings()?
+        let settings = tx.get_settings()?;
+        settings
             .set_auth_key(&pubkey, AuthKey::active(None, Permission::Read))
-            .await
+            .await?;
+        settings.set_name("while a member").await
     })
     .await?;
     let pubkey = key.public_key();
     let cut = reader.capture(db.root_id(), ReadScope::Verified).await?;
     assert!(reader.read_doc(&cut, "_index").await?.value.is_empty());
+    // No grant at the requested cut, but current Read is enough.
+    let computed = reader.read_doc(&before_joining, "_settings").await?;
+    assert_eq!(computed.context, before_joining);
+    assert_ne!(
+        computed.value.get("name").and_then(|v| v.as_text()),
+        Some("while a member")
+    );
 
     let refuse = |_: &ID, op: StateOperation<'_>| {
         !matches!(
@@ -202,12 +212,38 @@ async fn snapshot_first_rechecks_permission_and_preserves_error_kinds() -> eidet
         .set("key", "must not commit")
         .await?;
     assert!(tx.commit().await.unwrap_err().is_permission_denied());
-    db.with_transaction(|tx| async move { tx.get_settings()?.revoke_auth_key(&pubkey).await })
-        .await?;
-    assert!(matches!(
-        reader.read_doc(&cut, "_index").await,
-        Err(Error::State(StateError::Denied))
-    ));
+    db.with_transaction(|tx| async move {
+        let settings = tx.get_settings()?;
+        settings.revoke_auth_key(&pubkey).await?;
+        settings.set_name("after leaving").await
+    })
+    .await?;
+    // Historical Read is sufficient for this exact cut, not discovery of
+    // the latest boundary or a read at a cut without a grant.
+    let computed = reader.read_doc(&cut, "_settings").await?;
+    assert_eq!(computed.context, cut);
+    assert_eq!(
+        computed.value.get("name").and_then(|v| v.as_text()),
+        Some("while a member")
+    );
+    for scope in [ReadScope::Verified, ReadScope::AllowUnverified] {
+        assert!(matches!(
+            reader.capture(db.root_id(), scope).await,
+            Err(Error::State(StateError::Denied))
+        ));
+    }
+    let latest = admin.capture(db.root_id(), ReadScope::Verified).await?;
+    let diagnostic = ReadContext::at(
+        db.root_id().clone(),
+        cut.snapshot().clone(),
+        ReadScope::AllowUnverified,
+    );
+    for denied in [before_joining, latest, diagnostic] {
+        assert!(matches!(
+            reader.read_doc(&denied, "_settings").await,
+            Err(Error::State(StateError::Denied))
+        ));
+    }
     Ok(())
 }
 
