@@ -223,7 +223,7 @@ Operations deliberately **not** exposed over the wire — `update_verification_s
 
 `update_verification_status` is off-wire **by design, not just for tidiness**: verification is a local trust decision. If a client could set it over the socket, a client (or anything that reached the socket) could assert "this entry is `Verified`" without the server having validated it — exactly the caller-asserted-status hole the storage API was hardened to close. So the daemon's Instance owns verification: it stores everything `Unverified` and runs `Database::verify()` itself. The frontier/`allow_unverified` distinction is applied by the daemon-side `Database`, and each handle explicitly selects its read scope without changing the daemon's verification decisions.
 
-`DatabaseOp::required_permission()` reports roles: Write for `SubmitSignedEntry` (advisory; the server verifies the signed Entry instead), Admin for `SetInstanceMetadata` (gated against `_databases` instead of `root_id`), and Read for every other variant. The tree gate checks capability classes, not permission priority. The match is exhaustive, so a new operation cannot inherit Read by falling through.
+`DatabaseOp::required_permission()` reports roles: Write for `SubmitSignedEntry` (advisory; the server verifies the signed Entry instead), Admin for `SetInstanceMetadata` (gated against `_databases` instead of `root_id`), and Read for every other variant (advisory for `UnsubscribeWrites`, which checks subscription ownership instead). The tree gate checks capability classes, not permission priority. The match is exhaustive, so a new operation cannot inherit Read by falling through.
 
 Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The unchanged 64 MiB frame cap is enforced per request and response, so multi-record state is paged or chunked and a single record that cannot fit is refused with `RecordTooLarge`.
 
@@ -393,6 +393,7 @@ Sync uses a separate internal write hook and its own Verified-only checkpoints, 
 
 Dropping a callback cancels its local pending and in-flight work immediately.
 The client sweep sends cancellation for that ID after the grace period; IDs are not reused by a replacement registration, so a delayed unsubscribe cannot cancel its successor.
+Cancellation matches the original tree and proven identity within the authenticated connection, even if that identity no longer has Read permission.
 Client teardown (explicit retirement or last user-facing transport handle drop)
 shuts down the socket and aborts the reader without waiting for retained write
 owners. Retirement cancels attached watches, and disconnect drops all daemon-side

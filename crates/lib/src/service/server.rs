@@ -927,11 +927,9 @@ async fn dispatch_inner(
         //
         // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
         // the per-tree permission gate. Native login operations above are separate.
-        // Every `DatabaseOp` carries its target
-        // `root_id` explicitly, so the gate is *unconditional* — there is no
-        // tree-less op to fall through it — with two exceptions handled below
-        // (`SubmitSignedEntry`, verification-gated; `SetInstanceMetadata`,
-        // gated against the server-known `_databases`, not the request root).
+        // Every `DatabaseOp` carries its target `root_id` explicitly. The
+        // exceptions to gating against that tree are signed submits, instance
+        // metadata updates and connection-owned watch cancellation.
         ServiceRequest::AuthenticatedDb(inner) => {
             let (login_pubkey, keyset_snapshot, session_user_uuid) = match state {
                 ConnectionState::Authenticated {
@@ -1009,10 +1007,10 @@ async fn dispatch_inner(
                 resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?
             };
 
-            // Per-tree permission gate. Unconditional for every op *except*
-            // submit (verification in the handler is its boundary) and
-            // set-metadata (gated against `_databases` below). Private cache
-            // staging requires real Read access, not create-flow passthrough.
+            // Cancellation only drops a handle bound to this connection,
+            // root and proven identity. It neither reads the tree nor requires
+            // the original Read grant to still be active. Private cache staging
+            // requires real Read access, not create-flow passthrough.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -1023,7 +1021,7 @@ async fn dispatch_inner(
                     true,
                 )
                 .await?;
-            } else if !is_submit {
+            } else if !is_submit && !matches!(op, DatabaseOp::UnsubscribeWrites { .. }) {
                 let require_existing = matches!(
                     &op,
                     DatabaseOp::BeginStoreStateStaging { .. }
@@ -1101,10 +1099,9 @@ fn resolve_acting_pubkey(
 
 /// Dispatch a Database-level op against the server's local `Database`.
 ///
-/// Additive sibling of `dispatch_backend_op`. The caller has already verified
-/// the session identity and run the unconditional per-tree permission gate on
-/// `root_id`. Because the server runs the `Database` layer here, verify-on-read
-/// and the Verified frontier are server-side **by construction**.
+/// The caller has already applied the session and operation-specific gates.
+/// Because the server runs the `Database` layer here, verify-on-read and the
+/// Verified frontier are server-side **by construction**.
 async fn dispatch_database_op(
     instance: &Instance,
     ctx: &ConnectionContext,
