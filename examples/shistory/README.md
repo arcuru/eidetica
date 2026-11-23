@@ -262,10 +262,12 @@ or Store:
 The `preexec` hook starts a record before a command runs. The following
 `precmd` hook fills in its duration and exit status. If either hook call cannot
 reach the daemon, it stays quiet, preserves the command's exit status, and never
-prints the command text. Each start or finish request has a fixed one-second
+prints the command text. Each start or finish request has a one-second default
 deadline covering the socket connection, login, and database request.
-Cancellation can race a daemon commit, so a timed-out operation may still have
-committed.
+For a deliberate non-interactive capture, pass `--extended-capture-deadline`
+after `start` or `finish` to allow 10 seconds for that request only. The shell
+hooks do not use this flag. Cancellation can race a daemon commit, so a timed-out
+operation may still have committed.
 
 Command text is sent through standard input, not a process argument. Commands
 beginning with a space are skipped. To stop capture, remove the `source` line

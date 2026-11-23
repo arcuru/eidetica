@@ -16,6 +16,7 @@ use shistory::{
 use uuid::Uuid;
 
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(1);
+const EXTENDED_CAPTURE_DEADLINE: Duration = Duration::from_secs(10);
 const STATUS_VALUE_LIMIT: usize = 200;
 const STATUS_ERROR_LIMIT: usize = 240;
 
@@ -75,6 +76,9 @@ enum Command {
         cwd: String,
         #[arg(long)]
         started_at: String,
+        /// Allow 10 seconds for this capture request instead of one second.
+        #[arg(long)]
+        extended_capture_deadline: bool,
     },
     /// Complete the history record with duration and exit status.
     Finish {
@@ -83,6 +87,9 @@ enum Command {
         duration_ms: i64,
         #[arg(long, allow_hyphen_values = true)]
         exit_status: i32,
+        /// Allow 10 seconds for this capture request instead of one second.
+        #[arg(long)]
+        extended_capture_deadline: bool,
     },
     /// List recent history.
     List {
@@ -137,13 +144,21 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     #[cfg(feature = "testing")]
-    let capture_deadline = Duration::from_millis(cli.test_capture_deadline_ms);
+    let default_capture_deadline = Duration::from_millis(cli.test_capture_deadline_ms);
     #[cfg(not(feature = "testing"))]
-    let capture_deadline = CAPTURE_DEADLINE;
+    let default_capture_deadline = CAPTURE_DEADLINE;
     #[cfg(feature = "testing")]
     let status_deadline = Duration::from_millis(cli.test_status_deadline_ms);
     #[cfg(not(feature = "testing"))]
     let status_deadline = CAPTURE_DEADLINE;
+
+    let capture_deadline = |extended| {
+        if extended {
+            EXTENDED_CAPTURE_DEADLINE
+        } else {
+            default_capture_deadline
+        }
+    };
 
     match cli.command {
         Command::Setup {
@@ -175,13 +190,14 @@ async fn run(cli: Cli) -> Result<()> {
             session,
             cwd,
             started_at,
+            extended_capture_deadline,
         } => {
             let host_id = required_host_id(cli.host_id)?;
             let command = read_command()?;
             if command.starts_with(' ') {
                 return Ok(());
             }
-            let id = capture_with_deadline(capture_deadline, async {
+            let id = capture_with_deadline(capture_deadline(extended_capture_deadline), async {
                 let (_instance, user) = connect(&cli.user).await?;
                 start(
                     &open_capture_database(&user, host_id).await?,
@@ -202,9 +218,10 @@ async fn run(cli: Cli) -> Result<()> {
             id,
             duration_ms,
             exit_status,
+            extended_capture_deadline,
         } => {
             let host_id = required_host_id(cli.host_id)?;
-            capture_with_deadline(capture_deadline, async {
+            capture_with_deadline(capture_deadline(extended_capture_deadline), async {
                 let (_instance, user) = connect(&cli.user).await?;
                 finish(
                     &open_capture_database(&user, host_id).await?,

@@ -1946,10 +1946,10 @@ async fn cli_queries_pin_host_and_history_reads_once() -> Result<()> {
 async fn cli_capture_deadlines_are_enforced() {
     use tokio::net::UnixListener;
 
-    let cases = [(None, "1")];
+    let cases = [(false, None, "1"), (true, None, "10")];
     #[cfg(feature = "testing")]
-    let cases = [cases.as_slice(), &[(Some("25"), "0.025")]].concat();
-    for (deadline_ms, seconds) in cases {
+    let cases = [cases.as_slice(), &[(false, Some("25"), "0.025")]].concat();
+    for (extended, deadline_ms, seconds) in cases {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("stalled.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -1959,12 +1959,16 @@ async fn cli_capture_deadlines_are_enforced() {
             let stall = if deadline_ms.is_some() {
                 Duration::from_millis(250)
             } else {
-                Duration::from_secs(10)
+                Duration::from_secs(15)
             };
             tokio::time::sleep(stall).await;
         });
         let host = Uuid::new_v4().to_string();
-        let mut args = capture_args("alice", &host, START);
+        let finish = finish_args("unused");
+        let mut args = capture_args("alice", &host, if extended { &finish } else { START });
+        if extended {
+            args.push("--extended-capture-deadline");
+        }
         if let Some(ms) = deadline_ms {
             args.splice(0..0, ["--test-capture-deadline-ms", ms]);
         }
