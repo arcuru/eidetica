@@ -33,7 +33,7 @@ struct MainHistory {
 
 impl MainHistory {
     async fn load(tx: &Transaction, tips: &[ID]) -> Result<Self> {
-        let mut entries = HashMap::new();
+        let mut entries: HashMap<ID, Entry> = HashMap::new();
         let backend = tx.db.ops();
         let local = backend.local_engine();
         if local.is_none() && !tips.is_empty() {
