@@ -156,8 +156,35 @@ impl Registry {
     /// # Returns
     /// The entry metadata if found, or an error if not registered
     pub async fn get_entry(&self, name: impl AsRef<str>) -> Result<RegistryEntry> {
-        let name = name.as_ref();
-        let value = self.inner.get(name).await?;
+        self.entry(name.as_ref(), false).await
+    }
+
+    pub(crate) async fn check_registration_alias(&self, name: &str, literal: bool) -> Result<()> {
+        if name.contains('.') {
+            match self.entry(name, !literal).await {
+                Ok(_) => {
+                    return Err(StoreError::InvalidOperation {
+                        store: name.into(),
+                        operation: "register".into(),
+                        reason: "the other registration form already occupies this Store name"
+                            .into(),
+                    }
+                    .into());
+                }
+                Err(crate::Error::Store(e)) if matches!(e.as_ref(), StoreError::KeyNotFound { store, .. } if store == self.inner.name()) =>
+                    {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn entry(&self, name: &str, literal: bool) -> Result<RegistryEntry> {
+        let value = if literal {
+            self.inner.get_literal(name).await?
+        } else {
+            self.inner.get(name).await?
+        };
 
         // The value should be a Doc (nested map) with "type" and "config" keys
         let doc = value
@@ -273,6 +300,61 @@ impl Registry {
         self.inner.set(name, doc::Value::Doc(metadata_doc)).await?;
 
         Ok(())
+    }
+
+    pub(crate) async fn set_literal_entry(
+        &self,
+        name: &str,
+        type_id: &str,
+        config: Option<Doc>,
+        contract: Option<&super::schema::ContractDescriptor>,
+    ) -> Result<()> {
+        let mut row = Doc::new();
+        row.set("type", doc::Value::Text(type_id.to_string()));
+        if let Some(config) = config {
+            row.set("config", doc::Value::Doc(config));
+        }
+        if let Some(contract) = contract {
+            row.set(
+                super::attribution::DECLARATION,
+                super::attribution::declaration_value(contract)?,
+            );
+        }
+        self.inner
+            .transaction()
+            .stage_registry_patch(self.inner.name(), name, row)
+            .await
+    }
+
+    pub(crate) async fn set_literal_config(&self, name: &str, config: Doc) -> Result<()> {
+        self.entry(name, true).await?;
+        let mut row = Doc::new();
+        row.set("config", doc::Value::Doc(config));
+        self.inner
+            .transaction()
+            .stage_registry_patch(self.inner.name(), name, row)
+            .await
+    }
+
+    pub(crate) async fn set_literal_settings(
+        &self,
+        name: &str,
+        settings: SubtreeSettings,
+    ) -> Result<()> {
+        self.entry(name, true).await?;
+        let mut row = Doc::new();
+        let mut settings_doc = Doc::atomic();
+        if let Some(strategy) = settings.height_strategy {
+            settings_doc.set(
+                "height_strategy",
+                doc::Value::Text(serde_json::to_string(&strategy)?),
+            );
+        }
+        row.set("settings", doc::Value::Doc(settings_doc));
+        self.inner
+            .transaction()
+            .stage_registry_patch(self.inner.name(), name, row)
+            .await
     }
 
     /// List all registered entries

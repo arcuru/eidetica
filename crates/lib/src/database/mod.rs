@@ -1167,9 +1167,9 @@ impl Database {
     ///
     /// Creates an ephemeral transaction, deserializes every entry's
     /// store data as [`Doc`], and merges them via Doc's LWW merge —
-    /// the same merge `Store<T>` would perform client-side. All current
-    /// store types (DocStore, Table, Settings) serialize their data as
-    /// JSON, so `Doc`-typed deserialization works universally.
+    /// the same merge Doc-backed Stores (DocStore, Table, Settings) perform
+    /// client-side. Other Stores, including `StructuredStore`, require a
+    /// client-side reader for their own format.
     ///
     /// # Encrypted stores
     ///
