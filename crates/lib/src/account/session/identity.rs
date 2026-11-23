@@ -20,7 +20,7 @@ impl AccountSession {
     /// Serialize first-time initialization: reference writes are ordinary CRDT writes.
     /// A later reference/tracking failure does not delete an already-created root.
     pub async fn create_identity(&mut self, name: &str, key_id: &PublicKey) -> Result<Identity> {
-        Self::validate_reference_name(IDENTITY_REFERENCES, name)?;
+        Account::validate_reference_name(IDENTITY_REFERENCES, name)?;
         if self.identity_id(name).await?.is_some() || self.tracked_identity(name).await?.is_some() {
             return Err(AccountError::IdentityAlreadyExists {
                 name: name.to_owned(),
@@ -83,7 +83,7 @@ impl AccountSession {
         requested_permission: Permission,
         sync_settings: SyncSettings,
     ) -> Result<IdentityRegistration> {
-        Self::validate_reference_name(IDENTITY_REFERENCES, name)?;
+        Account::validate_reference_name(IDENTITY_REFERENCES, name)?;
         let previous = self.tracked_identity(name).await?;
         let active = previous
             .as_ref()

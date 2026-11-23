@@ -10,7 +10,7 @@ use eidetica::{
 };
 
 /// Common CSS styles for all pages
-const COMMON_STYLES: &str = r#"
+pub(crate) const COMMON_STYLES: &str = r#"
     body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         max-width: 1000px;
@@ -348,6 +348,8 @@ pub fn dashboard_page(
             parties under its Auth policy. An Account and an Identity need not
             correspond one-to-one.
         </p>
+
+        <p><a href="/dashboard/accounts">Browse linked Accounts</a></p>
 
         <h2>Public Keys</h2>
         {}
@@ -725,7 +727,7 @@ impl DatabaseInfo {
 }
 
 /// Escape HTML special characters
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

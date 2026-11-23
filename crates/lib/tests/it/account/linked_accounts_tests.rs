@@ -280,6 +280,13 @@ async fn exercise_owned_app(
         .await?;
     app.set_reference("notes", "delegated", delegated.root_id())
         .await?;
+    let viewed = owner.open_account(&app_id).await?;
+    assert_eq!(viewed.reference_namespaces().await?, ["notes"]);
+    assert_eq!(
+        viewed.reference("notes", "direct").await?,
+        Some(direct.root_id().clone())
+    );
+    assert_eq!(viewed.references("notes").await?.len(), 2);
     assert!(
         app.open_reference("notes", "direct").await.is_err(),
         "reference installed a mapping"

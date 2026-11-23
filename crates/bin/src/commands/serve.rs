@@ -1,5 +1,9 @@
 //! Serve command - runs the Eidetica web server with sync.
 
+#[cfg(test)]
+mod account_tests;
+mod accounts;
+
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
@@ -152,6 +156,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!("  POST /login        - Login submission");
     println!("  GET  /register     - Registration notice (self-service disabled)");
     println!("  GET  /dashboard    - Account dashboard (requires login)");
+    println!("  GET  /dashboard/accounts - Browse linked Accounts (requires login)");
     println!("  POST /dashboard/track - Request database access (requires login)");
     println!("  GET  /dashboard/requests - Pending access requests (requires database Admin)");
     println!("  POST /dashboard/requests/decide - Approve or reject an exact request");
@@ -245,6 +250,7 @@ fn dashboard_router(state: AppState, include_http_sync: bool) -> Router {
         )
         .route("/logout", post(handle_logout))
         .route("/dashboard", get(handle_dashboard))
+        .route("/dashboard/accounts", get(accounts::browse))
         .route("/dashboard/database", get(handle_database_detail))
         .route("/dashboard/track", post(handle_track_database))
         .route("/dashboard/requests", get(handle_access_requests))
