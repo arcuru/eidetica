@@ -237,7 +237,8 @@ pub enum DatabaseOp {
     },
 
     /// Release exactly this connection's registration. The request must use
-    /// the original tree and identity; an absent ID is a no-op. Gate Read.
+    /// the original tree and proven identity; an absent ID is a no-op.
+    /// Current Read permission is not required.
     UnsubscribeWrites { subscription_id: u64 },
 
     /// Return a point-in-time locator for the request's `root_id`.
@@ -246,17 +247,18 @@ pub enum DatabaseOp {
 }
 
 impl DatabaseOp {
-    /// Minimum permission the caller needs against the target database.
+    /// Minimum role for the standard tree permission gate.
     ///
     /// Private Derived staging needs Read, not authority to mutate the
-    /// database. Submit relies on verification of the signed Entry rather
-    /// than the session's role, so its Write value here is advisory.
+    /// database. Operations with special dispatcher gates return advisory roles.
     pub fn required_permission(&self) -> Permission {
         match self {
             DatabaseOp::SubmitSignedEntry { .. } => Permission::Write(0),
             // Gated against `_databases`, not the request's `root_id`; the
             // dispatcher special-cases this so the value here is advisory.
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
+            // Cancellation is authorized by ownership, not current tree Read.
+            DatabaseOp::UnsubscribeWrites { .. } => Permission::Read,
             DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetSnapshot { .. }
             | DatabaseOp::GetStoreState { .. }
@@ -273,7 +275,6 @@ impl DatabaseOp {
             | DatabaseOp::StoreStateRecordGet { .. }
             | DatabaseOp::StoreStateRecordScan { .. }
             | DatabaseOp::SubscribeWrites { .. }
-            | DatabaseOp::UnsubscribeWrites { .. }
             | DatabaseOp::CreateTicket => Permission::Read,
         }
     }
