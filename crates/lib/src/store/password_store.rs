@@ -36,15 +36,21 @@ use aes_gcm::{
 use argon2::{Argon2, Params, password_hash::SaltString};
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_bytes::{ByteBuf, Bytes};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use base64ct::{Base64, Encoding};
 
 use crate::{
     Result, Transaction,
-    crdt::{CRDTError, Doc, doc::Value},
+    crdt::{CRDTError, Doc, dag_cbor, doc::Value},
     store::{ProjectionDescriptor, Registered, Store, StoreError, StoreStateModel},
     transaction::Encryptor,
+};
+
+use super::{
+    attribution::{PASSWORD_TYPE, validate_structured_store},
+    schema::{self, ContractDescriptor},
 };
 
 /// Encrypted data fragment containing ciphertext and nonce.
@@ -71,7 +77,7 @@ pub const DEFAULT_ARGON2_T_COST: u32 = 2;
 pub const DEFAULT_ARGON2_P_COST: u32 = 1;
 
 /// Encryption metadata stored in _index config (plaintext)
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct EncryptionInfo {
     /// Encryption algorithm (always "aes-256-gcm" for v1)
     pub algorithm: String,
@@ -93,7 +99,7 @@ pub struct EncryptionInfo {
 }
 
 /// Configuration stored in _index for PasswordStore.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PasswordStoreConfig {
     /// Encryption parameters (stored in plaintext in _index).
     pub encryption: EncryptionInfo,
@@ -254,6 +260,35 @@ struct WrappedStoreInfo {
     _config: Doc,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredWrapped<C, B> {
+    metadata: B,
+    config: C,
+}
+
+fn encode_structured_wrapped(id: &ContractDescriptor, config: &Doc) -> Result<SecretBytes> {
+    let metadata = Zeroizing::new(schema::protect(Some(id))?);
+    dag_cbor::encode(&StructuredWrapped {
+        metadata: Bytes::new(&*metadata),
+        config,
+    })
+    .map(SecretBytes::from_vec)
+    .map_err(|_| schema::invalid("invalid encrypted structured configuration"))
+}
+
+fn decode_structured_wrapped(bytes: &[u8]) -> Result<(ContractDescriptor, Doc)> {
+    let decoded = || {
+        let StructuredWrapped { metadata, config } =
+            dag_cbor::decode::<StructuredWrapped<Doc, ByteBuf>>(bytes)?;
+        let id = schema::unprotect(&metadata)?
+            .ok_or_else(|| schema::invalid("missing wrapped declaration"))?;
+        Ok((id, config))
+    };
+    decoded()
+        .map_err(|_: crate::Error| schema::invalid("invalid encrypted structured configuration"))
+}
+
 /// Fixed `TypeMismatch::actual` text: the decrypted wrapped type is not echoed.
 const REDACTED_WRAPPED_TYPE: &str = "a different encrypted wrapped Store type";
 
@@ -389,6 +424,7 @@ impl DerivedKey {
 /// Caches the derived key to avoid expensive re-derivation on every operation.
 struct PasswordEncryptor {
     password: Password,
+    verified_store_type: Option<&'static str>,
     subtree_name: String,
     store_identity: Vec<u8>,
     /// Cached derived key (zeroized on drop, thread-safe)
@@ -418,10 +454,53 @@ impl PasswordEncryptor {
         store_identity.extend_from_slice(subtree_name.as_bytes());
         Self {
             password,
+            verified_store_type: None,
             subtree_name,
             store_identity,
             derived_key: Arc::new(Mutex::new(DerivedKey::new())),
         }
+    }
+
+    fn for_store(mut self, type_id: &'static str) -> Self {
+        self.verified_store_type = Some(type_id);
+        self
+    }
+
+    fn unwrap_structured(&self, config: &PasswordStoreConfig) -> Result<(ContractDescriptor, Doc)> {
+        let params = &config.encryption;
+        if params.version != "v0"
+            || params.algorithm != "aes-256-gcm"
+            || params.kdf != "argon2id"
+            || params.salt != self.password.salt
+            || params.argon2_m_cost.unwrap_or(DEFAULT_ARGON2_M_COST) != self.password.argon2_m_cost
+            || params.argon2_t_cost.unwrap_or(DEFAULT_ARGON2_T_COST) != self.password.argon2_t_cost
+            || params.argon2_p_cost.unwrap_or(DEFAULT_ARGON2_P_COST) != self.password.argon2_p_cost
+            || config.wrapped_config.nonce.len() != AES_GCM_NONCE_SIZE
+        {
+            return Err(schema::invalid(
+                "historical encrypted key context unavailable",
+            ));
+        }
+        // Reuse the unlocked key only for identical effective parameters; do
+        // not derive keys using arbitrary old entries' parameters or rotate.
+        self.with_key(|key| {
+            let cipher = Aes256Gcm::new_from_slice(key)
+                .map_err(|_| schema::invalid("invalid wrapped configuration key"))?;
+            let plaintext = cipher
+                .decrypt(
+                    Nonce::from_slice(&config.wrapped_config.nonce),
+                    config.wrapped_config.ciphertext.as_slice(),
+                )
+                .map(SecretBytes::from_vec)
+                .map_err(|_| {
+                    schema::invalid("failed to decrypt historical wrapped configuration")
+                })?;
+            let (id, doc) = decode_structured_wrapped(plaintext.as_bytes())?;
+            if !self.supports_store_type(&id.store) {
+                return Err(schema::invalid("unsupported historical wrapped Store type"));
+            }
+            Ok((id, doc))
+        })
     }
 
     /// Execute a function with access to the encryption key (with caching)
@@ -540,6 +619,14 @@ impl PasswordEncryptor {
 }
 
 impl Encryptor for PasswordEncryptor {
+    fn supports_store_type(&self, type_id: &str) -> bool {
+        self.verified_store_type == Some(type_id)
+    }
+
+    fn historical_descriptor(&self, config: &PasswordStoreConfig) -> Result<ContractDescriptor> {
+        self.unwrap_structured(config).map(|(id, _)| id)
+    }
+
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         // Wire format: nonce (12 bytes) || ciphertext
         if ciphertext.len() < AES_GCM_NONCE_SIZE {
@@ -799,13 +886,17 @@ impl<S: Store> PasswordStore<S> {
 impl<S: Store> Registered for PasswordStore<S> {
     fn type_id() -> &'static str {
         // Explicitly use v0 to indicate instability
-        "encrypted:password:v0"
+        PASSWORD_TYPE
     }
 }
 
 #[async_trait]
 impl<S: Store> Store for PasswordStore<S> {
     type Data = S::Data;
+
+    fn uses_literal_registration() -> bool {
+        S::structured_contract().is_some()
+    }
 
     fn state_model() -> StoreStateModel<Self::Data> {
         let inner = S::state_model();
@@ -819,7 +910,15 @@ impl<S: Store> Store for PasswordStore<S> {
     async fn load(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Try to load config from _index to determine state
         let index_store = txn.get_index().await?;
-        let info = index_store.get_entry(&subtree_name).await?;
+        let info = index_store
+            .entry(&subtree_name, Self::uses_literal_registration())
+            .await?;
+        if let Some(id) = S::structured_contract() {
+            let id = id.into();
+            validate_structured_store(&subtree_name, &id)?;
+            schema::protect(Some(&id))?;
+            txn.mark_literal_registration(&subtree_name);
+        }
 
         // Type validation
         if !Self::supports_type_id(&info.type_id) {
@@ -884,9 +983,26 @@ impl<S: Store> Store for PasswordStore<S> {
     async fn register(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Register in _index with empty config (marks as uninitialized)
         let index_store = txn.get_index().await?;
-        index_store
-            .set_entry(&subtree_name, Self::type_id(), Self::default_config())
-            .await?;
+        if let Some(id) = S::structured_contract() {
+            let id = id.into();
+            validate_structured_store(&subtree_name, &id)?;
+            schema::protect(Some(&id))?;
+            index_store
+                .check_registration_alias(&subtree_name, true)
+                .await?;
+            index_store
+                .set_literal_entry(
+                    &subtree_name,
+                    Self::type_id(),
+                    Some(Self::default_config()),
+                    None,
+                )
+                .await?;
+        } else {
+            index_store
+                .set_entry(&subtree_name, Self::type_id(), Self::default_config())
+                .await?;
+        }
 
         Ok(Self {
             name: subtree_name,
@@ -1016,12 +1132,16 @@ impl<S: Store> PasswordStore<S> {
         // the persistence await below.
         let config_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let wrapped_config_ciphertext = {
-            let wrapped_json = SecretBytes::json(&WrappedStoreInfoRef {
-                type_id: S::type_id(),
-                config: &wrapped_config,
-            })?;
+            let wrapped = if let Some(id) = S::structured_contract() {
+                encode_structured_wrapped(&id.into(), &wrapped_config)?
+            } else {
+                SecretBytes::json(&WrappedStoreInfoRef {
+                    type_id: S::type_id(),
+                    config: &wrapped_config,
+                })?
+            };
             cipher
-                .encrypt(&config_nonce, wrapped_json.as_bytes())
+                .encrypt(&config_nonce, wrapped.as_bytes())
                 .map_err(|e| StoreError::ImplementationError {
                     store: self.name.clone(),
                     reason: format!("Failed to encrypt wrapped config: {e}"),
@@ -1055,11 +1175,14 @@ impl<S: Store> PasswordStore<S> {
         self.set_config(config.clone().into()).await?;
 
         // Register encryptor with transaction (store is now unlocked)
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password.clone(),
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
+        let encryptor = Box::new(
+            PasswordEncryptor::new(
+                password.clone(),
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )
+            .for_store(S::type_id()),
+        );
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         // Update internal state
@@ -1203,21 +1326,30 @@ impl<S: Store> PasswordStore<S> {
 
         // Parse wrapped store info, then wipe the decrypted JSON. The parser error is not
         // carried: its message can quote decrypted content.
-        let wrapped_info: WrappedStoreInfo = serde_json::from_slice(decrypted_config.as_bytes())
-            .map_err(|_| StoreError::DeserializationFailed {
-                store: self.name.clone(),
-                reason: "Failed to parse wrapped store info".to_string(),
-            })?;
+        let supported = if S::structured_contract().is_some() {
+            let (id, _) = decode_structured_wrapped(decrypted_config.as_bytes())?;
+            S::supports_type_id(&id.store)
+        } else {
+            let wrapped_info: WrappedStoreInfo =
+                serde_json::from_slice(decrypted_config.as_bytes()).map_err(|_| {
+                    StoreError::DeserializationFailed {
+                        store: self.name.clone(),
+                        reason: "Failed to parse wrapped store info".to_string(),
+                    }
+                })?;
+            S::supports_type_id(&wrapped_info.type_id)
+        };
         drop(decrypted_config);
-
-        // Verify the stored wrapped type matches the static type parameter S. The parsed
-        // metadata is not retained, and the decrypted type is not echoed in the error.
-        let supported = S::supports_type_id(&wrapped_info.type_id);
-        drop(wrapped_info);
+        // The decrypted type is never echoed in errors.
         if !supported {
             return Err(StoreError::TypeMismatch {
                 store: self.name.clone(),
-                expected: S::type_id().to_string(),
+                expected: if S::structured_contract().is_some() {
+                    "the requested structured Store type"
+                } else {
+                    S::type_id()
+                }
+                .into(),
                 actual: REDACTED_WRAPPED_TYPE.to_string(),
             }
             .into());
@@ -1227,14 +1359,65 @@ impl<S: Store> PasswordStore<S> {
         self.cached_password = Some(password.clone());
 
         // Register encryptor with the transaction for transparent encryption
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password,
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
+        let encryptor = Box::new(
+            PasswordEncryptor::new(
+                password,
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )
+            .for_store(S::type_id()),
+        );
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         Ok(())
+    }
+
+    /// Advance the default of an unlocked structured Store. This stages only a
+    /// freshly wrapped declaration, preserving the wrapped config and key
+    /// parameters; it neither rewrites history nor creates a Store value.
+    pub async fn declare_structured_default(&self, descriptor: &ContractDescriptor) -> Result<()> {
+        let id =
+            S::structured_contract().ok_or_else(|| schema::invalid("not a structured Store"))?;
+        if descriptor.store != id.store {
+            return Err(schema::invalid(
+                "default must use the same wrapped Store grammar",
+            ));
+        }
+        schema::protect(Some(descriptor))?;
+        let password = self
+            .cached_password
+            .as_ref()
+            .ok_or_else(|| schema::invalid("structured Store is locked"))?;
+        let result = async {
+            let mut config = PasswordStoreConfig::try_from(self.get_config().await?)?;
+            let encryptor = PasswordEncryptor::new(
+                password.clone(),
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )
+            .for_store(id.store);
+            let (_, wrapped_config) = encryptor.unwrap_structured(&config)?;
+            let bytes = encode_structured_wrapped(descriptor, &wrapped_config)?;
+            let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+            let ciphertext = encryptor.with_key(|key| {
+                let cipher = Aes256Gcm::new_from_slice(key)
+                    .map_err(|_| schema::invalid("invalid wrapped configuration key"))?;
+                cipher
+                    .encrypt(&nonce, bytes.as_bytes())
+                    .map_err(|_| schema::invalid("failed to encrypt wrapped declaration"))
+            })?;
+            drop(bytes);
+            config.wrapped_config = EncryptedFragment {
+                ciphertext,
+                nonce: nonce.to_vec(),
+            };
+            self.set_config(config.into()).await
+        }
+        .await;
+        result.map_err(|e| {
+            self.transaction
+                .structured_error(&self.name, "declare default", e)
+        })
     }
 
     /// Check if the store is currently unlocked (password cached)

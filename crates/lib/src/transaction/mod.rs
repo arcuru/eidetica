@@ -19,8 +19,11 @@
 //! may omit observed tips or start an independent Store branch. `_settings`
 //! writes and signed pins retain exact causal-frontier validation.
 
+mod attribution;
 pub mod errors;
 
+#[cfg(test)]
+mod structured_tests;
 #[cfg(test)]
 mod tests;
 
@@ -106,6 +109,19 @@ pub(crate) trait Encryptor: Send + Sync {
     /// JSON for `DocStore`/`Table`, binary Yrs updates for `YDoc`).
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>>;
 
+    fn supports_store_type(&self, _type_id: &str) -> bool {
+        false
+    }
+
+    fn historical_descriptor(
+        &self,
+        _config: &crate::store::PasswordStoreConfig,
+    ) -> Result<crate::store::schema::ContractDescriptor> {
+        Err(crate::store::schema::invalid(
+            "historical wrapped configuration unavailable",
+        ))
+    }
+
     /// Encrypt plaintext bytes to ciphertext bytes
     ///
     /// # Arguments
@@ -182,7 +198,7 @@ pub struct Transaction {
     /// Maps subtree name -> encryptor implementation
     /// When an encryptor is registered, the transaction automatically encrypts writes
     /// and decrypts reads for that subtree
-    encryptors: Arc<Mutex<HashMap<String, Box<dyn Encryptor>>>>,
+    encryptors: Arc<Mutex<HashMap<String, Arc<dyn Encryptor>>>>,
     /// When true, `get_store` rejects any `_`-prefixed subtree name. Used by
     /// `Database::create_with_init` to keep its init callback from opening the
     /// system subtrees (`_settings`, `_root`, `_index`) that `create_with_init`
@@ -195,6 +211,8 @@ pub struct Transaction {
     record_views: Arc<Mutex<HashMap<String, RecordView>>>,
     /// Captured Store boundaries which declined optional retention.
     record_bypass: Arc<Mutex<HashSet<String>>>,
+    structured_contracts: Arc<Mutex<HashMap<String, crate::store::schema::ContractDescriptor>>>,
+    literal_registrations: Arc<Mutex<HashSet<String>>>,
     #[cfg(test)]
     snapshot_pause: Arc<Mutex<Option<SnapshotPause>>>,
 }
@@ -267,6 +285,8 @@ impl Transaction {
             logical_record_mutations: Arc::new(Mutex::new(HashMap::new())),
             record_views: Arc::new(Mutex::new(HashMap::new())),
             record_bypass: Arc::new(Mutex::new(HashSet::new())),
+            structured_contracts: Arc::new(Mutex::new(HashMap::new())),
+            literal_registrations: Arc::new(Mutex::new(HashSet::new())),
             #[cfg(test)]
             snapshot_pause: Arc::new(Mutex::new(None)),
         })
@@ -359,10 +379,14 @@ impl Transaction {
         subtree: impl Into<String>,
         encryptor: Box<dyn Encryptor>,
     ) -> Result<()> {
+        let builder = self.entry_builder.lock().unwrap();
+        if builder.is_none() {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         self.encryptors
             .lock()
             .unwrap()
-            .insert(subtree.into(), encryptor);
+            .insert(subtree.into(), Arc::from(encryptor));
         Ok(())
     }
 
@@ -566,6 +590,10 @@ impl Transaction {
         key: Vec<u8>,
         value: Option<Vec<u8>>,
     ) -> Result<()> {
+        let builder = self.entry_builder.lock().unwrap();
+        if builder.is_none() {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         let Some(key) = projection.normalize_record_key(&key)? else {
             return Ok(());
         };
@@ -863,7 +891,7 @@ impl Transaction {
         Ok(crate::backend::RecordPage { records, next })
     }
 
-    fn encrypted_projection_descriptor(
+    pub(crate) fn encrypted_projection_descriptor(
         &self,
         store: &str,
         descriptor: ProjectionDescriptor,
@@ -1030,7 +1058,10 @@ impl Transaction {
 
         // Check _index to determine if this is a new or existing subtree
         let index_store = self.get_index().await?;
-        match index_store.get_entry(&subtree_name).await {
+        match index_store
+            .entry(&subtree_name, T::uses_literal_registration())
+            .await
+        {
             Ok(subtree_info) => {
                 if !T::supports_type_id(&subtree_info.type_id) {
                     return Err(StoreError::TypeMismatch {
@@ -1049,6 +1080,9 @@ impl Transaction {
                 if matches!(error.as_ref(), StoreError::KeyNotFound { store, key }
                     if store == INDEX && key == &subtree_name) =>
             {
+                index_store
+                    .check_registration_alias(&subtree_name, T::uses_literal_registration())
+                    .await?;
                 T::register(self, subtree_name).await
             }
             Err(error) => Err(error),
@@ -1317,6 +1351,7 @@ impl Transaction {
             self.encrypt_if_needed(subtree_name, &result.encode()?)
         })
         .await
+        .map(|(value, _)| value)
     }
 
     /// Computes the CRDT state for a single entry using batch fetching.
@@ -1378,6 +1413,7 @@ impl Transaction {
                 self.encrypt_if_needed(subtree_name, &result.encode()?)
             })
             .await
+            .map(|(value, _)| value)
         })
     }
 
@@ -1473,7 +1509,8 @@ impl Transaction {
         self.commit_inner(Some(guard)).await
     }
 
-    async fn commit_inner(self, guard: Option<tokio::sync::OwnedMutexGuard<()>>) -> Result<ID> {
+    async fn commit_inner(mut self, guard: Option<tokio::sync::OwnedMutexGuard<()>>) -> Result<ID> {
+        let structured = self.freeze_structured()?;
         {
             let staged = self.logical_record_mutations.lock().unwrap().clone();
             for (store, mutations) in staged {
@@ -1587,7 +1624,9 @@ impl Transaction {
                 builder.set_subtree_parents_mut(&subtree_name, tips);
             }
 
-            builder.remove_empty_subtrees_mut()?;
+            if !structured {
+                builder.remove_empty_subtrees_mut()?;
+            }
         }
 
         // Pin the builder's pre-write main-parent settings, not the live database head.
@@ -1607,6 +1646,11 @@ impl Transaction {
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
             builder_from_cell.clone()
         };
+
+        if structured {
+            self.finalize_structured(&mut builder).await?;
+            builder.remove_empty_subtrees_mut()?;
+        }
 
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured
@@ -1687,10 +1731,22 @@ impl Transaction {
                     // System subtrees always inherit from tree
                     None
                 } else if let Some(ref idx) = index {
-                    idx.get_subtree_settings(&subtree_name)
-                        .await
-                        .ok()
-                        .and_then(|s| s.height_strategy)
+                    let literal = self
+                        .literal_registrations
+                        .lock()
+                        .unwrap()
+                        .contains(&subtree_name);
+                    if literal {
+                        idx.entry(&subtree_name, true)
+                            .await
+                            .ok()
+                            .and_then(|entry| entry.settings.height_strategy)
+                    } else {
+                        idx.get_subtree_settings(&subtree_name)
+                            .await
+                            .ok()
+                            .and_then(|settings| settings.height_strategy)
+                    }
                 } else {
                     None
                 };
