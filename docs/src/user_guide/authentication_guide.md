@@ -379,7 +379,15 @@ transaction.commit().await?;
 # }
 ```
 
-Note: Historical entries created by revoked keys remain valid.
+Historical entries created by revoked keys remain valid.
+
+### Removing a key from a delegated identity
+
+1. Call `Identity::revoke_key` with an authorized identity handle. Once a serving replica verifies that commit, the key no longer has **current** Read through that identity. It cannot discover the database or capture a new Snapshot on the strength of that membership alone.
+2. In each database that delegates to the identity, use a signer authorized to update its Settings. In a transaction, read the existing delegation, keep its permission bounds, and use `Identity::as_delegation` with those bounds to build the updated reference. Check that the new identity Snapshot includes the revocation and advances the existing pin, then call `SettingsStore::add_delegated_tree` and commit. Syncing the identity alone does not write this commit for the delegating database.
+3. To confirm the cutoff on a replica, check its Verified database Snapshot: the committed delegation must point to identity history that includes the revocation. An explicit read at that cut can no longer use the removed membership. A cut that still pins the grant remains readable, **even if it contains data written after the identity revoked the key**. Advancing the pin does not change those earlier cuts.
+
+This cutoff is per database and causal, not a timestamp or a guarantee about offline replicas. It does not withdraw an independent grant or erase data already disclosed.
 
 ### Historical Signatures and Operating Keys
 
