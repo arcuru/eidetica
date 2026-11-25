@@ -73,6 +73,7 @@ pub trait Registered {
 
 use crate::{
     Result, Transaction,
+    constants::INDEX,
     crdt::{Doc, doc},
     store::{DocStore, Store, StoreError},
 };
@@ -302,24 +303,16 @@ impl Registry {
         Ok(())
     }
 
+    /// Declare a Type for a literal row, together with its config.
     pub(crate) async fn set_literal_entry(
         &self,
         name: &str,
         type_id: &str,
-        config: Option<Doc>,
-        contract: Option<&super::schema::ContractDescriptor>,
+        config: Doc,
     ) -> Result<()> {
         let mut row = Doc::new();
         row.set("type", doc::Value::Text(type_id.to_string()));
-        if let Some(config) = config {
-            row.set("config", doc::Value::Doc(config));
-        }
-        if let Some(contract) = contract {
-            row.set(
-                super::attribution::DECLARATION,
-                super::attribution::declaration_value(contract)?,
-            );
-        }
+        row.set("config", doc::Value::Doc(config));
         self.inner
             .transaction()
             .stage_registry_patch(self.inner.name(), name, row)
@@ -402,13 +395,18 @@ impl Registry {
     ///
     /// # Returns
     /// Result indicating success or failure. Returns an error if the subtree
-    /// is not registered.
+    /// is not registered, or if concurrent registrations disagree: writing the
+    /// displayed row would silently choose one of them.
     pub async fn set_subtree_settings(
         &self,
         name: impl AsRef<str>,
         settings: SubtreeSettings,
     ) -> Result<()> {
         let name = name.as_ref();
+
+        if self.inner.name() == INDEX {
+            Box::pin(self.inner.transaction().check_registry_copy(name)).await?;
+        }
 
         // Get existing entry to preserve type_id and config
         let entry = self.get_entry(name).await?;

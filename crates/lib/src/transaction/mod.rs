@@ -28,7 +28,7 @@ mod structured_tests;
 mod tests;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -109,16 +109,11 @@ pub(crate) trait Encryptor: Send + Sync {
     /// JSON for `DocStore`/`Table`, binary Yrs updates for `YDoc`).
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>>;
 
-    fn supports_store_type(&self, _type_id: &str) -> bool {
-        false
-    }
-
-    fn historical_descriptor(
-        &self,
-        _config: &crate::store::PasswordStoreConfig,
-    ) -> Result<crate::store::schema::ContractDescriptor> {
+    /// Open the protected inner Type and config of one historical outer
+    /// registration, without falling back to the current one.
+    fn inner_registration(&self, _outer_type: &str, _outer_config: &Doc) -> Result<(String, Doc)> {
         Err(crate::store::schema::invalid(
-            "historical wrapped configuration unavailable",
+            "historical wrapped registration unavailable",
         ))
     }
 
@@ -211,7 +206,8 @@ pub struct Transaction {
     record_views: Arc<Mutex<HashMap<String, RecordView>>>,
     /// Captured Store boundaries which declined optional retention.
     record_bypass: Arc<Mutex<HashSet<String>>>,
-    structured_contracts: Arc<Mutex<HashMap<String, crate::store::schema::ContractDescriptor>>>,
+    structured_staging: Arc<Mutex<HashMap<String, attribution::StagedContribution>>>,
+    structured_config_writers: Arc<Mutex<HashMap<String, BTreeSet<&'static str>>>>,
     literal_registrations: Arc<Mutex<HashSet<String>>>,
     #[cfg(test)]
     snapshot_pause: Arc<Mutex<Option<SnapshotPause>>>,
@@ -285,7 +281,8 @@ impl Transaction {
             logical_record_mutations: Arc::new(Mutex::new(HashMap::new())),
             record_views: Arc::new(Mutex::new(HashMap::new())),
             record_bypass: Arc::new(Mutex::new(HashSet::new())),
-            structured_contracts: Arc::new(Mutex::new(HashMap::new())),
+            structured_staging: Arc::new(Mutex::new(HashMap::new())),
+            structured_config_writers: Arc::new(Mutex::new(HashMap::new())),
             literal_registrations: Arc::new(Mutex::new(HashSet::new())),
             #[cfg(test)]
             snapshot_pause: Arc::new(Mutex::new(None)),
@@ -891,7 +888,7 @@ impl Transaction {
         Ok(crate::backend::RecordPage { records, next })
     }
 
-    pub(crate) fn encrypted_projection_descriptor(
+    fn encrypted_projection_descriptor(
         &self,
         store: &str,
         descriptor: ProjectionDescriptor,
@@ -1351,7 +1348,6 @@ impl Transaction {
             self.encrypt_if_needed(subtree_name, &result.encode()?)
         })
         .await
-        .map(|(value, _)| value)
     }
 
     /// Computes the CRDT state for a single entry using batch fetching.
@@ -1413,7 +1409,6 @@ impl Transaction {
                 self.encrypt_if_needed(subtree_name, &result.encode()?)
             })
             .await
-            .map(|(value, _)| value)
         })
     }
 
@@ -1495,7 +1490,8 @@ impl Transaction {
     /// # Returns
     /// A `Result<ID>` containing the ID of the committed entry.
     pub async fn commit(self) -> Result<ID> {
-        self.commit_inner(None).await
+        // Committing is already near the limit of a 2 MiB stack in deep callers.
+        Box::pin(self.commit_inner(None)).await
     }
 
     /// Commit while the caller holds this database's per-tree write lock.
@@ -1506,7 +1502,7 @@ impl Transaction {
         self,
         guard: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<ID> {
-        self.commit_inner(Some(guard)).await
+        Box::pin(self.commit_inner(Some(guard))).await
     }
 
     async fn commit_inner(mut self, guard: Option<tokio::sync::OwnedMutexGuard<()>>) -> Result<ID> {
@@ -1648,7 +1644,7 @@ impl Transaction {
         };
 
         if structured {
-            self.finalize_structured(&mut builder).await?;
+            Box::pin(self.finalize_structured(&builder)).await?;
             builder.remove_empty_subtrees_mut()?;
         }
 

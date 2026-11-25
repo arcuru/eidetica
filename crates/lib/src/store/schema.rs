@@ -1,62 +1,117 @@
-//! Exact historical interpretation contracts for opt-in structured Stores.
+//! Types for opt-in structured Stores.
 //!
-//! The effective descriptor is a contribution's historical default or explicit
-//! override. It is not an Entry protocol version or a conversion request.
+//! A Store's Type string is its only version discriminator. It is the `type` of
+//! the Store's `_index` row in the signed history of each contributing Entry,
+//! never a tag inside the value.
 
-use std::marker::PhantomData;
-
-use ipld_core::ipld::Ipld;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_bytes::{ByteBuf, Bytes};
 
 use crate::{
     Result,
-    crdt::{CRDT, Codec, dag_cbor},
+    crdt::{CRDT, Codec, Doc, dag_cbor},
+    entry::ID,
 };
 
-/// Complete interpretation identity. Names are opaque, nonempty, byte-exact UTF-8.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ContractId {
-    pub store: &'static str,
-    pub data: &'static str,
-    pub schema: &'static str,
+/// Code support for exactly one persisted Store Type.
+///
+/// Implementing this for a Type string supplies neither permission nor
+/// conversion. Mint a different string for an incompatible grammar or merge.
+pub trait StructuredType: Send + Sync + 'static {
+    /// Nonempty, stable, byte-exact `_index` Type, such as `contacts:v0.1`.
+    const TYPE_ID: &'static str;
+
+    /// The complete native contribution and its merge.
+    type Data: CRDT + Clone + Serialize + DeserializeOwned + Send + Sync + 'static;
+
+    /// Interpret the Store config in the history of one contribution, or refuse.
+    ///
+    /// `configs` holds every distinct value left by concurrent config changes
+    /// there. It has one element unless the history is ambiguous, and an absent
+    /// config is an empty Doc. Return what distinguishes this Type's row grammar
+    /// or merge parameters. Contributions with different results are never
+    /// combined. A Type that does not use its config returns an empty Doc.
+    fn grammar(configs: &[Doc]) -> Result<Doc>;
 }
 
-/// Owned descriptor recorded in a contribution, suitable for authorized inspection.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The Type under which one contribution was written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContributionType {
+    /// Type declared at the contributing Entry.
+    pub type_id: String,
+    /// Latest Entries, in causal order, that declared it.
+    pub declared_by: Vec<ID>,
+}
+
+/// Whole-Store state decoded under one exact Type.
+///
+/// `Default` is an empty view with no source contribution. `new` is an actual
+/// contribution, even when its value is the application's default.
+pub struct StructuredState<T: StructuredType>(Option<T::Data>);
+
+impl<T: StructuredType> Clone for StructuredState<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: StructuredType> Default for StructuredState<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T: StructuredType> StructuredState<T> {
+    pub fn new(value: T::Data) -> Self {
+        Self(Some(value))
+    }
+
+    /// Whether at least one actual contribution was decoded or staged.
+    pub fn has_source(&self) -> bool {
+        self.0.is_some()
+    }
+
+    pub fn value(&self) -> Option<&T::Data> {
+        self.0.as_ref()
+    }
+
+    pub fn into_value(self) -> T::Data
+    where
+        T::Data: Default,
+    {
+        self.0.unwrap_or_default()
+    }
+
+    // Disposable cache framing. A digest keeps a wrong-Type record from being
+    // decoded without making the encrypted record's size depend on the Type.
+    pub(crate) fn encode_cached(&self) -> Result<Vec<u8>> {
+        dag_cbor::encode(&Cached {
+            data: self.0.as_ref().ok_or_else(no_source)?,
+            kind: serde_bytes::Bytes::new(type_digest::<T>().as_bytes()),
+        })
+    }
+
+    pub(crate) fn decode_cached(bytes: &[u8]) -> Result<Self> {
+        let cached: Cached<ipld_core::ipld::Ipld, serde_bytes::ByteBuf> = dag_cbor::decode(bytes)?;
+        if cached.kind != type_digest::<T>().as_bytes().as_slice() {
+            return Err(invalid("cached value has a different Type"));
+        }
+        Self::decode(&dag_cbor::encode(&cached.data)?)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ContractDescriptor {
-    #[serde(rename = "store")]
-    pub store: String,
-    #[serde(rename = "data")]
-    pub data: String,
-    #[serde(rename = "schema")]
-    pub schema: String,
+struct Cached<T, B> {
+    data: T,
+    kind: B,
 }
 
-impl From<ContractId> for ContractDescriptor {
-    fn from(id: ContractId) -> Self {
-        Self {
-            store: id.store.into(),
-            data: id.data.into(),
-            schema: id.schema.into(),
-        }
-    }
+fn type_digest<T: StructuredType>() -> blake3::Hash {
+    blake3::hash(T::TYPE_ID.as_bytes())
 }
 
-impl ContractDescriptor {
-    pub(crate) fn validate(&self) -> Result<()> {
-        if self.store.is_empty() || self.data.is_empty() || self.schema.is_empty() {
-            return Err(invalid("empty contract identifier"));
-        }
-        Ok(())
-    }
-}
-
-/// Static code support for exactly one Store/data/application contract.
-/// Merely naming a schema supplies neither its implementation nor permission.
-pub trait StoreContract: Send + Sync + 'static {
-    const ID: ContractId;
+fn no_source() -> crate::Error {
+    invalid("no source contribution")
 }
 
 pub(crate) fn invalid(reason: &str) -> crate::Error {
@@ -66,197 +121,9 @@ pub(crate) fn invalid(reason: &str) -> crate::Error {
     .into()
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Explicit<T> {
-    #[serde(rename = "contract")]
-    contract: ContractDescriptor,
-    #[serde(rename = "value")]
-    value: T,
-}
-
-// Staging and the opaque projection carry an explicit tuple; they are not
-// contribution encodings. Parsing the outer record before D prevents a cache
-// hit (or bad staging bytes) from bypassing the interpretation gate.
-pub(crate) fn inspect_explicit(bytes: &[u8]) -> Result<ContractDescriptor> {
-    let envelope: Explicit<Ipld> = dag_cbor::decode(bytes)?;
-    envelope.contract.validate()?;
-    Ok(envelope.contract)
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Contribution<T> {
-    #[serde(rename = "override", default, skip_serializing_if = "Option::is_none")]
-    override_id: Option<ContractDescriptor>,
-    value: T,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Protected<T, B> {
-    metadata: B,
-    value: T,
-}
-
-const ENCRYPTED_DESCRIPTOR_CAP: usize = 512;
-pub(crate) const CONTROL_SIZE: usize = 2 + ENCRYPTED_DESCRIPTOR_CAP;
-
-// A zero length denotes omission, not an encoded descriptor. Length and
-// capacity bytes are all inside the existing authenticated encryption boundary.
-pub(crate) fn protect(id: Option<&ContractDescriptor>) -> Result<[u8; CONTROL_SIZE]> {
-    let mut region = [0; CONTROL_SIZE];
-    if let Some(id) = id {
-        id.validate()?;
-        let encoded = dag_cbor::encode(id)?;
-        if encoded.len() > ENCRYPTED_DESCRIPTOR_CAP {
-            return Err(invalid(
-                "encrypted attribution descriptor exceeds 512 bytes",
-            ));
-        }
-        region[..2].copy_from_slice(&(encoded.len() as u16).to_be_bytes());
-        region[2..2 + encoded.len()].copy_from_slice(&encoded);
-    }
-    Ok(region)
-}
-
-pub(crate) fn unprotect(region: &[u8]) -> Result<Option<ContractDescriptor>> {
-    let region: &[u8; CONTROL_SIZE] = region
-        .try_into()
-        .map_err(|_| invalid("invalid encrypted attribution footprint"))?;
-    let length = usize::from(u16::from_be_bytes([region[0], region[1]]));
-    if length > ENCRYPTED_DESCRIPTOR_CAP || region[2 + length..].iter().any(|&b| b != 0) {
-        return Err(invalid("invalid encrypted attribution padding"));
-    }
-    if length == 0 {
-        return Ok(None);
-    }
-    let id: ContractDescriptor = dag_cbor::decode(&region[2..2 + length])?;
-    id.validate()?;
-    Ok(Some(id))
-}
-
-fn protected_value<T: Serialize>(id: Option<&ContractDescriptor>, value: T) -> Result<Vec<u8>> {
-    dag_cbor::encode(&Protected {
-        metadata: Bytes::new(&protect(id)?),
-        value,
-    })
-}
-
-/// Finalization changes only the framing of the already validated staged value.
-pub(crate) fn finalize_contribution(
-    bytes: &[u8],
-    staged: &ContractDescriptor,
-    default: &ContractDescriptor,
-    encrypted: bool,
-) -> Result<Vec<u8>> {
-    let Explicit { contract, value } = dag_cbor::decode::<Explicit<Ipld>>(bytes)?;
-    if &contract != staged || contract.store != default.store {
-        return Err(invalid("staged contract or default Store family mismatch"));
-    }
-    let override_id = (contract != *default).then_some(contract);
-    if encrypted {
-        protected_value(override_id.as_ref(), value)
-    } else {
-        dag_cbor::encode(&Contribution { override_id, value })
-    }
-}
-
-pub(crate) fn contribution(
-    bytes: &[u8],
-    default: &ContractDescriptor,
-    encrypted: bool,
-) -> Result<(Option<ContractDescriptor>, Ipld)> {
-    let (override_id, value) = if encrypted {
-        let Protected { metadata, value } = dag_cbor::decode::<Protected<Ipld, ByteBuf>>(bytes)?;
-        (unprotect(&metadata)?, value)
-    } else {
-        let Contribution { override_id, value } = dag_cbor::decode::<Contribution<Ipld>>(bytes)?;
-        (override_id, value)
-    };
-    if let Some(id) = &override_id {
-        id.validate()?;
-        if id == default || id.store != default.store {
-            return Err(invalid(
-                "redundant override or incompatible override Store family",
-            ));
-        }
-    }
-    Ok((override_id, value))
-}
-
-/// The resolved identity of an actual, authorized contribution.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContributionAttribution {
-    pub database: crate::entry::ID,
-    pub store: String,
-    pub entry: crate::entry::ID,
-    pub declaration_origins: Vec<crate::entry::ID>,
-    pub default: ContractDescriptor,
-    pub override_id: Option<ContractDescriptor>,
-}
-
-impl ContributionAttribution {
-    pub fn effective(&self) -> &ContractDescriptor {
-        self.override_id.as_ref().unwrap_or(&self.default)
-    }
-}
-
-/// Common whole-Store adapter. Nested values remain structural Serde values.
-///
-/// Default is an *unattributed* empty view; it must not be persisted as a schema
-/// declaration. `new` creates an actual contribution, even for a default value.
-pub struct Attributed<D, C: StoreContract> {
-    value: Option<D>,
-    contract: PhantomData<C>,
-}
-
-impl<D: Clone, C: StoreContract> Clone for Attributed<D, C> {
-    fn clone(&self) -> Self {
-        Self {
-            value: self.value.clone(),
-            contract: PhantomData,
-        }
-    }
-}
-
-impl<D, C: StoreContract> Default for Attributed<D, C> {
-    fn default() -> Self {
-        Self {
-            value: None,
-            contract: PhantomData,
-        }
-    }
-}
-
-impl<D, C: StoreContract> Attributed<D, C> {
-    pub fn new(value: D) -> Self {
-        Self {
-            value: Some(value),
-            contract: PhantomData,
-        }
-    }
-    /// Whether at least one actual contribution was decoded or explicitly staged.
-    pub fn has_source(&self) -> bool {
-        self.value.is_some()
-    }
-    pub fn value(&self) -> Option<&D> {
-        self.value.as_ref()
-    }
-    pub fn into_value(self) -> D
-    where
-        D: Default,
-    {
-        self.value.unwrap_or_default()
-    }
-    pub fn descriptor(&self) -> Option<ContractDescriptor> {
-        self.has_source().then(|| C::ID.into())
-    }
-}
-
-impl<D: CRDT + Clone, C: StoreContract> CRDT for Attributed<D, C> {
+impl<T: StructuredType> CRDT for StructuredState<T> {
     fn merge(&self, other: &Self) -> Result<Self> {
-        Ok(match (&self.value, &other.value) {
+        Ok(match (&self.0, &other.0) {
             (Some(left), Some(right)) => Self::new(left.merge(right)?),
             (None, _) => other.clone(),
             (_, None) => self.clone(),
@@ -264,56 +131,15 @@ impl<D: CRDT + Clone, C: StoreContract> CRDT for Attributed<D, C> {
     }
 }
 
-impl<D: Serialize + DeserializeOwned, C: StoreContract> Codec for Attributed<D, C> {
+/// The Type's native contribution, with no common framing. Callers establish the
+/// Type from history before decoding.
+impl<T: StructuredType> Codec for StructuredState<T> {
     fn encode(&self) -> Result<Vec<u8>> {
-        let contract = ContractDescriptor::from(C::ID);
-        contract.validate()?;
-        let value = self
-            .value
-            .as_ref()
-            .ok_or_else(|| invalid("no source contribution"))?;
-        dag_cbor::encode(&Explicit { contract, value })
+        dag_cbor::encode(self.0.as_ref().ok_or_else(no_source)?)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
-        let contract = inspect_explicit(bytes)?;
-        if contract != ContractDescriptor::from(C::ID) {
-            return Err(invalid("unsupported Store/data/application contract"));
-        }
-        // Only after the complete structural/identity gate may D run. N1's
-        // round-trip admission also rejects lossy application deserialization.
-        let envelope: Explicit<D> = dag_cbor::decode(bytes)?;
-        Ok(Self::new(envelope.value))
-    }
-}
-
-impl<D: Serialize + DeserializeOwned, C: StoreContract> Attributed<D, C> {
-    pub(crate) fn encode_cached(&self, encrypted: bool) -> Result<Vec<u8>> {
-        if !encrypted {
-            return self.encode();
-        }
-        let value = self
-            .value
-            .as_ref()
-            .ok_or_else(|| invalid("no source contribution"))?;
-        protected_value(Some(&C::ID.into()), value)
-    }
-
-    pub(crate) fn decode_cached(bytes: &[u8], encrypted: bool) -> Result<Self> {
-        if !encrypted {
-            return Self::decode(bytes);
-        }
-        let Protected { metadata, value } = dag_cbor::decode::<Protected<Ipld, ByteBuf>>(bytes)?;
-        if unprotect(&metadata)?.as_ref() != Some(&C::ID.into()) {
-            return Err(invalid(
-                "unsupported cached Store/data/application contract",
-            ));
-        }
-        Self::decode_value(&value)
-    }
-
-    pub(crate) fn decode_value(value: &Ipld) -> Result<Self> {
-        Ok(Self::new(dag_cbor::decode(&dag_cbor::encode(value)?)?))
+        dag_cbor::decode(bytes).map(Self::new)
     }
 }
 

@@ -1,49 +1,182 @@
-//! Project a single declaration from the signed `_index` Doc delta, not from
-//! the lossy (and deliberately last-writer-wins) ordinary registry view.
+//! Project one Store's registration change from a signed `_index` Doc delta.
+//!
+//! The ordinary registry view is last-writer-wins, so it cannot say which Type a
+//! contribution was written under. Only the literal row's `type` is interpreted
+//! here. `config` is carried for the Type and never inspected.
 
 use std::{collections::HashMap, fmt};
 
-use base64ct::{Base64, Encoding};
 use serde::{
     Deserialize, Deserializer,
-    de::{Error, MapAccess, Visitor},
+    de::{Error, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::value::RawValue;
 
 use crate::{
     Result,
-    crdt::{Doc, dag_cbor, doc::Value},
+    crdt::{Doc, doc::Value},
 };
 
-use super::{
-    PasswordStoreConfig,
-    schema::{ContractDescriptor, invalid},
-};
-
-pub(crate) const DECLARATION: &str = "structured_contract";
-pub(crate) const PASSWORD_TYPE: &str = "encrypted:password:v0";
-
-pub(crate) fn declaration_value(id: &ContractDescriptor) -> Result<Value> {
-    id.validate()?;
-    // Doc has no binary leaf. Use one atomic text leaf carrying the canonical
-    // descriptor, so neither a partial Doc merge nor name escaping can change it.
-    Ok(Value::Text(Base64::encode_string(&dag_cbor::encode(id)?)))
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TypeEvent {
+    Declared(String),
+    Removed,
+    Malformed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Declaration {
-    Plain(ContractDescriptor),
-    Wrapped(PasswordStoreConfig),
-    PlainConfigPatch,
-    Legacy,
-    Missing,
+pub(crate) enum ConfigEvent {
+    /// Ordinary Doc merge into the inherited config.
+    Patch(Value),
+    /// The containing row or index was removed or replaced as a whole.
+    Reset(Option<Value>),
     Malformed,
-    Unsupported,
 }
 
+/// The historical config at one cut. Contents belong to the Type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ConfigState {
+    Absent,
+    Present(Doc),
+    Malformed,
+}
+
+impl ConfigState {
+    fn of(value: Value) -> Self {
+        match value {
+            Value::Deleted => Self::Absent,
+            Value::Doc(doc) => Self::Present(doc),
+            _ => Self::Malformed,
+        }
+    }
+
+    pub(crate) fn apply(&self, event: &ConfigEvent) -> Self {
+        match event {
+            ConfigEvent::Reset(value) => value.clone().map_or(Self::Absent, Self::of),
+            ConfigEvent::Malformed => Self::Malformed,
+            ConfigEvent::Patch(value) => match (self, value) {
+                (Self::Present(doc), value) => {
+                    let mut merged = Value::Doc(doc.clone());
+                    merged.merge(value);
+                    Self::of(merged)
+                }
+                // A partial edit cannot repair an unreadable base.
+                (Self::Malformed, Value::Doc(patch)) if !patch.is_atomic() => Self::Malformed,
+                (_, value) => Self::of(value.clone()),
+            },
+        }
+    }
+}
+
+/// `None` in either field means this delta leaves that half alone. An invalid
+/// relevant structure is an event too: a descendant can replace it, but the older
+/// declaration must not be treated as if it survived.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RowDelta {
+    pub(crate) type_event: Option<TypeEvent>,
+    pub(crate) config: Option<ConfigEvent>,
+}
+
+impl RowDelta {
+    fn removed() -> Self {
+        Self {
+            type_event: Some(TypeEvent::Removed),
+            config: Some(ConfigEvent::Reset(None)),
+        }
+    }
+}
+
+pub(crate) fn project(index: &[u8], name: &str) -> RowDelta {
+    project_row(index, name).unwrap_or(RowDelta {
+        type_event: Some(TypeEvent::Malformed),
+        config: Some(ConfigEvent::Malformed),
+    })
+}
+
+fn project_row(index: &[u8], name: &str) -> Result<RowDelta> {
+    let index: Index<'_> = serde_json::from_slice(index)?;
+    if index.version != 0 || has_path_alias(&index, name)? {
+        return Err(malformed());
+    }
+    let Some(raw) = index.children.0.get(name) else {
+        return Ok(if index.atomic {
+            RowDelta::removed()
+        } else {
+            RowDelta::default()
+        });
+    };
+    let row = match value(raw)? {
+        Value::Deleted => return Ok(RowDelta::removed()),
+        Value::Doc(row) => row,
+        _ => return Err(malformed()),
+    };
+    let replaced = index.atomic || row.is_atomic();
+    let mut delta = if replaced {
+        RowDelta::removed()
+    } else {
+        RowDelta::default()
+    };
+    for (key, value) in row.iter_all() {
+        match key.as_str() {
+            "type" => {
+                delta.type_event = Some(match value {
+                    Value::Text(id) if !id.is_empty() => TypeEvent::Declared(id.clone()),
+                    Value::Deleted => TypeEvent::Removed,
+                    _ => TypeEvent::Malformed,
+                });
+            }
+            "config" => {
+                delta.config = Some(if replaced {
+                    ConfigEvent::Reset(Some(value.clone()))
+                } else {
+                    ConfigEvent::Patch(value.clone())
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(delta)
+}
+
+// `set("a.b", row)` on a Doc writes a nested row, not the literal key "a.b".
+// Such a legacy registration makes the literal name ambiguous.
+fn has_path_alias(index: &Index<'_>, name: &str) -> Result<bool> {
+    let mut segments = name.split('.').filter(|segment| !segment.is_empty());
+    let (Some(first), true) = (segments.next(), name.contains('.')) else {
+        return Ok(false);
+    };
+    let Some(raw) = index.children.0.get(first) else {
+        return Ok(false);
+    };
+    let mut row = value(raw)?;
+    for segment in segments {
+        let Value::Doc(doc) = &row else {
+            return Ok(false);
+        };
+        let Some(next) = doc.get_literal(segment) else {
+            return Ok(false);
+        };
+        row = next.clone();
+    }
+    Ok(matches!(&row, Value::Doc(row) if row.get_literal("type").is_some()))
+}
+
+fn value(raw: &RawValue) -> Result<Value> {
+    // Serde maps silently keep one of two duplicate members.
+    serde_json::from_str::<UniqueMembers>(raw.get())?;
+    Ok(serde_json::from_str(raw.get())?)
+}
+
+fn malformed() -> crate::Error {
+    crate::crdt::CRDTError::DeserializationFailed {
+        reason: "malformed registration".into(),
+    }
+    .into()
+}
+
+// Unrelated rows stay opaque, so another Store's bad row is not our failure.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawDoc<'a> {
+struct Index<'a> {
     #[serde(rename = "_v", default)]
     version: u8,
     #[serde(rename = "_a", default)]
@@ -52,26 +185,13 @@ struct RawDoc<'a> {
     children: Fields<'a>,
 }
 
-#[derive(Deserialize)]
-enum DocValue<'a> {
-    #[serde(borrow)]
-    Doc(RawDoc<'a>),
-}
-
-#[derive(Deserialize)]
-enum TextValue {
-    Text(String),
-}
-
-// Validate duplicates before constructing a Doc. Only the relevant row and
-// reserved containers are interpreted; unrelated Store configs remain opaque.
 struct Fields<'a>(HashMap<String, &'a RawValue>);
 
 impl<'de: 'a, 'a> Deserialize<'de> for Fields<'a> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        struct Unique;
-        impl<'de> Visitor<'de> for Unique {
-            type Value = Fields<'de>;
+        struct Rows;
+        impl<'de> Visitor<'de> for Rows {
+            type Value = HashMap<String, &'de RawValue>;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("unique Doc keys")
             }
@@ -85,164 +205,173 @@ impl<'de: 'a, 'a> Deserialize<'de> for Fields<'a> {
                         return Err(M::Error::custom("duplicate Doc member"));
                     }
                 }
-                Ok(Fields(fields))
+                Ok(fields)
             }
         }
-        let Fields(fields) = d.deserialize_map(Unique)?;
-        Ok(Fields(fields))
+        d.deserialize_map(Rows).map(Fields)
     }
 }
 
-impl<'a> RawDoc<'a> {
-    fn get(&self, key: &str) -> Option<&'a RawValue> {
-        self.children.0.get(key).copied()
-    }
+/// Accepts any JSON value whose objects, at every depth, have unique members.
+struct UniqueMembers;
 
-    fn nested(raw: &'a RawValue) -> Result<Self> {
-        let DocValue::Doc(doc) = serde_json::from_str(raw.get())?;
-        doc.check_version()?;
-        Ok(doc)
-    }
-
-    fn check_version(&self) -> Result<()> {
-        if self.version != 0 {
-            return Err(invalid("unsupported index Doc version"));
-        }
-        Ok(())
-    }
-
-    fn text(&self, key: &str) -> Result<Option<String>> {
-        self.get(key)
-            .map(|raw| {
-                let TextValue::Text(value) = serde_json::from_str(raw.get())?;
-                Ok(value)
-            })
-            .transpose()
-    }
-}
-
-/// `None` means this delta leaves the declaration alone. Invalid reserved
-/// changes are events too: a descendant can replace them, but they may never
-/// be treated as if the older declaration survived.
-pub(crate) fn project(index: &[u8], name: &str) -> Option<Declaration> {
-    project_row(index, name).unwrap_or(Some(Declaration::Malformed))
-}
-
-fn project_row(index: &[u8], name: &str) -> Result<Option<Declaration>> {
-    let index: RawDoc<'_> = serde_json::from_slice(index)?;
-    index.check_version()?;
-    let Some(row) = index.get(name) else {
-        return Ok(index.atomic.then_some(Declaration::Missing));
-    };
-    if row.get() == "\"Deleted\"" {
-        return Ok(Some(Declaration::Missing));
-    }
-    let row = RawDoc::nested(row)?;
-    let type_id = row.text("type")?;
-    if let Some(raw) = row.get(DECLARATION) {
-        if raw.get() == "\"Deleted\"" {
-            return Ok(Some(Declaration::Missing));
-        }
-        let TextValue::Text(encoded) = serde_json::from_str(raw.get())?;
-        let bytes =
-            Base64::decode_vec(&encoded).map_err(|_| invalid("invalid declaration encoding"))?;
-        let id: ContractDescriptor = dag_cbor::decode(&bytes)?;
-        id.validate()?;
-        if type_id.as_deref() != Some(id.store.as_str()) || !is_structured_family(&id.store) {
-            return Err(invalid(
-                "declaration does not match a structured registration",
-            ));
-        }
-        return Ok(Some(Declaration::Plain(id)));
-    }
-    match type_id.as_deref() {
-        Some(PASSWORD_TYPE) => {
-            let raw = row
-                .get("config")
-                .ok_or_else(|| invalid("missing wrapped config"))?;
-            let config = RawDoc::nested(raw)?;
-            if config.children.0.is_empty() {
-                return Ok(Some(Declaration::Missing));
+impl<'de> Deserialize<'de> for UniqueMembers {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct Walk;
+        impl<'de> Visitor<'de> for Walk {
+            type Value = UniqueMembers;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("JSON with unique members")
             }
-            if !config.atomic || config.children.0.len() != 2 {
-                return Err(invalid("expected a complete atomic wrapped config"));
-            }
-            for member in ["encryption", "wrapped_config"] {
-                let nested = RawDoc::nested(
-                    config
-                        .get(member)
-                        .ok_or_else(|| invalid("missing wrapped config member"))?,
-                )?;
-                validate_wrapped_fields(member, &nested)?;
-            }
-            let DocValueOwned::Doc(doc) = serde_json::from_str(raw.get())?;
-            Ok(Some(Declaration::Wrapped(PasswordStoreConfig::try_from(
-                &doc,
-            )?)))
-        }
-        Some(id) if is_legacy(id) => Ok(Some(Declaration::Legacy)),
-        Some(_) => Ok(Some(Declaration::Unsupported)),
-        None if !row.atomic
-            && !index.atomic
-            && row.children.0.keys().all(|key| key == "settings") =>
-        {
-            Ok(None)
-        }
-        None if row.atomic || index.atomic => Ok(Some(Declaration::Missing)),
-        None if row
-            .children
-            .0
-            .keys()
-            .all(|key| key == "settings" || key == "config") =>
-        {
-            RawDoc::nested(
-                row.get("config")
-                    .ok_or_else(|| invalid("missing config patch"))?,
-            )?;
-            Ok(Some(Declaration::PlainConfigPatch))
-        }
-        None => Ok(Some(Declaration::Malformed)),
-    }
-}
-
-#[derive(Deserialize)]
-enum DocValueOwned {
-    Doc(Doc),
-}
-
-fn validate_wrapped_fields(member: &str, doc: &RawDoc<'_>) -> Result<()> {
-    for (field, raw) in &doc.children.0 {
-        match (member, field.as_str()) {
-            ("wrapped_config", "ciphertext" | "nonce")
-            | ("encryption", "algorithm" | "kdf" | "salt" | "version") => {
-                serde_json::from_str::<TextValue>(raw.get())?;
-            }
-            ("encryption", "argon2_m_cost" | "argon2_t_cost" | "argon2_p_cost") => {
-                if !matches!(serde_json::from_str::<Value>(raw.get())?, Value::Int(cost) if u32::try_from(cost).is_ok())
-                {
-                    return Err(invalid("invalid wrapped config cost"));
+            fn visit_map<M: MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> std::result::Result<Self::Value, M::Error> {
+                let mut keys = std::collections::HashSet::new();
+                while let Some((key, UniqueMembers)) = map.next_entry::<String, _>()? {
+                    if !keys.insert(key) {
+                        return Err(M::Error::custom("duplicate member"));
+                    }
                 }
+                Ok(UniqueMembers)
             }
-            _ => return Err(invalid("unknown wrapped config member")),
+            fn visit_seq<S: SeqAccess<'de>>(
+                self,
+                mut seq: S,
+            ) -> std::result::Result<Self::Value, S::Error> {
+                while let Some(UniqueMembers) = seq.next_element()? {}
+                Ok(UniqueMembers)
+            }
+            fn visit_bool<E>(self, _: bool) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueMembers)
+            }
+            fn visit_i64<E>(self, _: i64) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueMembers)
+            }
+            fn visit_u64<E>(self, _: u64) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueMembers)
+            }
+            fn visit_f64<E>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueMembers)
+            }
+            fn visit_str<E>(self, _: &str) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueMembers)
+            }
+            fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueMembers)
+            }
+        }
+        d.deserialize_any(Walk)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use TypeEvent::{Declared, Malformed, Removed};
+
+    fn types(index: &str, name: &str) -> Option<TypeEvent> {
+        project(index.as_bytes(), name).type_event
+    }
+
+    #[test]
+    fn projects_exact_literal_type_events() {
+        let b = || Some(Declared("b:v1".into()));
+        for (index, expected) in [
+            (r#"{"children":{}}"#, None),
+            (r#"{"children":{"other":{"Doc":7}}}"#, None),
+            (r#"{"_a":true,"children":{}}"#, Some(Removed)),
+            (r#"{"children":{"s":"Deleted"}}"#, Some(Removed)),
+            (
+                r#"{"children":{"s":{"Doc":{"children":{"type":{"Text":"b:v1"}}}}}}"#,
+                b(),
+            ),
+            (
+                r#"{"_a":true,"children":{"s":{"Doc":{"children":{"type":{"Text":"b:v1"}}}}}}"#,
+                b(),
+            ),
+            // Partial edits of siblings do not declare anything.
+            (
+                r#"{"children":{"s":{"Doc":{"children":{"config":{"Doc":{"children":{"type":{"Text":"x"}}}}}}}}}"#,
+                None,
+            ),
+            (
+                r#"{"children":{"s":{"Doc":{"children":{"lens":{"Text":"x"},"settings":{"Doc":{"children":{}}}}}}}}"#,
+                None,
+            ),
+            // Replacement without a type must not resurrect the older one.
+            (
+                r#"{"children":{"s":{"Doc":{"_a":true,"children":{"settings":{"Doc":{"children":{}}}}}}}}"#,
+                Some(Removed),
+            ),
+            (
+                r#"{"children":{"s":{"Doc":{"children":{"type":"Deleted"}}}}}"#,
+                Some(Removed),
+            ),
+            (
+                r#"{"children":{"s":{"Doc":{"children":{"type":{"Text":""}}}}}}"#,
+                Some(Malformed),
+            ),
+            (
+                r#"{"children":{"s":{"Doc":{"children":{"type":{"Int":1}}}}}}"#,
+                Some(Malformed),
+            ),
+            (r#"{"children":{"s":{"Text":"b:v1"}}}"#, Some(Malformed)),
+            (r#"{"_v":1,"children":{}}"#, Some(Malformed)),
+            (r#"not json"#, Some(Malformed)),
+            // Duplicate members at any relevant depth.
+            (
+                r#"{"children":{"s":"Deleted","s":{"Doc":{"children":{"type":{"Text":"b:v1"}}}}}}"#,
+                Some(Malformed),
+            ),
+            (
+                r#"{"children":{"s":{"Doc":{"children":{"type":{"Text":"a"},"type":{"Text":"b:v1"}}}}}}"#,
+                Some(Malformed),
+            ),
+        ] {
+            assert_eq!(types(index, "s"), expected, "{index}");
         }
     }
-    Ok(())
-}
 
-fn is_legacy(id: &str) -> bool {
-    matches!(id, "docstore:v0" | "table:v0" | "settings:v0" | "ydoc:v0")
-}
-
-pub(crate) fn is_structured_family(id: &str) -> bool {
-    !id.is_empty() && !is_legacy(id) && !matches!(id, PASSWORD_TYPE | "structured:v0.1")
-}
-
-pub(crate) fn validate_structured_store(name: &str, id: &ContractDescriptor) -> Result<()> {
-    id.validate()?;
-    if name.is_empty() || name.starts_with('_') || !is_structured_family(&id.store) {
-        return Err(invalid(
-            "invalid Store name or unsupported structured Store type",
-        ));
+    #[test]
+    fn literal_names_do_not_alias_paths() {
+        let literal = r#"{"children":{"a.b":{"Doc":{"children":{"type":{"Text":"t"}}}}}}"#;
+        let nested = r#"{"children":{"a":{"Doc":{"children":{"b":{"Doc":{"children":{"type":{"Text":"t"}}}}}}}}}"#;
+        let both = r#"{"children":{"a.b":{"Doc":{"children":{"type":{"Text":"t"}}}},"a":{"Doc":{"children":{"b":{"Doc":{"children":{"type":{"Text":"u"}}}}}}}}}"#;
+        assert_eq!(types(literal, "a.b"), Some(Declared("t".into())));
+        assert_eq!(types(literal, "a"), None);
+        assert_eq!(types(nested, "a.b"), Some(Malformed));
+        assert_eq!(types(nested, "a"), None);
+        assert_eq!(types(both, "a.b"), Some(Malformed));
     }
-    Ok(())
+
+    #[test]
+    fn config_follows_doc_replacement_rules() {
+        let doc = |key: &str, atomic: bool| {
+            let mut doc = if atomic { Doc::atomic() } else { Doc::new() };
+            doc.set(key, true);
+            doc
+        };
+        let base = ConfigState::Present(doc("x", false));
+        let patch = |doc| ConfigEvent::Patch(Value::Doc(doc));
+        let ConfigState::Present(merged) = base.apply(&patch(doc("y", false))) else {
+            panic!()
+        };
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            base.apply(&patch(doc("y", true))),
+            ConfigState::Present(doc("y", true))
+        );
+        assert_eq!(base.apply(&ConfigEvent::Reset(None)), ConfigState::Absent);
+        assert_eq!(
+            base.apply(&ConfigEvent::Patch(Value::Deleted)),
+            ConfigState::Absent
+        );
+        let bad = base.apply(&ConfigEvent::Malformed);
+        assert_eq!(bad.apply(&patch(doc("y", false))), ConfigState::Malformed);
+        assert_eq!(
+            bad.apply(&patch(doc("y", true))),
+            ConfigState::Present(doc("y", true))
+        );
+    }
 }

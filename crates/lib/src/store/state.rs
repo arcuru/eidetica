@@ -122,13 +122,13 @@ pub(crate) async fn store_cached<T, F>(
     request: StoreStateRequest,
     value: T,
     encode: F,
-) -> Result<(T, Option<RecordView>)>
+) -> Result<T>
 where
     T: Send,
     F: FnOnce(&T) -> Result<Vec<u8>> + Send,
 {
     let token = match backend.begin_store_state_staging(request).await {
-        Err(error) if error.is_optional_store_state_unavailable() => return Ok((value, None)),
+        Err(error) if error.is_optional_store_state_unavailable() => return Ok(value),
         result => result?,
     };
     let bytes = match encode(&value) {
@@ -156,9 +156,12 @@ where
             if error.is_optional_store_state_unavailable()
                 || error.is_invalid_store_state_view() =>
         {
-            Ok((value, None))
+            Ok(value)
         }
-        result => Ok((value, Some(result?))),
+        result => {
+            result?;
+            Ok(value)
+        }
     }
 }
 
@@ -196,6 +199,6 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(value.0, 42);
+        assert_eq!(value, 42);
     }
 }

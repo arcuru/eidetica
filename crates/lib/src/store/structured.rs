@@ -1,47 +1,48 @@
 use std::marker::PhantomData;
 
 use async_trait::async_trait;
-use serde::{Serialize, de::DeserializeOwned};
 
 use super::{
-    Registered, Store, StoreStateModel,
-    schema::{
-        Attributed, ContractDescriptor, ContractId, ContributionAttribution, StoreContract, invalid,
-    },
+    Registered, Store, StoreError, StoreStateModel,
+    password_store::PASSWORD_TYPE,
+    schema::{StructuredState, StructuredType},
 };
 use crate::{Result, Transaction, crdt::CRDT};
 
-/// Opt-in whole-state Store with Entry-scoped historical interpretation.
+/// Opt-in whole-state Store whose contributions keep the Type they were written
+/// under.
 ///
-/// Uses structural Serde once at the whole-Store boundary. Existing Stores and
-/// Entry bytes are unchanged. Mixed, unknown and untagged histories fail closed;
-/// this API does not migrate data or coordinate schema rollouts.
+/// Each contribution is the Type's native canonical DAG-CBOR value. Its Type is
+/// the one declared in `_index` at the contributing Entry, including a
+/// declaration in that Entry. A commit emits bytes of the declared Type or fails.
+/// Reads refuse any history that is not entirely of this exact Type.
 ///
 /// ```no_run
-/// use eidetica::{Database, Result, Store, crdt::Lww};
-/// use eidetica::store::{StructuredStore, schema::{ContractId, StoreContract}};
+/// use eidetica::{Database, Result, Store, crdt::{Doc, Lww}};
+/// use eidetica::store::{StructuredStore, schema::StructuredType};
 /// struct Messages;
-/// impl StoreContract for Messages {
-///     const ID: ContractId = ContractId {
-///         store: "structured:v0.2", data: "eidetica/lww:v0.1",
-///         schema: "example/messages:v0.1",
-///     };
+/// impl StructuredType for Messages {
+///     const TYPE_ID: &'static str = "example/messages:v0.1";
+///     type Data = Lww<String>;
+///     fn grammar(_: &[Doc]) -> Result<Doc> {
+///         Ok(Doc::new())
+///     }
 /// }
 /// # async fn example(db: Database) -> Result<()> {
 /// let tx = db.new_transaction().await?;
-/// let store = StructuredStore::<Lww<String>, Messages>::open(&tx, "message").await?;
+/// let store = StructuredStore::<Messages>::open(&tx, "message").await?;
 /// store.apply(Lww::Set("hello".into())).await?;
 /// assert!(store.read().await?.has_source());
 /// tx.commit().await?;
 /// # Ok(()) }
 /// ```
-pub struct StructuredStore<D, C: StoreContract> {
+pub struct StructuredStore<T: StructuredType> {
     transaction: Transaction,
     name: String,
-    marker: PhantomData<fn() -> (D, C)>,
+    marker: PhantomData<fn() -> T>,
 }
 
-impl<D, C: StoreContract> Clone for StructuredStore<D, C> {
+impl<T: StructuredType> Clone for StructuredStore<T> {
     fn clone(&self) -> Self {
         Self {
             transaction: self.transaction.clone(),
@@ -51,59 +52,56 @@ impl<D, C: StoreContract> Clone for StructuredStore<D, C> {
     }
 }
 
-impl<D, C: StoreContract> Registered for StructuredStore<D, C> {
+impl<T: StructuredType> Registered for StructuredStore<T> {
     fn type_id() -> &'static str {
-        C::ID.store
+        T::TYPE_ID
     }
 }
 
 #[async_trait]
-impl<D, C> Store for StructuredStore<D, C>
-where
-    D: CRDT + Clone + Default + Serialize + DeserializeOwned + Send + Sync + 'static,
-    C: StoreContract,
-{
-    type Data = Attributed<D, C>;
+impl<T: StructuredType> Store for StructuredStore<T> {
+    type Data = StructuredState<T>;
 
     fn state_model() -> StoreStateModel<Self::Data> {
-        StoreStateModel::opaque("eidetica/attributed-opaque", 2)
+        StoreStateModel::opaque("eidetica/structured-opaque", 3)
     }
 
-    fn structured_contract() -> Option<ContractId> {
-        Some(C::ID)
+    fn uses_literal_registration() -> bool {
+        true
     }
 
     async fn register(txn: &Transaction, name: String) -> Result<Self> {
-        let store = Self::load(txn, name).await?;
-        txn.get_index()
-            .await?
-            .set_literal_entry(
-                &store.name,
-                C::ID.store,
-                Some(Self::default_config()),
-                Some(&C::ID.into()),
-            )
-            .await?;
-        Ok(store)
+        Self::stage_declaration(txn, name, Self::default_config()).await
     }
 
+    /// Patches config only. Does not declare a Type.
     async fn set_config(&self, config: crate::crdt::Doc) -> Result<()> {
         if self.transaction.structured_is_encrypted(&self.name) {
-            return Err(invalid(
-                "wrapped configuration must be changed through PasswordStore",
-            ));
+            return Err(StoreError::InvalidOperation {
+                store: self.name.clone(),
+                operation: "set_config".into(),
+                reason: "wrapped configuration must be changed through PasswordStore".into(),
+            }
+            .into());
         }
         self.transaction
             .get_index()
             .await?
             .set_literal_config(&self.name, config)
-            .await
+            .await?;
+        self.transaction.stage_config_writer(&self.name, T::TYPE_ID)
     }
 
     async fn load(txn: &Transaction, name: String) -> Result<Self> {
-        txn.bind_structured::<C>(&name)
-            .await
-            .map_err(|e| txn.structured_error(&name, "load", e))?;
+        if T::TYPE_ID.is_empty() || name.is_empty() || name.starts_with('_') {
+            return Err(StoreError::InvalidOperation {
+                store: name,
+                operation: "load".into(),
+                reason: "invalid structured Store name or Type".into(),
+            }
+            .into());
+        }
+        txn.mark_literal_registration(&name)?;
         Ok(Self {
             transaction: txn.clone(),
             name,
@@ -114,111 +112,116 @@ where
     fn name(&self) -> &str {
         &self.name
     }
+
     fn transaction(&self) -> &Transaction {
         &self.transaction
     }
 
     fn local_data(&self) -> Result<Option<Self::Data>> {
-        use crate::crdt::Codec;
         self.transaction
-            .with_structured_staging(&self.name, |staged| {
-                Ok((staged.map(Attributed::decode).transpose()?, None))
-            })
-            .map_err(|e| {
-                self.transaction
-                    .structured_error(&self.name, "local data", e)
-            })
+            .with_structured_staging::<T, _>(&self.name, |staged, _| Ok((staged, None)))
+            .map_err(|e| self.redact("local data", e))
     }
 }
 
-impl<D, C> StructuredStore<D, C>
-where
-    D: CRDT + Clone + Default + Serialize + DeserializeOwned + Send + Sync + 'static,
-    C: StoreContract,
-{
-    async fn historical(&self) -> Result<Attributed<D, C>> {
+impl<T: StructuredType> StructuredStore<T> {
+    fn redact(&self, operation: &str, error: crate::Error) -> crate::Error {
         self.transaction
-            .read_structured(
-                &self.name,
-                self.transaction
-                    .encrypted_projection_descriptor(&self.name, Self::state_model().descriptor()),
-            )
-            .await
+            .structured_error(&self.name, operation, error)
     }
 
-    /// Advance this plaintext Store's default in the current Entry, without
-    /// staging a contribution or changing what this typed handle can decode.
-    /// The supplied descriptor must use the same Store framing.
-    pub async fn declare_default(&self, descriptor: &ContractDescriptor) -> Result<()> {
-        if self.transaction.structured_is_encrypted(&self.name) {
-            return Err(invalid(
-                "change the default through the unlocked PasswordStore",
-            ));
+    async fn stage_declaration(
+        txn: &Transaction,
+        name: String,
+        config: crate::crdt::Doc,
+    ) -> Result<Self> {
+        let store = Self::load(txn, name).await?;
+        let index = txn.get_index().await?;
+        index.check_registration_alias(&store.name, true).await?;
+        index
+            .set_literal_entry(&store.name, T::TYPE_ID, config)
+            .await?;
+        Ok(store)
+    }
+
+    /// Declare this Type for `name` from the current Entry on, with its complete
+    /// config, and open the Store.
+    ///
+    /// This is the explicit choice that changes a Type or settles conflicting
+    /// declarations. It neither adds a contribution nor reinterprets, converts or
+    /// repairs earlier ones. Values staged under another Type make the commit fail.
+    pub async fn declare(
+        txn: &Transaction,
+        name: impl Into<String> + Send,
+        config: crate::crdt::Doc,
+    ) -> Result<Self> {
+        let name = name.into();
+        // A plaintext declaration must not silently end a Store's encryption.
+        if txn.structured_is_encrypted(&name)
+            || matches!(txn.get_index().await?.entry(&name, true).await,
+                Ok(row) if row.type_id == PASSWORD_TYPE)
+        {
+            return Err(StoreError::InvalidOperation {
+                store: name,
+                operation: "declare".into(),
+                reason: "change a wrapped Type through the unlocked PasswordStore".into(),
+            }
+            .into());
         }
-        if descriptor.store != C::ID.store {
-            return Err(invalid("default must use the same Store grammar"));
-        }
-        self.transaction
-            .get_index()
-            .await?
-            .set_literal_entry(&self.name, C::ID.store, None, Some(descriptor))
-            .await
+        // The whole config, not a patch over the previous Type's config.
+        let complete = crate::crdt::Doc::atomic().merge(&config)?;
+        Self::stage_declaration(txn, name, complete).await
     }
 
-    /// Inspect one actual contribution in this captured authorized history,
-    /// without requiring application support for its data or schema identifier.
-    pub async fn inspect(
-        &self,
-        entry: &crate::entry::ID,
-    ) -> Result<Option<ContributionAttribution>> {
-        self.transaction
-            .inspect_structured(&self.name, C::ID.store, entry)
-            .await
-            .map_err(|e| self.transaction.structured_error(&self.name, "inspect", e))
-    }
-
-    /// Read captured historical state plus the atomically captured staged delta.
-    /// Empty history has no recorded descriptor; `into_value` returns D::default.
-    pub async fn read(&self) -> Result<Attributed<D, C>> {
-        let result = async {
-            let history = self.historical().await?;
+    /// Read captured history plus the staged delta.
+    pub async fn read(&self) -> Result<StructuredState<T>> {
+        async {
+            let history = self.transaction.read_structured::<T>(&self.name).await?;
             self.transaction
-                .with_structured_staging(&self.name, |staged| {
-                    use crate::crdt::Codec;
-                    let value = match staged {
-                        Some(bytes) => history.merge(&Attributed::<D, C>::decode(bytes)?)?,
-                        None => history,
+                .with_structured_staging::<T, _>(&self.name, |staged, _| {
+                    let state = match staged {
+                        Some(staged) => history.state.merge(&staged)?,
+                        None => history.state,
                     };
-                    Ok((value, None))
+                    Ok((state, None))
                 })
         }
-        .await;
-        result.map_err(|e| self.transaction.structured_error(&self.name, "read", e))
+        .await
+        .map_err(|e| self.redact("read", e))
     }
 
     /// Compose, preview and encode before replacing staging under one lock.
-    /// Every failure preserves earlier staged bytes, even if the caller commits.
-    pub async fn apply(&self, delta: D) -> Result<()> {
-        let result = async {
-            let history = self.historical().await?;
+    /// Every failure preserves earlier staged bytes.
+    pub async fn apply(&self, delta: T::Data) -> Result<()> {
+        async {
+            let history = self.transaction.read_structured::<T>(&self.name).await?;
+            let writer_grammar = history.writer_grammar?;
             self.transaction
-                .with_structured_staging(&self.name, |staged| {
+                .with_structured_staging::<T, _>(&self.name, |staged, grammar| {
                     use crate::crdt::Codec;
-                    let delta = Attributed::<D, C>::new(delta);
+                    if [history.grammar.as_ref(), grammar]
+                        .into_iter()
+                        .flatten()
+                        .any(|g| g != &writer_grammar)
+                    {
+                        return Err(super::schema::invalid(
+                            "Store config does not match the values being extended",
+                        ));
+                    }
+                    let delta = StructuredState::<T>::new(delta);
                     let composed = match staged {
-                        Some(bytes) => Attributed::<D, C>::decode(bytes)?.merge(&delta)?,
+                        Some(staged) => staged.merge(&delta)?,
                         None => delta,
                     };
-                    let preview = history.merge(&composed)?;
-                    // Qualify both the durable delta and resulting typed view. The
-                    // round-trip rejects a custom serializer/decoder that loses state.
+                    // Qualify both the durable delta and the resulting view. The
+                    // round trip rejects a serializer that loses state.
                     let bytes = composed.encode()?;
-                    Attributed::<D, C>::decode(&bytes)?;
-                    Attributed::<D, C>::decode(&preview.encode()?)?;
-                    Ok(((), Some(bytes)))
+                    StructuredState::<T>::decode(&bytes)?;
+                    StructuredState::<T>::decode(&history.state.merge(&composed)?.encode()?)?;
+                    Ok(((), Some((bytes, writer_grammar))))
                 })
         }
-        .await;
-        result.map_err(|e| self.transaction.structured_error(&self.name, "apply", e))
+        .await
+        .map_err(|e| self.redact("apply", e))
     }
 }

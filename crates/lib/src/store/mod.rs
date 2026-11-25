@@ -180,14 +180,11 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// This is the type stored within each individual Entry.
     type Data: CRDT + Codec + Default + 'static;
 
-    #[doc(hidden)]
-    fn structured_contract() -> Option<schema::ContractId> {
-        None
-    }
-
+    /// Whether the `_index` row is the literal Store name and is edited by
+    /// patches that do not redeclare its Type.
     #[doc(hidden)]
     fn uses_literal_registration() -> bool {
-        Self::structured_contract().is_some()
+        false
     }
 
     /// Representation of this store's cached current state.
@@ -313,9 +310,7 @@ pub trait Store: Sized + Registered + Send + Sync {
     async fn set_config(&self, config: Doc) -> Result<()> {
         let index = self.transaction().get_index().await?;
         if Self::uses_literal_registration() {
-            index
-                .set_literal_entry(self.name(), Self::type_id(), Some(config), None)
-                .await
+            index.set_literal_config(self.name(), config).await
         } else {
             index.set_entry(self.name(), Self::type_id(), config).await
         }
@@ -356,14 +351,15 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// Returns an error if the subtree is not registered in `_index`.
     async fn set_height_strategy(&self, strategy: Option<HeightStrategy>) -> Result<()> {
         let index = self.transaction().get_index().await?;
-        let settings = SubtreeSettings {
-            height_strategy: strategy,
-        };
         if Self::uses_literal_registration() {
-            index.set_literal_settings(self.name(), settings).await
-        } else {
-            index.set_subtree_settings(self.name(), settings).await
+            let settings = SubtreeSettings {
+                height_strategy: strategy,
+            };
+            return index.set_literal_settings(self.name(), settings).await;
         }
+        let mut settings = index.get_subtree_settings(self.name()).await?;
+        settings.height_strategy = strategy;
+        index.set_subtree_settings(self.name(), settings).await
     }
 
     /// Returns the local (staged) data for this store from the current transaction.

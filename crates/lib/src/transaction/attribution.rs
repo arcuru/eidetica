@@ -6,33 +6,31 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use serde::{Serialize, de::DeserializeOwned};
-
 use super::{Transaction, TransactionError};
 use crate::{
     Entry, Error, Result, Snapshot,
-    backend::{CacheScope, StoreStateRequest, VerificationStatus},
+    backend::{CacheScope, VerificationStatus},
     constants::INDEX,
     crdt::{CRDT, Codec, Doc, doc::Value},
     entry::{EntryBuilder, ID},
     store::{
-        ProjectionDescriptor, StoreError,
-        attribution::{self, Declaration},
-        schema::{self, Attributed, ContractDescriptor, ContributionAttribution, StoreContract},
+        Store, StoreError, StructuredStore,
+        attribution::{self, ConfigState, RowDelta, TypeEvent},
+        schema::{ContributionType, StructuredState, StructuredType},
         state,
     },
 };
 
-use schema::invalid;
-
 struct MainHistory {
+    store: String,
     entries: Vec<Entry>,
     by_id: HashMap<ID, usize>,
     parents: Vec<Vec<usize>>,
 }
 
 impl MainHistory {
-    async fn load(tx: &Transaction, tips: &[ID]) -> Result<Self> {
+    async fn load(tx: &Transaction, store: &str, tips: &[ID]) -> Result<Self> {
+        let invalid = |reason: &str| unavailable(store, reason);
         let mut entries: HashMap<ID, Entry> = HashMap::new();
         let backend = tx.db.ops();
         let local = backend.local_engine();
@@ -54,7 +52,7 @@ impl MainHistory {
                         .pop()
                         .ok_or_else(|| invalid("captured attribution tips are not verified"))?;
                     if !entries.contains_key(&id) {
-                        let entry = checked_entry(tx, &id).await?;
+                        let entry = checked_entry(tx, store, &id).await?;
                         pending.extend(entry.parents()?);
                         entries.insert(id.clone(), entry);
                     }
@@ -67,6 +65,7 @@ impl MainHistory {
         // timestamp/height policy or recursion depth. Every dependency is
         // fetched through this handle's same authorized read seam.
         let mut history = Self {
+            store: store.into(),
             entries: Vec::new(),
             by_id: HashMap::new(),
             parents: Vec::new(),
@@ -103,7 +102,7 @@ impl MainHistory {
             let entry = match entries.get(&id) {
                 Some(entry) => entry,
                 None => {
-                    let entry = checked_entry(tx, &id).await?;
+                    let entry = checked_entry(tx, store, &id).await?;
                     entries.entry(id.clone()).or_insert(entry)
                 }
             };
@@ -118,26 +117,43 @@ impl MainHistory {
     }
 
     fn position(&self, id: &ID) -> Result<usize> {
-        self.by_id
-            .get(id)
-            .copied()
-            .ok_or_else(|| invalid("Store link is outside the verified main history"))
+        self.by_id.get(id).copied().ok_or_else(|| {
+            unavailable(
+                &self.store,
+                "Entry is outside the captured verified history",
+            )
+        })
     }
 
-    fn store_order(&self, store: &str, tips: &[ID]) -> Result<Vec<usize>> {
+    fn positions(&self, ids: &[ID]) -> Result<Vec<usize>> {
+        ids.iter().map(|id| self.position(id)).collect()
+    }
+
+    fn contribution(&self, registration: Registration) -> ContributionType {
+        ContributionType {
+            type_id: registration.type_id,
+            declared_by: registration
+                .declared_by
+                .into_iter()
+                .map(|n| self.entries[n].id())
+                .collect(),
+        }
+    }
+
+    fn store_order(&self, tips: &[ID]) -> Result<Vec<usize>> {
         let mut seen = HashSet::new();
         let mut pending = tips.to_vec();
         while let Some(id) = pending.pop() {
             let n = self.position(&id)?;
             if seen.insert(n) {
-                pending.extend(self.entries[n].subtree_parents(store)?);
+                pending.extend(self.entries[n].subtree_parents(&self.store)?);
             }
         }
         let mut order = seen
             .into_iter()
             .map(|n| {
                 Ok((
-                    self.entries[n].subtree_height(store)?,
+                    self.entries[n].subtree_height(&self.store)?,
                     self.entries[n].id_ref(),
                     n,
                 ))
@@ -147,15 +163,18 @@ impl MainHistory {
         Ok(order.into_iter().map(|(_, _, n)| n).collect())
     }
 
-    fn store_tips(&self, store: &str) -> Result<Snapshot> {
+    fn store_tips(&self) -> Result<Snapshot> {
         let mut tips = BTreeSet::new();
         for entry in &self.entries {
-            if entry.in_subtree(store) {
+            if entry.in_subtree(&self.store) {
                 tips.insert(entry.id());
-                for p in entry.subtree_parents(store)? {
+                for p in entry.subtree_parents(&self.store)? {
                     // Never treat an omitted/missing dependency as a branch.
-                    if !self.entries[self.position(&p)?].in_subtree(store) {
-                        return Err(invalid("parent does not contribute to the Store history"));
+                    if !self.entries[self.position(&p)?].in_subtree(&self.store) {
+                        return Err(unavailable(
+                            &self.store,
+                            "a Store parent does not contribute to the Store",
+                        ));
                     }
                     tips.remove(&p);
                 }
@@ -165,64 +184,136 @@ impl MainHistory {
     }
 }
 
-async fn checked_entry(tx: &Transaction, id: &ID) -> Result<Entry> {
+fn unavailable(store: &str, reason: &str) -> Error {
+    StoreError::HistoryUnavailable {
+        store: store.into(),
+        reason: reason.into(),
+    }
+    .into()
+}
+
+fn unresolved(store: &str, reason: &str) -> Error {
+    StoreError::UnresolvedType {
+        store: store.into(),
+        reason: reason.into(),
+    }
+    .into()
+}
+
+async fn checked_entry(tx: &Transaction, store: &str, id: &ID) -> Result<Entry> {
     let entry = tx.db.ops().get(id).await?;
     if entry.id_ref() != id || !entry.in_tree(tx.db.root_id()) {
-        return Err(invalid("wrong source Entry for attribution history"));
+        return Err(unavailable(store, "wrong source Entry"));
     }
     Ok(entry)
 }
 
-struct HistoricalDefaults<'a> {
-    history: &'a MainHistory,
-    declarations: HashMap<usize, Declaration>,
-    frontiers: Vec<BTreeSet<usize>>,
-    reachability: HashMap<(usize, usize), bool>,
-    decoded: HashMap<usize, ContractDescriptor>,
+/// Surviving declarations of one Store at one cut. The two halves move
+/// independently: a config edit does not declare a Type.
+#[derive(Clone, Default)]
+struct Frontier {
+    types: BTreeSet<usize>,
+    configs: BTreeSet<usize>,
 }
 
-impl<'a> HistoricalDefaults<'a> {
-    fn new(history: &'a MainHistory, store: &str) -> Self {
-        let mut defaults = Self {
+struct Registrations<'a> {
+    history: &'a MainHistory,
+    types: HashMap<usize, TypeEvent>,
+    configs: HashMap<usize, Vec<ConfigState>>,
+    frontiers: Vec<Frontier>,
+    reachability: HashMap<(usize, usize), bool>,
+}
+
+/// One cut's unique Type, and every distinct config its history leaves there.
+struct Registration {
+    type_id: String,
+    declared_by: Vec<usize>,
+    configs: Vec<ConfigState>,
+}
+
+impl<'a> Registrations<'a> {
+    fn new(history: &'a MainHistory) -> Self {
+        let mut registrations = Self {
             history,
-            declarations: HashMap::new(),
+            types: HashMap::new(),
+            configs: HashMap::new(),
             frontiers: Vec::with_capacity(history.entries.len()),
             reachability: HashMap::new(),
-            decoded: HashMap::new(),
         };
         for (n, entry) in history.entries.iter().enumerate() {
-            let mut frontier = defaults.inherited(&history.parents[n]);
-            if let Some(declaration) = entry
-                .data(INDEX)
-                .ok()
-                .and_then(|bytes| attribution::project(bytes, store))
-                && !defaults.leaves_declaration(&frontier, &declaration)
-            {
-                defaults.declarations.insert(n, declaration);
-                frontier = BTreeSet::from([n]);
-            }
-            defaults.frontiers.push(frontier);
+            let frontier = registrations.step(
+                &history.parents[n],
+                n,
+                entry.data(INDEX).ok().map(Vec::as_slice),
+            );
+            registrations.frontiers.push(frontier);
         }
-        defaults
+        registrations
     }
 
-    fn inherited(&mut self, parents: &[usize]) -> BTreeSet<usize> {
+    /// The registration an Entry with these main parents and row delta would have.
+    fn staged(&mut self, parents: &[usize], index: Option<&[u8]>) -> Result<Registration> {
+        // One past the history: a position no committed Entry can reach.
+        let n = self.history.entries.len();
+        let frontier = self.step(parents, n, index);
+        self.resolve(&frontier)
+    }
+
+    /// Inherited declarations, then this Entry's own row delta last.
+    fn step(&mut self, parents: &[usize], n: usize, index: Option<&[u8]>) -> Frontier {
+        let mut frontier = self.inherited(parents);
+        let delta = index.map_or_else(RowDelta::default, |bytes| {
+            attribution::project(bytes, &self.history.store)
+        });
+        if let Some(event) = delta.type_event {
+            self.types.insert(n, event);
+            frontier.types = BTreeSet::from([n]);
+        }
+        if let Some(event) = delta.config {
+            let states = distinct(
+                self.config_states(&frontier.configs)
+                    .iter()
+                    .map(|base| base.apply(&event)),
+            );
+            self.configs.insert(n, states);
+            frontier.configs = BTreeSet::from([n]);
+        }
+        frontier
+    }
+
+    fn config_states(&self, origins: &BTreeSet<usize>) -> Vec<ConfigState> {
+        if origins.is_empty() {
+            return vec![ConfigState::Absent];
+        }
+        distinct(origins.iter().flat_map(|n| self.configs[n].iter().cloned()))
+    }
+
+    fn inherited(&mut self, parents: &[usize]) -> Frontier {
         if let [parent] = parents {
             return self.frontiers[*parent].clone();
         }
-        let mut maximal = BTreeSet::new();
-        let candidates: BTreeSet<_> = parents
-            .iter()
-            .flat_map(|p| self.frontiers[*p].iter().copied())
-            .collect();
-        // Parent sets were already reduced. Compare origins only at joins;
-        // the topological index is a pruning bound, never a winner rule.
+        let mut union = Frontier::default();
+        for parent in parents {
+            union.types.extend(&self.frontiers[*parent].types);
+            union.configs.extend(&self.frontiers[*parent].configs);
+        }
+        Frontier {
+            types: self.latest(union.types),
+            configs: self.latest(union.configs),
+        }
+    }
+
+    /// Drop an origin only if a later one descends from it. Parent sets were
+    /// already reduced, so this compares origins only at joins. The topological
+    /// index is a pruning bound, never a winner rule.
+    fn latest(&mut self, candidates: BTreeSet<usize>) -> BTreeSet<usize> {
+        let mut latest = BTreeSet::new();
         for origin in candidates.into_iter().rev() {
-            if !maximal.iter().any(|&later| self.is_ancestor(origin, later)) {
-                maximal.insert(origin);
+            if !latest.iter().any(|&later| self.is_ancestor(origin, later)) {
+                latest.insert(origin);
             }
         }
-        maximal
+        latest
     }
 
     fn is_ancestor(&mut self, earlier: usize, later: usize) -> bool {
@@ -245,50 +336,70 @@ impl<'a> HistoricalDefaults<'a> {
             })
     }
 
-    fn leaves_declaration(&self, frontier: &BTreeSet<usize>, declaration: &Declaration) -> bool {
-        match declaration {
-            Declaration::Wrapped(_) => frontier
-                .iter()
-                .any(|origin| &self.declarations[origin] == declaration),
-            Declaration::PlainConfigPatch => {
-                !frontier.is_empty()
-                    && frontier
-                        .iter()
-                        .all(|origin| matches!(self.declarations[origin], Declaration::Plain(_)))
-            }
-            _ => false,
-        }
+    fn at(&self, n: usize) -> Result<Registration> {
+        self.resolve(&self.frontiers[n])
     }
 
-    fn resolve(
-        &mut self,
-        tx: &Transaction,
-        store: &str,
-        frontier: &BTreeSet<usize>,
-    ) -> Result<ContractDescriptor> {
-        let mut resolved = None;
-        for &origin in frontier {
-            let id = if let Some(id) = self.decoded.get(&origin) {
-                id.clone()
-            } else {
-                let id = tx.resolve_declaration(store, &self.declarations[&origin])?;
-                self.decoded.insert(origin, id.clone());
-                id
+    fn resolve(&self, frontier: &Frontier) -> Result<Registration> {
+        let store = &self.history.store;
+        let mut type_id: Option<&String> = None;
+        for origin in &frontier.types {
+            let declared = match &self.types[origin] {
+                TypeEvent::Declared(declared) => declared,
+                TypeEvent::Malformed => return Err(unresolved(store, "malformed registration")),
+                // Alone this is an unregistered Store. Beside a declaration it is
+                // a conflict. Neither has a Type.
+                TypeEvent::Removed => return Err(unresolved(store, "registration was removed")),
             };
-            if resolved.as_ref().is_some_and(|previous| previous != &id) {
-                return Err(invalid(
-                    "incomparable historical Store declarations disagree",
-                ));
+            if type_id.is_some_and(|previous| previous != declared) {
+                return Err(unresolved(store, "concurrent declarations disagree"));
             }
-            resolved = Some(id);
+            type_id = Some(declared);
         }
-        resolved.ok_or_else(|| invalid("no historical Store declaration"))
+        Ok(Registration {
+            type_id: type_id
+                .ok_or_else(|| unresolved(store, "no Type was declared"))?
+                .clone(),
+            declared_by: frontier.types.iter().copied().collect(),
+            configs: self.config_states(&frontier.configs),
+        })
     }
 }
 
+fn distinct<T: PartialEq>(values: impl Iterator<Item = T>) -> Vec<T> {
+    let mut distinct = Vec::new();
+    for value in values {
+        if !distinct.contains(&value) {
+            distinct.push(value);
+        }
+    }
+    distinct
+}
+
+/// Bytes an encoder produced, with what it produced them for. Commit compares
+/// them with the final declaration instead of trusting the order of API calls.
+#[derive(Clone)]
+pub(crate) struct StagedContribution {
+    type_id: &'static str,
+    grammar_of: fn(&[Doc]) -> Result<Doc>,
+    grammar: Doc,
+    bytes: Vec<u8>,
+}
+
+/// Everything a typed handle needs from the captured history.
+pub(crate) struct StructuredHistory<T: StructuredType> {
+    pub(crate) state: StructuredState<T>,
+    /// Grammar shared by all contributions, if there are any.
+    pub(crate) grammar: Option<Doc>,
+    /// Grammar the next value would be encoded for, or why there is none.
+    pub(crate) writer_grammar: Result<Doc>,
+}
+
 impl Transaction {
+    /// Detach staged state from cloned handles, so nothing can change between the
+    /// final Type check and signing.
     pub(super) fn freeze_structured(&mut self) -> Result<bool> {
-        let (builder, literals, contracts, encryptors, record_deltas) = {
+        let (builder, literals, staged, config_writers, encryptors, record_deltas) = {
             let mut builder = self.entry_builder.lock().unwrap();
             let literals = self.literal_registrations.lock().unwrap();
             if literals.is_empty() {
@@ -300,24 +411,46 @@ impl Transaction {
             (
                 builder,
                 literals.clone(),
-                self.structured_contracts.lock().unwrap().clone(),
+                self.structured_staging.lock().unwrap().clone(),
+                self.structured_config_writers.lock().unwrap().clone(),
                 self.encryptors.lock().unwrap().clone(),
                 self.logical_record_mutations.lock().unwrap().clone(),
             )
         };
         self.entry_builder = Arc::new(Mutex::new(Some(builder)));
         self.literal_registrations = Arc::new(Mutex::new(literals));
-        self.structured_contracts = Arc::new(Mutex::new(contracts));
+        self.structured_staging = Arc::new(Mutex::new(staged));
+        self.structured_config_writers = Arc::new(Mutex::new(config_writers));
         self.encryptors = Arc::new(Mutex::new(encryptors));
         self.logical_record_mutations = Arc::new(Mutex::new(record_deltas));
         Ok(true)
     }
 
-    pub(crate) fn mark_literal_registration(&self, name: &str) {
+    pub(crate) fn mark_literal_registration(&self, name: &str) -> Result<()> {
+        let builder = self.entry_builder.lock().unwrap();
+        if builder.is_none() {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         self.literal_registrations
             .lock()
             .unwrap()
             .insert(name.into());
+        Ok(())
+    }
+
+    /// A config edit is valid only under the Type whose handle made it.
+    pub(crate) fn stage_config_writer(&self, name: &str, type_id: &'static str) -> Result<()> {
+        let builder = self.entry_builder.lock().unwrap();
+        if builder.is_none() {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
+        self.structured_config_writers
+            .lock()
+            .unwrap()
+            .entry(name.into())
+            .or_default()
+            .insert(type_id);
+        Ok(())
     }
 
     pub(crate) fn structured_is_encrypted(&self, store: &str) -> bool {
@@ -325,8 +458,9 @@ impl Transaction {
     }
 
     pub(crate) fn structured_error(&self, store: &str, operation: &str, error: Error) -> Error {
-        // Application serializers and mergers can return arbitrary errors; no
-        // error text from an encrypted structured operation is safe to echo.
+        // Application serializers and mergers can return arbitrary errors, and an
+        // inner Type is private. No error text from an encrypted structured
+        // operation is safe to echo.
         if self.structured_is_encrypted(store) {
             StoreError::InvalidOperation {
                 store: store.into(),
@@ -339,70 +473,48 @@ impl Transaction {
         }
     }
 
-    pub(crate) async fn bind_structured<C: StoreContract>(&self, store: &str) -> Result<()> {
-        let expected = ContractDescriptor::from(C::ID);
-        attribution::validate_structured_store(store, &expected)?;
-        let unlocked = self
-            .encryptors
-            .lock()
-            .unwrap()
-            .get(store)
-            .map(|e| e.supports_store_type(C::ID.store));
-        match unlocked {
-            Some(false) => return Err(invalid("wrapped Store type mismatch")),
-            Some(true) => {
-                schema::protect(Some(&expected))?;
-            }
-            None => match self.get_index().await?.entry(store, true).await {
-                Ok(info) if info.type_id != C::ID.store => {
-                    return Err(StoreError::TypeMismatch {
-                        store: store.into(),
-                        expected: C::ID.store.into(),
-                        actual: info.type_id,
-                    }
-                    .into());
-                }
-                Ok(_) => {}
-                Err(Error::Store(e)) if matches!(e.as_ref(), StoreError::KeyNotFound { store: s, key } if s == INDEX && key == store) =>
-                {
-                    // A pre-existing path-based legacy registration may not be
-                    // replaced by adding a literal row for the same subtree.
-                    self.get_index()
-                        .await?
-                        .check_registration_alias(store, true)
-                        .await?;
-                }
-                Err(e) => return Err(e),
-            },
-        }
-        let builder = self.entry_builder.lock().unwrap();
-        if builder.is_none() {
-            return Err(TransactionError::TransactionAlreadyCommitted.into());
-        }
-        self.mark_literal_registration(store);
-        let mut bindings = self.structured_contracts.lock().unwrap();
-        if bindings.get(store).is_some_and(|bound| bound != &expected) {
-            return Err(invalid(
-                "structured Store already bound to another contract",
-            ));
-        }
-        bindings.insert(store.into(), expected);
-        Ok(())
-    }
-
     /// Serialize decode/compose/preview/replace across cloned handles.
-    pub(crate) fn with_structured_staging<T>(
+    ///
+    /// `apply` sees the value and grammar staged by this Type's encoder. Bytes
+    /// from anything else are never decoded.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn with_structured_staging<T: StructuredType, R>(
         &self,
         store: &str,
-        apply: impl FnOnce(Option<&[u8]>) -> Result<(T, Option<Vec<u8>>)>,
-    ) -> Result<T> {
+        apply: impl FnOnce(
+            Option<StructuredState<T>>,
+            Option<&Doc>,
+        ) -> Result<(R, Option<(Vec<u8>, Doc)>)>,
+    ) -> Result<R> {
         let mut guard = self.entry_builder.lock().unwrap();
         let builder = guard
             .as_mut()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-        let (result, bytes) = apply(builder.data(store).ok().map(Vec::as_slice))?;
-        if let Some(bytes) = bytes {
-            builder.set_subtree_data_mut(store.to_string(), bytes);
+        let mut staging = self.structured_staging.lock().unwrap();
+        let current = match builder.data(store).ok() {
+            None => None,
+            Some(bytes) => Some(
+                staging
+                    .get(store)
+                    .filter(|staged| staged.type_id == T::TYPE_ID && &staged.bytes == bytes)
+                    .ok_or_else(|| unresolved(store, "staged bytes are not of this Type"))?,
+            ),
+        };
+        let value = current
+            .map(|staged| StructuredState::decode(&staged.bytes))
+            .transpose()?;
+        let (result, replacement) = apply(value, current.map(|staged| &staged.grammar))?;
+        if let Some((bytes, grammar)) = replacement {
+            builder.set_subtree_data_mut(store.to_string(), bytes.clone());
+            staging.insert(
+                store.into(),
+                StagedContribution {
+                    type_id: T::TYPE_ID,
+                    grammar_of: T::grammar,
+                    grammar,
+                    bytes,
+                },
+            );
         }
         Ok(result)
     }
@@ -414,91 +526,228 @@ impl Transaction {
         patch: Doc,
     ) -> Result<()> {
         self.init_subtree_parents(index).await?;
-        self.mark_literal_registration(store);
-        self.with_structured_staging(index, |bytes| {
-            let mut index = bytes.map(Doc::decode).transpose()?.unwrap_or_default();
-            let row = match index.get_literal(store) {
-                Some(Value::Doc(row)) => row.merge(&patch)?,
-                _ => patch,
-            };
-            index.set_literal(store, Value::Doc(row));
-            Ok(((), Some(index.encode()?)))
-        })
+        self.mark_literal_registration(store)?;
+        let mut guard = self.entry_builder.lock().unwrap();
+        let builder = guard
+            .as_mut()
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+        let mut rows = builder
+            .data(index)
+            .ok()
+            .map(|bytes| Doc::decode(bytes))
+            .transpose()?
+            .unwrap_or_default();
+        let row = match rows.get_literal(store) {
+            Some(Value::Doc(row)) => row.merge(&patch)?,
+            _ => patch,
+        };
+        rows.set_literal(store, Value::Doc(row));
+        builder.set_subtree_data_mut(index.to_string(), rows.encode()?);
+        Ok(())
     }
 
-    fn resolve_declaration(
-        &self,
-        store: &str,
-        declaration: &Declaration,
-    ) -> Result<ContractDescriptor> {
-        let encryptors = self.encryptors.lock().unwrap();
-        let encryptor = encryptors.get(store);
-        match declaration {
-            Declaration::Plain(id) if encryptor.is_none() => Ok(id.clone()),
-            Declaration::Wrapped(config) if encryptor.is_some() => {
-                encryptors[store].historical_descriptor(config)
-            }
-            Declaration::Wrapped(_) => Err(invalid("historical wrapped configuration is locked")),
-            Declaration::Plain(_) => Err(invalid("historical Store is not encrypted")),
-            Declaration::Legacy => Err(invalid("historical Store is legacy and unattributed")),
-            Declaration::Missing => Err(invalid(
-                "historical Store declaration was removed or never initialized",
-            )),
-            Declaration::Malformed | Declaration::PlainConfigPatch => {
-                Err(invalid("malformed historical Store declaration"))
-            }
-            Declaration::Unsupported => Err(invalid("unsupported historical Store registration")),
-        }
-    }
-
-    pub(super) async fn finalize_structured(&self, builder: &mut EntryBuilder) -> Result<()> {
-        let bindings: Vec<_> = self
-            .structured_contracts
-            .lock()
-            .unwrap()
+    /// Turn the public declaration into the Type that owns the bytes. Only an
+    /// unlocked wrapper can open its protected metadata, at this same cut.
+    fn interpret(&self, store: &str, outer: &Registration) -> Result<(String, Vec<Doc>)> {
+        let configs = outer
+            .configs
             .iter()
-            .filter(|(store, _)| builder.data(store).is_ok())
-            .map(|(store, id)| (store.clone(), id.clone()))
-            .collect();
-        if bindings.is_empty() && builder.data(INDEX).is_err() {
-            return Ok(());
-        }
-        let parents = builder.parents()?;
-        let history = MainHistory::load(self, &parents).await?;
-        let positions = parents
-            .iter()
-            .map(|id| history.position(id))
+            .map(|state| match state {
+                ConfigState::Present(doc) => Ok(doc.clone()),
+                ConfigState::Absent => Ok(Doc::new()),
+                ConfigState::Malformed => Err(unresolved(store, "malformed Store config")),
+            })
             .collect::<Result<Vec<_>>>()?;
-        let staged_index = builder.data(INDEX).ok().cloned();
-        for (store, bound) in bindings {
-            let finalized = (|| {
-                let mut defaults = HistoricalDefaults::new(&history, &store);
-                let inherited = defaults.inherited(&positions);
-                let default = match staged_index
-                    .as_deref()
-                    .and_then(|bytes| attribution::project(bytes, &store))
-                {
-                    Some(declaration) if !defaults.leaves_declaration(&inherited, &declaration) => {
-                        self.resolve_declaration(&store, &declaration)?
-                    }
-                    _ => defaults.resolve(self, &store, &inherited)?,
-                };
-                schema::finalize_contribution(
-                    builder.data(&store)?,
-                    &bound,
-                    &default,
-                    self.structured_is_encrypted(&store),
-                )
-            })()
-            .map_err(|e| self.structured_error(&store, "commit", e))?;
-            builder.set_subtree_data_mut(store, finalized);
+        let encryptors = self.encryptors.lock().unwrap();
+        let Some(encryptor) = encryptors.get(store) else {
+            return Ok((outer.type_id.clone(), distinct(configs.into_iter())));
+        };
+        let mut type_id = None;
+        let mut inner_configs = Vec::new();
+        for config in configs {
+            let (inner, config) = encryptor.inner_registration(&outer.type_id, &config)?;
+            if type_id.as_ref().is_some_and(|previous| previous != &inner) {
+                return Err(unresolved(store, "concurrent declarations disagree"));
+            }
+            type_id = Some(inner);
+            inner_configs.push(config);
+        }
+        Ok((
+            type_id.ok_or_else(|| unresolved(store, "no Type was declared"))?,
+            distinct(inner_configs.into_iter()),
+        ))
+    }
+
+    /// Check every staged structured value against the final declaration of the
+    /// Entry that will carry it, before anything is encrypted or signed.
+    pub(super) async fn finalize_structured(&self, builder: &EntryBuilder) -> Result<()> {
+        let names = self.literal_registrations.lock().unwrap().clone();
+        for store in names {
+            let writers = self
+                .structured_config_writers
+                .lock()
+                .unwrap()
+                .get(&store)
+                .cloned()
+                .unwrap_or_default();
+            let data = builder.data(&store).ok();
+            if data.is_none() && writers.is_empty() {
+                continue;
+            }
+            self.check_declaration(builder, &store, data, &writers)
+                .await
+                .map_err(|e| self.structured_error(&store, "commit", e))?;
         }
         Ok(())
     }
 
-    async fn structured_history(&self, store: &str) -> Result<(MainHistory, Snapshot, Vec<usize>)> {
+    async fn check_declaration(
+        &self,
+        builder: &EntryBuilder,
+        store: &str,
+        data: Option<&Vec<u8>>,
+        config_writers: &BTreeSet<&'static str>,
+    ) -> Result<()> {
+        let parents = builder.parents()?;
+        let history = MainHistory::load(self, store, &parents).await?;
+        let positions = history.positions(&parents)?;
+        let registration = Registrations::new(&history)
+            .staged(&positions, builder.data(INDEX).ok().map(Vec::as_slice))?;
+        let (type_id, configs) = self.interpret(store, &registration)?;
+        if config_writers.iter().any(|writer| *writer != type_id) {
+            return Err(unresolved(
+                store,
+                "config was edited for a different Type than the one declared",
+            ));
+        }
+        let Some(data) = data else {
+            return Ok(());
+        };
+        let staged = self
+            .structured_staging
+            .lock()
+            .unwrap()
+            .get(store)
+            .filter(|staged| &staged.bytes == data)
+            .cloned()
+            .ok_or_else(|| unresolved(store, "staged bytes have no encoder Type"))?;
+        if staged.type_id != type_id {
+            return Err(unresolved(
+                store,
+                "value was encoded for a different Type than the one declared",
+            ));
+        }
+        if (staged.grammar_of)(&configs)? != staged.grammar {
+            return Err(unresolved(
+                store,
+                "value was encoded for a different Store config than the one declared",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Identify the declared Type of one contribution without decoding its value
+    /// or needing code for the Type.
+    ///
+    /// Uses this transaction's captured parents and the handle's read access.
+    /// `Ok(None)` means that the Entry has no data for `store`. A wrapped Store
+    /// reports its wrapper's Type.
+    ///
+    /// # Errors
+    /// [`StoreError::UnresolvedType`] if the complete verified history gives the
+    /// contribution no unique Type. [`StoreError::HistoryUnavailable`] or a
+    /// backend error if that history is incomplete, which is not evidence that no
+    /// Type was declared.
+    pub async fn inspect_contribution(
+        &self,
+        store: impl AsRef<str> + Send,
+        entry: &ID,
+    ) -> Result<Option<ContributionType>> {
+        Ok(self
+            .contribution_registration(store.as_ref(), entry)
+            .await?
+            .map(|(history, registration)| history.contribution(registration)))
+    }
+
+    /// `inspect_contribution` through an unlocked wrapper.
+    pub(crate) async fn inspect_wrapped(
+        &self,
+        store: &str,
+        entry: &ID,
+    ) -> Result<Option<ContributionType>> {
+        async {
+            let Some((history, registration)) =
+                self.contribution_registration(store, entry).await?
+            else {
+                return Ok(None);
+            };
+            let (type_id, _) = self.interpret(store, &registration)?;
+            Ok(Some(ContributionType {
+                type_id,
+                ..history.contribution(registration)
+            }))
+        }
+        .await
+        .map_err(|e| self.structured_error(store, "inspect", e))
+    }
+
+    async fn contribution_registration(
+        &self,
+        store: &str,
+        entry: &ID,
+    ) -> Result<Option<(MainHistory, Registration)>> {
+        let history = self.main_history(store).await?;
+        let n = history.position(entry)?;
+        if history.entries[n].data(store).is_err() {
+            return Ok(None);
+        }
+        let registration = Registrations::new(&history).at(n)?;
+        Ok(Some((history, registration)))
+    }
+
+    /// Refuse to copy the displayed registry row over concurrent declarations
+    /// that disagree. Without a complete verified history there is nothing to
+    /// compare, and the legacy registry path keeps its existing behavior.
+    pub(crate) async fn check_registry_copy(&self, store: &str) -> Result<()> {
+        let Ok(history) = self.main_history(store).await else {
+            return Ok(());
+        };
+        let (parents, index) = {
+            let guard = self.entry_builder.lock().unwrap();
+            let builder = guard
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+            (builder.parents()?, builder.data(INDEX).ok().cloned())
+        };
+        let positions = history.positions(&parents)?;
+        let mut registrations = Registrations::new(&history);
+        let n = history.entries.len();
+        let frontier = registrations.step(&positions, n, index.as_deref());
+        if distinct(frontier.types.iter().map(|n| &registrations.types[n])).len() > 1
+            || registrations.config_states(&frontier.configs).len() > 1
+        {
+            return Err(unresolved(store, "concurrent declarations disagree"));
+        }
+        Ok(())
+    }
+
+    async fn main_history(&self, store: &str) -> Result<MainHistory> {
+        let parents = {
+            let guard = self.entry_builder.lock().unwrap();
+            guard
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?
+                .parents()?
+        };
+        MainHistory::load(self, store, &parents).await
+    }
+
+    pub(crate) async fn read_structured<T: StructuredType>(
+        &self,
+        store: &str,
+    ) -> Result<StructuredHistory<T>> {
         self.init_subtree_parents(store).await?;
-        let (main, subtree) = {
+        let (parents, captured, index) = {
             let guard = self.entry_builder.lock().unwrap();
             let builder = guard
                 .as_ref()
@@ -506,177 +755,94 @@ impl Transaction {
             (
                 builder.parents()?,
                 Snapshot::from(builder.subtree_parents(store)?),
+                builder.data(INDEX).ok().cloned(),
             )
         };
-        let history = MainHistory::load(self, &main).await?;
-        let actual = history.store_tips(store)?;
-        if actual != subtree {
-            return Err(invalid(
+        let history = MainHistory::load(self, store, &parents).await?;
+        if history.store_tips()? != captured {
+            return Err(unavailable(
+                store,
                 "captured Store tips do not cover the verified main history",
             ));
         }
-        let order = history.store_order(store, actual.tips())?;
-        Ok((history, actual, order))
-    }
+        let mut registrations = Registrations::new(&history);
 
-    fn resolve_contribution(
-        &self,
-        store: &str,
-        store_type: &str,
-        defaults: &mut HistoricalDefaults<'_>,
-        n: usize,
-    ) -> Result<(ContributionAttribution, ipld_core::ipld::Ipld)> {
-        let frontier = defaults.frontiers[n].clone();
-        let default = defaults.resolve(self, store, &frontier)?;
-        if default.store != store_type {
-            return Err(invalid("unsupported historical Store grammar"));
-        }
-        let entry = &defaults.history.entries[n];
-        let bytes = self.decrypt_if_needed(store, entry.data(store)?)?;
-        let (override_id, value) =
-            schema::contribution(&bytes, &default, self.structured_is_encrypted(store))?;
-        Ok((
-            ContributionAttribution {
-                database: self.db.root_id().clone(),
-                store: store.into(),
-                entry: entry.id(),
-                declaration_origins: frontier
-                    .into_iter()
-                    .map(|n| defaults.history.entries[n].id())
-                    .collect(),
-                default,
-                override_id,
-            },
-            value,
-        ))
-    }
-
-    pub(crate) async fn inspect_structured(
-        &self,
-        store: &str,
-        store_type: &str,
-        id: &ID,
-    ) -> Result<Option<ContributionAttribution>> {
-        let (history, _, order) = self.structured_history(store).await?;
-        let n = history.position(id)?;
-        if !order.contains(&n) || history.entries[n].data(store).is_err() {
-            return Ok(None);
-        }
-        let mut defaults = HistoricalDefaults::new(&history, store);
-        let (identity, _) = self.resolve_contribution(store, store_type, &mut defaults, n)?;
-        Ok(Some(identity))
-    }
-
-    pub(crate) async fn read_structured<D, C>(
-        &self,
-        store: &str,
-        descriptor: ProjectionDescriptor,
-    ) -> Result<Attributed<D, C>>
-    where
-        D: CRDT + Clone + Serialize + DeserializeOwned + Send,
-        C: StoreContract,
-    {
-        let (history, boundary, order) = self.structured_history(store).await?;
-        let mut defaults = HistoricalDefaults::new(&history, store);
-        let expected = ContractDescriptor::from(C::ID);
-        let mut values = Vec::new();
-        // Gate the complete source before warm cache decode, application
+        // Gate every contribution before a warm cache hit, application
         // deserialization or merge. The cache does not prove source history.
-        for &n in &order {
-            if history.entries[n].data(store).is_ok() {
-                let (id, value) =
-                    self.resolve_contribution(store, C::ID.store, &mut defaults, n)?;
-                if id.effective() != &expected {
-                    return Err(invalid("unsupported Store/data/application contract"));
-                }
-                values.push((n, value));
+        let mut contributions = Vec::new();
+        let mut grammar: Option<Doc> = None;
+        for n in history.store_order(captured.tips())? {
+            let Ok(data) = history.entries[n].data(store) else {
+                continue;
+            };
+            let (type_id, configs) = self.interpret(store, &registrations.at(n)?)?;
+            if type_id != T::TYPE_ID {
+                return Err(unresolved(
+                    store,
+                    "history contains a contribution of an unsupported Type",
+                ));
             }
+            let found = T::grammar(&configs)?;
+            if grammar.as_ref().is_some_and(|previous| previous != &found) {
+                return Err(unresolved(
+                    store,
+                    "history combines incompatible Store configs",
+                ));
+            }
+            grammar = Some(found);
+            contributions.push(data);
         }
-        if values.is_empty() {
-            return Ok(Attributed::default());
-        }
-        let request = |boundary: &Snapshot| {
-            state::opaque_request(
-                self.db.root_id(),
-                store,
-                descriptor.clone(),
-                boundary.cache_key_bytes(),
-                CacheScope::Shared,
-            )
+
+        // A handle may encode before its Type is declared in this Entry. Commit
+        // still requires the final config to mean the same grammar.
+        let positions = history.positions(&parents)?;
+        let writer_grammar = match registrations
+            .staged(&positions, index.as_deref())
+            .and_then(|registration| self.interpret(store, &registration))
+        {
+            Ok((type_id, configs)) if type_id == T::TYPE_ID => T::grammar(&configs),
+            _ => T::grammar(&[StructuredStore::<T>::default_config()]),
         };
-        let target = request(&boundary);
-        if let Some(bytes) = state::load_cached(self.db.ops(), &target).await? {
-            return self.decode_structured_cache(store, &bytes);
-        }
-        let mut result = Attributed::default();
-        let mut skip = 0;
-        if boundary.len() > 1 {
-            let merge = self
-                .db
-                .ops()
-                .compute_merge_state(self.db.root_id(), store, boundary.tips())
-                .await?;
-            if let Some(base) = merge.merge_base {
-                let prefix = history.store_order(store, std::slice::from_ref(&base))?;
-                // A cached prefix may only replace precisely that prefix of
-                // canonical fold order (not a late interleaved branch).
-                if order.starts_with(&prefix)
-                    && values.first().is_some_and(|(n, _)| prefix.contains(n))
-                    && let Some(bytes) =
-                        state::load_cached(self.db.ops(), &request(&Snapshot::from([base]))).await?
-                {
-                    result = self.decode_structured_cache(store, &bytes)?;
-                    let prefix: HashSet<_> = prefix.into_iter().collect();
-                    skip = values
-                        .iter()
-                        .take_while(|(n, _)| prefix.contains(n))
-                        .count();
-                }
-            }
-        }
-        for (_, value) in values.into_iter().skip(skip) {
-            result = result.merge(&Attributed::decode_value(&value)?)?;
-        }
-        self.publish_structured_cache(store, target, result).await
-    }
-
-    fn decode_structured_cache<D: Serialize + DeserializeOwned, C: StoreContract>(
-        &self,
-        store: &str,
-        bytes: &[u8],
-    ) -> Result<Attributed<D, C>> {
-        Attributed::decode_cached(
-            &self.decrypt_if_needed(store, bytes)?,
-            self.structured_is_encrypted(store),
-        )
-    }
-
-    pub(super) async fn publish_structured_cache<
-        D: Serialize + DeserializeOwned + Send,
-        C: StoreContract,
-    >(
-        &self,
-        store: &str,
-        request: StoreStateRequest,
-        value: Attributed<D, C>,
-    ) -> Result<Attributed<D, C>> {
-        let encrypted = self.structured_is_encrypted(store);
-        let (value, view) = state::store_cached(self.db.ops(), request, value, |result| {
-            self.encrypt_if_needed(store, &result.encode_cached(encrypted)?)
+        let state = if contributions.is_empty() {
+            StructuredState::default()
+        } else {
+            self.fold_structured(store, &captured, contributions)
+                .await?
+        };
+        Ok(StructuredHistory {
+            state,
+            grammar,
+            writer_grammar,
         })
-        .await?;
-        if let Some(view) = view {
-            match state::load_opaque(self.db.ops(), &view).await {
-                Ok(Some(bytes)) => {
-                    self.decode_structured_cache::<D, C>(store, &bytes)?;
-                }
-                Ok(None) => return Err(invalid("missing attributed cache record")),
-                Err(e)
-                    if e.is_invalid_store_state_view()
-                        || e.is_optional_store_state_unavailable() => {}
-                Err(e) => return Err(e),
-            }
+    }
+
+    async fn fold_structured<T: StructuredType>(
+        &self,
+        store: &str,
+        boundary: &Snapshot,
+        contributions: Vec<&Vec<u8>>,
+    ) -> Result<StructuredState<T>> {
+        let request = state::opaque_request(
+            self.db.root_id(),
+            store,
+            self.encrypted_projection_descriptor(
+                store,
+                StructuredStore::<T>::state_model().descriptor(),
+            ),
+            boundary.cache_key_bytes(),
+            CacheScope::Shared,
+        );
+        if let Some(bytes) = state::load_cached(self.db.ops(), &request).await? {
+            return StructuredState::decode_cached(&self.decrypt_if_needed(store, &bytes)?);
         }
-        Ok(value)
+        let mut state = StructuredState::default();
+        for bytes in contributions {
+            let bytes = self.decrypt_if_needed(store, bytes)?;
+            state = state.merge(&StructuredState::decode(&bytes)?)?;
+        }
+        state::store_cached(self.db.ops(), request, state, |state| {
+            self.encrypt_if_needed(store, &state.encode_cached()?)
+        })
+        .await
     }
 }
