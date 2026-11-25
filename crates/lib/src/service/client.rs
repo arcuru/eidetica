@@ -537,6 +537,16 @@ impl RemoteConnection {
         op: DatabaseOp,
     ) -> crate::Result<ServiceResponse> {
         let _guard = self.inner.authentication.lock().await;
+        self.db_request_locked(root_id, identity, op).await
+    }
+
+    /// [`Self::db_request`] for a caller already holding `authentication`.
+    async fn db_request_locked(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        op: DatabaseOp,
+    ) -> crate::Result<ServiceResponse> {
         if let Some(signer) = &self.signer {
             self.register_session_key_locked(signer).await?;
         }
@@ -1013,13 +1023,15 @@ impl RemoteConnection {
         }
     }
 
-    pub(crate) async fn unsubscribe_writes(
+    /// Requires `authentication`, so the sweep can wait for admission
+    /// separately from the round trip it bounds.
+    async fn unsubscribe_writes_locked(
         &self,
         id: CallbackId,
         tree: ID,
         identity: SigKey,
     ) -> crate::Result<()> {
-        self.db_request(
+        self.db_request_locked(
             tree,
             identity,
             DatabaseOp::UnsubscribeWrites {
@@ -1506,54 +1518,72 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
         let Some(inner) = weak_inner.upgrade() else {
             return;
         };
-        if inner.closed.load(Ordering::Acquire) {
+        if !sweep_expired(inner, UNSUBSCRIBE_RTT_TIMEOUT).await {
             return;
         }
-        let expired = {
-            let mut subscriptions = inner
-                .subscriptions
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let now = std::time::Instant::now();
-            let ids: Vec<_> = subscriptions
-                .iter()
-                .filter_map(|(id, sub)| {
-                    sub.idle_since
-                        .filter(|since| now.duration_since(*since) >= idle_grace_window())
-                        .map(|_| *id)
-                })
-                .collect();
-            ids.into_iter()
-                .map(|id| (id, subscriptions.remove(&id).unwrap()))
-                .collect::<Vec<_>>()
-        };
-        let conn = RemoteConnection {
-            inner,
-            _live: None,
-            signer: None,
-        };
-        for (id, sub) in expired {
-            match tokio::time::timeout(
-                UNSUBSCRIBE_RTT_TIMEOUT,
-                conn.unsubscribe_writes(id, sub.tree, sub.identity),
-            )
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => tracing::debug!(%error, "Unsubscribe failed"),
-                Err(_) => {
-                    conn.inner.mark_dead();
-                    return;
-                }
+    }
+}
+
+/// Cancel every expired registration. Returns `false` once the connection is dead.
+async fn sweep_expired(inner: Arc<RemoteConnectionInner>, rtt_budget: std::time::Duration) -> bool {
+    if inner.closed.load(Ordering::Acquire) {
+        return false;
+    }
+    let expired = {
+        let mut subscriptions = inner
+            .subscriptions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let now = std::time::Instant::now();
+        let ids: Vec<_> = subscriptions
+            .iter()
+            .filter_map(|(id, sub)| {
+                sub.idle_since
+                    .filter(|since| now.duration_since(*since) >= idle_grace_window())
+                    .map(|_| *id)
+            })
+            .collect();
+        ids.into_iter()
+            .map(|id| (id, subscriptions.remove(&id).unwrap()))
+            .collect::<Vec<_>>()
+    };
+    let conn = RemoteConnection {
+        inner,
+        _live: None,
+        signer: None,
+    };
+    for (id, sub) in expired {
+        // Another authenticated request may hold admission for its whole
+        // round trip. That is local queueing, not evidence against the peer,
+        // so only time the cancellation itself. Admission cannot outlive
+        // retirement: draining `pending` releases the holder.
+        let _admission = conn.inner.authentication.lock().await;
+        if conn.inner.closed.load(Ordering::Acquire) {
+            return false;
+        }
+        match tokio::time::timeout(
+            rtt_budget,
+            conn.unsubscribe_writes_locked(id, sub.tree, sub.identity),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::debug!(%error, "Unsubscribe failed"),
+            Err(_) => {
+                conn.inner.mark_dead();
+                return false;
             }
         }
     }
+    true
 }
 
 #[cfg(test)]
 mod compatibility_tests;
 #[cfg(test)]
 mod retirement_tests;
+#[cfg(test)]
+mod sweep_tests;
 
 #[cfg(test)]
 mod tests {
