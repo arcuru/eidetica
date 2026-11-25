@@ -309,11 +309,40 @@ async fn snapshot_first_delegated_read_uses_the_committed_pointer() -> eidetica:
     delegated
         .with_transaction(|tx| async move { tx.get_settings()?.revoke_auth_key(&pubkey).await })
         .await?;
-    point_at(delegated.snapshot().await?).await?;
     assert!(matches!(
         reader.capture(db.root_id(), ReadScope::Verified).await,
         Err(Error::State(StateError::Denied))
     ));
+
+    // A data commit does not advance the parent's identity pin.
+    db.with_transaction(|tx| async move {
+        tx.get_store::<DocStore>("data")
+            .await?
+            .set("v", "before pin advance")
+            .await
+    })
+    .await?;
+    let before_advance = admin.capture(db.root_id(), ReadScope::Verified).await?;
+    assert_eq!(
+        reader
+            .read_doc(&before_advance, "data")
+            .await?
+            .value
+            .get("v")
+            .and_then(|v| v.as_text()),
+        Some("before pin advance")
+    );
+
+    point_at(delegated.snapshot().await?).await?;
+    let advanced = admin.capture(db.root_id(), ReadScope::Verified).await?;
+    assert!(matches!(
+        reader.read_doc(&advanced, "data").await,
+        Err(Error::State(StateError::Denied))
+    ));
+    assert_eq!(
+        reader.read_doc(&before_advance, "data").await?.context,
+        before_advance
+    );
     // The caller's delegation hint names a grant, but only the committed
     // pointer of the requested cut can make that grant relevant.
     assert!(matches!(

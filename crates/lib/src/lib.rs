@@ -67,12 +67,15 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Common error type for the Eidetica library.
 ///
+/// Match the variants you handle and use a fallback for future variants.
+///
 /// All domain-specific error variants are boxed to keep `Result<T, Error>` small
 /// on the stack. The box allocation only occurs on the error (cold) path.
 ///
 /// `#[error(transparent)]` works with `Box<impl Error>` because `thiserror`
 /// delegates `Display` and `source()` through the wrapper.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
