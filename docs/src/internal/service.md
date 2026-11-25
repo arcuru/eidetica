@@ -408,6 +408,7 @@ Sync uses a separate internal write hook and its own Verified-only checkpoints, 
 
 Dropping a callback cancels its local pending and in-flight work immediately.
 The client sweep sends cancellation for that ID after the grace period; IDs are not reused by a replacement registration, so a delayed unsubscribe cannot cancel its successor.
+The sweep first waits behind any authenticated request on the connection; only an unanswered cancellation after it is sent retires the connection.
 Cancellation matches the original tree and proven identity within the authenticated connection, even if that identity no longer has Read permission.
 Client teardown (explicit retirement or last user-facing transport handle drop)
 shuts down the socket and aborts the reader without waiting for retained write
