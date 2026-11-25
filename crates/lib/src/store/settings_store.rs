@@ -5,14 +5,16 @@
 //! to provide settings-specific functionality while maintaining proper CRDT semantics.
 
 use crate::{
-    Result, Transaction,
+    Database, Result, Snapshot, Transaction,
     auth::{
         crypto::PublicKey,
+        errors::AuthError,
         settings::AuthSettings,
         types::{AuthKey, DelegatedTreeRef, KeyStatus},
     },
     constants::ENTRY_TIMESTAMPS,
     crdt::{CRDTError, Doc, doc},
+    entry::ID,
     height::HeightStrategy,
     store::DocStore,
 };
@@ -298,6 +300,63 @@ impl SettingsStore {
         self.inner
             .set(format!("auth.delegations.{root_id}"), tree_ref)
             .await
+    }
+
+    /// Stage a forward-only move of a configured delegation's pin to cover `to`.
+    ///
+    /// Unlike re-adding the delegation, this keeps the permission bounds this
+    /// transaction reads and never drops history the pin already covers. If `to`
+    /// and the pin are incomparable, the new pin names both frontiers.
+    ///
+    /// `delegated` is this replica's handle on the delegated database; its
+    /// ancestry answers the coverage question. Commit still requires complete
+    /// locally Verified ancestry for the new pin and a signer with permission
+    /// covering the delegation's bounds.
+    ///
+    /// The result describes this transaction's settings only. It says nothing
+    /// about other replicas, and a concurrent settings write can win the merge.
+    /// Call it again on a later transaction to check the accepted pin.
+    /// Coverage is ancestry, not outcome: at a pin joining concurrent frontiers,
+    /// settings from either can win. Read the delegated state at the pin itself.
+    ///
+    /// # Returns
+    /// `true` if a new pin was staged, or `false` if the pin already covers `to`
+    /// and nothing was staged.
+    ///
+    /// # Errors
+    /// Fails without staging anything if the delegation is not configured, `to`
+    /// is empty, or ancestry needed to compare the snapshots is missing locally.
+    pub async fn advance_delegation(&self, delegated: &Database, to: &Snapshot) -> Result<bool> {
+        let root = delegated.root_id();
+        if to.is_empty() {
+            return Err(AuthError::InvalidDelegationTips {
+                tree_id: root.clone(),
+                claimed_tips: Vec::new(),
+            }
+            .into());
+        }
+        let mut tree_ref = self.auth_snapshot().await?.get_delegated_tree(root)?;
+        let pin = Snapshot::new(tree_ref.tree.tips);
+
+        let covered = delegated.ids_added(&Snapshot::EMPTY, &pin).await?;
+        let mut tips: Vec<ID> = to.tips().to_vec();
+        tips.retain(|tip| !covered.contains(tip));
+        if tips.is_empty() {
+            return Ok(false);
+        }
+        // Drop only the old tips that the new ones cover.
+        let added = delegated
+            .ids_added(&Snapshot::EMPTY, &Snapshot::from(&tips))
+            .await?;
+        tips.extend(
+            pin.into_tips()
+                .into_iter()
+                .filter(|tip| !added.contains(tip)),
+        );
+
+        tree_ref.tree.tips = Snapshot::new(tips).into_tips();
+        self.add_delegated_tree(tree_ref).await?;
+        Ok(true)
     }
 
     /// Get the auth document for validation purposes
