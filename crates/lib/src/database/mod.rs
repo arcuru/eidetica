@@ -1177,7 +1177,8 @@ impl Database {
     ///
     /// Creates an ephemeral transaction, deserializes every entry's
     /// store data as [`Doc`], and merges them via Doc's LWW merge —
-    /// the same merge Doc-backed Stores perform client-side.
+    /// the same merge Doc-backed Stores perform client-side. Other Stores,
+    /// including `StructuredStore`, require a client-side reader.
     ///
     /// # Encrypted stores
     ///

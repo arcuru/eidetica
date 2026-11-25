@@ -55,6 +55,16 @@ pub enum StoreError {
     #[error("Invalid configuration for store '{store}': {reason}")]
     InvalidConfiguration { store: String, reason: String },
 
+    /// Verified history gives a contribution no unique usable Type, or a Type
+    /// other than the one required. Retrying does not change this.
+    #[error("Unresolved Type in store '{store}': {reason}")]
+    UnresolvedType { store: String, reason: String },
+
+    /// The complete verified history needed for a decision is not available.
+    /// This does not mean that the Store or its Type is absent.
+    #[error("History unavailable for store '{store}': {reason}")]
+    HistoryUnavailable { store: String, reason: String },
+
     /// Implementation-specific error from a store type
     #[error("Store implementation error in '{store}': {reason}")]
     ImplementationError { store: String, reason: String },
@@ -76,7 +86,10 @@ impl StoreError {
 
     /// Check if this error is related to type mismatches
     pub fn is_type_error(&self) -> bool {
-        matches!(self, StoreError::TypeMismatch { .. })
+        matches!(
+            self,
+            StoreError::TypeMismatch { .. } | StoreError::UnresolvedType { .. }
+        )
     }
 
     /// Check if this error is related to data integrity
@@ -108,6 +121,8 @@ impl StoreError {
             | StoreError::RequiresTransaction { store, .. }
             | StoreError::DataCorruption { store, .. }
             | StoreError::InvalidConfiguration { store, .. }
+            | StoreError::UnresolvedType { store, .. }
+            | StoreError::HistoryUnavailable { store, .. }
             | StoreError::ImplementationError { store, .. } => store,
         }
     }

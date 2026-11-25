@@ -43,9 +43,19 @@ use base64ct::{Base64, Encoding};
 use crate::{
     Result, Transaction,
     crdt::{CRDTError, Doc, doc::Value},
-    store::{ProjectionDescriptor, Registered, Store, StoreError, StoreStateModel},
+    entry::ID,
+    store::{
+        ProjectionDescriptor, Registered, Store, StoreError, StoreStateModel,
+        schema::ContributionType,
+    },
     transaction::Encryptor,
 };
+
+pub(crate) const PASSWORD_TYPE: &str = "encrypted:password:v0";
+
+/// Wrapped metadata of a structured Store is padded to a multiple of this many
+/// bytes, so a Type change does not show its length.
+const WRAPPED_INFO_BLOCK: usize = 512;
 
 /// Encrypted data fragment containing ciphertext and nonce.
 ///
@@ -242,16 +252,28 @@ struct WrappedStoreInfoRef<'a> {
     config: &'a Doc,
 }
 
-/// Decrypted wrapped store metadata, parsed during `open` only to validate it.
+/// Decrypted wrapped store metadata.
 ///
-/// It is dropped immediately after the type check. Its `String` and `Doc` allocations are
+/// `open` parses it only to validate the type and drops it immediately. A structured
+/// Store's historical reads also use its config. Its `String` and `Doc` allocations are
 /// ordinary owners: dropping them does not wipe their contents.
 #[derive(Deserialize)]
 struct WrappedStoreInfo {
     #[serde(rename = "type")]
     type_id: String,
-    #[serde(rename = "config")]
-    _config: Doc,
+    config: Doc,
+}
+
+fn wrapped_info<S: Store>(config: &Doc) -> serde_json::Result<SecretBytes> {
+    let info = WrappedStoreInfoRef {
+        type_id: S::type_id(),
+        config,
+    };
+    if S::uses_literal_registration() {
+        SecretBytes::json_padded(&info, WRAPPED_INFO_BLOCK)
+    } else {
+        SecretBytes::json(&info)
+    }
 }
 
 /// Fixed `TypeMismatch::actual` text: the decrypted wrapped type is not echoed.
@@ -307,10 +329,17 @@ impl SecretBytes {
     /// The guard exists before any plaintext is written, so a failed serialization wipes
     /// whatever partial output it produced.
     fn json<T: Serialize>(value: &T) -> serde_json::Result<Self> {
+        Self::json_padded(value, 1)
+    }
+
+    /// Like [`Self::json`], with trailing whitespace up to a multiple of `block`.
+    fn json_padded<T: Serialize>(value: &T, block: usize) -> serde_json::Result<Self> {
         let mut counter = ByteCounter(0);
         serde_json::to_writer(&mut counter, value)?;
-        let mut output = Self::from_vec(Vec::with_capacity(counter.0));
+        let len = counter.0.next_multiple_of(block);
+        let mut output = Self::from_vec(Vec::with_capacity(len));
         serde_json::to_writer(&mut *output.0, value)?;
+        output.0.resize(len, b' ');
         Ok(output)
     }
 }
@@ -540,6 +569,44 @@ impl PasswordEncryptor {
 }
 
 impl Encryptor for PasswordEncryptor {
+    fn inner_registration(&self, outer_type: &str, outer_config: &Doc) -> Result<(String, Doc)> {
+        let unavailable = || StoreError::HistoryUnavailable {
+            store: self.subtree_name.clone(),
+            reason: "historical wrapped registration is locked or unavailable".to_string(),
+        };
+        if outer_type != PASSWORD_TYPE {
+            return Err(unavailable().into());
+        }
+        let config = PasswordStoreConfig::try_from(outer_config).map_err(|_| unavailable())?;
+        let params = &config.encryption;
+        // Reuse the unlocked key only for identical effective parameters. Old Entries
+        // cannot choose a derivation to run.
+        if params.version != "v0"
+            || params.algorithm != "aes-256-gcm"
+            || params.kdf != "argon2id"
+            || params.salt != self.password.salt
+            || params.argon2_m_cost.unwrap_or(DEFAULT_ARGON2_M_COST) != self.password.argon2_m_cost
+            || params.argon2_t_cost.unwrap_or(DEFAULT_ARGON2_T_COST) != self.password.argon2_t_cost
+            || params.argon2_p_cost.unwrap_or(DEFAULT_ARGON2_P_COST) != self.password.argon2_p_cost
+            || config.wrapped_config.nonce.len() != AES_GCM_NONCE_SIZE
+        {
+            return Err(unavailable().into());
+        }
+        self.with_key(|key| {
+            let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| unavailable())?;
+            let plaintext = cipher
+                .decrypt(
+                    Nonce::from_slice(&config.wrapped_config.nonce),
+                    config.wrapped_config.ciphertext.as_slice(),
+                )
+                .map(SecretBytes::from_vec)
+                .map_err(|_| unavailable())?;
+            let info: WrappedStoreInfo =
+                serde_json::from_slice(plaintext.as_bytes()).map_err(|_| unavailable())?;
+            Ok((info.type_id, info.config))
+        })
+    }
+
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         // Wire format: nonce (12 bytes) || ciphertext
         if ciphertext.len() < AES_GCM_NONCE_SIZE {
@@ -799,13 +866,17 @@ impl<S: Store> PasswordStore<S> {
 impl<S: Store> Registered for PasswordStore<S> {
     fn type_id() -> &'static str {
         // Explicitly use v0 to indicate instability
-        "encrypted:password:v0"
+        PASSWORD_TYPE
     }
 }
 
 #[async_trait]
 impl<S: Store> Store for PasswordStore<S> {
     type Data = S::Data;
+
+    fn uses_literal_registration() -> bool {
+        S::uses_literal_registration()
+    }
 
     fn state_model() -> StoreStateModel<Self::Data> {
         let inner = S::state_model();
@@ -819,7 +890,11 @@ impl<S: Store> Store for PasswordStore<S> {
     async fn load(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Try to load config from _index to determine state
         let index_store = txn.get_index().await?;
-        let info = index_store.get_entry(&subtree_name).await?;
+        let literal = Self::uses_literal_registration();
+        if literal {
+            txn.mark_literal_registration(&subtree_name)?;
+        }
+        let info = index_store.entry(&subtree_name, literal).await?;
 
         // Type validation
         if !Self::supports_type_id(&info.type_id) {
@@ -884,9 +959,15 @@ impl<S: Store> Store for PasswordStore<S> {
     async fn register(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Register in _index with empty config (marks as uninitialized)
         let index_store = txn.get_index().await?;
-        index_store
-            .set_entry(&subtree_name, Self::type_id(), Self::default_config())
-            .await?;
+        if Self::uses_literal_registration() {
+            index_store
+                .set_literal_entry(&subtree_name, Self::type_id(), Self::default_config())
+                .await?;
+        } else {
+            index_store
+                .set_entry(&subtree_name, Self::type_id(), Self::default_config())
+                .await?;
+        }
 
         Ok(Self {
             name: subtree_name,
@@ -1016,10 +1097,7 @@ impl<S: Store> PasswordStore<S> {
         // the persistence await below.
         let config_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let wrapped_config_ciphertext = {
-            let wrapped_json = SecretBytes::json(&WrappedStoreInfoRef {
-                type_id: S::type_id(),
-                config: &wrapped_config,
-            })?;
+            let wrapped_json = wrapped_info::<S>(&wrapped_config)?;
             cipher
                 .encrypt(&config_nonce, wrapped_json.as_bytes())
                 .map_err(|e| StoreError::ImplementationError {
@@ -1235,6 +1313,75 @@ impl<S: Store> PasswordStore<S> {
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         Ok(())
+    }
+
+    /// Change the Type and complete config of an unlocked structured Store from the
+    /// current Entry on, keeping its password and key parameters.
+    ///
+    /// Only freshly encrypted metadata is staged. It adds no value and does not
+    /// rewrite or reinterpret earlier ones.
+    ///
+    /// # Errors
+    /// Returns an error if the Store is locked, or if either Type is not structured.
+    pub async fn declare_inner<T: Store>(self, wrapped_config: Doc) -> Result<PasswordStore<T>> {
+        let invalid = |reason: &str| StoreError::InvalidOperation {
+            store: self.name.clone(),
+            operation: "declare_inner".to_string(),
+            reason: reason.to_string(),
+        };
+        if !S::uses_literal_registration() || !T::uses_literal_registration() {
+            return Err(invalid("not a structured Store").into());
+        }
+        let (Some(config), Some(password)) = (&self.config, &self.cached_password) else {
+            return Err(invalid("Store not opened - call open() first").into());
+        };
+        let encryptor = PasswordEncryptor::new(
+            password.clone(),
+            self.name.clone(),
+            self.transaction.database_id().to_string().as_bytes(),
+        );
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let plaintext =
+            wrapped_info::<T>(&wrapped_config).map_err(|_| invalid("invalid wrapped config"))?;
+        let ciphertext = encryptor.with_key(|key| {
+            Aes256Gcm::new_from_slice(key)
+                .ok()
+                .and_then(|cipher| cipher.encrypt(&nonce, plaintext.as_bytes()).ok())
+                .ok_or_else(|| invalid("failed to encrypt wrapped config").into())
+        })?;
+        drop(plaintext);
+        let config = PasswordStoreConfig {
+            encryption: config.encryption.clone(),
+            wrapped_config: EncryptedFragment {
+                ciphertext,
+                nonce: nonce.to_vec(),
+            },
+        };
+        self.set_config(config.clone().into()).await?;
+        Ok(PasswordStore {
+            name: self.name,
+            transaction: self.transaction,
+            config: Some(config),
+            cached_password: self.cached_password,
+            _phantom: PhantomData,
+        })
+    }
+
+    /// Identify the inner Type of one contribution, from the protected metadata in
+    /// that contribution's own history.
+    ///
+    /// Requires the unlocked Store. Details are not included in errors. See
+    /// [`Transaction::inspect_contribution`] for the public wrapper Type.
+    pub async fn inspect_contribution(&self, entry: &ID) -> Result<Option<ContributionType>> {
+        if !self.is_open() {
+            return Err(StoreError::InvalidOperation {
+                store: self.name.clone(),
+                operation: "inspect_contribution".to_string(),
+                reason: "Store not opened - call open() first".to_string(),
+            }
+            .into());
+        }
+        self.transaction.inspect_wrapped(&self.name, entry).await
     }
 
     /// Check if the store is currently unlocked (password cached)

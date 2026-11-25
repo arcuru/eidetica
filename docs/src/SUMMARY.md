@@ -10,6 +10,7 @@
   - [Entries & Databases](user_guide/concepts/entries_databases.md)
   - [Database Storage](user_guide/concepts/backends.md)
   - [Stores](user_guide/concepts/stores.md)
+    - [Structured Stores](user_guide/structured_stores.md)
   - [Transactions](user_guide/transactions.md)
 - [Authentication and Database Creation](user_guide/authentication_guide.md)
 - [Linked Accounts and App Login](user_guide/linked_accounts.md)

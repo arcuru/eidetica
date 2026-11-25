@@ -121,6 +121,14 @@ To support this constraint, `SubTreeNode.data` is `Option<RawData>`, where `RawD
 
 This allows subtrees to appear in Entries purely to satisfy the constraint without requiring data changes.
 
+### The Type of a contribution
+
+The merged `_index` row answers what a Store is registered as at one snapshot. It does not say which Type an earlier contribution was written under.
+That is the last `type` declaration in the contributing Entry's own main ancestry, including its own `_index` delta. A config or settings edit alone does not declare a Type, a removed or replaced row does not keep the old one, and concurrent declarations that disagree give none.
+Core compares only the `type` string. The config belongs to the Type.
+
+`Transaction::inspect_contribution` reports it, and [`StructuredStore`](../user_guide/structured_stores.md) uses it for reads and commits. Other Stores keep their existing registration check, and Entry verification is unchanged.
+
 ## API Reference
 
 ### Registered Trait

@@ -128,6 +128,10 @@ impl<D: CRDT + 'static> StoreStateModel<D> {
 mod errors;
 pub use errors::StoreError;
 
+pub mod schema;
+mod structured;
+pub use structured::StructuredStore;
+
 mod docstore;
 pub use docstore::{DocStore, DocStoreInit};
 
@@ -140,6 +144,7 @@ pub use table::{Table, TableCursor, TablePage};
 mod settings_store;
 pub use settings_store::SettingsStore;
 
+pub(crate) mod attribution;
 mod registry;
 pub use registry::Registered;
 pub use registry::Registry;
@@ -174,6 +179,13 @@ pub trait Store: Sized + Registered + Send + Sync {
     ///
     /// This is the type stored within each individual Entry.
     type Data: CRDT + Codec + Default + 'static;
+
+    /// Whether the `_index` row is the literal Store name and is edited by
+    /// patches that do not redeclare its Type.
+    #[doc(hidden)]
+    fn uses_literal_registration() -> bool {
+        false
+    }
 
     /// Representation of this store's cached current state.
     ///
@@ -278,7 +290,9 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// Returns an error if the subtree is not registered in `_index`.
     async fn get_config(&self) -> Result<Doc> {
         let index = self.transaction().get_index().await?;
-        let info = index.get_entry(self.name()).await?;
+        let info = index
+            .entry(self.name(), Self::uses_literal_registration())
+            .await?;
         Ok(info.config)
     }
 
@@ -295,10 +309,11 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// A `Result<()>` indicating success or failure.
     async fn set_config(&self, config: Doc) -> Result<()> {
         let index = self.transaction().get_index().await?;
-        index
-            .set_entry(self.name(), Self::type_id(), config)
-            .await?;
-        Ok(())
+        if Self::uses_literal_registration() {
+            index.set_literal_config(self.name(), config).await
+        } else {
+            index.set_entry(self.name(), Self::type_id(), config).await
+        }
     }
 
     /// Gets the height strategy for this Store from the `_index` subtree.
@@ -313,7 +328,11 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// Returns an error if the subtree is not registered in `_index`.
     async fn get_height_strategy(&self) -> Result<Option<HeightStrategy>> {
         let index = self.transaction().get_index().await?;
-        let settings = index.get_subtree_settings(self.name()).await?;
+        let settings = if Self::uses_literal_registration() {
+            index.entry(self.name(), true).await?.settings
+        } else {
+            index.get_subtree_settings(self.name()).await?
+        };
         Ok(settings.height_strategy)
     }
 
@@ -332,6 +351,12 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// Returns an error if the subtree is not registered in `_index`.
     async fn set_height_strategy(&self, strategy: Option<HeightStrategy>) -> Result<()> {
         let index = self.transaction().get_index().await?;
+        if Self::uses_literal_registration() {
+            let settings = SubtreeSettings {
+                height_strategy: strategy,
+            };
+            return index.set_literal_settings(self.name(), settings).await;
+        }
         let mut settings = index.get_subtree_settings(self.name()).await?;
         settings.height_strategy = strategy;
         index.set_subtree_settings(self.name(), settings).await
