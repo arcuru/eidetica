@@ -79,6 +79,7 @@
 pub mod client;
 pub mod error;
 pub mod protocol;
+pub mod read_v1;
 pub mod server;
 
 pub use client::RemoteConnection;

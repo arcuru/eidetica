@@ -40,6 +40,8 @@ The engine folds only the requested supported plaintext Doc projection, looking 
 
 The legacy `GetStoreState` JSON operation still requires current Read. It computes the projection at one captured Verified cut but omits context from the response. `BeginTransaction` remains a legacy write-preparation bundle. Neither defines a new State wire protocol.
 
+The opt-in [read-side v1 adapter](./service_read_v1.md) uses a distinct Unix socket, caller-held proof and contextual Doc/CAR streams. It does not replace the write/credential/watch paths below.
+
 ## Wire Protocol
 
 The protocol uses **length-prefixed JSON frames** over a Unix domain socket.

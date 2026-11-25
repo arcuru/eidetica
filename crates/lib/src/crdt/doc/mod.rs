@@ -610,17 +610,28 @@ impl CRDT for Doc {
             return Ok(other.clone());
         }
         let mut result = self.clone();
+        result.merge_from(other);
+        Ok(result)
+    }
+}
+
+impl Doc {
+    /// Fold a delta into an owned materialization without cloning its prefix.
+    pub(crate) fn merge_from(&mut self, other: &Self) {
+        if other.atomic {
+            *self = other.clone();
+            return;
+        }
         for (key, other_value) in &other.children {
-            match result.children.get_mut(key) {
+            match self.children.get_mut(key) {
                 Some(self_value) => {
                     self_value.merge(other_value);
                 }
                 None => {
-                    result.children.insert(key.clone(), other_value.clone());
+                    self.children.insert(key.clone(), other_value.clone());
                 }
             }
         }
-        Ok(result)
     }
 }
 

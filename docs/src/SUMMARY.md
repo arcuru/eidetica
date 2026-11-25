@@ -43,6 +43,7 @@
 - [Encryption](internal/encryption.md)
 - [Sync](internal/sync.md)
 - [Service (Daemon)](internal/service.md)
+  - [Read-side service v1](internal/service_read_v1.md)
 - [Bootstrap](internal/bootstrap.md)
 - [Testing](internal/testing.md)
   - [Multi-Instance Test Harness](internal/test_harness.md)

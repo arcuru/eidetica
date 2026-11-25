@@ -128,6 +128,10 @@ pub struct InMemory {
     store_state_scan_reads: AtomicUsize,
     #[cfg(feature = "testing")]
     store_history_reads: AtomicUsize,
+    #[cfg(feature = "testing")]
+    bounded_reads: AtomicUsize,
+    #[cfg(feature = "testing")]
+    bounded_read_bytes: AtomicUsize,
     /// Bounds for the derived Store-state materialization cache (one policy
     /// surface; see [`DerivedCachePolicy`]).
     derived_cache_policy: RwLock<DerivedCachePolicy>,
@@ -190,6 +194,14 @@ impl InMemory {
     pub fn store_history_read_count(&self) -> usize {
         self.store_history_reads.load(Ordering::Relaxed)
     }
+
+    #[cfg(feature = "testing")]
+    pub fn bounded_entry_read_counts(&self) -> (usize, usize) {
+        (
+            self.bounded_reads.load(Ordering::Relaxed),
+            self.bounded_read_bytes.load(Ordering::Relaxed),
+        )
+    }
 }
 
 impl InMemory {
@@ -216,6 +228,10 @@ impl InMemory {
             store_state_scan_reads: AtomicUsize::new(0),
             #[cfg(feature = "testing")]
             store_history_reads: AtomicUsize::new(0),
+            #[cfg(feature = "testing")]
+            bounded_reads: AtomicUsize::new(0),
+            #[cfg(feature = "testing")]
+            bounded_read_bytes: AtomicUsize::new(0),
             derived_cache_policy: RwLock::new(policy),
             cache_recency: Mutex::new(RecencyState::default()),
         }
@@ -812,6 +828,65 @@ impl BackendImpl for InMemory {
     async fn get(&self, id: &ID) -> Result<Entry> {
         let inner = self.inner.read().unwrap();
         storage::get(&inner, id)
+    }
+
+    async fn get_bounded(&self, id: &ID, max_bytes: usize) -> Result<(Entry, usize)> {
+        let inner = self.inner.read().unwrap();
+        let entry = inner
+            .entries
+            .get(id)
+            .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?;
+        let size = entry.canonical_len();
+        if size > max_bytes {
+            return Err(crate::state::StateError::Limit.into());
+        }
+        #[cfg(feature = "testing")]
+        {
+            self.bounded_reads.fetch_add(1, Ordering::Relaxed);
+            self.bounded_read_bytes.fetch_add(size, Ordering::Relaxed);
+        }
+        Ok((entry.clone(), size))
+    }
+
+    async fn verified_snapshot_bounded(&self, tree: &ID, max_tips: usize) -> Result<Snapshot> {
+        let inner = self.inner.read().unwrap();
+        if inner
+            .verified
+            .get(tree)
+            .is_some_and(|s| s.frontier.len() > max_tips)
+        {
+            return Err(crate::state::StateError::Limit.into());
+        }
+        Ok(storage::verified_snapshot(&inner, tree))
+    }
+
+    async fn indexed_store_tips_at(
+        &self,
+        tree: &ID,
+        store: &str,
+        at: &Snapshot,
+        max_tips: usize,
+    ) -> Result<Option<Snapshot>> {
+        let inner = self.inner.read().unwrap();
+        let Some((raw, verified)) = inner.tips.get(tree).zip(inner.verified.get(tree)) else {
+            return Ok(None);
+        };
+        if at.is_empty()
+            || raw.tree_tips.len() != at.len()
+            || verified.frontier.len() != at.len()
+            || !at
+                .iter()
+                .all(|id| raw.tree_tips.contains(id) && verified.frontier.contains(id))
+        {
+            return Ok(None);
+        }
+        let Some(tips) = raw.subtree_tips.get(store) else {
+            return Ok(Some(Snapshot::EMPTY));
+        };
+        if tips.len() > max_tips {
+            return Err(crate::state::StateError::Limit.into());
+        }
+        Ok(Some(Snapshot::new(tips.iter().cloned().collect())))
     }
 
     /// Gets the verification status of an entry.

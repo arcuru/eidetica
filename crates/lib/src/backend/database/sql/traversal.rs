@@ -114,6 +114,46 @@ pub async fn try_verified_store_snapshot(
     )))
 }
 
+pub(super) async fn indexed_store_tips_at(
+    backend: &SqlxBackend,
+    tree: &ID,
+    store: &str,
+    at: &Snapshot,
+    max_tips: usize,
+) -> Result<Option<Snapshot>> {
+    // Limit the lookup itself, not just the result we give the reader. One
+    // statement snapshot keeps all three indexes consistent under advancement.
+    let rows: Vec<(i32, String)> = sqlx::query_as(
+        "SELECT 0, entry_id FROM tips WHERE tree_id = $1 AND store_name = ''
+         UNION ALL
+         SELECT 1, entry_id FROM verified_tips WHERE tree_id = $1
+         UNION ALL
+         SELECT 2, entry_id FROM tips WHERE tree_id = $1 AND store_name = $2
+         LIMIT $3",
+    )
+    .bind(tree.to_string())
+    .bind(store)
+    .bind(i64::try_from(max_tips.saturating_mul(3).saturating_add(1)).unwrap_or(i64::MAX))
+    .fetch_all(backend.pool())
+    .await
+    .sql_context("Failed to read bounded indexed Store tips")?;
+    let [mut raw, mut verified, mut store_tips] = [Vec::new(), Vec::new(), Vec::new()];
+    for (kind, id) in rows {
+        match kind {
+            0 => raw.push(ID::parse(&id)?),
+            1 => verified.push(ID::parse(&id)?),
+            _ => store_tips.push(ID::parse(&id)?),
+        }
+    }
+    if at.is_empty() || Snapshot::new(raw) != *at || Snapshot::new(verified) != *at {
+        return Ok(None);
+    }
+    if store_tips.len() > max_tips {
+        return Err(crate::state::StateError::Limit.into());
+    }
+    Ok(Some(Snapshot::new(store_tips)))
+}
+
 /// Get store tips that are reachable from the given main tree entries.
 pub async fn store_snapshot_at(
     backend: &SqlxBackend,

@@ -166,12 +166,23 @@ impl<'de> Deserialize<'de> for InMemory {
                 .map_err(serde::de::Error::custom)?;
         }
 
+        // Prime encoded lengths while opening the already materialized file.
+        // A bounded service point read must be able to reject a large Entry
+        // before cloning or re-encoding it, including after a restart.
+        for entry in inner.entries.values() {
+            let _ = entry.canonical_len();
+        }
+
         Ok(InMemory {
             inner: RwLock::new(inner),
             store_state_point_reads: std::sync::atomic::AtomicUsize::new(0),
             store_state_scan_reads: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(feature = "testing")]
             store_history_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "testing")]
+            bounded_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "testing")]
+            bounded_read_bytes: std::sync::atomic::AtomicUsize::new(0),
             // Derived Store-state namespaces are disposable performance
             // state and are never persisted; the policy resets to defaults
             // and recency restarts empty on load.

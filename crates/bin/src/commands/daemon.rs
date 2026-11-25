@@ -17,6 +17,7 @@ use eidetica::NewAccount;
 use eidetica::instance::InstanceError;
 use eidetica::service::ServiceServer;
 use eidetica::service::default_socket_path;
+use eidetica::service::read_v1::ReadServer;
 use eidetica::sync::DatabaseTicket;
 use eidetica::sync::transports::iroh::IrohTransport;
 
@@ -59,6 +60,10 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Determine socket path
     let socket_path = args.socket.clone().unwrap_or_else(default_socket_path);
     let server = ServiceServer::bind(instance.clone(), &socket_path).await?;
+    let read_server = match &args.read_v1_socket {
+        Some(path) => Some(ReadServer::bind(instance.clone(), path).await?),
+        None => None,
+    };
 
     // Reserve the address before announcing readiness; no second backend is opened.
     // A bind failure drops the socket owner.
@@ -102,6 +107,9 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
     println!("Eidetica daemon listening on {}", socket_path.display());
+    if let Some(path) = &args.read_v1_socket {
+        println!("Read v1 listening on {}", path.display());
+    }
     println!(
         "  Backend: {}",
         crate::backend::backend_label(&args.backend_config)
@@ -114,6 +122,16 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let server = server.run(shutdown_rx);
     tokio::pin!(server);
+    let mut read_shutdown = shutdown_tx.subscribe();
+    let read_server = async move {
+        if let Some(server) = read_server {
+            server.run(read_shutdown).await
+        } else {
+            let _ = read_shutdown.changed().await;
+            Ok(())
+        }
+    };
+    tokio::pin!(read_server);
     let web_shutdown = shutdown_tx.subscribe();
     let web_server = async move {
         if let Some((listener, app)) = web {
@@ -139,15 +157,16 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let stopped = tokio::select! {
         result = &mut server => Some(("service", result.map_err(|e| e.to_string()))),
+        result = &mut read_server => Some(("read v1", result.map_err(|e| e.to_string()))),
         result = &mut web_server => Some(("dashboard", result.map_err(|e| e.to_string()))),
         _ = sigterm.recv() => None,
         _ = sigint.recv() => None,
     };
     drop(shutdown_tx);
-    // Bound both graceful drains. A cancelled server drops its listener; the
+    // Bound graceful drains. A cancelled server drops its listener; the
     // service owner removes only the socket identity it bound.
     let drain = std::time::Duration::from_secs(10);
-    let (service_result, web_result) = tokio::join!(
+    let (service_result, read_result, web_result) = tokio::join!(
         async {
             if stopped.as_ref().is_some_and(|(name, _)| *name == "service") {
                 Ok(())
@@ -155,6 +174,16 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
                 tokio::time::timeout(drain, &mut server)
                     .await
                     .map_err(|_| "service shutdown timed out".to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()))
+            }
+        },
+        async {
+            if stopped.as_ref().is_some_and(|(name, _)| *name == "read v1") {
+                Ok(())
+            } else {
+                tokio::time::timeout(drain, &mut read_server)
+                    .await
+                    .map_err(|_| "read v1 shutdown timed out".to_string())
                     .and_then(|r| r.map_err(|e| e.to_string()))
             }
         },
@@ -187,6 +216,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     let sync_stop = sync.stop_server().await;
     service_result?;
+    read_result?;
     web_result?;
     if let Some((name, result)) = stopped {
         result.map_err(|e| format!("{name} listener failed: {e}"))?;
@@ -289,6 +319,7 @@ mod tests {
             command: None,
             sync_tickets: Vec::new(),
             socket: Some(socket.to_path_buf()),
+            read_v1_socket: None,
             dashboard: false,
             dashboard_host: "127.0.0.1".into(),
             dashboard_port: 5942,
@@ -364,6 +395,8 @@ mod tests {
             .await
             .unwrap();
         let mut args = daemon_args(dir.path(), &socket);
+        let v1 = dir.path().join("read.sock");
+        args.read_v1_socket = Some(v1.clone());
         args.dashboard = true;
         args.dashboard_port = occupied.local_addr().unwrap().port();
         let result = tokio::time::timeout(Duration::from_secs(2), run(&args))
@@ -371,6 +404,7 @@ mod tests {
             .unwrap();
         assert!(result.is_err());
         assert!(!socket.exists());
+        assert!(!v1.exists());
     }
 
     #[tokio::test]

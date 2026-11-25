@@ -427,10 +427,11 @@ fn remote_conn(instance: &Instance) -> eidetica::service::client::RemoteConnecti
 #[tokio::test]
 async fn snapshot_first_service_signer_state_without_credentials() -> eidetica::Result<()> {
     use eidetica::{
-        Database, Error,
+        Database, DatabaseKey, Error,
         account::AccountSigner,
         auth::types::AuthKey,
         crdt::Codec,
+        service::read_v1::{ReadClient, ReadServer},
         state::{StateError, StateOperation},
     };
     use std::sync::{
@@ -441,9 +442,11 @@ async fn snapshot_first_service_signer_state_without_credentials() -> eidetica::
     let dir = tempfile::tempdir()?;
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
     let socket = dir.path().join("state.sock");
+    let v1_socket = dir.path().join("read-v1.sock");
     let instance = crate::helpers::test_local_instance().await;
     let (owner, _) = generate_keypair();
     let (reader_key, reader_pubkey) = generate_keypair();
+    let v1_key = DatabaseKey::new(reader_key.clone());
     let db = Database::create(&instance, owner.clone(), Doc::new()).await?;
     let root = db.root_id().clone();
     db.with_transaction(|tx| async move {
@@ -464,6 +467,8 @@ async fn snapshot_first_service_signer_state_without_credentials() -> eidetica::
         }));
     let (shutdown, rx) = watch::channel(());
     let task = tokio::spawn(service.run(rx));
+    let v1 = ReadServer::bind(instance.clone(), &v1_socket).await?;
+    let v1_task = tokio::spawn(v1.run(shutdown.subscribe()));
 
     let url = format!("unix://{}", socket.display());
     let unauthenticated = Instance::connect(&url).await?;
@@ -537,6 +542,17 @@ async fn snapshot_first_service_signer_state_without_credentials() -> eidetica::
         Some("from history")
     );
     assert!(computed.get("not-engine-state").is_none());
+    let read_client = ReadClient::connect(v1_socket).await.unwrap();
+    let cut = read_client.capture(&v1_key, &root).await.unwrap();
+    let projection = read_client
+        .read_state(&v1_key, &root, cut.at.snapshot(), "data")
+        .await
+        .unwrap()
+        .collect_complete()
+        .await
+        .unwrap();
+    assert_eq!(projection.context.source, cut);
+    assert_eq!(projection.value, computed);
     assert!(
         matches!(
             conn.get_store_state(root.clone(), writer_identity, "_index".into())
@@ -558,6 +574,12 @@ async fn snapshot_first_service_signer_state_without_credentials() -> eidetica::
     ));
 
     shutdown.send(()).unwrap();
+    drop(read_client);
+    tokio::time::timeout(Duration::from_secs(10), v1_task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(10), task)
         .await
         .unwrap()
