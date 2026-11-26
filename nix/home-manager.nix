@@ -29,6 +29,17 @@ in {
       description = "Host the daemon web dashboard at the configured bind address and port; requires daemon.";
     };
 
+    httpSyncBind = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "0.0.0.0:5942";
+      description = ''
+        Inbound HTTP peer sync bind (IP:port); requires daemon. Null keeps HTTP
+        client-only. An address equal to the dashboard bind shares its listener.
+        IPv6 addresses must be bracketed, for example [::1]:5942.
+      '';
+    };
+
     port = mkOption {
       type = types.port;
       default = 5942;
@@ -70,6 +81,10 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
+        assertion = cfg.httpSyncBind == null || cfg.daemon;
+        message = "services.eidetica.httpSyncBind requires services.eidetica.daemon";
+      }
+      {
         assertion = !cfg.dashboard || cfg.daemon;
         message = "services.eidetica.dashboard requires services.eidetica.daemon";
       }
@@ -110,6 +125,7 @@ in {
             "EIDETICA_DATA_DIR=${cfg.dataDir}"
           ]
           ++ optional (cfg.postgresUrl != null) "EIDETICA_POSTGRES_URL=${cfg.postgresUrl}"
+          ++ optional (cfg.httpSyncBind != null) "EIDETICA_HTTP_SYNC_BIND=${cfg.httpSyncBind}"
           ++ mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
       };
 
