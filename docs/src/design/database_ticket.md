@@ -15,16 +15,23 @@ eidetica:?db=<database_id>&pr=<transport_address>&pr=<transport_address>
 ```
 
 - **Scheme**: `eidetica`
-- **`db`** (required): The database ID, passed through as an opaque string
+- **`db`** (required): The database ID, parsed as an `ID`
 - **`pr`** (optional, repeatable): A self-describing peer address
 
 ### Database ID
 
-The database ID is stored as-is in the `db` query parameter, no encoding or
-transformation is applied. The ID is a multibase-encoded
-[CID (Content Identifier)][cid-spec] string (e.g., `bafyr4i...` for
-base32lower). The ticket format does not need to understand the ID's internal
-structure.
+For a nonempty `db` value, the parser validates the decoded text with
+`ID::parse`, which parses a [CID (Content Identifier)][cid-spec]. The ticket
+stores the typed `ID`, not the original text. Serialization uses `ID`'s
+`Display` representation (base32lower for CIDv1), so it need not reproduce the
+input spelling. CID parsing does not verify that the ID names an existing
+database root or that anyone can access it.
+
+Every `db` occurrence is parsed in order. If all are accepted, the last one
+wins. A malformed nonempty value fails immediately with `Error::Id`, even if
+a later `db` is valid. A missing `db` fails with `SyncError::InvalidAddress`
+wrapped in `Error::Sync`. A present but empty `db=` is different: `ID::parse`
+accepts it as the empty ID, not a CID.
 
 [cid-spec]: https://github.com/multiformats/cid
 
@@ -36,64 +43,55 @@ name and a colon. The transport's native encoding follows the colon:
 - `http:192.168.1.1:8080` — HTTP transport (plain `host:port`)
 - `iroh:endpointABC...` — Iroh transport (`EndpointTicket` format)
 
-The first `:` separates the transport name from the transport-specific
-address. Each transport uses its own native encoding — for iroh this is
-the standard `EndpointTicket` format (postcard + base32-lower with
-`endpoint` prefix).
-
 Multiple `pr` parameters are supported, including multiple addresses for the
 same transport type (e.g., different network interfaces).
 
-### Examples
+Parsing splits each decoded `pr` value on the first `:`. Values without that
+separator are skipped. Unknown transport names and even empty names or
+payloads are retained if the separator is present. Parsing does not check
+whether a transport is available, whether it accepts the address, or whether
+a peer answers. Bootstrap selects a usable route through a transport and
+handshake; a successful handshake does not grant database access.
 
-Database ID only (no hints):
+### Round-trip example
 
-```text
-eidetica:?db=bafyr4ihkr4ld3m4gqkjf4reryxsy2s5tkbxprqkow6fin2iiyvreuzzab4
+This example uses a sample CID to show the format without creating a database
+or contacting a peer. For a real ticket, use the database's root ID.
+
+```rust
+use eidetica::{
+    ID,
+    sync::{Address, DatabaseTicket},
+};
+
+let id = ID::from_bytes(b"example ticket ID");
+let address = Address::http("192.168.1.1:8080");
+let ticket = DatabaseTicket::with_addresses(id.clone(), vec![address.clone()]);
+let url = ticket.to_string();
+assert_eq!(url, format!("eidetica:?db={id}&pr=http:192.168.1.1:8080"));
+
+let parsed: DatabaseTicket = url.parse().unwrap();
+assert_eq!(parsed.database_id(), &id);
+assert_eq!(parsed.addresses(), &[address]);
 ```
 
-With transport hints:
+## Proposed: `tips` parameter
 
-```text
-eidetica:?db=bafyr4i...&pr=iroh:endpoint...&pr=http:192.168.1.1:8080
-```
-
-## Future Features
-
-### `tips` Parameter
-
-An optional `tips` query parameter could reference a database at a specific
-state. A database state is defined by its complete set of tips, so tips are
-encoded as a single parameter value rather than repeated parameters (unlike
-`pr`, where each address is independent). A count prefix makes truncation
-detectable:
+The `tips` parameter is a proposal, not implemented. Its purpose would be to
+reference a database at a specific state using the complete set of tips.
+The proposed format puts the set in a single parameter, unlike independent
+`pr` values. A count prefix would let a reader detect a missing tip:
 
 ```text
 tips=<count>:<tip_id>,<tip_id>,...
 ```
 
-For example, `tips=2:bafyr4i...,bafyr4i...`. If the count doesn't match the
-number of parsed tip IDs the parameter is discarded as truncated. A receiver
-can use the tips to sync to a known state or verify they reached the expected
-point. Not needed for normal use.
-
-A set of `tips` would **fully define the database state**.
+For example, `tips=2:bafyr4i...,bafyr4i...`. Under the proposal, a count
+mismatch would discard the parameter; a receiver could use a complete set to
+identify the intended state. Today the parser ignores `tips` like any other
+unknown parameter, and including it does not affect bootstrap.
 
 ## Implementation
-
-### `DatabaseTicket` struct
-
-<!-- Code block ignored: API signature illustration, not compilable standalone -->
-
-```rust,ignore
-pub struct DatabaseTicket {
-    database_id: ID,
-    addresses: Vec<Address>,
-}
-```
-
-`DatabaseTicket` reuses the existing `Address` type from the sync module,
-which already bundles a transport type identifier with an address string.
 
 ### Serialization
 
@@ -102,34 +100,29 @@ that are structurally significant in query strings (`&`, `=`, `#`, `+`, `%`)
 are encoded. Colons and other characters pass through verbatim, keeping
 tickets human-readable.
 
-Parsing uses `url::form_urlencoded::parse()` which handles both encoded and
-unencoded input, so tickets produced by other implementations with more
-aggressive encoding are accepted.
+Parsing requires the literal `eidetica:?` prefix and uses
+`url::form_urlencoded::parse()` on the rest. It accepts more aggressive
+percent-encoding and decodes an unescaped `+` as a space.
 
 ### `Sync::create_ticket`
 
-Generates a ticket for a database using all running transports:
-
-<!-- Code block ignored: API signature illustration, not compilable standalone -->
-
-```rust,ignore
-pub async fn create_ticket(&self, database_id: &ID) -> Result<DatabaseTicket>
-```
-
-Collects server addresses from all running transports and bundles them with
-the database ID into a `DatabaseTicket`. Lower-level helper that does not
-touch user-level sync preferences.
+`Sync::create_ticket` pairs the supplied ID with addresses reported by running
+transport servers. A server that cannot report its address contributes no hint;
+the resulting list can be empty. This operation neither reads nor changes an
+Account's sharing preference.
 
 ### Session-scoped ticket lookup
 
-A `Database` opened or created by an `AccountSession` is the high-level API for making a
-tracked database shareable. It deliberately does not combine the process into
-one atomic call:
+A `Database` handle with a local login's tracking record and Read permission
+can make that database shareable. Writing the preference and obtaining a
+locator are separate operations:
 
-1. `Database::share` writes the user's signed durable preference.
+1. `Database::share` writes the user's durable installation-local preference.
 2. Owner reconciliation applies the daemon's private combined configuration independently.
-3. `Database::ticket` checks this user's setting and, when enabled, returns a
-   point-in-time locator built from the owner's current addresses.
+3. `Database::ticket` checks this user's setting. If enabled, it asks the
+   embedded sync instance or the connected daemon for a point-in-time locator.
+   Enabling the preference does not guarantee an available sync instance or
+   a reachable address.
 
 `Database::sync_settings` exposes only that user's settings. It does not expose
 or consult combined settings, other users, or runtime telemetry. A caller whose
@@ -144,8 +137,9 @@ remain separate.
 ## Joining through a client or daemon
 
 `AccountSession::join` is the high-level consumer of a ticket. On an embedded instance it
-uses the existing `request_database_access` facility. On a connected instance the
-daemon owns transports, while the client retains the user's private signing key.
+uses the same `Sync::bootstrap_with_ticket` path as `request_database_access`. On a
+connected instance the daemon owns transports, while the client retains the user's
+private signing key.
 Neither a second client sync engine nor daemon custody of that key is needed.
 
 A request proof binds the answering peer, database and advertised tips, so a
@@ -168,9 +162,3 @@ This is not device enrollment or a durable completion job. Later daemon sync use
 its device key and needs separate authority or a global grant. The existing
 held-tree Read gate and native authority semantics remain unchanged; see the
 [recovery limits](../user_guide/bootstrap.md#current-recovery-limits).
-
-## Forward Compatibility
-
-Unknown query parameters are silently ignored during parsing. This allows
-future parameters to be added without breaking existing parsers. Malformed
-`pr` values (missing `:` separator) are also silently skipped.
