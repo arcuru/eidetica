@@ -43,6 +43,8 @@ The target's [delegation bounds](authentication_guide.md) still apply. A referen
 
 ## Join an existing Identity from another installation
 
+If you are setting up a second installation of the same Account, [join that Account and register its local login](linked_accounts.md#reuse-the-root-on-another-installation) first. Then request only the memberships you need from that login.
+
 1. On the sharing installation, enable sync and a listening transport. Call `identity.database().share().await?`, then `identity.ticket().await?` on its session-owned handle. Send the locator through your normal onboarding channel; the ticket contains no private key or authority.
 2. The requester generates or selects a key held on **its own** installation. Call `register_identity` with the ticket, that key, the requested permission and explicit local `SyncSettings`. It returns `IdentityRegistration::Pending` if peer approval is needed, even if the public root is already replicated. A valid existing explicit grant can satisfy the request without a new approval.
 3. An approver on the sharing peer uses a proven current Admin key for that Identity root. Inspect `pending_access_requests(root, admin_key)`, verify who is requesting membership out of band, and decide whether to grant the exact requested permission. Key proof is not proof of a person's identity. If approving, first sign the ordinary Auth grant using the Identity's admin handle, then call `complete_access_request(root, request_id, admin_key)`. To deny, call `reject_access_request` on the same root and request instead, without adding a grant.

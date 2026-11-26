@@ -1559,8 +1559,29 @@ impl AccountSession {
         }
         // Discovery can read delegated databases, so do it before holding the
         // AccountSession write lock. Even an unchanged tracked key needs a valid identity.
-        let available =
-            Database::find_sigkeys(&self.instance, &tracked.database_id, key_id).await?;
+        let available = Database::find_sigkeys(&self.instance, &tracked.database_id, key_id).await;
+        #[cfg(all(unix, feature = "service"))]
+        let available = match available {
+            Err(original) if self.instance.remote_connection().is_some() => {
+                // The default socket login may not be able to read a database
+                // whose Auth admits the selected key. Prove that key and apply
+                // the normal per-tree read gate, without changing the login.
+                // Keep the additional wire futures out of the embedded
+                // bootstrap/registration state machine's inline storage.
+                Box::pin(async {
+                    let signer = self.acting_as(key_id, None)?;
+                    let database = signer
+                        .open_database(&self.instance, &tracked.database_id)
+                        .await?;
+                    let auth = database.live_auth_settings().await?;
+                    Ok::<_, Error>(auth.find_all_sigkeys_for_pubkey(key_id))
+                })
+                .await
+                .or(Err(original))
+            }
+            result => result,
+        };
+        let available = available?;
         let (sigkey, _) = available
             .first()
             .ok_or_else(|| AccountError::NoSigKeyFound {
