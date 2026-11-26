@@ -806,7 +806,7 @@ Clearing only the derived cache is not a substitute.
 
 1. **Use descriptive key names**: `"alice_laptop"`, `"deploy_bot"` for keys that will be looked up by name
 2. **Set appropriate permission bounds**: Don't grant more access than needed
-3. **Manage delegation tips deliberately**: A pointer rewind alone does not reset inherited floors. See the [rewind, effective-removal and nested examples](../design/authentication.md#causal-snapshot-validation) before using removal as a recovery tool
+3. **Manage delegation tips deliberately**: A pointer rewind alone does not reset inherited floors. See the [rewind, effective-removal and nested examples](../design/authentication.md#causal-snapshot-validation) before using removal as a recovery tool. To advance an Identity's floor without editing Settings, see [refreshing delegating databases](identity_guide.md#refresh-delegating-databases-after-removing-a-key).
 4. **Track delegated database root IDs**: Delegation paths use root IDs, so document which IDs correspond to which databases
 5. **Document delegation chains**: Complex hierarchies can be hard to debug
 

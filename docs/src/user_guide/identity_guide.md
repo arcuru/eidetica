@@ -74,3 +74,39 @@ These calls work with embedded instances or connected clients. Start the network
 The signed grant and recorded decision are separate commits. If the second fails, inspect the existing grant and retry finalization; do not blindly resubmit a settings update. If verified membership has arrived separately, `activate_identity(name)` explicitly checks the local grant and activates the local selection. It does not contact the peer, change its request status, or rewrite database sync preferences; retry `register_identity` to finish that bookkeeping. Local activation is not proof of a peer decision or of global catch-up.
 
 Register separately for each required Identity. There is no automatic enrollment of all Account references, background completion or stronger global revocation guarantee. See [the bootstrap lifecycle](../internal/bootstrap.md#identity-membership) and [Accounts design](../design/accounts.md#identity-references-and-activation).
+
+## Refresh delegating databases after removing a key
+
+`Identity::revoke_key` changes the Identity, not the databases that delegate to it. Once the removal is Verified on your replica, an active member with effective delegated Write can carry that Identity snapshot into the target's history. The refresh writes an empty data entry through the selected Identity. It does not edit the configured delegation, its bounds, or any other Settings.
+
+Use `Identity::advance_delegation` for one database, or `AccountSession::advance_delegations` for the databases tracked locally by the account. The sweep uses one Verified Identity snapshot for all direct delegators. Use either call explicitly; revocation does not run a sweep for you.
+
+```rust,no_run
+use eidetica::{AccountSession, ID, Result, account::{DelegationAdvance, Identity}};
+
+async fn refresh_one(identity: &Identity, target: &ID) -> Result<()> {
+    match identity.advance_delegation(target).await? {
+        Some(entry) => println!("{target}: committed {entry}"),
+        None => println!("{target}: already covered"),
+    }
+    Ok(())
+}
+
+async fn refresh_tracked(account: &AccountSession, identity_name: &str) -> Result<()> {
+    for (target, outcome) in account.advance_delegations(identity_name).await? {
+        match outcome {
+            DelegationAdvance::Updated(entry) => println!("{target}: committed {entry}"),
+            DelegationAdvance::AlreadyCovered => println!("{target}: already covered"),
+            DelegationAdvance::Skipped => println!("{target}: no direct delegation"),
+            DelegationAdvance::Failed(error) => eprintln!("{target}: no advance confirmed: {error}"),
+        }
+    }
+    Ok(())
+}
+```
+
+- **Already covered** means the floor at the target snapshot already covers the chosen Identity cut. No entry was added. If the chosen cut and the existing floor are incomparable, the helper returns an error rather than dropping either branch. Sync the missing Identity history and retry once the Verified cut covers all required tips.
+- **Committed** is a local result. Sync the Identity proof and the target history to each recipient, then check the entry is in that replica's Verified history. A replica can receive the entry before it has enough history to verify it.
+- The [causal cutoff](../design/authentication.md#causal-snapshot-validation) applies to descendants, not to older snapshots or branches that never observed the refresh. Other grants are unaffected. Concurrent Identity settings can affect whether the removed key is revoked at the joined cut; check the key's state at that cut before relying on it. Reopen any existing signing handle pinned below the new floor.
+
+The sweep does not find untracked databases, advance nested paths, or establish a wall-clock cutoff.
