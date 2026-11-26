@@ -9,7 +9,13 @@
 //!   already-initialised backend. Fails with a pointer to `daemon init` if
 //!   the backend is empty.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use axum::{
     extract::State,
@@ -131,7 +137,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     tracing::info!(%address, "Daemon sync listener started");
 
-    let dashboard_open = Arc::new(RwLock::new(true));
+    let dashboard = Arc::new(DashboardAdmission::default());
     let web = web_listener.map(|listener| {
         let addr = listener.local_addr().expect("bound listener");
         println!("Dashboard listening on http://{addr}");
@@ -139,7 +145,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
             println!("HTTP sync listening on http://{addr} (shared dashboard listener)");
         }
         let app = super::serve::web_router(instance.clone(), shared_http_sync).route_layer(
-            middleware::from_fn_with_state(dashboard_open.clone(), dashboard_admission),
+            middleware::from_fn_with_state(dashboard.clone(), dashboard_admission),
         );
         (listener, app)
     });
@@ -192,7 +198,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     let drain = Duration::from_secs(10);
     // Stop browser writes and wait for admitted requests before flushing. The
     // shared /api/v0 route bypasses this gate and stays served during the flush.
-    let dashboard_result = close_dashboard(&dashboard_open, drain).await;
+    let dashboard_result = dashboard.close_and_drain(drain).await;
     if !shared_http_sync {
         let _ = web_shutdown_tx.send(());
     }
@@ -265,26 +271,38 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn close_dashboard(open: &RwLock<bool>, drain: Duration) -> Result<(), String> {
-    tokio::time::timeout(drain, async {
-        *open.write().await = false;
-    })
-    .await
-    .map_err(|_| "dashboard requests did not drain before sync flush".to_string())
+#[derive(Default)]
+struct DashboardAdmission {
+    closed: AtomicBool,
+    active: RwLock<()>,
+}
+
+impl DashboardAdmission {
+    async fn close_and_drain(&self, drain: Duration) -> Result<(), String> {
+        // Close admission independently of the cancellable wait for handlers.
+        self.closed.store(true, Ordering::Release);
+        let _drained = tokio::time::timeout(drain, self.active.write())
+            .await
+            .map_err(|_| "dashboard requests did not drain before sync flush".to_string())?;
+        Ok(())
+    }
 }
 
 /// Hold a read guard until a browser handler finishes, so shutdown can quiesce
 /// local writes without stopping HTTP peer sync on the same listener.
 async fn dashboard_admission(
-    State(open): State<Arc<RwLock<bool>>>,
+    State(admission): State<Arc<DashboardAdmission>>,
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
     if request.uri().path() == "/api/v0" {
         return next.run(request).await;
     }
-    let open = open.read().await;
-    if !*open {
+    let Ok(_active) = admission.active.try_read() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    // Check after taking the guard: anyone admitted before closure is counted.
+    if admission.closed.load(Ordering::Acquire) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     next.run(request).await
@@ -489,7 +507,7 @@ mod tests {
         .await
         .unwrap();
         instance.enable_sync().await.unwrap();
-        let open = Arc::new(RwLock::new(true));
+        let admission = Arc::new(DashboardAdmission::default());
         let admitted = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let app = {
@@ -509,7 +527,7 @@ mod tests {
                     }),
                 )
                 .route_layer(middleware::from_fn_with_state(
-                    open.clone(),
+                    admission.clone(),
                     dashboard_admission,
                 ))
         };
@@ -536,7 +554,8 @@ mod tests {
             };
             admitted.notified().await;
             assert!(
-                close_dashboard(&open, Duration::from_millis(50))
+                admission
+                    .close_and_drain(Duration::from_millis(50))
                     .await
                     .is_err(),
                 "dashboard admission must cover the handler's lifetime"

@@ -971,7 +971,7 @@ async fn handle_sync_request(
 ) -> axum::Json<SyncResponse> {
     let context = RequestContext {
         remote_address: Some(Address {
-            transport_type: "http".to_string(),
+            transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
             address: addr.to_string(),
         }),
         peer_pubkey: match &request {

@@ -286,6 +286,9 @@ pub struct IrohTransport {
 
 **Relationship Tracking:** Each sync request includes the peer's device public key, enabling automatic tracking of tree/peer relationships. This enables bidirectional `sync_on_commit` without manual setup.
 
+Inbound HTTP is an exception: it does not register either peer addresses or tree/peer relationships.
+An authorized pull is not permission to send future writes to the requester.
+
 ### 7. Declarative Sync API
 
 **Decision:** Provide `register_sync_peer()` for declaring sync intent with `SyncHandle` for status tracking

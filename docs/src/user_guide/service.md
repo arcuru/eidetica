@@ -131,18 +131,21 @@ with no loopback restriction. When it equals the enabled dashboard bind, one
 listener serves both surfaces; otherwise the HTTP transport opens its own
 listener, serving only `/api/v0`. HTTP sync does not use browser cookies and
 does not require a form `Origin` header. Per-database sync authorization still
-applies. This transport is plaintext HTTP: use Iroh for encrypted peer transport
-when the network is untrusted.
+applies. Inbound HTTP requests do not register push recipients or their addresses.
+Configure those relationships separately if the server should push updates to a peer.
+This transport is plaintext HTTP: use Iroh for encrypted peer transport when the
+network is untrusted.
 
 Generated tickets advertise transport-owned listeners, not the shared HTTP
 endpoint. To connect over the shared port, supply that HTTP address explicitly
 (for example with `DatabaseTicket::with_addresses` and `Address::http`).
 
 During shutdown, socket clients and admitted dashboard requests drain before
-the final sync flush. On a shared listener, new dashboard requests then receive
-503 while `/api/v0` remains available through that flush. The shared listener
-closes afterward, as does the separate HTTP listener. A dashboard drain timeout
-is an error rather than a successful flush racing active browser writes.
+the final sync flush. On a shared listener, new dashboard requests receive 503
+from the start of draining, while `/api/v0` remains available through the flush.
+The shared listener closes afterward, as does the separate HTTP listener.
+A dashboard drain timeout leaves the dashboard closed to new requests and is
+reported as an error instead of flushing alongside active browser writes.
 
 Both NixOS and Home Manager expose `services.eidetica.httpSyncBind` (default
 `null`, HTTP client-only); it requires `daemon = true`. To share the dashboard
