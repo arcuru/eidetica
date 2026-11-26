@@ -15,6 +15,13 @@ graph LR
 
 The server wraps a full `Instance` (not just a backend) so it can handle both storage operations and write notifications. A client calls `Instance::connect("unix://...")`, which establishes a `RemoteConnection`, wraps it as a `RemoteBackend`, fetches `InstanceMetadata` over the wire, and constructs an Instance with **no local secrets** (`secrets: None`) — signing keys are derived client-side after login, never held by the constructed Instance until a user logs in.
 
+The daemon always runs Iroh and an outbound HTTP sync client on this same
+Instance. `--http-sync-bind` opts into inbound HTTP peer sync. An equal enabled
+dashboard bind shares one listener; otherwise HTTP sync has its own listener.
+Neither mode exposes service RPC over HTTP. Shutdown stops socket clients and
+quiesces dashboard handlers before the final sync flush, while HTTP peer sync
+remains available until that flush finishes.
+
 ### Module Structure
 
 | Module              | Role                                                                                              |

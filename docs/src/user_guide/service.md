@@ -63,11 +63,11 @@ The daemon prints its socket path on startup and runs until interrupted (SIGINT/
 `eidetica daemon --dashboard` also hosts the existing login/dashboard, health,
 and stats pages. It listens on exactly the address set by `--dashboard-host`
 and `--dashboard-port` (default **127.0.0.1:5942**). The default daemon remains
-socket-only. Both listeners and the Iroh sync listener use the **same
+socket-only for local clients. Both listeners and the sync transports use the **same
 Instance/backend**, whether SQLite, PostgreSQL, or in-memory; no separate
 `serve` process is needed. The dashboard does not expose the trusted Unix
-service RPC or `/api/v0` HTTP peer-sync endpoint. Peer sync continues over
-Iroh. If either listener stops unexpectedly, the daemon stops both, flushes
+service RPC. It exposes `/api/v0` only when HTTP peer sync is explicitly
+configured to share its bind (see below). If either local listener stops unexpectedly, the daemon stops both, flushes
 sync, and exits with an error. Shutdown removes its socket.
 
 The dashboard speaks plain HTTP. For remote access, terminate HTTPS at a
@@ -105,9 +105,65 @@ NixOS and Home Manager modules preserve their `serve` default. Set
 `services.eidetica.dashboard = true;` to opt into its dashboard; `host` and
 `port` set its bind address and port. A dashboard requires daemon mode. The
 NixOS module opens the port when `openFirewall = true` and a web listener
-(legacy `serve` or the dashboard) is running. The NixOS daemon puts its socket
+(legacy `serve` or the dashboard) is running; an explicit `httpSyncBind` also
+opens that sync port. The NixOS daemon puts its socket
 at `dataDir/service.sock` (not in systemd's private `/tmp`); client processes
 need owner-approved access to that directory.
+
+### HTTP peer sync
+
+The daemon always registers an HTTP client alongside Iroh. Outbound sync to
+HTTP peers, including `--sync-ticket` bootstrap, works without an HTTP listener
+or a dashboard. Inbound HTTP peer sync is opt-in:
+
+```bash
+# A separate HTTP sync listener, with no dashboard
+eidetica daemon --http-sync-bind 0.0.0.0:5943
+
+# Share one listener between the dashboard and /api/v0
+eidetica daemon --dashboard --dashboard-host 127.0.0.1 --dashboard-port 5942 \
+  --http-sync-bind 127.0.0.1:5942
+```
+
+`--http-sync-bind` (or `EIDETICA_HTTP_SYNC_BIND`) takes an IP address and port;
+bracket IPv6 addresses, for example `[::1]:5942`. It binds exactly that address,
+with no loopback restriction. When it equals the enabled dashboard bind, one
+listener serves both surfaces; otherwise the HTTP transport opens its own
+listener, serving only `/api/v0`. HTTP sync does not use browser cookies and
+does not require a form `Origin` header. Per-database sync authorization still
+applies. This transport is plaintext HTTP: use Iroh for encrypted peer transport
+when the network is untrusted.
+
+Generated tickets advertise transport-owned listeners, not the shared HTTP
+endpoint. To connect over the shared port, supply that HTTP address explicitly
+(for example with `DatabaseTicket::with_addresses` and `Address::http`).
+
+During shutdown, socket clients and admitted dashboard requests drain before
+the final sync flush. On a shared listener, new dashboard requests then receive
+503 while `/api/v0` remains available through that flush. The shared listener
+closes afterward, as does the separate HTTP listener. A dashboard drain timeout
+is an error rather than a successful flush racing active browser writes.
+
+Both NixOS and Home Manager expose `services.eidetica.httpSyncBind` (default
+`null`, HTTP client-only); it requires `daemon = true`. To share the dashboard
+port, set it to the same `host:port`, for example:
+
+```nix
+services.eidetica = {
+  daemon = true;
+  dashboard = true;
+  host = "127.0.0.1";
+  port = 5942;
+  httpSyncBind = "127.0.0.1:5942";
+};
+```
+
+**Migration from `serve`:** setting `daemon = true` does not preserve the inbound
+HTTP sync previously served on `port`. Set `httpSyncBind` explicitly to keep it.
+Enable `dashboard` too if you want to retain the web pages on that same port;
+setting `dashboard` alone does not enable inbound HTTP sync. The NixOS
+`openFirewall` opt-in opens the configured HTTP sync port as well as any web
+port; Home Manager leaves firewall management to the operator.
 
 ### Dashboard Account information
 
@@ -342,13 +398,14 @@ instead of unwrapping.
 | `--dashboard-port` / `EIDETICA_DASHBOARD_PORT` | Dashboard port                                                                           | `5942`                                          |
 | `--socket` / `EIDETICA_SOCKET`                 | Unix socket path                                                                         | See [Default Socket Path](#default-socket-path) |
 | `--sync-ticket` / `EIDETICA_SYNC_TICKETS`      | Bootstrap/reconcile a database from a native ticket (repeatable; env is comma-separated) | --                                              |
+| `--http-sync-bind` / `EIDETICA_HTTP_SYNC_BIND` | Inbound HTTP sync IP:port; shares an equal enabled dashboard bind                        | disabled (outbound HTTP remains enabled)        |
 | `--backend`                                    | Storage backend (`sqlite`, `postgres`, `inmemory`)                                       | `sqlite`                                        |
 | `--data-dir`                                   | Data directory for storage files                                                         | Current directory                               |
 | `--postgres-url`                               | PostgreSQL connection URL                                                                | --                                              |
 
 ## Limitations
 
-- **Sync management is server-side.** The daemon always loads persisted sync state, starts its Iroh listener, and keeps syncing without connected service clients. Use `--sync-ticket <TICKET>` for owner-side bootstrap and peer setup; the resulting relationships persist across restart. A connected client can't drive that lifecycle over the wire; `enable_sync()` on a remote Instance remains a no-op. To join a database from a ticket, a connected client calls `AccountSession::join`: the daemon performs the network exchange, while the client holds its private key and signs the access request. Success returns an opened database after recording the account's key mapping and sync preferences; pending approval requires an explicit retry. Pending and rejection create no new Account state. Failed or interrupted calls can leave committed effects; retry explicitly rather than assuming rollback. There is no automatic restart-safe completion, cancellation API, or device enrollment. Held/unreadable acquisition, automatic delegated-history acquisition and stronger authority recovery remain unsupported; see [current recovery limits](bootstrap.md#current-recovery-limits). Ongoing daemon replication needs device-key authorization or a global grant; account-key access alone does not supply private background authority. Account tracking changes made through the socket are reconciled by the daemon's Instance callbacks.
+- **Sync management is server-side.** The daemon always loads persisted sync state, starts its Iroh listener, registers an HTTP client, and keeps syncing without connected service clients. Inbound HTTP requires `--http-sync-bind`. Use `--sync-ticket <TICKET>` for owner-side bootstrap and peer setup; the resulting relationships persist across restart. A connected client can't drive that lifecycle over the wire; `enable_sync()` on a remote Instance remains a no-op. To join a database from a ticket, a connected client calls `AccountSession::join`: the daemon performs the network exchange, while the client holds its private key and signs the access request. Success returns an opened database after recording the account's key mapping and sync preferences; pending approval requires an explicit retry. Pending and rejection create no new Account state. Failed or interrupted calls can leave committed effects; retry explicitly rather than assuming rollback. There is no automatic restart-safe completion, cancellation API, or device enrollment. Held/unreadable acquisition, automatic delegated-history acquisition and stronger authority recovery remain unsupported; see [current recovery limits](bootstrap.md#current-recovery-limits). Ongoing daemon replication needs device-key authorization or a global grant; account-key access alone does not supply private background authority. Account tracking changes made through the socket are reconciled by the daemon's Instance callbacks.
 - **Unix-only.** The service module requires Unix domain sockets and is not available on Windows.
 - **Feature flag required.** The `service` feature must be enabled (included in the default `full` feature set).
 

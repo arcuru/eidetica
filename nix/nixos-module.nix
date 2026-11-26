@@ -29,6 +29,17 @@ in {
       description = "Host the daemon web dashboard at the configured bind address and port; requires daemon.";
     };
 
+    httpSyncBind = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "0.0.0.0:5942";
+      description = ''
+        Inbound HTTP peer sync bind (IP:port); requires daemon. Null keeps HTTP
+        client-only. An address equal to the dashboard bind shares its listener.
+        IPv6 addresses must be bracketed, for example [::1]:5942.
+      '';
+    };
+
     port = mkOption {
       type = types.port;
       default = 5942;
@@ -144,6 +155,10 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
+        assertion = cfg.httpSyncBind == null || cfg.daemon;
+        message = "services.eidetica.httpSyncBind requires services.eidetica.daemon";
+      }
+      {
         assertion = !cfg.dashboard || cfg.daemon;
         message = "services.eidetica.dashboard requires services.eidetica.daemon";
       }
@@ -216,6 +231,9 @@ in {
         // optionalAttrs (cfg.cacheBackend != null) {
           EIDETICA_CACHE_BACKEND = cfg.cacheBackend;
         }
+        // optionalAttrs (cfg.httpSyncBind != null) {
+          EIDETICA_HTTP_SYNC_BIND = cfg.httpSyncBind;
+        }
         // cfg.environment;
 
       serviceConfig =
@@ -281,6 +299,10 @@ in {
     };
 
     # Firewall configuration
-    networking.firewall.allowedTCPPorts = mkIf (cfg.openFirewall && (!cfg.daemon || cfg.dashboard)) [cfg.port];
+    networking.firewall.allowedTCPPorts = mkIf cfg.openFirewall (
+      optional (!cfg.daemon || cfg.dashboard) cfg.port
+      ++ optional (cfg.daemon && cfg.httpSyncBind != null)
+      (toInt (last (splitString ":" cfg.httpSyncBind)))
+    );
   };
 }
