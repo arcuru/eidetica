@@ -537,27 +537,19 @@ impl RemoteConnection {
         op: DatabaseOp,
     ) -> crate::Result<ServiceResponse> {
         let _guard = self.inner.authentication.lock().await;
-        self.db_request_locked(root_id, identity, op).await
-    }
-
-    /// [`Self::db_request`] for a caller already holding `authentication`.
-    async fn db_request_locked(
-        &self,
-        root_id: ID,
-        identity: SigKey,
-        op: DatabaseOp,
-    ) -> crate::Result<ServiceResponse> {
         if let Some(signer) = &self.signer {
             self.register_session_key_locked(signer).await?;
         }
-        self.request_ok(ServiceRequest::AuthenticatedDb(Box::new(
-            AuthenticatedDbRequest {
-                root_id,
-                identity,
-                op,
-            },
-        )))
-        .await
+        self.request_ok(Self::authenticated_db_request(root_id, identity, op))
+            .await
+    }
+
+    fn authenticated_db_request(root_id: ID, identity: SigKey, op: DatabaseOp) -> ServiceRequest {
+        ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+            root_id,
+            identity,
+            op,
+        }))
     }
 
     /// Prove a caller-owned signer, with no daemon credential-store dependency.
@@ -1021,25 +1013,6 @@ impl RemoteConnection {
         {
             sub.idle_since = Some(std::time::Instant::now());
         }
-    }
-
-    /// Requires `authentication`, so the sweep can wait for admission
-    /// separately from the round trip it bounds.
-    async fn unsubscribe_writes_locked(
-        &self,
-        id: CallbackId,
-        tree: ID,
-        identity: SigKey,
-    ) -> crate::Result<()> {
-        self.db_request_locked(
-            tree,
-            identity,
-            DatabaseOp::UnsubscribeWrites {
-                subscription_id: id.0,
-            },
-        )
-        .await
-        .and_then(Self::expect_ok)
     }
 
     // === Database operations (DatabaseOp via AuthenticatedDb envelope) ===
@@ -1561,14 +1534,21 @@ async fn sweep_expired(inner: Arc<RemoteConnectionInner>, rtt_budget: std::time:
         if conn.inner.closed.load(Ordering::Acquire) {
             return false;
         }
-        match tokio::time::timeout(
-            rtt_budget,
-            conn.unsubscribe_writes_locked(id, sub.tree, sub.identity),
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::debug!(%error, "Unsubscribe failed"),
+        // The sweep has no signer to register; use the same request envelope
+        // without adding another async frame to ordinary database requests.
+        let request = RemoteConnection::authenticated_db_request(
+            sub.tree,
+            sub.identity,
+            DatabaseOp::UnsubscribeWrites {
+                subscription_id: id.0,
+            },
+        );
+        match tokio::time::timeout(rtt_budget, conn.request_ok(request)).await {
+            Ok(response) => {
+                if let Err(error) = response.and_then(RemoteConnection::expect_ok) {
+                    tracing::debug!(%error, "Unsubscribe failed");
+                }
+            }
             Err(_) => {
                 conn.inner.mark_dead();
                 return false;
