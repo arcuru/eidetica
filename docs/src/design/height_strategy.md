@@ -30,8 +30,10 @@ The integration test `test_store_height_transition_joins_all_effective_parent_he
 | First Store write                            | Genesis        |           1 |    Author clock (independent) |
 | Left                                         | First write    |           2 |                          2000 |
 | Right                                        | First write    |           2 |                          5000 |
-| Join, remove override                        | Left and right |    **5001** |              5001 (inherited) |
+| Join, request inheritance                    | Left and right |    **5001** |              5001 (inherited) |
 | Alternatively: join, set `Some(Incremental)` | Left and right |       **3** |            5001 (independent) |
+
+`set_height_strategy(None)` requests inheritance for the join being authored. It omits `settings` from the staged registration rather than writing a tombstone. A historical Doc merge preserves omitted children, so a fresh transaction can still read the previous override. Inspect the join's stored height to see what it used; do not treat the setter as a durable reset.
 
 Neither sibling writes `_settings`, so the join pins the same settings frontier as the siblings, not their IDs. Both joins consume both Store parents. Both must exceed 5000 **in the Store**. Only the inheriting join must carry that jump into the main tree and its later descendants. The siblings' different Store heights do not make one an ancestor of the other, and the larger height does not discard the other tip.
 
