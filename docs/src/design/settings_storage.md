@@ -1,283 +1,62 @@
-> ✅ **Status: Implemented**
->
-> This design is fully implemented and functional.
-
 # Settings Storage Design
 
-## Overview
+Historical databases store replicated settings in the `_settings` Store (`constants::SETTINGS`). It holds a `Doc` CRDT: the database name is stored as `name`, and authentication configuration is stored as `auth`. These settings travel with Entries; they are distinct from an installation's local [sharing preferences](../user_guide/database_management.md).
 
-This document describes how Eidetica stores, retrieves, and tracks settings in databases. Settings are stored exclusively in the `_settings` store and tracked via entry metadata for efficient access.
+## Create, rename, and read
 
-## Architecture
+Pass the initial settings as a `Doc` when creating the database. After creation, use `Transaction::get_settings()` to get a `SettingsStore`, a typed wrapper over `DocStore`. Getting the handle is synchronous; reading and staging settings through it are async.
 
-### Settings Storage
+```rust
+# extern crate eidetica;
+# extern crate tokio;
+# use eidetica::{Instance, NewAccount, backend::database::Sqlite, crdt::Doc};
+#
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let (_instance, mut user) = Instance::create_backend(
+#     Box::new(Sqlite::in_memory().await?),
+#     NewAccount::passwordless("alice"),
+# ).await?;
+let mut initial_settings = Doc::new();
+initial_settings.set("name", "Draft Notes");
+let key = user.get_default_key()?;
+let database = user.create_database(initial_settings, &key).await?;
 
-Settings are stored in the `_settings` store (constant `SETTINGS` in `constants.rs`):
+let txn = database.new_transaction().await?;
+let settings = txn.get_settings()?;
+assert_eq!(settings.get_name().await?, "Draft Notes");
+settings.set_name("Project Notes").await?;
+assert_eq!(settings.get_name().await?, "Project Notes");
+txn.commit().await?;
 
-```rust,ignore
-// Settings structure in _settings store
-{
-    "auth": {
-        "key_name": {
-            "key": "...",           // Public key
-            "permissions": "...",   // Permission level
-            "status": "..."         // Active/Revoked
-        }
-    }
-    // Future: tree_config, replication, etc.
-}
+let next = database.new_transaction().await?;
+assert_eq!(next.get_settings()?.get_name().await?, "Project Notes");
+# Ok(())
+# }
 ```
 
-**Key Properties:**
+A settings read combines the `_settings` history at the transaction's fixed main-parent snapshot with that transaction's staged settings. The first transaction sees its own rename before commit; the next transaction in the example reads it from committed history. A transaction opened with `Database::new_transaction_at()` at an earlier snapshot does not pick up settings written after that boundary.
 
-- **Data Type**: `Doc` CRDT for deterministic merging. Store configurations (e.g., `PasswordStoreConfig`) use atomic Docs (`Doc::atomic()`) to ensure the full config is replaced as a unit on each write, rather than merging individual fields.
-- **Location**: Exclusively in `_settings` store
-- **Access**: Through `Transaction::get_settings()` method
+## Genesis
 
-### Settings Retrieval
+`AccountSession::create_database()` passes the selected signing key and settings to `Database::create_with_init`. It stages the initial `_settings` Doc and `_root` marker, adds random entropy, and commits one signed root Entry. Its ID identifies the Database. A user Store opened in the genesis initializer can also have its [registration](subtree_index.md#from-genesis-to-the-first-registration) in that Entry. If `auth` is absent, creation grants the signer `Admin(0)`. If `auth` is supplied, it is used as given: the signer must already have active Admin authority in that configuration, and invalid or empty Auth does not receive a fallback creator grant.
 
-Settings can be accessed through two primary interfaces:
+Genesis has no main parents, so its settings pin and `_settings` parents are empty. It is the only entry that can bootstrap authority from its own settings payload.
 
-#### SettingsStore API (Recommended)
+## Entry Metadata
 
-`SettingsStore` provides a type-safe, high-level interface for settings management:
+`Transaction::commit()` writes signed JSON metadata in the entry's main `TreeNode.metadata`. The internal `EntryMetadata.settings_snapshot` is serialized as `settings_tips`, an array of entry IDs. The metadata also carries root entropy and, when enabled, an advisory timestamp.
 
-```rust,ignore
-use eidetica::store::SettingsStore;
+**`settings_tips` pins the pre-write settings frontier.** It must equal the complete canonical `_settings` frontier derived independently from the entry's main parents. The comparison is set equality, not list order. If the entry writes `_settings`, that Store's parents must equal the same frontier. Ordinary Stores may omit observed Store tips; `_settings` cannot omit causal authority context. The signed pin does not replace complete main ancestry or enable sparse verification.
 
-// Create a SettingsStore from a transaction
-let settings_store = transaction.get_settings()?;
+Except at genesis, signature and permission checks use the pinned pre-write settings, not the live head or the settings produced by the entry. An entry cannot authorize itself by adding a grant, and a later grant or revocation does not change the authority of an earlier entry. The resulting settings are the merge of the pre-write state and the entry's settings contribution. They are used separately for delegation transitions, including pointer floors and effective removal. See the [causal authorization rules](authentication.md#causal-snapshot-validation) and [snapshot boundaries](authentication.md#local-state-and-snapshot-boundaries).
 
-// Type-safe access to common settings
-let database_name = settings_store.get_name()?;
-let auth_settings = settings_store.get_auth_settings()?;
-```
+In the rename example, call the root G and the rename R. R has main parent G, `_settings` parent G, and `settings_tips = [G]`. A subsequent data-only child of R pins `[R]` without copying the name or writing `_settings`. The signed IDs identify a snapshot, not the merged settings document. [Height calculation](height_strategy.md#calculating-a-commit) uses the resulting settings instead.
 
-#### Transaction API
+The optional `ts` field is independent of authorization. The author emits it when the resulting settings contain `entry_timestamps: true`, including on the commit that enables it. `Entry::committed_at_ms()` reads this signed author-clock value; verification does not interpret it, and it does not determine ordering. See [Optional commit timestamps](../user_guide/transactions.md#optional-commit-timestamps).
 
-`Transaction::get_settings()` returns a SettingsStore that handles:
+## Verification and read limits
 
-- **Historical state**: Computed from all relevant entries in the database
-- **Staged changes**: Any modifications to `_settings` in the current transaction
+Default local transactions read from the `Verified` frontier. If a received entry is missing required main, settings, or delegated proof, or that proof is not yet `Verified`, the entry can remain `Unverified` and absent from default reads. A later local `Database::verify()` pass can promote it once the proof is available and validation succeeds. A conclusively invalid pin or settings-parent frontier instead makes the entry `Failed`.
 
-### Entry Metadata
-
-Every entry includes metadata tracking settings state:
-
-```rust,ignore
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EntryMetadata {
-    /// Tips of the _settings store at the time this entry was created
-    settings_tips: Vec<ID>,
-    /// Random entropy for ensuring unique IDs for root entries
-    entropy: Option<u64>,
-    /// Advisory author-clock Unix milliseconds, omitted when stamping is off
-    ts: Option<u64>,
-}
-```
-
-**Metadata Properties:**
-
-- Automatically populated by `Transaction::commit()`
-- Identifies the causal pre-write authority snapshot; it does not enable sparse verification
-- Stored in `TreeNode.metadata` field as serialized JSON
-
-**`settings_tips` is the verification pin.** Its signed value must equal the full `_settings` frontier of the entry's main parents, excluding any settings written in that entry. Only genesis can bootstrap against its own settings. An entry's signature is always
-validated against the `_settings` state these tips identify — _not_ the
-current settings — so granting or revoking authority later cannot
-retroactively (in)validate historical entries. When a node does not yet hold
-the full `_settings` ancestor closure named by `settings_tips` (the normal
-partial-sync case), the entry's pinned settings are _incomplete_: it cannot
-be checked yet and stays `Unverified` until the missing `_settings` entries
-arrive, at which point a later `Database::verify()` pass promotes it. This is
-why an entry can be legitimately `Unverified` ("can't tell yet")
-as opposed to `Failed` ("checked and rejected").
-
-A settings entry's subtree parents must also equal its main parents' canonical
-settings frontier. This is intentionally stricter than ordinary Stores: ordinary
-Store parents select consumption and may omit observed tips, but `_settings`
-cannot omit causal authority context. Signed metadata alone does not prove the
-pin is correct; validation derives it independently from complete main ancestry. Local historical transactions derive both that frontier and
-the metadata pin from the same fixed main-parent snapshot. The entry's resulting
-merged settings are a separate post-write state used for delegation transitions;
-they cannot grant the same non-genesis entry authority. See the canonical
-[causal authorization rules](authentication.md#causal-snapshot-validation) and
-[snapshot boundaries](authentication.md#local-state-and-snapshot-boundaries).
-
-`ts` is independent of the pin: verification does not interpret it.
-The author writes it when the transaction's resulting settings contain
-`entry_timestamps: true`. Older readers ignore the unknown field. Because the
-field is inside the signed Entry metadata, replicas preserve it without using
-it as a clock-skew check or for ordering. See [Optional commit timestamps](../user_guide/transactions.md#optional-commit-timestamps).
-
-## SettingsStore API
-
-### Overview
-
-`SettingsStore` provides a specialized, type-safe interface for managing the `_settings` subtree. It wraps `DocStore` to offer convenient methods for common settings operations while maintaining proper CRDT semantics and transaction boundaries.
-
-### Key Benefits
-
-- **Type Safety**: Eliminates raw CRDT manipulation for common operations
-- **Convenience**: Direct methods for authentication key management
-- **Atomicity**: Transaction boundaries ensure atomic multi-step operations
-- **Validation**: Built-in validation for authentication configurations
-- **Abstraction**: Hides implementation details while providing escape hatch via `as_doc_store()`
-
-### Primary Methods
-
-```rust,ignore
-impl SettingsStore {
-    // Core settings management
-    fn get_name(&self) -> Result<String>;
-    fn set_name(&self, name: &str) -> Result<()>;
-
-    // Authentication key management
-    fn set_auth_key(&self, key_name: &str, key: AuthKey) -> Result<()>;
-    fn get_auth_key(&self, key_name: &str) -> Result<AuthKey>;
-    fn revoke_auth_key(&self, key_name: &str) -> Result<()>;
-    fn add_delegated_tree(&self, tree_ref: DelegatedTreeRef) -> Result<()>;
-
-    // Advanced access
-    fn as_doc_store(&self) -> &DocStore;
-    fn validate_entry_auth(&self, sig_key: &SigKey, instance: Option<&Instance>) -> Result<ResolvedAuth>;
-}
-```
-
-## Data Structures
-
-### Entry Structure
-
-```rust,ignore
-pub struct Entry {
-    database: TreeNode,       // Main database node with metadata
-    stores: Vec<SubTreeNode>, // Named stores including _settings
-    auth: AuthInfo,           // Signature and key hint
-}
-```
-
-### TreeNode Structure
-
-```rust,ignore
-struct TreeNode {
-    pub root: ID,                   // Root entry ID of the database
-    pub parents: Vec<ID>,           // Parent entry IDs in main database history
-    pub metadata: Option<RawData>,  // Opaque metadata bytes (settings tips, entropy)
-}
-```
-
-**Note**: `TreeNode` no longer contains a data field - all data is stored in named stores.
-
-### SubTreeNode Structure
-
-```rust,ignore
-struct SubTreeNode {
-    pub name: String,             // Store name (e.g., "_settings")
-    pub parents: Vec<ID>,         // Parent entries in store history
-    pub data: Option<RawData>,    // Opaque payload bytes in the store's chosen format
-}
-```
-
-`RawData` is `Vec<u8>` — the entry layer treats payloads as opaque bytes. Each `Store`
-owns the encoding of its own payload (JSON for `DocStore`/`Table`, binary Yrs updates for
-`YDoc`, ciphertext for `PasswordStore`, etc.). Encoded as a CBOR byte string (major
-type 2) in DAG-CBOR for IPLD interop.
-
-## Authentication Settings
-
-Authentication configuration is stored in `_settings.auth`:
-
-### AuthSettings Structure
-
-```rust,ignore
-pub struct AuthSettings {
-    inner: Doc,  // Wraps Doc data from _settings.auth
-}
-```
-
-**Key Operations:**
-
-- `add_key()`: Add/update authentication keys
-- `revoke_key()`: Mark keys as revoked
-- `get_key()`: Retrieve specific keys
-- `get_all_keys()`: Get all authentication keys
-
-### Authentication Flow
-
-1. **Settings Access**: `Transaction::get_settings()` retrieves current auth configuration
-2. **Key Resolution**: `AuthValidator` resolves key names to full key information
-3. **Permission Check**: Validates operation against key permissions
-4. **Signature Verification**: Verifies entry signatures match configured keys
-
-## Usage Patterns
-
-### Reading Settings
-
-```rust,ignore
-// In a Transaction context
-let settings_store = transaction.get_settings()?;
-
-// Access database name
-let name = settings_store.get_name()?;
-
-// Access auth configuration
-let auth_settings = settings_store.get_auth_settings()?;
-```
-
-### Modifying Settings
-
-#### Using SettingsStore
-
-```rust,ignore
-use eidetica::store::SettingsStore;
-use eidetica::auth::{AuthKey, Permission};
-
-// Get a SettingsStore handle for type-safe operations
-let settings_store = transaction.get_settings()?;
-
-// Update database name
-settings_store.set_name("My Database")?;
-
-// Set authentication keys with validation (upsert behavior)
-let auth_key = AuthKey::active(
-    "ed25519:user_public_key",
-    Permission::Write(10),
-)?;
-settings_store.set_auth_key("alice", auth_key)?;
-
-// Set multiple keys directly
-settings_store.set_auth_key("bob", bob_key)?;
-settings_store.revoke_auth_key("old_user")?;
-
-// Commit the transaction
-transaction.commit()?;
-```
-
-#### Using DocStore Directly (Low-Level)
-
-```rust,ignore
-// Get a DocStore handle for the _settings store
-let mut settings_store = transaction.get_store::<DocStore>("_settings")?;
-
-// Update a setting
-settings_store.set("name", "My Database")?;
-
-// Commit the transaction
-transaction.commit()?;
-```
-
-### Bootstrap Process
-
-When creating a database with authentication:
-
-1. First entry includes auth configuration in `_settings.auth`
-2. `Transaction::commit()` detects bootstrap scenario
-3. Allows self-signed entry to establish initial auth configuration
-
-## Design Benefits
-
-1. **Single Source of Truth**: All settings in `_settings` store
-2. **CRDT Semantics**: Deterministic merge resolution for concurrent updates. Store configurations use atomic Docs to guarantee whole-value replacement rather than partial field merging.
-3. **Efficient Access**: Metadata tips enable quick settings retrieval
-4. **Clean Architecture**: Entry is pure data, Transaction handles business logic
-5. **Extensibility**: Easy to add new setting categories alongside `auth`
+`Database::allow_unverified()` selects a diagnostic, non-`Failed` frontier; it does not prove that the selected history is accepted or relax the checks for a signed commit. See the [verification model](verification.md#default-reads-and-allow_unverified).
