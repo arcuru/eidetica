@@ -164,8 +164,10 @@ pub use ydoc::{YDoc, YrsBinary};
 /// to stage changes before committing them as a single `Entry`.
 ///
 /// Users typically interact with `Store` implementations obtained either via:
-/// 1. `Database::get_store_viewer`: For read-only access to the current merged state.
-/// 2. `Transaction::get_store`: For staging modifications within a transaction.
+/// 1. `Database::get_store_viewer`: For reads; calls `load` directly without
+///    checking the registration.
+/// 2. `Transaction::get_store`: Checks the registration before loading an
+///    ordinary Store, or stages a registration for a new one.
 ///
 /// Store types must also implement [`Registered`] to provide their type identifier.
 #[async_trait]

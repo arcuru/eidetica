@@ -8,7 +8,7 @@
 
 `get_store` initializes the named Store's parents at the transaction's main snapshot, then reads its registration:
 
-- **Missing named key in `_index`:** call `Store::register`. The default loads the Store and calls `Registry::set_entry` with its type ID and default config.
+- **Missing named key in `_index`:** call `Store::register`. The default awaits `Store::load` and stages the type ID and default configuration `Doc` through `Store::set_config` and `Registry::set_entry`.
 - **Existing registration:** check `Registered::supports_type_id` and load the Store only if compatible. Reading a type ID does not migrate data.
 - **Malformed registration or another read error:** return the error, not a fresh registration. Use `get_entry` when the distinction matters; `contains` reports only whether `get_entry` succeeded.
 
@@ -18,7 +18,7 @@ For a single-segment Store name, the corresponding top-level key holds a nested 
 
 For each top-level name in the staged `_index` Doc, the transaction includes the corresponding subtree, using its parents at the chosen main boundary if it was not already in the Entry builder. Even a registration with **no Store payload** participates in that Store's history. The Entry carries `_index` data and a named subtree whose `data` is `None`. This is not an encoded tombstone; an unreferenced, untouched Store need not appear at all. Use single-segment names for this coupling: `set_entry("team.notes", …)` writes a nested Doc path, but commit and `list` inspect top-level keys (`team`), not the dotted string.
 
-For example, pre-register a DocStore without writing any documents, then open it in a second transaction:
+See [Manual Registration](../user_guide/concepts/stores.md#manual-registration) for the application-facing configuration round trip. The example below inspects the Entry to show how registration participates in the Store history even before the first document write:
 
 ```rust
 # extern crate eidetica;

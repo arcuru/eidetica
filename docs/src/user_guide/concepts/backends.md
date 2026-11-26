@@ -30,6 +30,8 @@ The in-memory sqlite URL requires sqlx's single-colon URI form (`sqlite:` rather
 
 Backends whose Cargo feature isn't compiled in return `InstanceError::BackendUnavailable { scheme, missing_feature }` at runtime — no link-time surprise.
 
+For a standalone SQLite dependency recipe and a commit/reopen example, see [Getting Started](../getting_started.md#installation). Use `?mode=rwc` to allow SQLite file creation and `?mode=rw` for an existing file only.
+
 For escape-hatch construction (custom sqlx pool config, custom clock, etc.) the per-backend constructors below remain `pub`; see [`Instance::open_backend`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.open_backend), [`connect_or_create_backend`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.connect_or_create_backend), and [`create_backend`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.create_backend) for the URL-less entry points.
 
 ## Available Backend Implementations
@@ -50,18 +52,20 @@ Refusal leaves the version marker, Entries, instance metadata and Store-state re
 The error names both versions.
 This is not a read-only open: SQLite may still set WAL mode and open its ownership sidecar, and PostgreSQL still performs ownership bookkeeping before checking the schema version.
 
-<!-- Code block ignored: Requires async runtime context -->
+<!-- Code block ignored: This excerpt creates and reopens a fixed SQLite file in the application directory. -->
 
 ```rust,ignore
 use eidetica::{Instance, NewAccount};
 
-// Recommended: by URL.
+// Bootstrap in a fresh file, by URL.
 let (instance, _) = Instance::connect_or_create(
-    "sqlite://./my_data.db",
+    "sqlite://./my_data.db?mode=rwc",
     NewAccount::passwordless("alice"),
 ).await?;
 
-// Escape-hatch: build the backend manually for custom configuration.
+// Alternatively, open an existing initialized instance with a prebuilt backend.
+// Drop all handles to the first instance before opening the same file again.
+drop(instance);
 use eidetica::backend::database::Sqlite;
 let backend = Sqlite::open("my_data.db").await?;
 let instance = Instance::open_backend(Box::new(backend)).await?;

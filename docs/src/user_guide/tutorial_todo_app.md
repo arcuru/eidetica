@@ -96,13 +96,13 @@ See [Accounts](../design/accounts.md#initialization-and-concurrency) for the ini
 
 ### 4. Transactions and Stores
 
-All data modifications happen within a `Transaction`. Transactions ensure atomicity and are automatically authenticated using the database's default signing key.
+A `Transaction` stages Store changes and commits them as one Entry, using the signer associated with the opened Database handle. See [Getting Started](getting_started.md#working-with-data) for a persistent Table walkthrough, including deletion and reopen.
 
 Within a transaction, you access `Stores` - flexible containers for different types of data. The Todo example uses `Table<Todo>` to store todo items with unique IDs.
 
 ### 5. The Todo Data Structure
 
-The example defines a `Todo` struct that must implement `Serialize` and `Deserialize` to work with Eidetica:
+The example defines a `Todo` row with Serde serialization/deserialization and `Clone`. These excerpts rely on the imports and setup in `examples/todo/src/main.rs`; run the application below to exercise them.
 
 ```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,7 +190,7 @@ These examples show the typical pattern: start a transaction, get a store handle
 
 ### 8. Y-CRDT Integration (`YDoc`)
 
-The example also uses `YDoc` stores for user information and preferences. Y-CRDTs are designed for collaborative editing:
+The example also uses `YDoc` stores for user information and preferences; these require the `y-crdt` feature in addition to `sqlite` for file-backed storage. The example crate already configures both. Y-CRDTs are designed for collaborative editing:
 
 ```rust,ignore
 async fn set_user_info(
@@ -245,15 +245,16 @@ To see these concepts in action, you can run the Todo example:
 # Navigate to the example directory
 cd examples/todo
 
-# Build the example
-cargo build
+# Build the example with the checkout's lockfile
+cargo build --locked
 
-# Run commands (this will create todo_db.json)
-cargo run -- add "Learn Eidetica"
-cargo run -- list
-# Note the ID printed
-cargo run -- complete <id_from_list>
-cargo run -- list
+# Use a fresh file in a disposable directory
+scratch=$(mktemp -d)
+cargo run --locked -- --database-path "$scratch/todo.db" add "Learn Eidetica"
+cargo run --locked -- --database-path "$scratch/todo.db" list
+# Set id to the ID printed by list before running complete
+cargo run --locked -- --database-path "$scratch/todo.db" complete "$id"
+cargo run --locked -- --database-path "$scratch/todo.db" list
 ```
 
 Refer to the example's [README.md](https://github.com/arcuru/eidetica/blob/main/examples/todo/README.md) and [test.sh](https://github.com/arcuru/eidetica/blob/main/examples/todo/test.sh) for more usage details.

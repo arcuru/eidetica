@@ -602,69 +602,69 @@ println!("Account {} has key: {}", username, default_key);
 
 **2. Room Creation with Global Access**
 
-<!-- Code block ignored: Requires tokio runtime and AccountSession API mutability -->
+This example grants global write access to illustrate the chat demo's room policy. Do not use it as a default for private rooms.
 
-```rust,ignore
-// Create a chat room (database) with settings
+```rust
+# use eidetica::{Instance, NewAccount, auth, crdt::Doc};
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let (_instance, user) = Instance::connect_or_create(
+#     "memory://", NewAccount::passwordless("alice"),
+# ).await?;
+# let mut user = user.expect("fresh in-memory instance");
 let mut settings = Doc::new();
 settings.set("name", "Team Chat");
 
 let key_id = user.get_default_key()?;
-let database = user.create_database(settings, &key_id)?;
+let database = user.create_database(settings, &key_id).await?;
 
-// Add global permission so anyone can join and write
-let tx = database.new_transaction()?;
+let tx = database.new_transaction().await?;
 let settings_store = tx.get_settings()?;
 let global_key = auth::AuthKey::active(None, auth::Permission::Write(10));
-settings_store.set_global_auth_key(global_key)?;
-tx.commit()?;
+settings_store.set_global_auth_key(global_key).await?;
+tx.commit().await?;
 
 println!("Chat room created with ID: {}", database.root_id());
+# Ok(())
+# }
 ```
 
 **3. Message Storage with Table**
 
-<!-- Code block ignored: Requires chrono and uuid crates for timestamp/ID generation -->
+This reduced example uses the [same Table API as Getting Started](getting_started.md#working-with-data). The full chat app also carries application-level message metadata; `Table::insert` generates a separate row ID.
 
-```rust,ignore
-use chrono::{DateTime, Utc};
-use uuid::Uuid;
-
+```rust
+# use eidetica::{Instance, NewAccount, crdt::Doc, store::Table};
+# use serde::{Deserialize, Serialize};
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let (_instance, user) = Instance::connect_or_create(
+#     "memory://", NewAccount::passwordless("alice"),
+# ).await?;
+# let mut user = user.expect("fresh in-memory instance");
+# let key = user.get_default_key()?;
+# let database = user.create_database(Doc::new(), &key).await?;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatMessage {
-    id: String,
     author: String,
     content: String,
-    timestamp: DateTime<Utc>,
 }
 
-impl ChatMessage {
-    fn new(author: String, content: String) -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            author,
-            content,
-            timestamp: Utc::now(),
-        }
-    }
-}
+let txn = database.new_transaction().await?;
+let messages = txn.get_store::<Table<ChatMessage>>("messages").await?;
+let id = messages.insert(ChatMessage {
+    author: "alice".into(),
+    content: "Hello, world!".into(),
+}).await?;
+txn.commit().await?;
 
-// Send a message to the chat room
-let message = ChatMessage::new("alice".to_string(), "Hello, world!".to_string());
-
-let txn = database.new_transaction()?;
-let messages_store = txn.get_store::<Table<ChatMessage>>("messages")?;
-messages_store.insert(message)?;
-txn.commit()?;
-
-// Read all messages
-let txn_viewer = database.new_transaction()?;
-let viewer_store = txn_viewer.get_store::<Table<ChatMessage>>("messages")?;
-let all_messages = viewer_store.search(|_| true)?;
-
-for (_, msg) in all_messages {
-    println!("[{}] {}: {}", msg.timestamp.format("%H:%M:%S"), msg.author, msg.content);
-}
+let reader = database.new_transaction().await?;
+let messages = reader.get_store::<Table<ChatMessage>>("messages").await?;
+let message = messages.get(&id).await?;
+assert_eq!(message.content, "Hello, world!");
+println!("{}: {}", message.author, message.content);
+# Ok(())
+# }
 ```
 
 **4. Bootstrap Connection to Remote Room**

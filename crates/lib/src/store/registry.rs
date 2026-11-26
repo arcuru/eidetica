@@ -40,8 +40,8 @@ pub trait Registered {
 
     /// Check if this type supports loading from a stored type_id.
     ///
-    /// Override this method to support version migration, allowing newer
-    /// implementations to read data stored by older versions.
+    /// Override this only when the implementation can load those stored
+    /// formats. Accepting an older ID does not migrate the stored payload.
     ///
     /// # Example
     ///
@@ -241,12 +241,16 @@ impl Registry {
     /// * `name` - The name of the entry to check
     ///
     /// # Returns
-    /// true if the entry is registered, false otherwise
+    /// `true` if metadata could be read and decoded. Use [`Self::get_entry`]
+    /// to distinguish absence from read or decode errors.
     pub async fn contains(&self, name: impl AsRef<str>) -> bool {
         self.get_entry(name).await.is_ok()
     }
 
-    /// Register or update an entry
+    /// Stage a registration or metadata update in the current transaction.
+    ///
+    /// This does not convert existing data when changing the type ID. For
+    /// `_index`, use a single-segment name; dots are interpreted as Doc paths.
     ///
     /// # Arguments
     /// * `name` - The name of the entry to register/update
