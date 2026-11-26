@@ -22,7 +22,7 @@ Eidetica implements a Merkle-CRDT using content-addressable entries organized in
 - `Transaction::get_local_data<T>` requires only `T: Codec`.
 
 Neither trait requires `Clone` or Serde. There is no blanket `Codec`
-implementation: deriving Serde does not choose a persistence format.
+implementation: deriving Serde does not choose a persistence format. `Table<T>` requires Serde for its rows, but `<Table<T> as Store>::Data` is `Doc`, not `T`. See [Store Implementation Details](../user_guide/concepts/stores.md#store-implementation-details) for the full Store boundary.
 
 ### Migrating implementers from `Data`
 

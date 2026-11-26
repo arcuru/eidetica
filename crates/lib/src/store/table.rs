@@ -132,7 +132,7 @@ pub struct TablePage<T> {
 /// - Supports searching across all records with a predicate function
 ///
 /// # Type Parameters
-/// - `T`: The record type to be stored, which must be serializable, deserializable, and cloneable
+/// - `T`: The row type. Table operations require `Serialize + DeserializeOwned + Clone + Send + Sync`.
 ///
 /// This abstraction simplifies working with collections of similarly structured data
 /// by handling the details of:
@@ -199,12 +199,12 @@ where
     ///
     /// # Returns
     /// * `Ok(T)` - The retrieved record if found
-    /// * `Err(Error::NotFound)` - If no record exists with the given key
+    /// * `Err` wrapping [`StoreError::KeyNotFound`] - If the row is absent or deleted
     ///
     /// # Errors
     /// Returns an error if:
-    /// * The record doesn't exist (`Error::NotFound`)
-    /// * There's a serialization/deserialization error
+    /// * The record is absent or deleted
+    /// * Reading the Store state or decoding the row fails
     pub async fn get(&self, key: impl AsRef<str>) -> Result<T> {
         let key = key.as_ref();
 
@@ -264,7 +264,7 @@ where
         Ok(primary_key)
     }
 
-    /// Updates an existing row in the Table with a new value.
+    /// Stages a replacement row at the given key.
     ///
     /// This method completely replaces the existing record with the provided one.
     /// If the record doesn't exist yet, it will be created with the given key.
@@ -295,18 +295,19 @@ where
 
     /// Deletes a row from the Table by its primary key.
     ///
-    /// This method marks the record as deleted using CRDT tombstone semantics,
-    /// ensuring the deletion is properly synchronized across distributed nodes.
+    /// This stages a CRDT tombstone. Commit the transaction to persist the
+    /// deletion; earlier Entry payloads are not erased.
     ///
     /// # Arguments
     /// * `key` - The primary key of the record to delete
     ///
     /// # Returns
-    /// * `Ok(true)` - If a record existed and was deleted
-    /// * `Ok(false)` - If no record existed with the given key
+    /// * `Ok(true)` - A tombstone was staged.
+    /// * `Ok(false)` - No tombstone was staged. The existence check treats
+    ///   a read error as no readable row, so this is not proof of absence.
     ///
     /// # Errors
-    /// Returns an error if there's a serialization error or the operation fails
+    /// Returns an error if checking staged descendants or staging the tombstone fails.
     pub async fn delete(&self, key: impl AsRef<str>) -> Result<bool> {
         let key_str = key.as_ref();
 

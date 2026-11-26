@@ -79,4 +79,4 @@ See [Height Strategy Design](../design/height_strategy.md) for implementation de
 
 ## Implementation
 
-See `src/entry/mod.rs` and `src/transaction/mod.rs` for implementation.
+See `crates/lib/src/entry/mod.rs` and `crates/lib/src/transaction/mod.rs` for implementation. A Store is the typed Rust handle over a named subtree; `Transaction::get_store` uses the [Subtree Index](../design/subtree_index.md#from-genesis-to-the-first-registration) to check its registration.

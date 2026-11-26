@@ -20,7 +20,7 @@ Stores offer several advantages:
 - **Type Safety**: Each store implementation provides appropriate methods for its data type
 - **Isolation**: Changes to different stores can be tracked separately
 - **Composition**: Multiple data structures can exist within a single Database
-- **Efficiency**: Only relevant Store state needs to be loaded; sync still transfers whole Entries
+- **Efficiency**: Applications can read individual Store state; sync still [transfers whole Entries](../../design/synchronization.md#selective-sync-design-direction)
 - **Atomic Operations**: Changes across multiple stores can be committed atomically
 
 ## Store History and Tips
@@ -196,72 +196,17 @@ Use cases for `DocStore`:
 
 ### Table
 
-The `Table<T>` store manages collections of serializable items, similar to a table in a database:
+`Table<T>` stores collections of rows by string ID. Follow the [persistent CRUD walkthrough](../getting_started.md#working-with-data) for a complete create, read, update, delete and reopen sequence. All Rust row types used by `Table<T>` share the registration ID `table:v0`; that ID does not identify the row schema. Use a consistent row type for each named Table.
 
-```rust
-# extern crate eidetica;
-# extern crate tokio;
-# extern crate serde;
-# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::Table};
-# use serde::{Serialize, Deserialize};
-#
-# #[tokio::main]
-# async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create_backend(
-#     backend,
-#     eidetica::NewAccount::passwordless("alice"),
-# ).await?;
-# let mut settings = Doc::new();
-# settings.set("name", "test_db");
-# let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key).await?;
-// Define a struct for your data
-#[derive(Serialize, Deserialize, Clone)]
-struct User {
-    name: String,
-    email: String,
-    active: bool,
-}
+| Operation                 | Result                                                                                                                                                                        |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `insert(row).await`       | Stages a new row and returns its generated UUID as a `String`.                                                                                                                |
+| `get(id).await`           | Reads a row, including staged changes. An absent or deleted row returns `StoreError::KeyNotFound` inside `Error::Store`; decoding and backend failures are not absence.       |
+| `set(id, row).await`      | Stages a whole-row replacement or creates a row at that ID.                                                                                                                   |
+| `delete(id).await`        | Stages a tombstone and returns `true` when a deletion was staged. `false` means no tombstone was staged; the existence check can also return `false` after a failed row read. |
+| `search(predicate).await` | Returns matching `(id, row)` pairs.                                                                                                                                           |
 
-// Get a Table store
-let txn = database.new_transaction().await?;
-let users = txn.get_store::<Table<User>>("users").await?;
-
-// Insert items (returns a generated UUID)
-let user = User {
-    name: "Alice".to_string(),
-    email: "alice@example.com".to_string(),
-    active: true,
-};
-let id = users.insert(user).await?;
-
-// Get an item by ID
-if let Ok(user) = users.get(&id).await {
-    println!("Found user: {}", user.name);
-}
-
-// Update an item
-if let Ok(mut user) = users.get(&id).await {
-    user.active = false;
-    users.set(&id, user).await?;
-}
-
-// Delete an item
-let was_deleted = users.delete(&id).await?;
-if was_deleted {
-    println!("User deleted successfully");
-}
-
-// Search for items matching a condition
-let active_users = users.search(|user| user.active).await?;
-for (id, user) in active_users {
-    println!("Active user: {} (ID: {})", user.name, id);
-}
-# txn.commit().await?;
-# Ok(())
-# }
-```
+Commit the transaction to persist staged writes. Deletion changes the visible state but not earlier immutable Entries. It is not historical erasure.
 
 Use cases for `Table`:
 
@@ -509,7 +454,7 @@ The index is maintained automatically when you access stores via `get_store()` a
 - **Type information**: Understanding what Store type manages each subtree
 - **Tooling**: Building generic database browsers and inspectors
 
-The index is accessed via `Transaction::get_index()`, which returns a `Registry` - a general-purpose type for managing `name → {type, config}` mappings.
+Access the index with `Transaction::get_index().await?`, which returns a `Registry` - a general-purpose type for managing `name → {type, config}` mappings.
 
 ### Automatic Registration
 
@@ -542,7 +487,7 @@ txn.commit().await?;
 # }
 ```
 
-Registration happens immediately when `get_store()` is called for a new subtree.
+Registration is staged when `get_store().await` finds a missing named registration. It is persisted only when the transaction commits. Malformed metadata, an incompatible type ID or a registry read error does not trigger replacement registration.
 
 **System Subtrees**: The special system subtrees (`_settings`, `_index`, `_root`) are excluded from the index to avoid circular dependencies.
 
@@ -585,38 +530,44 @@ for name in subtrees {
     println!("Found subtree: {}", name);
 }
 
-// Check if a specific subtree exists
-if index.contains("config").await {
-    // Get metadata about the subtree
-    let info = index.get_entry("config").await?;
-    println!("Type: {}", info.type_id);  // e.g., "docstore:v0"
-    println!("Config: {}", info.config);  // Store-specific configuration
-}
+// Read metadata without treating malformed or unreadable entries as absent.
+let info = index.get_entry("config").await?;
+assert_eq!(info.type_id, "docstore:v0");
+println!("Config: {}", info.config);
 # Ok(())
 # }
 ```
 
 ### Manual Registration
 
-You can manually register or update subtree metadata using `set_entry()` on the index. This is useful for pre-registering subtrees with custom configuration:
+Use the Registry directly to pre-register a Store with a non-default `Doc` configuration. Use a single-segment name such as `documents`: dots are parsed as paths, but subtree discovery uses top-level keys. The following stores an application label as metadata; `DocStore` itself does not interpret `label`.
 
-<!-- Code block ignored: Manual registration requires custom config which varies by Store type -->
+```rust
+# use eidetica::{Instance, NewAccount, Registered, Store, crdt::Doc, store::DocStore};
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let (_instance, user) = Instance::connect_or_create(
+#     "memory://", NewAccount::passwordless("alice"),
+# ).await?;
+# let mut user = user.expect("fresh in-memory instance");
+# let key = user.get_default_key()?;
+# let database = user.create_database(Doc::new(), &key).await?;
+let txn = database.new_transaction().await?;
+let index = txn.get_index().await?;
+let mut config = Doc::new();
+config.set("label", "Project notes");
+index.set_entry("documents", DocStore::type_id(), config).await?;
+txn.commit().await?;
 
-```rust,ignore
-let txn = database.new_transaction()?;
-let index = txn.get_index()?;
-
-// Pre-register a subtree with custom configuration
-index.set_entry(
-    "documents",
-    "ydoc:v0",
-    r#"{"compression":"zstd","cache_size":1024}"#
-)?;
-
-txn.commit()?;
-
-// Future accesses will use the registered configuration
+let txn = database.new_transaction().await?;
+let documents = txn.get_store::<DocStore>("documents").await?;
+let config = documents.get_config().await?;
+assert_eq!(config.get("label").and_then(|value| value.as_text()), Some("Project notes"));
+# Ok(())
+# }
 ```
+
+`set_entry` stages metadata, not document content. It is not a migration tool: changing the type ID does not rewrite existing payloads, and only the Store or application decides what its configuration means. Use `get_entry`, not the boolean `contains`, when you need to distinguish missing metadata from a read or decode error.
 
 ### When to Use the Subtree Index
 
@@ -631,27 +582,15 @@ For more information on how the index system works internally, see the [Subtree 
 
 ## Store Implementation Details
 
-<!-- Code block ignored: Shows trait definition rather than complete implementation -->
+Implement [`Registered`](../../rustdoc/eidetica/store/trait.Registered.html) with a stable, versioned type ID and [`Store`](../../rustdoc/eidetica/store/trait.Store.html) with your application-facing methods. The `Store` implementation uses `#[async_trait::async_trait]` (add `async-trait` to your application dependencies) and supplies:
 
-Each Store implementation in Eidetica:
+- `type Data: CRDT + Codec + Default + 'static`: the data type for Entry deltas and reconstructed state. For example, a Store can reuse `Doc` rather than invent a merge rule or codec. See [Encoding and the Rust API](../../internal/crdt.md#encoding-and-the-rust-api).
+- `async fn load(txn: &Transaction, subtree_name: String) -> Result<Self>`: attach a handle to an existing transaction, usually by keeping a clone of that handle. `name(&self) -> &str` and `transaction(&self) -> &Transaction` expose that context to the default methods.
+- Optional `default_config()` or `register(...)` overrides when the default registration does not suffice. The default calls `load`, then stages the type ID and config in the index. Don't call `get_store::<Self>` from `load`; that would re-enter registration. You can leave the default whole-state projection in place.
 
-1. Implements the `Store` trait
-2. Provides methods appropriate for its data structure
-3. Handles serialization/deserialization of data
-4. Manages the store's history within the Database
+Open ordinary Stores with `txn.get_store::<YourStore>("name").await?`. This is where the registry is checked: a missing registration invokes `register`, and a compatible existing type invokes `load`. An incompatible type is an error, not a conversion. `Registered::supports_type_id` can accept an older ID only if the implementation can actually read that format; it does not migrate bytes. `Database::get_store_viewer` calls `load` directly, so use the transaction path when you need the registration check.
 
-The `Store` trait defines the minimal interface:
-
-<!-- Code block ignored: Shows trait definition rather than complete implementation -->
-
-```rust,ignore
-pub trait Store: Sized {
-    fn new(txn: &Transaction, store_name: &str) -> Result<Self>;
-    fn name(&self) -> &str;
-}
-```
-
-Store implementations add their own methods on top of this minimal interface.
+For a small working custom implementation, see [`ProbeStore` in the registration integration test](https://github.com/arcuru/eidetica/blob/257a3202389ec9a552c959cf41914da28bd4fc7a/crates/lib/tests/it/store/registration_boundary.rs). It wraps `DocStore`, reuses `Doc` as `Data`, and accounts for `load` and `register` calls so the test can distinguish the successful paths from invalid registration metadata. Its alternate type ID and instrumentation are test fixtures, not a recipe for migration.
 
 ## Store Height Strategies
 
@@ -687,7 +626,7 @@ Each Store type implements its own merge logic, typically triggered implicitly w
 
 - **`DocStore`**: Uses the internal `Doc` type with **structural merge** by default. When merging concurrent writes to the _same key_ or path, the write associated with the later `Entry` "wins" (LWW), and its value is kept. Writes to different keys are simply combined. Deleted keys (via `delete()`) are tracked with tombstones to ensure deletions propagate properly. Docs marked as **atomic** (via `Doc::atomic()`) use full **Last-Writer-Wins** replacement — the entire Doc replaces its predecessor rather than merging field-by-field. This is used for data that should be treated as a complete unit.
 
-- **`Table<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
+- **`Table<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). A deletion contributes a tombstone to that same row history; do not treat it as permanent removal.
 
 **Note:** The CRDT merge logic happens internally when a `Transaction` loads the initial state of a Store or when a store viewer is created. You typically don't invoke merge logic directly.
 
