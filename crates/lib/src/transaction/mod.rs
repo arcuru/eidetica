@@ -1474,6 +1474,49 @@ impl Transaction {
     }
 
     async fn commit_inner(self, guard: Option<tokio::sync::OwnedMutexGuard<()>>) -> Result<ID> {
+        let (key, identity) = self
+            .provided_signing_key
+            .as_ref()
+            .ok_or(TransactionError::AuthenticationRequired)?;
+        let PreparedEntry { entry, auth } = self.prepare_entry(identity).await?;
+        let entry = entry.sign(key)?;
+        let instance = self.db.instance()?;
+        // Delegated proof resolution requires a local engine. A connected
+        // write is verified by the daemon against its actual pin.
+        #[cfg(all(unix, feature = "service"))]
+        let validate_locally = instance.remote_connection().is_none()
+            || !matches!(identity, SigKey::Delegation { .. });
+        #[cfg(not(all(unix, feature = "service")))]
+        let validate_locally = true;
+        if validate_locally {
+            validate_prepared(&instance, &entry, &auth).await?;
+        }
+
+        let id = entry.id();
+        if let Some(guard) = guard {
+            instance
+                .put_entry_under_tree_lock(
+                    guard,
+                    self.db.root_id(),
+                    VerificationStatus::Verified,
+                    entry,
+                    WriteSource::Local,
+                )
+                .await?;
+        } else {
+            instance
+                .put_entry(
+                    self.db.root_id(),
+                    VerificationStatus::Verified,
+                    entry,
+                    WriteSource::Local,
+                )
+                .await?;
+        }
+        Ok(id)
+    }
+
+    pub(crate) async fn prepare_entry(&self, identity: &SigKey) -> Result<PreparedEntry> {
         {
             let staged = self.logical_record_mutations.lock().unwrap().clone();
             for (store, mutations) in staged {
@@ -1608,26 +1651,8 @@ impl Transaction {
             builder_from_cell.clone()
         };
 
-        // Handle authentication configuration before building
-        // All entries must now be authenticated - fail if no auth key is configured
+        builder.set_auth_mut(AuthInfo::builder().key(identity.clone()).build());
 
-        // Use provided signing key
-        let signing_key = if let Some((ref provided_key, ref identity)) = self.provided_signing_key
-        {
-            // Use provided signing key directly (already decrypted from AccountKeyManager or device key)
-            let key_clone = provided_key.clone();
-
-            // Build AuthInfo from the already-typed SigKey identity
-            let sig_builder = AuthInfo::builder().key(identity.clone());
-
-            // Set auth ID on the entry builder (without signature initially)
-            builder.set_auth_mut(sig_builder.build());
-
-            Some(key_clone)
-        } else {
-            // No authentication key configured
-            return Err(TransactionError::AuthenticationRequired.into());
-        };
         // Encrypt subtree data if encryptors are registered
         // This must happen before building the entry to ensure encrypted data is persisted
         {
@@ -1744,7 +1769,7 @@ impl Transaction {
         })?);
 
         // Build the final immutable Entry
-        let mut entry = builder.build()?;
+        let entry = builder.build()?;
 
         // CRITICAL VALIDATION: Ensure entry structural integrity before commit
         //
@@ -1764,14 +1789,6 @@ impl Transaction {
         if !self.db.validate_entry_parents(&entry).await? {
             return Err(TransactionError::EntryValidationFailed.into());
         }
-
-        // Sign the entry if we have a signing key
-        if let Some(signing_key) = signing_key {
-            entry = entry.sign(&signing_key)?;
-        }
-
-        // Validate authentication (all entries must be authenticated)
-        let mut validator = AuthValidator::new();
 
         // Get the final settings state for validation
         // IMPORTANT: For permission checking, we must use the historical auth configuration
@@ -1802,55 +1819,45 @@ impl Transaction {
             }
         };
 
-        // Connected clients have no local engine for delegated proof resolution.
-        // SubmitSignedEntry verifies on the daemon and acknowledges only Verified
-        // entries. Keep direct-key client validation as an additional early check.
-        #[cfg(all(unix, feature = "service"))]
-        let validate_locally = instance.remote_connection().is_none()
-            || !matches!(
-                self.provided_signing_key
-                    .as_ref()
-                    .map(|(_, identity)| identity),
-                Some(SigKey::Delegation { .. })
-            );
-        #[cfg(not(all(unix, feature = "service")))]
-        let validate_locally = true;
-        if validate_locally {
-            let is_valid = validator
-                .validate_entry(&entry, &auth_settings_for_validation, Some(&instance))
-                .await?;
-            if !is_valid {
-                return Err(TransactionError::EntryValidationFailed.into());
-            }
+        Ok(PreparedEntry {
+            entry,
+            auth: auth_settings_for_validation,
+        })
+    }
+}
+
+/// A structurally validated, pinned unsigned Entry. Callers that separate
+/// preparation and signing must check the observed frontier again on use.
+pub(crate) struct PreparedEntry {
+    pub(crate) entry: Entry,
+    auth: AuthSettings,
+}
+
+async fn validate_prepared(
+    instance: &crate::Instance,
+    signed: &Entry,
+    auth: &AuthSettings,
+) -> Result<()> {
+    if !AuthValidator::new()
+        .validate_entry(signed, auth, Some(instance))
+        .await?
+    {
+        return Err(TransactionError::EntryValidationFailed.into());
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, feature = "service"))]
+impl PreparedEntry {
+    /// Validate an externally produced signature on exactly this draft.
+    pub(crate) async fn validate_signed(
+        &self,
+        instance: &crate::Instance,
+        signed: &Entry,
+    ) -> Result<()> {
+        if signed.signing_bytes()? != self.entry.signing_bytes()? {
+            return Err(TransactionError::EntryValidationFailed.into());
         }
-
-        let verification_status = VerificationStatus::Verified;
-
-        // Get the entry's ID
-        let id = entry.id();
-
-        // Write entry through Instance which handles backend storage and callback dispatch
-        if let Some(guard) = guard {
-            instance
-                .put_entry_under_tree_lock(
-                    guard,
-                    self.db.root_id(),
-                    verification_status,
-                    entry.clone(),
-                    WriteSource::Local,
-                )
-                .await?;
-        } else {
-            instance
-                .put_entry(
-                    self.db.root_id(),
-                    verification_status,
-                    entry.clone(),
-                    WriteSource::Local,
-                )
-                .await?;
-        }
-
-        Ok(id)
+        validate_prepared(instance, signed, &self.auth).await
     }
 }

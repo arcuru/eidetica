@@ -992,6 +992,33 @@ impl BackendImpl for InMemory {
         self
     }
 
+    async fn verified_entry_summary(&self, tree: &ID, limit: usize) -> Result<(usize, Vec<ID>)> {
+        let inner = self.inner.read().unwrap();
+        let mut count = 0;
+        let mut sample = std::collections::BinaryHeap::new();
+        for (id, entry) in &inner.entries {
+            if entry.in_tree(tree)
+                && inner.verification_status.get(id) == Some(&VerificationStatus::Verified)
+            {
+                count += 1;
+                if limit > 0 {
+                    sample.push((entry.height(), id));
+                    if sample.len() > limit {
+                        sample.pop();
+                    }
+                }
+            }
+        }
+        Ok((
+            count,
+            sample
+                .into_sorted_vec()
+                .into_iter()
+                .map(|(_, id)| id.clone())
+                .collect(),
+        ))
+    }
+
     async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
         let inner = self.inner.read().unwrap();
         storage::get_tree(&inner, tree)

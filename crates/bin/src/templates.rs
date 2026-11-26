@@ -2,6 +2,7 @@
 //!
 //! Simple inline HTML templates without a template engine.
 
+use eidetica::service::dashboard::{KeyInfo, QueueRow};
 use eidetica::{
     Database, Error,
     account::{AccountSession, SyncSettings, TrackedDatabase},
@@ -132,6 +133,11 @@ pub(crate) const COMMON_STYLES: &str = r#"
 
 /// Render the login page
 pub fn login_page(error: Option<&str>) -> String {
+    login_form(error, None)
+}
+
+pub fn login_form(error: Option<&str>, token: Option<&str>) -> String {
+    let token = form_token(token);
     let error_html = error.map_or(String::new(), |e| {
         format!(r#"<div class="error">{}</div>"#, html_escape(e))
     });
@@ -149,7 +155,7 @@ pub fn login_page(error: Option<&str>) -> String {
         <h1>Eidetica Sync Server</h1>
         <h2>Login</h2>
         {error_html}
-        <form method="POST" action="/login">
+        <form method="POST" action="/login">{token}
             <div class="form-group">
                 <label for="username">Username:</label>
                 <input type="text" id="username" name="username" required autofocus>
@@ -212,23 +218,71 @@ pub fn dashboard_page(
     databases: Vec<DatabaseInfo>,
     list_error: Option<&str>,
 ) -> String {
-    let keys_html = match (user.list_keys(), user.get_default_key()) {
-        (Ok(keys), Ok(default_key)) => {
+    let keys = (|| {
+        let default = user.get_default_key()?;
+        Ok::<_, eidetica::Error>(
+            user.list_keys()?
+                .into_iter()
+                .map(|id| {
+                    let name = user.key_display_name(&id).map(str::to_owned);
+                    let default = id == default;
+                    KeyInfo { id, name, default }
+                })
+                .collect::<Vec<_>>(),
+        )
+    })()
+    .map_err(|e| e.to_string());
+    let root = user.account().id().to_string();
+    dashboard_view(
+        DashboardView {
+            username: user.username(),
+            login_id: user.login_id(),
+            root: &root,
+            keys: keys.as_deref().map_err(String::as_str),
+            token: None,
+        },
+        databases,
+        list_error,
+    )
+}
+
+pub struct DashboardView<'a> {
+    pub username: &'a str,
+    pub login_id: &'a str,
+    pub root: &'a str,
+    pub keys: Result<&'a [KeyInfo], &'a str>,
+    pub token: Option<&'a str>,
+}
+
+pub fn dashboard_view(
+    view: DashboardView<'_>,
+    databases: Vec<DatabaseInfo>,
+    list_error: Option<&str>,
+) -> String {
+    let token = form_token(view.token);
+    let count_heading = if view.token.is_some() {
+        "Verified entries on this daemon"
+    } else {
+        "Entries"
+    };
+    let keys_html = match view.keys {
+        Ok(keys) => {
             let rows: String = keys
                 .iter()
                 .map(|key| {
-                    let display_name = user
-                        .key_display_name(key)
+                    let display_name = key
+                        .name
+                        .as_ref()
                         .map(|n| format!(" ({})", html_escape(n)))
                         .unwrap_or_default();
-                    let default_marker = if key == &default_key {
+                    let default_marker = if key.default {
                         " <strong>(default)</strong>"
                     } else {
                         ""
                     };
                     format!(
                         r#"<div class="info-row"><span class="value code">{}</span>{}{}</div>"#,
-                        html_escape(&key.to_string()),
+                        html_escape(&key.id.to_string()),
                         display_name,
                         default_marker
                     )
@@ -238,12 +292,10 @@ pub fn dashboard_page(
                 r#"<p style="color: #666;">Public key IDs held by this account (IDs and display names only; key material is never shown).</p>{rows}"#
             )
         }
-        (Err(e), _) | (_, Err(e)) => {
-            format!(
-                r#"<div class="error">Key list unavailable: {}</div>"#,
-                html_escape(&e.to_string())
-            )
-        }
+        Err(e) => format!(
+            r#"<div class="error">Key list unavailable: {}</div>"#,
+            html_escape(e)
+        ),
     };
 
     let list_error_html = list_error.map_or(String::new(), |e| {
@@ -296,7 +348,7 @@ pub fn dashboard_page(
             <tr>
                 <th>Database ID</th>
                 <th>Name</th>
-                <th>Entries</th>
+                <th>{count_heading}</th>
                 <th>Your Sync Preference</th>
                 <th>Actions</th>
             </tr>
@@ -321,7 +373,7 @@ pub fn dashboard_page(
 <body>
     <div class="container">
         <h1>Eidetica Dashboard
-            <form method="POST" action="/logout" style="display: inline;">
+            <form method="POST" action="/logout" style="display: inline;">{token}
                 <button type="submit" class="logout-btn">Logout</button>
             </form>
         </h1>
@@ -361,7 +413,7 @@ pub fn dashboard_page(
         {}
 
         <h2>Request Database Access</h2>
-        <form method="POST" action="/dashboard/track">
+        <form method="POST" action="/dashboard/track">{token}
             <div class="form-group">
                 <label for="ticket">Database Ticket URL:</label>
                 <input type="text" id="ticket" name="ticket"
@@ -387,9 +439,9 @@ pub fn dashboard_page(
 </body>
 </html>"#,
         COMMON_STYLES,
-        html_escape(user.username()),
-        html_escape(user.login_id()),
-        html_escape(&user.account().id().to_string()),
+        html_escape(view.username),
+        html_escape(view.login_id),
+        html_escape(view.root),
         keys_html,
         list_error_html,
         databases_html
@@ -398,8 +450,14 @@ pub fn dashboard_page(
 
 /// Render only the requests the handler has authorized this session to inspect.
 pub fn access_requests_page(requests: &[(String, BootstrapRequest)]) -> String {
+    let rows: Vec<_> = requests.iter().cloned().map(QueueRow::from).collect();
+    access_requests_view(&rows, None)
+}
+
+pub fn access_requests_view(requests: &[QueueRow], token: Option<&str>) -> String {
+    let token = form_token(token);
     let mut rows = String::new();
-    for (id, request) in requests {
+    for request in requests {
         rows.push_str(&format!(
             r#"<section>
                 <h2>Pending request</h2>
@@ -412,18 +470,18 @@ pub fn access_requests_page(requests: &[(String, BootstrapRequest)]) -> String {
                     <dt>Lifecycle state</dt><dd>Pending approval</dd>
                     <dt>Submitted</dt><dd>{timestamp}</dd>
                 </dl>
-                <form method="POST" action="/dashboard/requests/decide">
+                <form method="POST" action="/dashboard/requests/decide">{token}
                     <input type="hidden" name="database_id" value="{database}">
                     <input type="hidden" name="request_id" value="{id}">
                     <button type="submit" name="decision" value="approve">Approve exact request</button>
                     <button type="submit" name="decision" value="reject">Reject request</button>
                 </form>
             </section>"#,
-            id = html_escape(id),
-            database = html_escape(&request.tree_id.to_string()),
-            key = html_escape(&request.requesting_pubkey.to_string()),
-            name = html_escape(&request.requesting_key_name),
-            permission = html_escape(&format!("{:?}", request.requested_permission)),
+            id = html_escape(&request.id),
+            database = html_escape(&request.root.to_string()),
+            key = html_escape(&request.key.to_string()),
+            name = html_escape(&request.name),
+            permission = html_escape(&format!("{:?}", request.permission)),
             timestamp = html_escape(&request.timestamp),
         ));
     }
@@ -447,9 +505,19 @@ pub fn access_requests_page(requests: &[(String, BootstrapRequest)]) -> String {
 
 /// Lifecycle outcomes are rendered directly, not passed in an editable query string.
 pub fn access_result_page(title: &str, message: &str, retry: Option<(&str, &str)>) -> String {
+    access_result_view(title, message, retry, None)
+}
+
+pub fn access_result_view(
+    title: &str,
+    message: &str,
+    retry: Option<(&str, &str)>,
+    token: Option<&str>,
+) -> String {
+    let token = form_token(token);
     let retry = retry.map_or_else(String::new, |(ticket, permission)| {
         format!(
-            r#"<form method="POST" action="/dashboard/track">
+            r#"<form method="POST" action="/dashboard/track">{token}
             <input type="hidden" name="ticket" value="{}">
             <input type="hidden" name="permission" value="{}">
             <button type="submit">Retry request</button>
@@ -479,6 +547,19 @@ pub fn database_detail_page(
     db_info: DatabaseInfo,
     entries: Result<Vec<String>, String>,
 ) -> String {
+    database_detail_view(db_info, entries, None)
+}
+
+pub fn database_detail_view(
+    db_info: DatabaseInfo,
+    entries: Result<Vec<String>, String>,
+    token: Option<&str>,
+) -> String {
+    let count_heading = if token.is_some() {
+        "Verified entries on this daemon"
+    } else {
+        "Entry Count"
+    };
     let entries_html = match entries {
         Ok(entries) if entries.is_empty() => {
             r#"<p style="color: #666; font-style: italic;">No entries in this database yet.</p>"#
@@ -496,10 +577,19 @@ pub fn database_detail_page(
                 })
                 .collect();
 
-            let more_msg = if entries.len() > 100 {
+            let total = if token.is_some() {
+                db_info
+                    .entry_count
+                    .as_ref()
+                    .copied()
+                    .unwrap_or(entries.len())
+            } else {
+                entries.len()
+            };
+            let more_msg = if total > 100 {
                 format!(
                     "<p style=\"color: #666;\">Showing first 100 of {} entries</p>",
-                    entries.len()
+                    total
                 )
             } else {
                 String::new()
@@ -556,7 +646,7 @@ pub fn database_detail_page(
             <span class="value code">{}</span>
         </div>
         <div class="info-row">
-            <span class="label">Entry Count:</span>
+            <span class="label">{count_heading}:</span>
             <span class="value">{}</span>
         </div>
         <div class="info-row">
@@ -585,19 +675,20 @@ pub fn database_detail_page(
         db_info.entry_count_cell(),
         sync_status,
         html_escape(&db_info.key_id),
-        sync_preferences_form(&db_info),
+        sync_preferences_form(&db_info, token),
         entries_html
     )
 }
 
-fn sync_preferences_form(db: &DatabaseInfo) -> String {
+fn sync_preferences_form(db: &DatabaseInfo, token: Option<&str>) -> String {
+    let token = form_token(token);
     let settings = &db.sync_settings;
     let selected = |value| if value { " selected" } else { "" };
     format!(
         r#"<h2>Your Sync Preferences</h2>
         <p>These preferences apply only to your account. Another account may still
         request sync. Disabling does not cancel in-flight network work or revoke access.</p>
-        <form method="POST" action="/dashboard/database/sync">
+        <form method="POST" action="/dashboard/database/sync">{token}
             <input type="hidden" name="id" value="{}">
             <div class="form-group">
                 <label for="enabled">Sync enabled:</label>
@@ -724,6 +815,51 @@ impl DatabaseInfo {
             Err(e) => format!(r#"unknown ({})"#, html_escape(e)),
         }
     }
+}
+
+pub fn stats_page(session_count: usize) -> axum::response::Html<String> {
+    let mut html = String::from(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Eidetica Server Statistics</title>
+    <style>
+        body { font-family: monospace; max-width: 800px; margin: 40px auto; padding: 0 20px; }
+        h1 { border-bottom: 2px solid #333; padding-bottom: 10px; }
+        h2 { margin-top: 30px; border-bottom: 1px solid #666; padding-bottom: 5px; }
+        .stat { margin: 10px 0; }
+        .label { font-weight: bold; display: inline-block; width: 200px; }
+        .value { color: #0066cc; }
+        table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+        th { background-color: #f0f0f0; }
+    </style>
+</head>
+<body>
+    <h1>Eidetica Server Statistics</h1>
+"#,
+    );
+
+    html.push_str("<h2>Instance Overview</h2>\n");
+
+    html.push_str(&format!(
+        r#"<div class="stat"><span class="label">Active Sessions:</span> <span class="value">{session_count}</span></div>"#
+    ));
+
+    html.push_str("<p><em>Database details available on authenticated dashboard.</em></p>\n");
+
+    html.push_str("</body>\n</html>");
+    axum::response::Html(html)
+}
+
+fn form_token(token: Option<&str>) -> String {
+    token.map_or_else(String::new, |token| {
+        format!(
+            r#"<input type="hidden" name="generation" value="{}">"#,
+            html_escape(token)
+        )
+    })
 }
 
 /// Escape HTML special characters

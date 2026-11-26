@@ -77,6 +77,7 @@
 //!   signs locally.
 
 pub mod client;
+pub mod dashboard;
 pub mod error;
 pub mod protocol;
 pub mod server;

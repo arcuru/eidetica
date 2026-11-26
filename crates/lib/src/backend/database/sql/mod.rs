@@ -1408,6 +1408,10 @@ impl BackendImpl for SqlxBackend {
         self
     }
 
+    async fn verified_entry_summary(&self, tree: &ID, limit: usize) -> Result<(usize, Vec<ID>)> {
+        storage::verified_entry_summary(self, tree, limit).await
+    }
+
     async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
         storage::get_tree(self, tree).await
     }

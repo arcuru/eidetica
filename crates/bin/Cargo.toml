@@ -6,13 +6,18 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Eidetica CLI binary"
+description = "Eidetica CLI and standalone dashboard"
+default-run = "eidetica"
 publish = false
 
 [[bin]]
 name = "eidetica"
 path = "src/main.rs"
 # doc = false
+
+[[bin]]
+name = "eidetica-dashboard"
+path = "src/dashboard_main.rs"
 
 [dependencies]
 eidetica = { path = "../lib" }
@@ -29,6 +34,7 @@ base64ct = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true }
 rpassword = "7"
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

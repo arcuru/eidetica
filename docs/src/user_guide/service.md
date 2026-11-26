@@ -109,6 +109,55 @@ NixOS module opens the port when `openFirewall = true` and a web listener
 at `dataDir/service.sock` (not in systemd's private `/tmp`); client processes
 need owner-approved access to that directory.
 
+### Standalone web dashboard
+
+Use `eidetica-dashboard` to run the same dashboard outside the daemon. The
+package installs both executables. Use matching versions of the daemon and GUI.
+After initializing the daemon as above, run these under the same Unix user:
+
+```bash
+install -d -m 0700 "$XDG_RUNTIME_DIR/eidetica-dashboard"
+SOCKET="$XDG_RUNTIME_DIR/eidetica-dashboard/dashboard.sock"
+eidetica daemon --dashboard-socket "$SOCKET"
+```
+
+In a second terminal (with the same `SOCKET` value):
+
+```bash
+eidetica-dashboard --socket "$SOCKET"
+# From a source checkout, the equivalent is:
+# nix run .#eidetica-dashboard -- --socket "$SOCKET"
+```
+
+Open `http://127.0.0.1:5942`. Use `--port` to avoid a clash with the combined
+dashboard. The standalone binary listens on loopback only and serves no peer
+HTTP sync or general service API. The daemon opens this additional Unix socket
+only when asked; it still owns storage and sync, with or without a GUI running.
+The socket's directory and endpoint must be private to the daemon user. This
+separates processes, not Unix users: it does not protect against another
+process running as that user. Use passwords for accounts that need protection
+from anyone who can reach the dashboard. A passwordless bundle is not secret
+from a process that can obtain it from the socket.
+
+The GUI keeps your password only for unlocking and holds the unlocked signing
+keys in memory for that browser login. The daemon receives possession proofs and
+signed operations, not your password or unlocked keys. Each login gets its own
+connection. Separate browser profiles can sign into different Accounts (or the
+same Account) at the same time; tabs in one profile share a login. Use separate
+profiles or hostnames when running multiple standalone GUIs, since cookies are
+not scoped by port. Standalone and combined dashboards use different cookies.
+
+Signing out closes that login's connection and leaves other logins alone. A
+broken connection or a daemon/GUI restart requires a new login. An operation
+sent just before a disconnect may have finished on the daemon; reload to check
+before retrying. The standalone database detail shows **Verified entries on
+this daemon** and at most 100 Entry IDs, not raw stored rows or a claim that
+sync is complete.
+
+No existing configuration changes are needed. `eidetica daemon --dashboard`
+keeps its combined behavior, `eidetica daemon` still runs headless, and
+`eidetica serve` still supports legacy HTTP sync.
+
 ### Dashboard Account information
 
 The dashboard distinguishes the stable **Account Root ID** from the
@@ -338,6 +387,7 @@ instead of unwrapping.
 | Option / Env Var                               | Description                                                                              | Default                                         |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | `--dashboard` / `EIDETICA_DASHBOARD`           | Serve web dashboard alongside socket (boolean)                                           | disabled                                        |
+| `--dashboard-socket`                           | Owner-only Unix endpoint for the standalone GUI                                          | disabled                                        |
 | `--dashboard-host` / `EIDETICA_DASHBOARD_HOST` | Dashboard bind address                                                                   | `127.0.0.1`                                     |
 | `--dashboard-port` / `EIDETICA_DASHBOARD_PORT` | Dashboard port                                                                           | `5942`                                          |
 | `--socket` / `EIDETICA_SOCKET`                 | Unix socket path                                                                         | See [Default Socket Path](#default-socket-path) |
@@ -383,6 +433,8 @@ not create new Account mappings or preferences.
 A successful transfer followed by a local bookkeeping error is reported separately,
 not as usable local access: local metadata may have persisted despite the error.
 Retry explicitly to repair or inspect the recorded state.
-The network wait does not hold the per-session lock, and bookkeeping preserves a
-tracked preference/key selection changed while that request was waiting.
+A network wait in the standalone dashboard occupies only that login’s socket,
+not the logout handler or another login. In combined mode the network wait
+does not hold the per-session lock. In either mode the bookkeeping preserves
+a tracked preference or key selection changed during the wait.
 This observed-state check is not distributed compare-and-set or background completion.
