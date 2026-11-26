@@ -1,12 +1,9 @@
-//! Test that verifies automatic peer tracking when syncing.
-//!
-//! This test demonstrates that when a peer syncs a tree with the server,
-//! the server should automatically track that the peer is interested in that tree
-//! WITHOUT requiring manual add_tree_sync() calls.
+//! HTTP transport checks for the boundary between pulls and persistent routes.
 
 use std::sync::Arc;
 
 use eidetica::{
+    Database,
     account::types::SyncSettings,
     auth::{AuthKey, Permission},
     crdt::Doc,
@@ -19,10 +16,9 @@ use eidetica::{
 use super::helpers::*;
 use crate::helpers::{set_global_auth_key, test_local_instance as setup_empty_db};
 
-/// Test automatic peer tracking: when client syncs with server, server should
-/// automatically track the tree/peer relationship WITHOUT manual setup.
+/// A client can pull a public tree over HTTP without creating a reverse route.
 #[tokio::test]
-async fn test_server_automatically_tracks_peers_that_sync_trees() {
+async fn test_http_pull_does_not_register_a_reverse_route() {
     // ===== Setup Server =====
     let server_instance = setup_empty_db().await;
     server_instance.enable_sync().await.unwrap();
@@ -81,8 +77,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     // Get client's device public key
     let client_pubkey = client_sync.get_device_pubkey().unwrap();
 
-    // IMPORTANT: Server needs to know about the client peer for tracking to work
-    // (This would normally happen via handshake, but we're testing just the sync request)
+    // A known device is not necessarily a push recipient for this tree.
     server_sync
         .register_peer(&client_pubkey, Some("Test Client"))
         .await
@@ -114,40 +109,28 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
         .await
         .unwrap();
 
-    // ===== THE KEY TEST: Client syncs a tree with the server =====
-    // Client sets up its side of the relationship (this is normal/expected)
+    // The client configures its side of the relationship and pulls the tree.
     client_sync
         .add_tree_sync(&server_pubkey, &tree_id)
         .await
         .unwrap();
 
-    // Now client syncs - this will send a SyncTreeRequest to the server
-    // Server automatically tracks when it sees the sync request
     client_sync
         .sync_tree_with_peer(&server_pubkey, &tree_id)
         .await
         .unwrap();
 
-    // ===== VERIFICATION: Server should have automatically tracked this relationship =====
-
-    let peer_trees = server_sync.get_peer_trees(&client_pubkey).await.unwrap();
-
-    assert!(
-        peer_trees.contains(&tree_id),
-        "AUTOMATIC TRACKING FAILED: Server did not automatically track that peer {client_pubkey} is syncing tree {tree_id}.\n\
-         This means the server received a sync request from the client but did not record the relationship.\n\
-         Expected: Server tracks the relationship automatically (no manual add_tree_sync needed)\n\
-         Actual: Server has no record of this peer syncing this tree.\n\
-         Peer trees found: {peer_trees:?}"
+    let pulled = Database::open(&client_instance, &tree_id).await.unwrap();
+    assert_eq!(
+        pulled.snapshot().await.unwrap(),
+        server_db.snapshot().await.unwrap()
     );
-
-    // Verify bidirectional: client should also know about this relationship
     assert!(
-        client_sync
-            .is_tree_synced_with_peer(&server_pubkey, &tree_id)
+        !server_sync
+            .is_tree_synced_with_peer(&client_pubkey, &tree_id)
             .await
             .unwrap(),
-        "Client should have tracked that it's syncing tree {tree_id} with server {server_pubkey}"
+        "a public HTTP pull must not configure future pushes"
     );
 
     // Clean up

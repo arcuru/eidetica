@@ -91,6 +91,8 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
         )
         .await?;
     let peer_db = peer_user.open_database(&tree).await?;
+    // The incoming HTTP pull did not configure a push route on the daemon.
+    daemon_sync.register_peer(&peer.id(), None).await?;
     daemon_sync.add_tree_sync(&peer.id(), &tree).await?;
     peer_sync.add_tree_sync(&daemon.id(), &tree).await?;
     peer_sync
