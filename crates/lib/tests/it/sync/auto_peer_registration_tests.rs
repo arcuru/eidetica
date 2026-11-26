@@ -64,7 +64,7 @@ async fn test_handshake_automatically_registers_peer() {
     };
 
     // Create request context with remote address
-    let remote_address = Address::http("203.0.113.42:54321");
+    let remote_address = Address::iroh("peer_endpoint");
     let context = RequestContext {
         remote_address: Some(remote_address.clone()),
         peer_pubkey: None,
@@ -126,7 +126,7 @@ async fn test_duplicate_handshakes_handled_gracefully() {
     };
 
     let context = RequestContext {
-        remote_address: Some(Address::http("203.0.113.42:54321")),
+        remote_address: Some(Address::iroh("peer_endpoint")),
         peer_pubkey: None,
     };
 
@@ -166,7 +166,7 @@ async fn test_handshake_without_listen_addresses() {
         listen_addresses: vec![],
     };
 
-    let remote_address = Address::http("203.0.113.42:54321");
+    let remote_address = Address::iroh("peer_endpoint");
     let context = RequestContext {
         remote_address: Some(remote_address.clone()),
         peer_pubkey: None,
@@ -477,7 +477,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         .unwrap();
 
     let context = RequestContext {
-        remote_address: Some(Address::http("203.0.113.42:54321")),
+        remote_address: Some(Address::iroh("peer_endpoint")),
         peer_pubkey: Some(peer_verifying_key.clone()),
     };
 
@@ -532,9 +532,9 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     assert!(peer_trees.contains(&tree_id2));
 }
 
-/// Test that HTTP transport correctly captures remote address in RequestContext
+/// HTTP handshakes work without changing persistent routing state.
 #[tokio::test]
-async fn test_http_transport_request_context() {
+async fn test_http_handshake_does_not_register_a_route() {
     let (_base_db, sync) = setup().await;
     let instance = sync.instance().expect("Failed to get instance");
     let sync_tree_id = sync.sync_tree_root_id().clone();
@@ -576,17 +576,11 @@ async fn test_http_transport_request_context() {
     // Verify handshake succeeded
     assert!(matches!(response, SyncResponse::Handshake(_)));
 
-    // Verify peer was registered with an HTTP address
-    let peer_info = sync.get_peer_info(&peer_verifying_key).await.unwrap();
-    assert!(peer_info.is_some());
-
-    let addresses = sync
-        .get_peer_addresses(&peer_verifying_key, Some("http"))
-        .await
-        .unwrap();
     assert!(
-        !addresses.is_empty(),
-        "Peer should have at least one HTTP address"
+        sync.get_peer_info(&peer_verifying_key)
+            .await
+            .unwrap()
+            .is_none()
     );
 
     // Cleanup
@@ -645,9 +639,9 @@ async fn test_sync_without_peer_identifier_works() {
     assert!(matches!(response, SyncResponse::Error(_)));
 }
 
-/// Test auto-detection of permissions when requested_permission is None - authorized key
+/// An authorized HTTP pull must not alter the private tree's push recipients.
 #[tokio::test]
-async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
+async fn test_http_private_pull_preserves_configured_recipients() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
     crate::helpers::create_account(&instance, "test_user", "")
@@ -675,12 +669,19 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
     let sync_tree_id = sync.sync_tree_root_id().clone();
     let handler = SyncHandlerImpl::new(instance.clone(), sync_tree_id);
 
+    // The reader is known locally, but only the separately configured peer
+    // is configured to receive pushes for this tree.
+    let (_, recipient) = generate_keypair();
+    sync.register_peer(&recipient, None).await.unwrap();
+    sync.add_tree_sync(&recipient, &tree_id).await.unwrap();
+    sync.register_peer(&key_id, None).await.unwrap();
+
     // Bootstrap request with authorized key but no requested_permission
     let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: our_tips.clone(),
-        peer_pubkey: None,
+        peer_pubkey: Some(key_id.clone()),
         requesting_key: Some(key_id.clone()),
         requesting_key_name: Some(key_id.to_string()),
         requested_permission: None, // Should auto-detect from auth settings
@@ -696,7 +697,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
 
     let context = RequestContext {
         remote_address: Some(Address::http("203.0.113.42:54321")),
-        peer_pubkey: None,
+        peer_pubkey: Some(key_id.clone()),
     };
 
     let request = SyncRequest::SyncTree(sync_request);
@@ -716,6 +717,10 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
         }
         other => panic!("Expected Bootstrap response, got: {other:?}"),
     }
+    assert_eq!(
+        sync.get_tree_peers(&tree_id).await.unwrap(),
+        vec![PeerId::new(recipient)]
+    );
 }
 
 /// Test that bootstrap rejects unauthorized keys when requested_permission is None

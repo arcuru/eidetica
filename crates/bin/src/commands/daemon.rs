@@ -192,11 +192,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     let drain = Duration::from_secs(10);
     // Stop browser writes and wait for admitted requests before flushing. The
     // shared /api/v0 route bypasses this gate and stays served during the flush.
-    let dashboard_result = tokio::time::timeout(drain, async {
-        *dashboard_open.write().await = false;
-    })
-    .await
-    .map_err(|_| "dashboard requests did not drain before sync flush".to_string());
+    let dashboard_result = close_dashboard(&dashboard_open, drain).await;
     if !shared_http_sync {
         let _ = web_shutdown_tx.send(());
     }
@@ -267,6 +263,14 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Daemon shut down");
     Ok(())
+}
+
+async fn close_dashboard(open: &RwLock<bool>, drain: Duration) -> Result<(), String> {
+    tokio::time::timeout(drain, async {
+        *open.write().await = false;
+    })
+    .await
+    .map_err(|_| "dashboard requests did not drain before sync flush".to_string())
 }
 
 /// Hold a read guard until a browser handler finishes, so shutdown can quiesce
@@ -477,7 +481,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_sync_remains_served_while_dashboard_drains() {
+    async fn dashboard_drain_timeout_keeps_admission_closed() {
         let (instance, _) = Instance::create_backend(
             Box::new(eidetica::backend::database::InMemory::new()),
             NewAccount::passwordless("admin"),
@@ -531,17 +535,22 @@ mod tests {
                 tokio::spawn(async move { http.post(format!("{url}/write")).send().await.unwrap() })
             };
             admitted.notified().await;
-            let closing = open.clone();
-            let mut close = tokio::spawn(async move {
-                *closing.write().await = false;
-            });
-            // Shutdown must wait for the real handler, without parking peer
-            // sync behind the pending exclusive admission lock.
             assert!(
-                tokio::time::timeout(Duration::from_millis(50), &mut close)
+                close_dashboard(&open, Duration::from_millis(50))
                     .await
                     .is_err(),
                 "dashboard admission must cover the handler's lifetime"
+            );
+            assert_eq!(
+                http.post(format!("{url}/login"))
+                    .header("Origin", &url)
+                    .form(&[("username", "admin")])
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "a drain timeout must not reopen dashboard admission"
             );
             let response = http
                 .post(format!("{url}/api/v0"))
@@ -561,7 +570,6 @@ mod tests {
             ));
             release.add_permits(1);
             assert_eq!(browser.await.unwrap().status(), StatusCode::OK);
-            close.await.unwrap();
             assert_eq!(
                 http.post(format!("{url}/login"))
                     .header("Origin", &url)
