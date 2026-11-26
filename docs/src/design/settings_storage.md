@@ -35,7 +35,7 @@ assert_eq!(next.get_settings()?.get_name().await?, "Project Notes");
 # }
 ```
 
-A settings read combines the `_settings` history at the transaction's fixed main-parent snapshot with that transaction's staged settings. The first transaction sees its own rename before commit; the next transaction in the example reads it from committed history. A transaction opened with `Database::new_transaction_at()` at an earlier snapshot does not pick up settings written after that boundary.
+A settings lookup checks staged values first, then reads history at the transaction's fixed main-parent snapshot. For the merged document, use `get_all()`; a single-key `get` can return a staged nested Doc rather than the whole historical value. The first transaction sees its own rename before commit; the next transaction in the example reads it from committed history. A transaction opened with `Database::new_transaction_at()` at an earlier snapshot does not pick up settings written after that boundary.
 
 ## Genesis
 
@@ -49,7 +49,7 @@ Genesis has no main parents, so its settings pin and `_settings` parents are emp
 
 **`settings_tips` pins the pre-write settings frontier.** It must equal the complete canonical `_settings` frontier derived independently from the entry's main parents. The comparison is set equality, not list order. If the entry writes `_settings`, that Store's parents must equal the same frontier. Ordinary Stores may omit observed Store tips; `_settings` cannot omit causal authority context. The signed pin does not replace complete main ancestry or enable sparse verification.
 
-Except at genesis, signature and permission checks use the pinned pre-write settings, not the live head or the settings produced by the entry. An entry cannot authorize itself by adding a grant, and a later grant or revocation does not change the authority of an earlier entry. The resulting settings are the merge of the pre-write state and the entry's settings contribution. They are used separately for delegation transitions, including pointer floors and effective removal. See the [causal authorization rules](authentication.md#causal-snapshot-validation) and [snapshot boundaries](authentication.md#local-state-and-snapshot-boundaries).
+Except at genesis, the signer derives authority from the pinned pre-write settings, not the live head or the settings produced by the entry. The permission _required_ for an Auth change depends on the old and resulting grants. An entry cannot authorize itself by adding a grant, and a later grant or revocation does not change the authority of an earlier entry. The resulting settings are the merge of the pre-write state and the entry's settings contribution. They are used separately for delegation transitions, including pointer floors and effective removal. See the [causal authorization rules](authentication.md#causal-snapshot-validation) and [snapshot boundaries](authentication.md#local-state-and-snapshot-boundaries).
 
 In the rename example, call the root G and the rename R. R has main parent G, `_settings` parent G, and `settings_tips = [G]`. A subsequent data-only child of R pins `[R]` without copying the name or writing `_settings`. The signed IDs identify a snapshot, not the merged settings document. [Height calculation](height_strategy.md#calculating-a-commit) uses the resulting settings instead.
 
