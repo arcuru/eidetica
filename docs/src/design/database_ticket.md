@@ -108,8 +108,10 @@ percent-encoding and decodes an unescaped `+` as a space.
 
 `Sync::create_ticket` pairs the supplied ID with addresses reported by running
 transport servers. A server that cannot report its address contributes no hint;
-the resulting list can be empty. This operation neither reads nor changes an
-Account's sharing preference.
+the resulting list can be empty. A ticket with no addresses still identifies
+its database, but ticket bootstrap cannot find a peer from the database ID
+alone. Creating the ticket neither reads nor changes an Account's sharing
+preference.
 
 ### Session-scoped ticket lookup
 
@@ -118,7 +120,9 @@ can make that database shareable. Writing the preference and obtaining a
 locator are separate operations:
 
 1. `Database::share` writes the user's durable installation-local preference.
-2. Owner reconciliation applies the daemon's private combined configuration independently.
+2. When sync is enabled, the embedded instance or connected daemon refreshes
+   its sync configuration before reporting success. If the refresh fails,
+   `share()` can return an error after the preference has been saved.
 3. `Database::ticket` checks this user's setting. If enabled, it asks the
    embedded sync instance or the connected daemon for a point-in-time locator.
    Enabling the preference does not guarantee an available sync instance or
@@ -127,8 +131,10 @@ locator are separate operations:
 `Database::sync_settings` exposes only that user's settings. It does not expose
 or consult combined settings, other users, or runtime telemetry. A caller whose
 own setting is disabled receives an error even if another user keeps the daemon
-serving the database. An unknown write acknowledgment is safe to retry or read
-back because setting the preference is idempotent.
+serving the database. If a write acknowledgment is lost, read `sync_settings`
+again to see the current preference. It does not tell you whether the refresh
+succeeded. Retry `share()` only if sharing is still intended: another session
+for the same login may have called `stop_sharing()` since the first write.
 
 A `DatabaseTicket` is a locator, not a capability: its database ID and address
 hints do not grant database permission. Authorization and bootstrap approval
