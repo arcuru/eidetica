@@ -20,7 +20,7 @@ use eidetica::service::default_socket_path;
 use eidetica::sync::DatabaseTicket;
 use eidetica::sync::transports::iroh::IrohTransport;
 
-use crate::backend::create_backend;
+use crate::backend::{create_backend, open_instance};
 use crate::cli::{BackendConfig, DaemonArgs, DaemonInitArgs};
 
 /// Run the Eidetica daemon against an already-initialised backend.
@@ -36,12 +36,15 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Instance — load only. Map NotInitialized to a friendly
     // pointer at `daemon init`.
-    let instance = match Instance::open_backend(backend).await {
+    let instance = match open_instance(&args.backend_config, backend).await {
         Ok(instance) => instance,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e
                 && matches!(boxed.as_ref(), InstanceError::NotInitialized)
             {
+                if args.backend_config.device_key_dir.is_some() {
+                    return Err("Trial database has no instance metadata. Run `eidetica daemon init` only for a fresh disposable pair. If initialisation was interrupted, preserve both stores for inspection.".into());
+                }
                 return Err(format!(
                     "Backend at {} is not initialised.\nRun `eidetica daemon init --username <NAME> [--password PASS | --passwordless]` first.",
                     crate::backend::backend_label(&args.backend_config)
@@ -223,17 +226,17 @@ pub async fn run_init(
         if pw != confirm {
             return Err("Passwords did not match.".into());
         }
-        if pw.is_empty() {
-            return Err(
-                "Empty password rejected. Pass `--passwordless` to opt in to no-password mode."
-                    .into(),
-            );
-        }
         NewAccount::with_password(&args.username, pw)
     };
 
     let backend = create_backend(backend_args).await?;
-    let (instance, _user) = match Instance::create_backend(backend, new_account).await {
+    let initialized = match backend_args.device_key_dir.as_deref() {
+        Some(directory) => {
+            Instance::create_backend_with_device_key_dir(backend, new_account, directory).await
+        }
+        None => Instance::create_backend(backend, new_account).await,
+    };
+    let (instance, _user) = match initialized {
         Ok(pair) => pair,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e
@@ -256,7 +259,11 @@ pub async fn run_init(
     println!("  Device ID:    {}", instance.id());
     println!("  Initial user: {}", args.username);
     println!();
-    println!("Start the daemon with: `eidetica daemon`");
+    if backend_args.device_key_dir.is_some() {
+        println!("Start `eidetica daemon` with the same --device-key-dir.");
+    } else {
+        println!("Start the daemon with: `eidetica daemon`");
+    }
 
     Ok(())
 }
@@ -286,9 +293,12 @@ mod tests {
             dashboard_host: "127.0.0.1".into(),
             dashboard_port: 5942,
             backend_config: BackendConfig {
+                cache_dir: None,
+                cache_backend: None,
                 backend: Backend::Inmemory,
                 data_dir: Some(data_dir.to_path_buf()),
                 postgres_url: None,
+                device_key_dir: None,
                 cache_bytes: None,
                 cache_namespaces: 1024,
             },
@@ -305,9 +315,12 @@ mod tests {
             .await
             .unwrap();
         let backend = create_backend(&BackendConfig {
+            cache_dir: None,
+            cache_backend: None,
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,
+            device_key_dir: None,
             cache_bytes: None,
             cache_namespaces: 1024,
         })
@@ -333,9 +346,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("service.sock");
         let backend = create_backend(&BackendConfig {
+            cache_dir: None,
+            cache_backend: None,
             backend: Backend::Inmemory,
             data_dir: Some(dir.path().into()),
             postgres_url: None,
+            device_key_dir: None,
             cache_bytes: None,
             cache_namespaces: 1024,
         })
@@ -368,9 +384,12 @@ mod tests {
             .unwrap();
         let socket_path = socket_parent.join("daemon.sock");
         let backend = create_backend(&BackendConfig {
+            cache_dir: None,
+            cache_backend: None,
             backend: Backend::Inmemory,
             data_dir: Some(data_dir.clone()),
             postgres_url: None,
+            device_key_dir: None,
             cache_bytes: None,
             cache_namespaces: 1024,
         })

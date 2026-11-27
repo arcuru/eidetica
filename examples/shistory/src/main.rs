@@ -16,6 +16,7 @@ use shistory::{
 use uuid::Uuid;
 
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(1);
+const EXTENDED_CAPTURE_DEADLINE: Duration = Duration::from_secs(10);
 const STATUS_VALUE_LIMIT: usize = 200;
 const STATUS_ERROR_LIMIT: usize = 240;
 
@@ -29,6 +30,20 @@ struct Cli {
     /// Stable UUID printed by setup for this local host record.
     #[arg(long, env = "SHISTORY_HOST_ID")]
     host_id: Option<Uuid>,
+
+    /// Override capture timing for structural integration tests, not shell hooks.
+    #[cfg(feature = "testing")]
+    #[arg(long, hide = true,
+        default_value_t = CAPTURE_DEADLINE.as_millis() as u64,
+        value_parser = clap::value_parser!(u64).range(1..))]
+    test_capture_deadline_ms: u64,
+
+    /// Override diagnostic timing for structural integration tests, not normal status checks.
+    #[cfg(feature = "testing")]
+    #[arg(long, hide = true,
+        default_value_t = CAPTURE_DEADLINE.as_millis() as u64,
+        value_parser = clap::value_parser!(u64).range(1..))]
+    test_status_deadline_ms: u64,
 
     #[command(subcommand)]
     command: Command,
@@ -61,6 +76,9 @@ enum Command {
         cwd: String,
         #[arg(long)]
         started_at: String,
+        /// Allow 10 seconds for this capture request instead of one second.
+        #[arg(long)]
+        extended_capture_deadline: bool,
     },
     /// Complete the history record with duration and exit status.
     Finish {
@@ -69,6 +87,9 @@ enum Command {
         duration_ms: i64,
         #[arg(long, allow_hyphen_values = true)]
         exit_status: i32,
+        /// Allow 10 seconds for this capture request instead of one second.
+        #[arg(long)]
+        extended_capture_deadline: bool,
     },
     /// List recent history.
     List {
@@ -122,6 +143,23 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    #[cfg(feature = "testing")]
+    let default_capture_deadline = Duration::from_millis(cli.test_capture_deadline_ms);
+    #[cfg(not(feature = "testing"))]
+    let default_capture_deadline = CAPTURE_DEADLINE;
+    #[cfg(feature = "testing")]
+    let status_deadline = Duration::from_millis(cli.test_status_deadline_ms);
+    #[cfg(not(feature = "testing"))]
+    let status_deadline = CAPTURE_DEADLINE;
+
+    let capture_deadline = |extended| {
+        if extended {
+            EXTENDED_CAPTURE_DEADLINE
+        } else {
+            default_capture_deadline
+        }
+    };
+
     match cli.command {
         Command::Setup {
             ticket,
@@ -152,13 +190,14 @@ async fn run(cli: Cli) -> Result<()> {
             session,
             cwd,
             started_at,
+            extended_capture_deadline,
         } => {
             let host_id = required_host_id(cli.host_id)?;
             let command = read_command()?;
             if command.starts_with(' ') {
                 return Ok(());
             }
-            let id = capture_with_deadline(async {
+            let id = capture_with_deadline(capture_deadline(extended_capture_deadline), async {
                 let (_instance, user) = connect(&cli.user).await?;
                 start(
                     &open_capture_database(&user, host_id).await?,
@@ -179,9 +218,10 @@ async fn run(cli: Cli) -> Result<()> {
             id,
             duration_ms,
             exit_status,
+            extended_capture_deadline,
         } => {
             let host_id = required_host_id(cli.host_id)?;
-            capture_with_deadline(async {
+            capture_with_deadline(capture_deadline(extended_capture_deadline), async {
                 let (_instance, user) = connect(&cli.user).await?;
                 finish(
                     &open_capture_database(&user, host_id).await?,
@@ -228,7 +268,7 @@ async fn run(cli: Cli) -> Result<()> {
             let database = open_database(&user).await?;
             print_summary(std::io::stdout(), &summarize(&database, host_id).await?)?;
         }
-        Command::Status => status(&cli.user, cli.host_id).await?,
+        Command::Status => status(&cli.user, cli.host_id, status_deadline).await?,
     }
     Ok(())
 }
@@ -239,20 +279,26 @@ fn read_command() -> Result<String> {
     Ok(command)
 }
 
-async fn capture_with_deadline<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
-    tokio::time::timeout(CAPTURE_DEADLINE, future)
+async fn capture_with_deadline<T>(
+    deadline: Duration,
+    future: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(deadline, future)
         .await
         .map_err(|_| -> eidetica::Error {
             eidetica::store::StoreError::InvalidOperation {
                 store: "shistory".to_owned(),
                 operation: "capture".to_owned(),
-                reason: "daemon request exceeded the 1 second capture deadline".to_owned(),
+                reason: format!(
+                    "daemon request exceeded the {} second capture deadline",
+                    deadline.as_secs_f64()
+                ),
             }
             .into()
         })?
 }
 
-async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
+async fn status(username: &str, host_id: Option<Uuid>, deadline: Duration) -> Result<()> {
     let socket_path = default_socket_path();
     println!(
         "effective socket: {}",
@@ -276,6 +322,7 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
     };
 
     let instance = match status_with_deadline(
+        deadline,
         "daemon connection",
         Instance::connect(default_socket_url()),
     )
@@ -299,8 +346,9 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
     };
 
     let user = match status_with_deadline(
+        deadline,
         "passwordless user login",
-        instance.login_account(username, None),
+        instance.login_account(username, ""),
     )
     .await
     {
@@ -320,29 +368,32 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
         }
     };
 
-    let database = match status_with_deadline("history database lookup", open_database(&user)).await
-    {
-        Ok(database) => {
-            println!(
-                "history database: ok ({})",
-                status_value(&database.root_id().to_string())
-            );
-            database
-        }
-        Err(error) => {
-            println!(
-                "history database: failed — {}; run shistory setup once for this user",
-                status_error_value(&error)
-            );
-            println!("configured host: skipped — history database lookup failed");
-            status_limitations();
-            return status_result(false);
-        }
-    };
+    let database =
+        match status_with_deadline(deadline, "history database lookup", open_database(&user)).await
+        {
+            Ok(database) => {
+                println!(
+                    "history database: ok ({})",
+                    status_value(&database.root_id().to_string())
+                );
+                database
+            }
+            Err(error) => {
+                println!(
+                    "history database: failed — {}; run shistory setup once for this user",
+                    status_error_value(&error)
+                );
+                println!("configured host: skipped — history database lookup failed");
+                status_limitations();
+                return status_result(false);
+            }
+        };
 
     match host_id {
         Some(host_id) => {
-            match status_with_deadline("configured host lookup", host(&database, host_id)).await {
+            match status_with_deadline(deadline, "configured host lookup", host(&database, host_id))
+                .await
+            {
                 Ok(host) => println!(
                     "configured host: ok ({host_id}, {})",
                     bounded_escaped(&host.name, HOST_DISPLAY_LIMIT)
@@ -380,16 +431,16 @@ fn status_error_value(error: &impl std::fmt::Display) -> String {
 }
 
 async fn status_with_deadline<T>(
+    deadline: Duration,
     operation: &str,
     future: impl Future<Output = Result<T>>,
 ) -> Result<T> {
-    tokio::time::timeout(CAPTURE_DEADLINE, future)
-        .await
-        .map_err(|_| {
-            status_error(format!(
-                "{operation} exceeded the 1 second diagnostic deadline"
-            ))
-        })?
+    tokio::time::timeout(deadline, future).await.map_err(|_| {
+        status_error(format!(
+            "{operation} exceeded the {} second diagnostic deadline",
+            deadline.as_secs_f64()
+        ))
+    })?
 }
 
 fn status_result(healthy: bool) -> Result<()> {

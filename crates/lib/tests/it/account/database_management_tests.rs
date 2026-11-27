@@ -31,14 +31,14 @@ async fn setup_full() -> Result<(
         tokio::spawn(server.run(rx));
 
         let client = Instance::connect(format!("unix://{}", socket.display())).await?;
-        let mut user = client.login_account("manager", None).await?;
+        let mut user = client.login_account("manager", "").await?;
         let database = create_user_database(&mut user).await;
         return Ok((owner, user, database));
     }
 
-    let (instance, _) = setup_instance_with_user("manager", None).await;
+    let (instance, _) = setup_instance_with_user("manager", "").await;
     instance.enable_sync().await?;
-    let mut user = instance.login_account("manager", None).await?;
+    let mut user = instance.login_account("manager", "").await?;
     let database = create_user_database(&mut user).await;
     Ok((instance, user, database))
 }
@@ -79,8 +79,8 @@ async fn preference_write_is_acknowledged_before_locator_query() -> Result<()> {
 #[tokio::test]
 async fn sharing_intent_does_not_require_an_attached_sync_engine() -> Result<()> {
     let instance = crate::helpers::test_local_instance().await;
-    crate::helpers::create_account(&instance, "manager", None).await?;
-    let mut user = instance.login_account("manager", None).await?;
+    crate::helpers::create_account(&instance, "manager", "").await?;
+    let mut user = instance.login_account("manager", "").await?;
     let database = create_user_database(&mut user).await;
 
     database.share().await?;
@@ -107,10 +107,10 @@ async fn sharing_rejects_a_handle_after_its_database_is_untracked() -> Result<()
 #[tokio::test]
 async fn ticket_requires_this_users_sharing_setting() -> Result<()> {
     let instance = crate::helpers::test_local_instance().await;
-    crate::helpers::create_account(&instance, "alice", None).await?;
-    crate::helpers::create_account(&instance, "bob", None).await?;
+    crate::helpers::create_account(&instance, "alice", "").await?;
+    crate::helpers::create_account(&instance, "bob", "").await?;
     instance.enable_sync().await?;
-    let mut alice = instance.login_account("alice", None).await?;
+    let mut alice = instance.login_account("alice", "").await?;
     let database = create_user_database(&mut alice).await;
     let database_id = database.root_id().clone();
     let tx = database.new_transaction().await?;
@@ -125,7 +125,7 @@ async fn ticket_requires_this_users_sharing_setting() -> Result<()> {
         .await?;
     sync.accept_connections().await?;
 
-    let mut bob = instance.login_account("bob", None).await?;
+    let mut bob = instance.login_account("bob", "").await?;
     let bob_key = bob.get_default_key()?;
     bob.track_database(database_id.clone(), &bob_key, SyncSettings::enabled())
         .await?;

@@ -15,6 +15,15 @@ pub enum Backend {
     Inmemory,
 }
 
+/// Disposable Derived-cache engine, selected independently of the primary backend
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CacheBackend {
+    /// SQLite file beneath the cache directory (requires a persistent primary)
+    Sqlite,
+    /// Process memory, discarded on exit
+    Inmemory,
+}
+
 /// Eidetica decentralized database server
 #[derive(Parser, Debug)]
 #[command(name = "eidetica")]
@@ -58,6 +67,21 @@ pub struct BackendConfig {
     /// For InMemory: stores eidetica.json
     #[arg(short, long, env = "EIDETICA_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
+
+    /// Derived-cache engine (default: the primary backend's own cache —
+    /// a SQLite file for sqlite, PostgreSQL tables for postgres, memory for inmemory).
+    #[arg(long, env = "EIDETICA_CACHE_BACKEND")]
+    pub cache_backend: Option<CacheBackend>,
+
+    /// Disposable SQLite cache directory (default: platform cache location/eidetica).
+    /// Must be writable; existing directory ownership and permissions are preserved.
+    #[arg(long, env = "EIDETICA_CACHE_DIR")]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Opt-in device-key store for disposable SQLite trials. Use the same existing
+    /// private directory for initialisation and subsequent opens.
+    #[arg(long, env = "EIDETICA_DEVICE_KEY_DIR")]
+    pub device_key_dir: Option<PathBuf>,
 
     /// PostgreSQL connection URL (required when backend=postgres)
     #[arg(long, env = "EIDETICA_POSTGRES_URL")]
@@ -172,8 +196,9 @@ pub struct DaemonInitArgs {
     #[arg(long, env = "EIDETICA_ADMIN_PASSWORD", conflicts_with = "passwordless")]
     pub password: Option<String>,
 
-    /// Create the initial admin user without a password. Suitable for
-    /// embedded / single-user development; not recommended for production.
+    /// Use an empty password with the ordinary encrypted bundle format.
+    /// Equivalent to `--password ""`; provides no meaningful confidentiality
+    /// against a bundle holder. Not recommended for production.
     #[arg(long, conflicts_with = "password")]
     pub passwordless: bool,
 }

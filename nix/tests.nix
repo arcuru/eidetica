@@ -337,6 +337,7 @@ in {
       } ''
         SOCKET="$TMPDIR/test.sock"
         DATA="$TMPDIR/data"
+        export EIDETICA_CACHE_DIR="$TMPDIR/cache"
 
         # The daemon refuses to run an uninitialised backend, so initialise a
         # fresh sqlite instance first, then start the daemon against the same
@@ -477,6 +478,61 @@ in {
         echo "passed" > $out/result
       '';
 
+    # Exercise the opt-in store with the packaged daemon, without repeating
+    # the default service smoke test's socket and dashboard workloads.
+    device-key-restart =
+      pkgs.runCommand "integration-device-key-restart" {
+        nativeBuildInputs = [eidetica-bin pkgs.jq];
+      } ''
+        export EIDETICA_CACHE_DIR="$TMPDIR/cache"
+        export RUST_LOG=eidetica=debug
+        KEY_DIR="$TMPDIR/device-key"
+        install -d -m 0700 "$KEY_DIR"
+        DAEMON=(eidetica daemon --backend sqlite --data-dir "$TMPDIR/data")
+        "''${DAEMON[@]}" --device-key-dir "$KEY_DIR" init \
+          --username admin --passwordless >"$TMPDIR/init.log" 2>&1 || {
+          echo "Opt-in daemon init failed"
+          exit 1
+        }
+        DEVICE_ID=$(sed -n 's/^  Device ID:    //p' "$TMPDIR/init.log")
+        test -n "$DEVICE_ID"
+
+        DAEMON_PID=""
+        trap 'if [ -n "$DAEMON_PID" ]; then kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; fi' EXIT
+        export EIDETICA_DEVICE_KEY_DIR="$KEY_DIR"
+        for start in 1 2; do
+          SOCKET="$TMPDIR/device-key-$start.sock"
+          LOG="$TMPDIR/start-$start.log"
+          "''${DAEMON[@]}" --socket "$SOCKET" >"$LOG" 2>&1 &
+          DAEMON_PID=$!
+          for attempt in $(seq 1 100); do
+            if [ -S "$SOCKET" ] && grep -q 'Daemon sync listener started' "$LOG"; then
+              break
+            fi
+            kill -0 "$DAEMON_PID" 2>/dev/null || break
+            sleep 0.1
+          done
+          if [ ! -S "$SOCKET" ] || ! grep -q 'Daemon sync listener started' "$LOG"; then
+            echo "Opt-in daemon start $start did not become ready"
+            exit 1
+          fi
+          kill -TERM "$DAEMON_PID"
+          wait "$DAEMON_PID"
+          DAEMON_PID=""
+          grep -Fq "Instance initialized (device ID: $DEVICE_ID)" "$LOG"
+        done
+
+        # Never pass the key in argv or echo the captured logs on failure.
+        jq -e --rawfile init "$TMPDIR/init.log" \
+          --rawfile first "$TMPDIR/start-1.log" --rawfile restart "$TMPDIR/start-2.log" \
+          '.signing_key | select(type == "string" and length > 0) as $key
+           | all([$init, $first, $restart][]; contains($key) | not)' \
+          "$KEY_DIR/instance-secrets.json" >/dev/null
+        echo "Device key restart test passed (same device ID; no key in init or daemon logs)"
+        mkdir -p "$out"
+        echo "passed" > "$out/result"
+      '';
+
     # OCI container integration test
     # Loads the container image and verifies it starts and responds
     container = pkgs.testers.nixosTest {
@@ -484,6 +540,7 @@ in {
 
       nodes.machine = _: {
         virtualisation.podman.enable = true;
+        environment.systemPackages = [pkgs.sqlite];
       };
 
       testScript = ''
@@ -493,37 +550,184 @@ in {
         # Load the image (this triggers podman socket activation)
         machine.succeed("podman load < ${eidetica-image}")
 
-        # Create data directory with correct ownership for container user (1000:1000)
-        # Use /var/lib instead of /tmp to avoid tmpfs issues with SQLite WAL mode
-        machine.succeed("mkdir -p /var/lib/eidetica-data")
-        machine.succeed("chown 1000:1000 /var/lib/eidetica-data")
-        # Opt in to the passwordless-admin bootstrap explicitly; the
-        # entrypoint now fails closed without a credential source.
+        import json
+
+        entrypoint = json.loads(machine.succeed("podman image inspect eidetica:dev"))[0]["Config"]["Cmd"][0]
+
+        def owned(path):
+            machine.succeed(f"mkdir -p {path}; chown 1000:1000 {path}")
+            return path
+
+        # Distinct administrator-provisioned /config, /data and optional /cache.
+        def data(name, persistent_cache=True):
+            path = owned("/var/lib/" + name)
+            mounts = f"-v {owned(path + '-config')}:/config -v {path}:/data"
+            if not persistent_cache:
+                return mounts
+            return mounts + f" -v {owned(path + '-cache')}:/cache"
+
+        def uninitialised(mounts):
+            status, output = machine.execute(f"podman run --rm {mounts} eidetica:dev /bin/eidetica info 2>&1")
+            assert status == 1 and "not initialised" in output, "storage must remain uninitialised"
+
+        def refused(name, mounts, options, diagnostic):
+            status, output = machine.execute(
+                f"podman run --name {name} {mounts} {options} eidetica:dev {entrypoint} info 2>&1"
+            )
+            assert status == 1, f"{name}: expected refusal exit 1, got {status}"
+            assert diagnostic in output, f"{name}: missing refusal diagnostic"
+            uninitialised(mounts)
+            machine.succeed(f"podman rm {name}")
+
+        # Generate synthetic credentials without printing their values or cookies.
         machine.succeed(
-          "podman run -d --name eidetica-test -p 5942:5942 "
-          "-e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 "
-          "-v /var/lib/eidetica-data:/data eidetica:dev"
+            "umask 077; head -c 24 /dev/urandom | base64 | tr -d '\\n' >/var/lib/admin-password; "
+            "head -c 24 /dev/urandom | base64 | tr -d '\\n' >/var/lib/wrong-password; "
+            "chown 1000:1000 /var/lib/admin-password"
+        )
+        secret = "-v /var/lib/admin-password:/run/secrets/admin_password:ro"
+        mounts = data("secret-data")
+        # A file takes priority over both other configured credential sources.
+        machine.succeed(
+            f"podman run -d --name eidetica-test -p 5942:5942 {mounts} {secret} "
+            "-e EIDETICA_ADMIN_PASSWORD=unused-fallback -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 eidetica:dev"
+        )
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+
+        def login(password_file=None, passwordless=False):
+            password = f"--data-urlencode password@{password_file}" if password_file else "--data 'password='"
+            if passwordless:
+                password = ""
+            return machine.succeed(
+                "curl -sS -o /dev/null -w '%{http_code}' -H 'Origin: http://localhost:5942' "
+                f"--data username=admin {password} http://localhost:5942/login"
+            ).strip()
+
+        correct, empty, wrong = login("/var/lib/admin-password"), login(), login("/var/lib/wrong-password")
+        machine.log(f"Secret-file login status: correct={correct}, empty={empty}, wrong={wrong}")
+        assert correct == "303", "secret-file password must authenticate"
+        assert empty == "200", "empty password must not authenticate"
+        assert wrong == "200", "wrong password must not authenticate"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+        # The packaged binary used distinct durable/cache mounts with no
+        # credential/history tables in C. Record both images while stopped.
+        machine.succeed("test -s /var/lib/secret-data/eidetica.db")
+        cache_files = machine.succeed("find /var/lib/secret-data-cache -name '*.sqlite'").splitlines()
+        assert len(cache_files) == 1, "instance-key cache file must be separate from /config"
+        cache_path = cache_files[0]
+        assert not machine.succeed("find /var/lib/secret-data -name '*.cache' -o -name '*.sqlite'").strip()
+        assert not machine.succeed("find /var/lib/secret-data-config -mindepth 1").strip(), "/config must not hold storage"
+        old_names = set(machine.succeed(f"sqlite3 {cache_path} 'SELECT namespace_id FROM store_state_namespaces WHERE status = 1'").splitlines())
+        assert old_names, "real login reads must populate Derived records in /cache"
+        assert machine.succeed(f"sqlite3 {cache_path} \"SELECT count(*) FROM sqlite_master WHERE name IN ('entries','local_accounts','instance_secrets','verified_tips')\"").strip() == "0"
+        # Restart without any credential source: skip bootstrap and preserve admin.
+        machine.succeed(f"podman run -d --name eidetica-test -p 5942:5942 {mounts} eidetica:dev")
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login("/var/lib/admin-password") == "303"
+        assert login() == "200"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+        retained_names = set(machine.succeed(f"sqlite3 {cache_path} 'SELECT namespace_id FROM store_state_namespaces WHERE status = 1'").splitlines())
+        assert old_names & retained_names, "restart must reuse immutable Snapshot namespaces"
+        # Supported offline recreation: remove only this instance's C image
+        # and SQLite sidecars, not its stable ownership sidecar or shared root.
+        machine.succeed(f"rm -f {cache_path} {cache_path}-wal {cache_path}-shm {cache_path}-journal")
+        # A stopped process can leave WAL to checkpoint on the next open.
+        # Compare SQLite's complete logical image, not an uncheckpointed main file.
+        machine.succeed("sqlite3 /var/lib/secret-data/eidetica.db .dump > /var/lib/history-before-recreate.sql")
+        machine.succeed(f"podman run --rm {mounts} eidetica:dev /bin/eidetica info")
+        machine.succeed("sqlite3 /var/lib/secret-data/eidetica.db .dump > /var/lib/history-after-recreate.sql; cmp /var/lib/history-before-recreate.sql /var/lib/history-after-recreate.sql")
+        machine.succeed(f"test -s {cache_path}")
+        machine.succeed(f"podman run -d --name eidetica-test -p 5942:5942 {mounts} eidetica:dev")
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login("/var/lib/admin-password") == "303", "cache recreation must preserve native credentials"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+
+        # Legacy layout: an instance bootstrapped in /config by an older image,
+        # reproduced through the explicit compatibility override.
+        legacy = owned("/var/lib/legacy")
+        legacy_cache = owned("/var/lib/legacy-cache")
+        legacy_info = machine.succeed(
+            f"podman run --rm -v {legacy}:/config -v {legacy_cache}:/cache {secret} "
+            f"-e EIDETICA_DATA_DIR=/config eidetica:dev {entrypoint} info"
+        )
+        machine.succeed(f"test -s {legacy}/eidetica.db")
+        dump = "sqlite3 {}/eidetica.db .dump > /var/lib/{}.sql"
+        machine.succeed(dump.format(legacy, "legacy-before"))
+
+        def legacy_unchanged():
+            machine.succeed(dump.format(legacy, "legacy-after") + "; cmp /var/lib/legacy-before.sql /var/lib/legacy-after.sql")
+
+        # The new default refuses before any open, despite a usable credential
+        # that would otherwise bootstrap a fresh instance in the empty /data.
+        status, output = machine.execute(
+            f"podman run --rm -v {legacy}:/config -v {legacy_cache}:/cache {secret} eidetica:dev {entrypoint} info 2>&1"
+        )
+        assert status == 1 and "legacy /config location" in output, f"legacy store must be refused: {output}"
+        legacy_unchanged()
+
+        # Two stores are ambiguous: neither is selected, opened or changed.
+        other = data("other-data")
+        machine.succeed(f"podman run --rm {other} {secret} eidetica:dev {entrypoint} info")
+        machine.succeed(dump.format("/var/lib/other-data", "other-before"))
+        status, output = machine.execute(
+            f"podman run --rm -v {legacy}:/config -v /var/lib/other-data:/data eidetica:dev {entrypoint} info 2>&1"
+        )
+        assert status == 1 and "both /config and /data" in output, f"ambiguous stores must be refused: {output}"
+        legacy_unchanged()
+        machine.succeed(dump.format("/var/lib/other-data", "other-after") + "; cmp /var/lib/other-before.sql /var/lib/other-after.sql")
+
+        # Documented relocation: mount the same directory at /data. Nothing moves,
+        # and the instance identity, history and credentials are retained.
+        relocated = f"-v {owned('/var/lib/legacy-new-config')}:/config -v {legacy}:/data -v {legacy_cache}:/cache"
+        relocated_info = machine.succeed(f"podman run --rm {relocated} eidetica:dev {entrypoint} info")
+        device = lambda text: [line for line in text.splitlines() if line.startswith("Device ID:")]
+        assert device(legacy_info) and device(legacy_info) == device(relocated_info), "relocation must keep the instance"
+        legacy_unchanged()
+        machine.succeed(f"podman run -d --name eidetica-test -p 5942:5942 {relocated} eidetica:dev")
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login("/var/lib/admin-password") == "303", "relocation must preserve native credentials"
+        assert login() == "200"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+
+        refused("missing", data("missing-data"), "", "refusing to bootstrap admin user without credentials")
+        # cat on a directory fails after the source has been selected. Neither
+        # environment credentials nor passwordless opt-in may mask that failure.
+        machine.succeed("mkdir /var/lib/broken-secret")
+        refused(
+            "read-error", data("read-error-data"),
+            "-v /var/lib/broken-secret:/run/secrets/admin_password:ro "
+            "-e EIDETICA_ADMIN_PASSWORD=unused-fallback -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1",
+            "failed to read admin password file",
         )
 
-        # Wait for container to start
-        import time
-        time.sleep(3)
+        # An existing but unreadable file is not an absent credential source.
+        machine.succeed("touch /var/lib/unreadable-secret; chmod 000 /var/lib/unreadable-secret")
+        refused(
+            "unreadable", data("unreadable-data"),
+            "-v /var/lib/unreadable-secret:/run/secrets/admin_password:ro "
+            "-e EIDETICA_ADMIN_PASSWORD=unused-fallback -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1",
+            "failed to read admin password file",
+        )
 
-        # Check container is running
-        machine.succeed("podman ps | grep eidetica-test")
+        # No /cache mount: the image-owned writable directory is disposable.
+        mounts = data("env-data", persistent_cache=False)
+        machine.succeed(
+            f"podman run -d --name eidetica-test -p 5942:5942 {mounts} "
+            '-e EIDETICA_ADMIN_PASSWORD="$(cat /var/lib/admin-password)" eidetica:dev'
+        )
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login("/var/lib/admin-password") == "303"
+        assert login() == "200"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
 
-        # Verify the service responds (follow redirects since / redirects to /login)
-        machine.wait_until_succeeds("curl -fL http://localhost:5942/", timeout=30)
-
-        # Check container logs
-        logs = machine.succeed("podman logs eidetica-test")
-        machine.log(f"Container logs: {logs}")
-
-        # Stop and cleanup
-        machine.succeed("podman stop eidetica-test")
-        machine.succeed("podman rm eidetica-test")
-
-        machine.log("OCI container integration test passed!")
+        machine.succeed(
+            "podman run -d --name eidetica-test -p 5942:5942 " + data("passwordless-data") +
+            " -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 eidetica:dev"
+        )
+        machine.wait_until_succeeds("curl -fsS http://localhost:5942/health", timeout=30)
+        assert login(passwordless=True) == "303"
+        machine.succeed("podman stop eidetica-test; podman rm eidetica-test")
+        machine.log("OCI container integration test passed: distinct config/data/cache mounts, restart, legacy refusal/relocation, offline cache recreation, credentials, refusal and disposable image cache")
       '';
     };
   };

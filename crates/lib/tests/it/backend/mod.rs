@@ -6,6 +6,7 @@ mod cross_backend_ordering;
 mod height_calculations;
 mod helpers;
 mod merge_base_trace;
+mod non_failed_snapshot;
 mod out_of_order_tips;
 #[cfg(feature = "postgres")]
 mod postgres_ownership;
@@ -18,3 +19,5 @@ mod subtree_operations;
 mod tree_operations;
 mod verification;
 mod verified_snapshot;
+
+mod local_accounts;

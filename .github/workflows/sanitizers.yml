@@ -21,7 +21,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Nix
-        uses: ./.github/actions/setup-nix
+        uses: $/.github/actions/setup-nix
 
       # asan + lsan in one target (.#…sanitize.default), one dependency graph
       # sharing the nightly toolchain and sanitizer-instrumented deps.

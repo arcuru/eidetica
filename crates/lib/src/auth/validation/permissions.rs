@@ -3,18 +3,25 @@
 //! This module provides utilities for checking if resolved authentication
 //! has sufficient permissions for specific operations.
 
+use std::collections::BTreeSet;
+
 use crate::{
     Error, Result,
     auth::{
         crypto::PublicKey,
         errors::AuthError,
         settings::AuthSettings,
-        types::{Operation, Permission, ResolvedAuth, SigKey},
-        validation::AuthValidator,
+        types::{AuthKey, DelegatedTreeRef, Operation, Permission, ResolvedAuth, SigKey},
+        validation::delegation::DelegationResolver,
     },
+    crdt::{CRDT, Codec, Doc, doc::Value},
 };
 
-/// Resolve the permission level for a pubkey + identity against auth settings.
+/// Resolve live access for a pubkey + identity against current accepted auth settings.
+///
+/// Delegated paths use the verifier's current accepted state at every hop, never
+/// caller-claimed historical tips. Historical Entry validation instead uses
+/// `AuthValidator::resolve_sig_key` at its pinned snapshots.
 ///
 /// Shared validation logic used by both the local path (`Database::validate_key`,
 /// which holds a `DatabaseKey` that bundles signing key + identity) and the
@@ -32,6 +39,27 @@ pub async fn resolve_identity_permission(
     identity: &SigKey,
     auth_settings: &AuthSettings,
     instance: Option<&crate::Instance>,
+) -> Result<Permission> {
+    resolve_permission(pubkey, identity, auth_settings, instance, false).await
+}
+
+/// Resolve Read authority as recorded at a validated database cut. Delegated
+/// authority follows the committed pointers in those settings, not caller tips.
+pub(crate) async fn resolve_snapshot_identity_permission(
+    pubkey: &PublicKey,
+    identity: &SigKey,
+    auth_settings: &AuthSettings,
+    instance: &crate::Instance,
+) -> Result<Permission> {
+    resolve_permission(pubkey, identity, auth_settings, Some(instance), true).await
+}
+
+async fn resolve_permission(
+    pubkey: &PublicKey,
+    identity: &SigKey,
+    auth_settings: &AuthSettings,
+    instance: Option<&crate::Instance>,
+    use_committed_pointers: bool,
 ) -> Result<Permission> {
     match identity {
         SigKey::Direct { hint } if hint.is_global() => {
@@ -91,16 +119,25 @@ pub async fn resolve_identity_permission(
                 key_name: hint.name.clone().unwrap_or_else(|| pubkey.to_string()),
             })))
         }
-        SigKey::Delegation { .. } => {
-            let mut validator = AuthValidator::new();
-            let resolved_auths = validator
-                .resolve_sig_key(identity, auth_settings, instance)
-                .await
-                .map_err(|e| {
-                    Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
-                        reason: format!("Delegation resolution failed: {e}"),
-                    }))
-                })?;
+        SigKey::Delegation { path, hint } => {
+            let instance = instance.ok_or_else(|| AuthError::DatabaseRequired {
+                operation: "live delegated access".to_string(),
+            })?;
+            let mut resolver = DelegationResolver::new();
+            let resolution = if use_committed_pointers {
+                resolver
+                    .resolve_committed_delegation_path(path, hint, auth_settings, instance)
+                    .await
+            } else {
+                resolver
+                    .resolve_live_delegation_path(path, hint, auth_settings, instance)
+                    .await
+            };
+            let resolved_auths = resolution.map_err(|e| {
+                Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
+                    reason: format!("Delegation resolution failed: {e}"),
+                }))
+            })?;
 
             select_effective_permission(&resolved_auths, pubkey).ok_or_else(|| {
                 Error::Auth(Box::new(AuthError::SigningKeyMismatch {
@@ -127,6 +164,93 @@ pub(crate) fn select_effective_permission(
         .filter(|ra| ra.public_key == *pubkey && ra.grants_access())
         .map(|ra| ra.effective_permission)
         .max()
+}
+
+/// Minimum signer permission needed for the `_settings.auth` changes in `delta`.
+///
+/// `pre_auth` is the entry's pre-write auth state. Every grant whose stored value
+/// differs after applying `delta` — added, removed, revoked, renamed or replaced,
+/// whether through one key path, a whole map or a tombstone — requires the signer
+/// to rank at least as high as both its old and its new permission. A weaker signer
+/// therefore cannot strip a stronger grant or manufacture one. Delegations count
+/// at their bounds, and the wildcard `global` grant at its permission. Malformed
+/// resulting grants or auth containers are rejected regardless of signer privilege.
+///
+/// Returns `None` when no grant changes, and an error for malformed resulting auth
+/// state or when `delta` is not a Doc.
+pub(crate) fn required_auth_change_permission(
+    pre_auth: &AuthSettings,
+    delta: &[u8],
+) -> Result<Option<Permission>> {
+    let delta = Doc::decode(delta)?;
+    let mut before = Doc::new();
+    before.set("auth", pre_auth.as_doc().clone());
+    let after = before.merge(&delta)?;
+    let empty = Doc::new();
+    let malformed = || AuthError::InvalidAuthConfiguration {
+        reason: "settings write leaves malformed authentication state".to_string(),
+    };
+    let after_auth = match after.get("auth") {
+        Some(Value::Doc(auth)) => auth,
+        // Deletion is distinct from a present value of the wrong type.
+        None => &empty,
+        Some(_) => return Err(malformed().into()),
+    };
+    let before_auth = pre_auth.as_doc();
+
+    let mut required = None;
+    let mut require = |old: Option<&Value>,
+                       new: Option<&Value>,
+                       grant: fn(&Doc) -> Option<Permission>|
+     -> Result<()> {
+        let parsed = match new {
+            Some(Value::Doc(doc)) => Some(grant(doc).ok_or_else(malformed)?),
+            Some(_) => return Err(malformed().into()),
+            None => None,
+        };
+        if old == new {
+            return Ok(());
+        }
+        if let Some(Value::Doc(doc)) = old {
+            required = required.max(grant(doc));
+        }
+        required = required.max(parsed);
+        Ok(())
+    };
+    let key_grant = |doc: &Doc| AuthKey::try_from(doc).ok().map(|key| *key.permissions());
+    let delegation_grant = |doc: &Doc| {
+        DelegatedTreeRef::try_from(doc).ok().map(|delegation| {
+            let bounds = delegation.permission_bounds;
+            bounds.min.map_or(bounds.max, |min| min.max(bounds.max))
+        })
+    };
+
+    for (map, grant) in [
+        ("keys", key_grant as fn(&Doc) -> Option<Permission>),
+        ("delegations", delegation_grant),
+    ] {
+        let entries = |auth: &Doc| match auth.get(map) {
+            Some(Value::Doc(entries)) => entries.clone(),
+            _ => Doc::new(),
+        };
+        if after_auth
+            .get(map)
+            .is_some_and(|value| !matches!(value, Value::Doc(_)))
+        {
+            return Err(malformed().into());
+        }
+        let (old, new) = (entries(before_auth), entries(after_auth));
+        let names: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+        for name in names {
+            require(old.get(name), new.get(name), grant)?;
+        }
+    }
+    require(
+        before_auth.get("global"),
+        after_auth.get("global"),
+        key_grant,
+    )?;
+    Ok(required)
 }
 
 /// Check if a resolved authentication has sufficient permissions for an operation

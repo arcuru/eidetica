@@ -91,6 +91,14 @@ impl Backend for LocalBackend {
         self.0.store_snapshot(tree, store).await
     }
 
+    async fn try_verified_store_snapshot(
+        &self,
+        tree: &ID,
+        store: &str,
+    ) -> Result<Option<Snapshot>> {
+        self.0.try_verified_store_snapshot(tree, store).await
+    }
+
     async fn store_snapshot_at(
         &self,
         tree: &ID,
@@ -138,6 +146,14 @@ impl Backend for LocalBackend {
         _source: WriteSource,
     ) -> Result<()> {
         let entry_id = entry.id();
+        // Storage and status promotion are separate engine transactions. If
+        // promotion fails (or execution stops between them), a newly inserted
+        // entry remains stored Unverified; an error does not roll back `put`.
+        // Fresh local transaction tips can recover through Database::snapshot's
+        // best-effort verification once their ancestry and pinned settings are
+        // available. Default reads exclude them until verification succeeds.
+        // This is not atomic commit success or a guarantee of write callbacks,
+        // nor should arbitrary historical insertions rely on the tip-read hook.
         self.0.put(entry).await?;
         if verification != VerificationStatus::Unverified {
             self.0

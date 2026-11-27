@@ -47,6 +47,16 @@ in {
       description = "Storage backend to use.";
     };
 
+    cacheBackend = mkOption {
+      type = types.nullOr (types.enum ["sqlite" "inmemory"]);
+      default = null;
+      description = ''
+        Derived-cache engine, selected independently of `backend`. Null keeps
+        the backend's own cache. `sqlite` uses a file under /var/cache/eidetica
+        and requires a persistent backend.
+      '';
+    };
+
     dataDir = mkOption {
       type = types.path;
       default = "/var/lib/eidetica";
@@ -113,8 +123,10 @@ in {
       type = types.bool;
       default = false;
       description = ''
-        Opt in to bootstrapping the initial admin user **without a
-        password**. A passwordless admin means anyone who can reach the
+        Bootstrap the initial admin user with an **empty password**, using
+        the ordinary encrypted credential bundle format. Empty-string wrapping
+        provides no meaningful confidentiality against a bundle holder.
+        A passwordless admin means anyone who can reach the
         service can act as admin, so only set this for trusted/LAN
         deployments or local development. Use `initialPasswordFile`
         instead for any deployment where others can reach the web
@@ -134,6 +146,10 @@ in {
       {
         assertion = !cfg.dashboard || cfg.daemon;
         message = "services.eidetica.dashboard requires services.eidetica.daemon";
+      }
+      {
+        assertion = !(cfg.backend == "inmemory" && cfg.cacheBackend == "sqlite");
+        message = "services.eidetica.cacheBackend = \"sqlite\" requires a persistent backend";
       }
       {
         assertion = cfg.backend != "postgres" || cfg.postgresUrl != null;
@@ -191,10 +207,14 @@ in {
           EIDETICA_HOST = cfg.host;
           EIDETICA_BACKEND = cfg.backend;
           EIDETICA_DATA_DIR = cfg.dataDir;
+          XDG_CACHE_HOME = "/var/cache";
           EIDETICA_SOCKET = "${cfg.dataDir}/service.sock";
         }
         // optionalAttrs (cfg.postgresUrl != null) {
           EIDETICA_POSTGRES_URL = cfg.postgresUrl;
+        }
+        // optionalAttrs (cfg.cacheBackend != null) {
+          EIDETICA_CACHE_BACKEND = cfg.cacheBackend;
         }
         // cfg.environment;
 
@@ -250,6 +270,7 @@ in {
           ProtectHome = true;
           PrivateTmp = true;
           ReadWritePaths = [cfg.dataDir];
+          CacheDirectory = "eidetica";
         }
         // optionalAttrs (cfg.initialPasswordFile != null) {
           # systemd reads the file as root and exposes it to the service at

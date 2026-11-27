@@ -172,6 +172,49 @@ impl Sync {
         requested_permission: Permission,
         metadata: Option<Doc>,
     ) -> Result<()> {
+        self.bootstrap_ticket_request(
+            ticket,
+            requesting_key,
+            requesting_key_name,
+            requested_permission,
+            metadata,
+            false,
+        )
+        .await
+    }
+
+    /// Request an explicit key membership grant through the ordinary bootstrap lifecycle.
+    /// Public/global or delegated access does not substitute for that direct grant.
+    /// Uses a distinct request identity and a proof bound to membership intent.
+    pub(crate) async fn request_membership_with_ticket(
+        &self,
+        ticket: &DatabaseTicket,
+        requesting_key: &PrivateKey,
+        requesting_key_name: &str,
+        requested_permission: Permission,
+        metadata: Option<Doc>,
+    ) -> Result<()> {
+        self.bootstrap_ticket_request(
+            ticket,
+            requesting_key,
+            requesting_key_name,
+            requested_permission,
+            metadata,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn bootstrap_ticket_request(
+        &self,
+        ticket: &DatabaseTicket,
+        requesting_key: &PrivateKey,
+        requesting_key_name: &str,
+        requested_permission: Permission,
+        metadata: Option<Doc>,
+        require_direct_key: bool,
+    ) -> Result<()> {
         let mut operation = SyncOperation::new("bootstrap_ticket");
         let span = operation.span();
         let result = async {
@@ -203,12 +246,13 @@ impl Sync {
                 .select_address(ticket.addresses(), None, &mut operation)
                 .await?;
             let tips = Snapshot::EMPTY;
-            let auth = SyncRequestAuth::sign(
+            let auth = SyncRequestAuth::sign_access(
                 requesting_key,
                 &peer_pubkey,
                 &database_id,
                 &tips,
                 instance.clock().now_millis(),
+                require_direct_key.then_some(requested_permission),
             );
             self.add_peer_address(&peer_pubkey, address.clone()).await?;
             let result = self
@@ -307,16 +351,13 @@ impl Sync {
                 }
                 .into());
             }
-            if request.requested_permission.is_none() {
-                return Err(SyncError::SyncProtocolError(
+            let permission = request.requested_permission.ok_or_else(|| SyncError::SyncProtocolError(
                     "bootstrap request must name a permission".to_string(),
-                )
-                .into());
-            }
-            auth.verify(peer_pubkey, &request.tree_id, &request.our_tips)
+                ))?;
+            auth.verify_access(peer_pubkey, &request.tree_id, &request.our_tips, Some(permission))
                 .map_err(|_| {
                     SyncError::AuthenticationFailed(
-                        "request proof does not cover this peer, database, and tip set".to_string(),
+                        "request proof does not cover this peer, database, tip set or membership intent".to_string(),
                     )
                 })?;
 
@@ -460,11 +501,12 @@ impl Sync {
         if matches!(request.status, RequestStatus::Approved { .. }) {
             return Ok(());
         }
-        if !Database::can_access(
+        if !request_satisfied(
             &instance,
             &request.tree_id,
             &request.requesting_pubkey,
             &request.requested_permission,
+            request.require_direct_key,
         )
         .await?
         {
@@ -643,6 +685,145 @@ impl Sync {
             "Bootstrap request rejected by user with Admin permission"
         );
 
+        Ok(())
+    }
+}
+
+/// Shared explicit-key versus ordinary access decision. Global Read never counts
+/// as direct membership; ordinary joins retain their existing authority discovery.
+pub(crate) async fn request_satisfied(
+    instance: &crate::Instance,
+    tree: &ID,
+    key: &PublicKey,
+    permission: &Permission,
+    require_direct_key: bool,
+) -> Result<bool> {
+    if !require_direct_key {
+        return Database::can_access(instance, tree, key, permission).await;
+    }
+    let auth = Database::open(instance, tree)
+        .await?
+        .live_auth_settings()
+        .await?;
+    Ok(auth
+        .get_key_by_pubkey(key)
+        .is_ok_and(|grant| grant.is_active() && grant.permissions() >= permission))
+}
+
+impl Sync {
+    /// Read only one authorized target's pending requests, never the raw sync store.
+    pub(crate) async fn pending_access_requests_for(
+        &self,
+        root_id: &ID,
+        key: &PublicKey,
+        identity: &crate::auth::SigKey,
+    ) -> Result<Vec<(String, BootstrapRequest)>> {
+        self.require_request_admin(root_id, key, identity).await?;
+        let tx = self.sync_tree.new_transaction().await?;
+        BootstrapRequestManager::new(&tx)
+            .pending_requests_for(root_id)
+            .await
+    }
+
+    async fn require_request_admin(
+        &self,
+        root_id: &ID,
+        key: &PublicKey,
+        identity: &crate::auth::SigKey,
+    ) -> Result<()> {
+        let instance = self.instance()?;
+        let denied = || crate::auth::AuthError::PermissionDenied {
+            reason: format!("access request management requires Admin on {root_id}"),
+        };
+        // The lifecycle store is not an enrollment target (and this check can
+        // run under its lock while committing a terminal decision).
+        if root_id == self.sync_tree.root_id() || !instance.has_database(root_id).await {
+            return Err(denied().into());
+        }
+        let auth = Database::open(&instance, root_id)
+            .await?
+            .live_auth_settings()
+            .await?;
+        let permission = crate::auth::validation::permissions::resolve_identity_permission(
+            key,
+            identity,
+            &auth,
+            Some(&instance),
+        )
+        .await
+        .map_err(|_| denied())?;
+        if !permission.can_admin() {
+            return Err(denied().into());
+        }
+        Ok(())
+    }
+
+    /// Finalize an explicit admin decision after any ordinary target Auth write.
+    /// Approval never creates/restores a grant: sufficient current authority must
+    /// already exist. This is the shared connected-client bookkeeping seam.
+    pub(crate) async fn finish_access_request(
+        &self,
+        root_id: &ID,
+        request_id: &str,
+        key: &PublicKey,
+        identity: &crate::auth::SigKey,
+        reject: bool,
+    ) -> Result<()> {
+        let instance = self.instance()?;
+        self.sync_tree.snapshot().await?;
+        let guard = instance
+            .tree_lock(self.sync_tree.root_id())
+            .lock_owned()
+            .await;
+        self.require_request_admin(root_id, key, identity).await?;
+        let snapshot = Snapshot::from(self.sync_tree.verified_frontier().await?);
+        let tx = self.sync_tree.new_transaction_at(&snapshot).await?;
+        let manager = BootstrapRequestManager::new(&tx);
+        let request = manager
+            .get_request(request_id)
+            .await?
+            .filter(|request| &request.tree_id == root_id)
+            .ok_or_else(|| SyncError::RequestNotFound(request_id.to_owned()))?;
+        let status = match (&request.status, reject) {
+            (RequestStatus::Pending, true) => RequestStatus::Rejected {
+                rejected_by: identity.display_id(),
+                rejection_time: instance.clock().now_rfc3339(),
+            },
+            (RequestStatus::Pending, false) => {
+                if !request_satisfied(
+                    &instance,
+                    &request.tree_id,
+                    &request.requesting_pubkey,
+                    &request.requested_permission,
+                    request.require_direct_key,
+                )
+                .await?
+                {
+                    return Err(SyncError::PermissionDenied(
+                        "explicitly grant the requested authority before finalizing approval"
+                            .to_owned(),
+                    )
+                    .into());
+                }
+                RequestStatus::Approved {
+                    approved_by: identity.display_id(),
+                    approval_time: instance.clock().now_rfc3339(),
+                }
+            }
+            (RequestStatus::Approved { .. }, false) | (RequestStatus::Rejected { .. }, true) => {
+                return Ok(());
+            }
+            _ => {
+                return Err(SyncError::InvalidRequestState {
+                    request_id: request_id.to_owned(),
+                    current_status: format!("{:?}", request.status),
+                    expected_status: "Pending or matching terminal decision".to_owned(),
+                }
+                .into());
+            }
+        };
+        manager.update_status(request_id, status).await?;
+        tx.commit_under_tree_lock(guard).await?;
         Ok(())
     }
 }

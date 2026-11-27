@@ -7,6 +7,10 @@ license.workspace = true
 description = "Shell history example using an Eidetica daemon"
 publish = false
 
+[features]
+# Opt-in test hooks; not enabled in normal builds.
+testing = []
+
 [dependencies]
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true }

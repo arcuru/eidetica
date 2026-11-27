@@ -1,4 +1,5 @@
 //! Real browser HTTP requests and peer bootstrap exchanges, not mocked grants.
+use super::test_helpers::{Web, instance};
 use super::*;
 use eidetica::{
     AccountSession, Database, NewAccount,
@@ -7,138 +8,7 @@ use eidetica::{
     store::DocStore,
     sync::{DatabaseTicket, RequestStatus, peer_types::Address},
 };
-use reqwest::{Client, Response as HttpResponse, redirect::Policy};
 use tokio::task::JoinHandle;
-
-struct Web {
-    url: String,
-    state: AppState,
-    client: Client,
-    task: JoinHandle<()>,
-}
-
-impl Drop for Web {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-impl Web {
-    async fn start(instance: &Instance) -> Self {
-        let sync = instance.sync().unwrap();
-        let state = AppState {
-            instance: Arc::new(instance.clone()),
-            sync_handler: Arc::new(SyncHandlerImpl::new(
-                instance.clone(),
-                sync.sync_tree_root_id().clone(),
-            )),
-            sessions: SessionStore::new(),
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let app = dashboard_router(state.clone(), true);
-        let task = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .unwrap();
-        });
-        Self {
-            url,
-            state,
-            task,
-            client: Client::builder()
-                .redirect(Policy::none())
-                .timeout(Duration::from_secs(10))
-                .build()
-                .unwrap(),
-        }
-    }
-
-    async fn login(&self, username: &str) -> String {
-        let response = self.post("/login", None, &[("username", username)]).await;
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        response.headers()["set-cookie"]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_string()
-    }
-
-    async fn post(&self, path: &str, cookie: Option<&str>, form: &[(&str, &str)]) -> HttpResponse {
-        let mut request = self
-            .client
-            .post(format!("{}{path}", self.url))
-            .header("Origin", &self.url);
-        if let Some(cookie) = cookie {
-            request = request.header("Cookie", cookie);
-        }
-        request.form(form).send().await.unwrap()
-    }
-
-    async fn get(&self, path: &str, cookie: Option<&str>) -> HttpResponse {
-        let mut request = self.client.get(format!("{}{path}", self.url));
-        if let Some(cookie) = cookie {
-            request = request.header("Cookie", cookie);
-        }
-        request.send().await.unwrap()
-    }
-
-    async fn track(&self, cookie: &str, ticket: &DatabaseTicket, permission: &str) -> HttpResponse {
-        self.post(
-            "/dashboard/track",
-            Some(cookie),
-            &[("ticket", &ticket.to_string()), ("permission", permission)],
-        )
-        .await
-    }
-
-    async fn decide(
-        &self,
-        cookie: Option<&str>,
-        db: &ID,
-        id: &str,
-        decision: &str,
-    ) -> HttpResponse {
-        self.post(
-            "/dashboard/requests/decide",
-            cookie,
-            &[
-                ("database_id", &db.to_string()),
-                ("request_id", id),
-                ("decision", decision),
-            ],
-        )
-        .await
-    }
-
-    async fn user(&self, cookie: &str) -> Arc<tokio::sync::RwLock<AccountSession>> {
-        self.state
-            .sessions
-            .get_user(cookie.split_once('=').unwrap().1)
-            .await
-            .unwrap()
-    }
-}
-
-async fn instance(name: &str) -> (Instance, AccountSession) {
-    let (instance, user) =
-        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless(name))
-            .await
-            .unwrap();
-    instance.enable_sync().await.unwrap();
-    instance
-        .sync()
-        .unwrap()
-        .register_transport("http", HttpTransport::builder())
-        .await
-        .unwrap();
-    (instance, user)
-}
 
 struct Sharing {
     instance: Instance,
@@ -278,7 +148,7 @@ async fn access_http_approval_is_scoped_and_grants_only_requested_access() {
         .create_account(NewAccount::passwordless("outsider"))
         .await
         .unwrap();
-    let outsider_user = peer.instance.login_account("outsider", None).await.unwrap();
+    let outsider_user = peer.instance.login_account("outsider", "").await.unwrap();
     peer.owner
         .admin()
         .await
@@ -349,7 +219,7 @@ async fn access_http_approval_is_scoped_and_grants_only_requested_access() {
         StatusCode::SEE_OTHER
     );
     // A valid but unrelated database owned by this session cannot substitute for the target.
-    let mut owner = peer.instance.login_account("owner", None).await.unwrap();
+    let mut owner = peer.instance.login_account("owner", "").await.unwrap();
     let other = owner.create_database(Doc::new(), &peer.key).await.unwrap();
     let cookie = peer.web.login("owner").await;
     assert_eq!(
@@ -790,28 +660,32 @@ async fn access_http_local_bookkeeping_failure_does_not_claim_usable_access() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    // Test-only fault injection: reduce Account write authority while the peer
-    // is serving the join. Production code never opens the Account backing DB.
-    let account = {
-        let session = user.read().await;
-        Database::open(&client_instance, session.account().id())
-            .await
-            .unwrap()
-            .with_key(session.get_signing_key(&key).unwrap())
-    };
+    // Fault the native record after the network phase starts. Account write
+    // authority is no longer the local-bookkeeping persistence boundary.
+    let native = client_instance.backend().local_engine().unwrap();
+    let record_name = format!("account-state:{}", user.read().await.login_id());
+    let original_bytes = native
+        .local_account_record(&record_name)
+        .await
+        .unwrap()
+        .unwrap();
+    let unavailable = b"injected unavailable local state";
     let (gate, ticket, proxy_task) = gated_peer(&peer).await;
     let request = client.track(&cookie, &ticket, "write");
     let fail_during_network = async {
         tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
             .await
             .unwrap();
-        let tx = account.new_transaction().await.unwrap();
-        tx.get_settings()
-            .unwrap()
-            .set_auth_key(&key, AuthKey::active(Some("read only"), Permission::Read))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
+        assert!(
+            native
+                .compare_exchange_local_account_record(
+                    &record_name,
+                    Some(&original_bytes),
+                    unavailable
+                )
+                .await
+                .unwrap()
+        );
         gate.resume.notify_one();
     };
     let (response, ()) = tokio::join!(request, fail_during_network);
@@ -824,6 +698,20 @@ async fn access_http_local_bookkeeping_failure_does_not_claim_usable_access() {
     );
     assert!(body.contains("Retry request"));
     assert!(!body.contains("Access granted and recorded locally"));
+    assert_eq!(
+        native
+            .local_account_record(&record_name)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(unavailable.as_slice())
+    );
+    assert!(
+        native
+            .compare_exchange_local_account_record(&record_name, Some(unavailable), &original_bytes)
+            .await
+            .unwrap()
+    );
     let session = user.read().await;
     assert_eq!(session.databases().await.unwrap(), before);
     assert!(

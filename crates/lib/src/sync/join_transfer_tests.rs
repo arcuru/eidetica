@@ -33,6 +33,8 @@ enum Fault {
     PutTree,
     PromoteTree,
     AckTree,
+    LocalState,
+    AckLocalState,
 }
 
 /// Only the named write fails; all reads use the real backend, including caches.
@@ -43,6 +45,40 @@ struct FaultBackend {
 
 #[async_trait]
 impl BackendImpl for FaultBackend {
+    async fn local_account_record(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        self.inner.local_account_record(name).await
+    }
+    async fn local_account_names(&self) -> Result<Vec<String>> {
+        self.inner.local_account_names().await
+    }
+    async fn compare_exchange_local_account_record(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool> {
+        let fault = self.fault.lock().unwrap().clone();
+        let target = ID::from_bytes(name);
+        if fault
+            .as_ref()
+            .is_some_and(|(op, id)| matches!(op, Fault::LocalState) && id == &target)
+        {
+            return Err(std::io::Error::other("injected local state persistence failure").into());
+        }
+        let exchanged = self
+            .inner
+            .compare_exchange_local_account_record(name, expected, replacement)
+            .await?;
+        if exchanged
+            && fault
+                .as_ref()
+                .is_some_and(|(op, id)| matches!(op, Fault::AckLocalState) && id == &target)
+        {
+            return Err(std::io::Error::other("injected local state lost acknowledgement").into());
+        }
+        Ok(exchanged)
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -89,6 +125,9 @@ impl BackendImpl for FaultBackend {
         status: VerificationStatus,
     ) -> Result<Vec<ID>> {
         self.inner.get_entries_by_verification_status(status).await
+    }
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        self.inner.non_failed_snapshot(tree).await
     }
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
         self.inner.snapshot(tree).await
@@ -561,18 +600,21 @@ async fn wildcard_database(instance: &Instance) -> Result<Database> {
 #[tokio::test]
 async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result<()> {
     use crate::account::SyncSettings;
-    for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+    for op in [Fault::LocalState, Fault::AckLocalState] {
         let (instance, _sync, fault) = destination(Arc::new(InMemory::new())).await?;
-        let mut user = instance.login_account("client", None).await?;
+        let mut user = instance.login_account("client", "").await?;
         let key = user.get_default_key()?;
         let db = wildcard_database(&instance).await?;
-        *fault.lock().unwrap() = Some((op, user.account().id().clone()));
+        *fault.lock().unwrap() = Some((
+            op,
+            ID::from_bytes(format!("account-state:{}", user.login_id())),
+        ));
         assert!(
             user.track_database(db.root_id(), &key, SyncSettings::disabled())
                 .await
                 .is_err()
         );
-        if matches!(op, Fault::AckTree) {
+        if matches!(op, Fault::AckLocalState) {
             assert_eq!(
                 user.key_mapping(&key, db.root_id())?,
                 Some(crate::auth::SigKey::global(&key)),
@@ -600,7 +642,7 @@ async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result
             user.account().database().snapshot().await?,
             "identical retry appended Account history"
         );
-        let fresh = instance.login_account("client", None).await?;
+        let fresh = instance.login_account("client", "").await?;
         assert_eq!(
             fresh.key_mapping(&key, db.root_id())?,
             user.key_mapping(&key, db.root_id())?
@@ -625,7 +667,7 @@ async fn join_user_rediscovers_legacy_mapping_and_preserves_unrelated_intent() -
     user.map_key(&key, db.root_id(), crate::auth::SigKey::from_pubkey(&key))
         .await?;
     let other = wildcard_database(&instance).await?;
-    let mut another_session = instance.login_account("client", None).await?;
+    let mut another_session = instance.login_account("client", "").await?;
     another_session
         .track_database(
             other.root_id(),
@@ -670,6 +712,7 @@ async fn pending_request(
             requesting_pubkey: key.clone(),
             requesting_key_name: "requester".into(),
             requested_permission: permission,
+            require_direct_key: false,
             timestamp: "2026-10-03T18:00:00Z".into(),
             status: RequestStatus::Pending,
             peer_address: Address::http("unused"),
@@ -684,7 +727,7 @@ async fn pending_request(
 async fn join_approval_reconciles_split_commit_without_regrant() -> Result<()> {
     for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
         let (instance, sync, fault) = destination(Arc::new(InMemory::new())).await?;
-        let mut owner = instance.login_account("client", None).await?;
+        let mut owner = instance.login_account("client", "").await?;
         let owner_key = owner.get_default_key()?;
         let db = owner.create_database(Doc::new(), &owner_key).await?;
         let (_, requester) = generate_keypair();
@@ -739,7 +782,7 @@ async fn join_requester_retry_completes_after_split_approval_commit() -> Result<
 
     for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
         let (instance, sync, fault) = destination(Arc::new(InMemory::new())).await?;
-        let mut owner = instance.login_account("client", None).await?;
+        let mut owner = instance.login_account("client", "").await?;
         let owner_key = owner.get_default_key()?;
         let db = owner.create_database(Doc::new(), &owner_key).await?;
         let tree = db.root_id().clone();
@@ -813,7 +856,7 @@ async fn join_requester_retry_completes_after_split_approval_commit() -> Result<
 async fn join_approval_retry_refuses_observed_reduction_and_revocation() -> Result<()> {
     for revoke in [false, true] {
         let (instance, sync, _) = destination(Arc::new(InMemory::new())).await?;
-        let mut owner = instance.login_account("client", None).await?;
+        let mut owner = instance.login_account("client", "").await?;
         let owner_key = owner.get_default_key()?;
         let db = owner.create_database(Doc::new(), &owner_key).await?;
         let (_, requester) = generate_keypair();
@@ -883,7 +926,7 @@ async fn join_transfer_checks_grant_and_rejects_incremental_send_back() -> Resul
         .is_err(),
         "peer's approved flag substituted for requested authority"
     );
-    let owner = source.login_account("owner", None).await?;
+    let owner = source.login_account("owner", "").await?;
     let db = owner.open_database(&tree).await?;
     db.with_transaction(|tx| {
         let requester = requester.clone();
@@ -929,15 +972,18 @@ async fn join_transfer_checks_grant_and_rejects_incremental_send_back() -> Resul
 #[tokio::test]
 async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Result<()> {
     use crate::{account::SyncSettings, backend::database::Sqlite};
-    for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+    for op in [Fault::LocalState, Fault::AckLocalState] {
         let dir = tempfile::tempdir()?;
         let file = dir.path().join("join.sqlite");
         let (instance, sync, fault) = destination(Arc::new(Sqlite::open(&file).await?)).await?;
-        let mut user = instance.login_account("client", None).await?;
+        let mut user = instance.login_account("client", "").await?;
         let key = user.get_default_key()?;
         let target = wildcard_database(&instance).await?;
         let target_id = target.root_id().clone();
-        *fault.lock().unwrap() = Some((op, user.account().id().clone()));
+        *fault.lock().unwrap() = Some((
+            op,
+            ID::from_bytes(format!("account-state:{}", user.login_id())),
+        ));
         assert!(
             user.track_database(&target_id, &key, SyncSettings::disabled())
                 .await
@@ -949,7 +995,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
         drop(instance);
         drop(fault);
         let instance = Instance::open_backend(Box::new(Sqlite::open(&file).await?)).await?;
-        let mut user = instance.login_account("client", None).await?;
+        let mut user = instance.login_account("client", "").await?;
         user.track_database(&target_id, &key, SyncSettings::disabled())
             .await?;
         let tips = user.account().database().snapshot().await?;
@@ -967,7 +1013,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
             let dir = tempfile::tempdir()?;
             let file = dir.path().join("peer.sqlite");
             let (instance, sync, fault) = destination(Arc::new(Sqlite::open(&file).await?)).await?;
-            let mut owner = instance.login_account("client", None).await?;
+            let mut owner = instance.login_account("client", "").await?;
             let key = owner.get_default_key()?;
             let target = owner.create_database(Doc::new(), &key).await?;
             let tree = target.root_id().clone();
@@ -996,7 +1042,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
             let instance = Instance::open_backend(Box::new(Sqlite::open(&file).await?)).await?;
             let sync = Sync::load(instance.clone(), &sync_id).await?;
             assert_eq!(sync.sync_tree.root_id(), &sync_id);
-            let owner = instance.login_account("client", None).await?;
+            let owner = instance.login_account("client", "").await?;
             owner
                 .approve_bootstrap_request(&sync, &request, &key)
                 .await?;
@@ -1021,7 +1067,7 @@ async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Res
 #[tokio::test]
 async fn join_approval_refuses_removed_key_and_rejection_is_idempotent() -> Result<()> {
     let (instance, sync, _) = destination(Arc::new(InMemory::new())).await?;
-    let mut owner = instance.login_account("client", None).await?;
+    let mut owner = instance.login_account("client", "").await?;
     let key = owner.get_default_key()?;
     let db = owner.create_database(Doc::new(), &key).await?;
     let (_, requester) = generate_keypair();
@@ -1243,7 +1289,7 @@ async fn join_transfer_missing_delegated_history_is_not_complete() -> Result<()>
 #[tokio::test]
 async fn join_concurrent_approval_and_routing_are_idempotent() -> Result<()> {
     let (instance, sync, _) = destination(Arc::new(InMemory::new())).await?;
-    let mut owner = instance.login_account("client", None).await?;
+    let mut owner = instance.login_account("client", "").await?;
     let key = owner.get_default_key()?;
     let db = owner.create_database(Doc::new(), &key).await?;
     let (_, requester) = generate_keypair();

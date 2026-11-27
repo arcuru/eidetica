@@ -117,7 +117,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Nix
-        uses: ./.github/actions/setup-nix
+        uses: $/.github/actions/setup-nix
         id: nix
         with:
           signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}

@@ -1,154 +1,44 @@
-> ✅ **Status: Implemented**
->
-> Height strategies are fully implemented with database-level and per-subtree configuration.
-
 # Height Strategy Design
 
-This document describes the design of configurable height strategies in Eidetica, allowing applications to choose how entry heights are calculated. Heights provide deterministic ordering when merging DAG branches after network splits. Entries are processed in height order, with ties broken by entry hash.
+In a historical Database, **parent IDs determine ancestry; height orders a traversal of that ancestry**. Main-tree traversal sorts Entries by increasing main height. To fold a Store's history, Eidetica orders its contributions by increasing _effective Store height_. In either traversal equal heights are broken by `ID` order (the CID tuple, not the alphabetical order of its printed string). The Store's CRDT determines what merging the ordered contributions means.
 
-## Problem Statement
+## What is stored
 
-Entries in Eidetica form a Merkle-DAG where each entry references its parents. When merging DAG branches after a network split, entries must be processed in a deterministic order—height provides this ordering, with ties broken by entry hash. Different applications have different ordering requirements:
+| Where                             | Meaning                                                                                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `_settings.height_strategy`       | The database's authoring strategy; the default is `Incremental`. Set it with `SettingsStore::set_height_strategy`.                                                  |
+| `_index` registration for a Store | Optional override in `settings.height_strategy`. `Store::set_height_strategy(Some(strategy))` requests an independent height; `None` requests inheritance.          |
+| Main `TreeNode`                   | The calculated height (`0` if the field is omitted).                                                                                                                |
+| Participating `SubTreeNode`       | An explicit height for an independent Store; no height field when inheriting. `Entry::subtree_height(name)` returns the explicit value or this Entry's main height. |
 
-- **Offline-first apps**: Need simple sequential ordering
-- **Time-series data**: Need timestamp-based ordering for accurate event sequencing
-- **Audit logs**: May need independent counters separate from main data
+The setters encode the strategy as JSON in a `Doc` text value. The reader of an old **Entry** does not consult today's `_settings` or `_index` to find its height. See [Settings storage](settings_storage.md) for the boundary between staged and historical settings, and [Subtree index](subtree_index.md) for the registration write.
 
-A one-size-fits-all approach limits the applicability of the database.
+## Calculating a commit
 
-## Goals
+`Transaction::commit` uses the **resulting** database settings, including a strategy change staged in this transaction. This is different from the pre-write settings used to authorize the commit.
 
-1. Allow applications to configure height calculation strategy at the database level
-2. Support per-subtree overrides for mixed-strategy use cases
-3. Keep the common case simple (defaults work for most applications)
+1. For each touched Store with an override, calculate its height from its own effective Store-parent heights. This does not raise the main height. Names beginning with `_` always inherit during height calculation.
+2. For the main height, take the maximum over main-parent heights **and** the effective parent heights of every touched inheriting Store. Inheritance copies the resulting main height; it does not start a new counter.
+3. In each calculation, `Incremental` gives that maximum plus one (zero without parents). `Timestamp` gives the greater of that result and the author's clock in Unix milliseconds. Neither the timestamp strategy nor the optional signed `ts` metadata proves real-time event order across writers. `ts` is not a sort key.
 
-## Non-Goals
+## A fork and two ways to join it
 
-1. Custom height calculation algorithms (only predefined strategies)
-2. Dynamic strategy switching based on content
-3. Per-entry strategy selection
+The integration test `test_store_height_transition_joins_all_effective_parent_heights` constructs this fork with a fixed clock. The database uses `Incremental`. On top of genesis, the first write to `transition` registers the Store in `_index` and sets its override to `Timestamp`. Two transactions opened with `Database::new_transaction_at` at that **same** first write produce sibling Entries. A transaction at a snapshot containing both siblings writes `transition` and changes its override in the same commit.
 
-## Solution Overview
+| Entry                                        | Main parents   | Main height | Effective `transition` height |
+| -------------------------------------------- | -------------- | ----------: | ----------------------------: |
+| First Store write                            | Genesis        |           1 |    Author clock (independent) |
+| Left                                         | First write    |           2 |                          2000 |
+| Right                                        | First write    |           2 |                          5000 |
+| Join, request inheritance                    | Left and right |    **5001** |              5001 (inherited) |
+| Alternatively: join, set `Some(Incremental)` | Left and right |       **3** |            5001 (independent) |
 
-A two-level configuration system:
+`set_height_strategy(None)` requests inheritance for the join being authored. It omits `settings` from the staged registration rather than writing a tombstone. A historical Doc merge preserves omitted children, so a fresh transaction can still read the previous override. Inspect the join's stored height to see what it used; do not treat the setter as a durable reset.
 
-1. **Database-level strategy**: Stored in `_settings`, applies to the main tree and all subtrees by default
-2. **Per-subtree overrides**: Stored in `_index` registry, allows individual subtrees to use independent height tracking
+Neither sibling writes `_settings`, so the join pins the same settings frontier as the siblings, not their IDs. Both joins consume both Store parents. Both must exceed 5000 **in the Store**. Only the inheriting join must carry that jump into the main tree and its later descendants. The siblings' different Store heights do not make one an ancestor of the other, and the larger height does not discard the other tip.
 
-### Height Strategies
+## Verification is not strategy replay
 
-| Strategy      | Calculation                     | Storage                       |
-| ------------- | ------------------------------- | ----------------------------- |
-| `Incremental` | `max(parent_heights) + 1`       | Small integers (0, 1, 2, ...) |
-| `Timestamp`   | `max(timestamp_ms, parent + 1)` | Milliseconds since Unix epoch |
+Local and received Entries must grow strictly along every main-parent edge and along each actual Store-parent edge in effective Store height. Positive gaps are valid: the verifier does not reconstruct the author's clock or require the smallest possible increment. An ordinary Store parent must contribute to the same Store in the same Database and be reachable through main links. Observing another Store write does not require consuming it or exceeding its independent Store height. Empty, nonmaximal and redundant ordinary Store-parent sets can be valid. A `_settings` write, by contrast, must consume the complete settings frontier at its main parents.
 
-### Inheritance Model
-
-<!-- Code block ignored: Diagram showing data structure, not compilable code -->
-
-```text
-Entry
-├── tree.height         ← Database HeightStrategy (from _settings)
-└── subtrees[]
-    └── height          ← None = inherit tree height (not serialized)
-                        ← Some(h) = independent (per _index settings)
-```
-
-Subtree height is `Option<u64>`: `None` means inherit from the tree, `Some(h)` is an independent height. When `None`, the field is omitted from serialization entirely.
-
-## Implementation Details
-
-### Storage Locations
-
-**Database-level strategy** (`_settings`):
-
-```json
-{
-  "height_strategy": "timestamp",
-  "name": "events_db",
-  "auth": { ... }
-}
-```
-
-**Per-subtree settings** (`_index`):
-
-```json
-{
-  "messages": {
-    "type": "docstore:v0",
-    "config": "{}"
-  },
-  "audit_log": {
-    "type": "docstore:v0",
-    "config": "{}",
-    "settings": { "height_strategy": "incremental" }
-  }
-}
-```
-
-### Height Calculation in Transaction.commit()
-
-During commit, heights are calculated as follows:
-
-1. **Tree height**: Use database-level strategy from `_settings`
-2. **Subtree heights**:
-   - System subtrees (`_settings`, `_index`, `_root`): Always inherit (height = None)
-   - User subtrees: Check `_index` for strategy override
-     - Override found: Calculate independent height as `Some(h)`
-     - No override: Leave height as `None` (inherit)
-
-### Entry.subtree_height() Accessor
-
-<!-- Code block ignored: Simplified pseudocode showing accessor logic -->
-
-```rust,ignore
-pub fn subtree_height(&self, name: &str) -> Result<u64> {
-    let subtree = self.find_subtree(name)?;
-    Ok(subtree.height.unwrap_or_else(|| self.height()))
-}
-```
-
-This provides transparent inheritance at read time.
-
-## Alternative Approaches Considered
-
-### Sentinel Value (0 = Inherit)
-
-Use 0 as a sentinel value instead of Option:
-
-<!-- Code block ignored: Illustrative struct showing rejected approach -->
-
-```rust,ignore
-struct SubTreeNode {
-    height: u64,  // 0 means inherit
-}
-```
-
-**Rejected**: Overloads the meaning of 0, preventing independent subtrees from having height 0. Option is semantically clearer.
-
-### Strategy Stored in Each Entry
-
-Store the strategy used alongside the height:
-
-<!-- Code block ignored: Illustrative struct showing rejected approach -->
-
-```rust,ignore
-struct SubTreeNode {
-    height: u64,
-    height_strategy: Option<HeightStrategy>,
-}
-```
-
-**Rejected**: Bloats entry size and complicates serialization. Strategy configuration is a database/subtree property, not an entry property.
-
-### No Per-Subtree Override
-
-Only support database-level strategy:
-
-**Rejected**: Limits use cases. For example, an app with timestamp-ordered messages might want incremental audit logs for simpler debugging.
-
-## Future Considerations
-
-1. **Additional strategies**: Could add `Hybrid` (timestamp with sub-millisecond counter) for high-throughput scenarios
-2. **Strategy versioning**: If strategy semantics change, version identifiers allow migration
-3. **Query optimization**: Height values enable efficient range queries and pagination
+See [Store-parent frontiers](verification.md#store-parent-frontiers) for a main descendant that leaves two Store tips, and [height monotonicity](verification.md#height-monotonicity) for received Entries and the offline procedure for previously verified history. `Incremental` and `Timestamp` are implemented authoring strategies, not a general-purpose custom strategy or a wall-clock query interface.

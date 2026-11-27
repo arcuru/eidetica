@@ -10,8 +10,10 @@ use super::CRDT;
 /// not define Table row lifecycle or resurrection semantics.
 ///
 /// The payload need not implement [`CRDT`], `Default`, or any encoding trait.
-/// Merging requires only `T: Clone`. This type has no built-in [`super::Codec`]
-/// or Serde implementation and does not select a persistence format.
+/// Merging requires only `T: Clone`. Conditional Serde implementations expose
+/// `"NoOp"`, `"Delete"`, or `{"Set": T}` with a structured payload. There is no
+/// built-in [`super::Codec`]; [`super::dag_cbor`] supplies a shared persistence
+/// boundary for new structured formats without encoding each child separately.
 ///
 /// ```
 /// use eidetica::crdt::{CRDT, Lww};
@@ -25,14 +27,17 @@ use super::CRDT;
 /// assert_eq!(before.merge(&Lww::default())?, before);
 /// # Ok::<(), eidetica::Error>(())
 /// ```
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Lww<T> {
     /// Identity operation; leaves the preceding operation unchanged.
     #[default]
+    #[serde(rename = "NoOp")]
     NoOp,
     /// Replace the complete value, without merging the payload.
+    #[serde(rename = "Set")]
     Set(T),
     /// Remove the visible value while retaining the deletion operation.
+    #[serde(rename = "Delete")]
     Delete,
 }
 

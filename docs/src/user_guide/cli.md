@@ -24,7 +24,7 @@ eidetica serve [OPTIONS]
 
 ### `health`
 
-Checks the health of a running Eidetica server by querying its `/health` endpoint.
+Checks the health of a running Eidetica server by querying its `/health` endpoint. This is an HTTP check: it applies to `serve` and the optional web dashboard, not to the socket-only `daemon`, which has no HTTP listener (confirm that the daemon is up by its startup log line printing the socket path, or by connecting a socket client).
 
 ```bash
 eidetica health [URL] [OPTIONS]
@@ -70,13 +70,13 @@ Initialises a fresh Eidetica instance on the chosen backend with an initial admi
 eidetica daemon [BACKEND OPTIONS] init --username <NAME> [--password <PASS> | --passwordless]
 ```
 
-| Option           | Default | Env Var                   | Description                                           |
-| ---------------- | ------- | ------------------------- | ----------------------------------------------------- |
-| `--username`     | —       | —                         | **Required.** Initial admin username. No default.     |
-| `--password`     | —       | `EIDETICA_ADMIN_PASSWORD` | Optional. Prompted twice on stdin if not provided.    |
-| `--passwordless` | off     | —                         | Skip the password (mutually exclusive with the flag). |
+| Option           | Default | Env Var                   | Description                                                        |
+| ---------------- | ------- | ------------------------- | ------------------------------------------------------------------ |
+| `--username`     | —       | —                         | **Required.** Initial admin username. No default.                  |
+| `--password`     | —       | `EIDETICA_ADMIN_PASSWORD` | Optional. Prompted twice on stdin if not provided.                 |
+| `--passwordless` | off     | —                         | Use an empty password (same encrypted storage as `--password ""`). |
 
-`--username` has no default: operators must spell it out so no static credential ships by accident. `--passwordless` is intentionally a separate opt-in (rather than just leaving `--password` unset) — pick it only for embedded or single-user development; production deployments should set a password.
+`--username` has no default: operators must spell it out so no static credential ships by accident. `--passwordless` is shorthand for `--password ""`, not a different storage mode or a required insecure-use acknowledgement. The explicit flag, password environment variable and interactive prompt all accept an empty string; leaving the option unset prompts rather than silently choosing a password. Empty and nonempty strings use the same encrypted bundle and KDF, but empty-string wrapping provides no meaningful confidentiality against a bundle holder.
 
 Examples:
 
@@ -91,8 +91,8 @@ EIDETICA_ADMIN_PASSWORD=… eidetica daemon --data-dir /var/lib/eidetica init --
 eidetica daemon --data-dir ~/.local/share/eidetica init --username me --passwordless
 ```
 
-Backend options (`--backend`, `--data-dir`, `--postgres-url`,
-`--cache-bytes`, `--cache-namespaces`) go before the `init` subcommand and are shared with `daemon` (see below).
+Backend options (`--backend`, `--data-dir`, `--postgres-url`, `--cache-backend`,
+`--cache-dir`, `--cache-bytes`, `--cache-namespaces`) go before the `init` subcommand and are shared with `daemon` (see below).
 
 ### `daemon`
 
@@ -111,11 +111,36 @@ eidetica daemon [OPTIONS]
 | `--backend`        | `-b`  | `sqlite`      | `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
 | `--data-dir`       | `-d`  | current dir   | `EIDETICA_DATA_DIR`       | Data directory for storage files                                |
 | `--postgres-url`   |       | —             | `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL (required when backend is `postgres`) |
+| `--cache-backend`  |       | primary's own | `EIDETICA_CACHE_BACKEND`  | Derived-cache engine (`sqlite`, `inmemory`)                     |
+
+`--cache-backend` selects where disposable Derived state lives, independently of
+`--backend`. Omitted, each backend keeps its own cache: a SQLite file for `sqlite`,
+PostgreSQL tables for `postgres`, memory for `inmemory`. `--cache-backend sqlite`
+with `--backend postgres` uses the instance-key SQLite file in the cache directory
+described below; `--cache-backend inmemory` keeps Derived state in process memory
+for `sqlite` or `postgres`. A split primary retains no Derived state of its own.
+PostgreSQL reclaims Derived rows from an earlier configuration on open; a SQLite
+primary leaves its earlier cache file untouched, so remove it offline if unwanted.
+`--backend inmemory --cache-backend sqlite` is refused: a persistent cache must
+not outlive an in-memory primary. Use the same selection for every command opening the backend.
+See [Separate cache engine](concepts/backends.md#separate-cache-engine).
+
+SQLite commands also accept `--cache-dir` (`EIDETICA_CACHE_DIR`), an application
+directory rather than a SQLite filename. The default is the native platform
+cache location, with an `eidetica` subdirectory. Each initialized instance uses
+its existing device public key as a filesystem-safe filename. Initialization uses
+memory until complete metadata exists; the next open creates its disk cache.
+Use the same override for `daemon init`, `daemon`, `serve`, `info`, `db list`,
+reset and repair. It applies to a SQLite primary's own cache and to
+`--cache-backend sqlite`; other configurations do not use it.
+See [SQLite cache storage](concepts/backends.md#disposable-sqlite-cache) for exact
+platform defaults, permissions, sensitive contents and offline cleanup.
 
 All commands opening a backend also accept `--cache-bytes`
 (`EIDETICA_CACHE_BYTES`) and `--cache-namespaces`
-(`EIDETICA_CACHE_NAMESPACES`, default `1024`). The byte defaults are `268435456`
-for InMemory and `4294967296` for file-backed SQL. These count live derived
+(`EIDETICA_CACHE_NAMESPACES`, default `1024`). They bound the selected cache
+engine. The byte defaults are `268435456` for an in-memory cache and `4294967296`
+for a file-backed SQL cache. These count live derived
 record key/value payload, not total memory or physical disk use. Zero disables
 retention; oversized derived materializations use history instead. The daemon
 installs these bounds before startup trim; remote clients cannot override them.
@@ -162,16 +187,39 @@ The `--json` flag works with `info` and `db list`.
 | `postgres` | PostgreSQL database             | Specified by `--postgres-url`     |
 | `inmemory` | In-memory with JSON persistence | `eidetica.json` in data directory |
 
+### Disposable device-key store trial
+
+On Unix, `--device-key-dir` (or `EIDETICA_DEVICE_KEY_DIR`)
+keeps the SQLite instance's device signing key in a separate file. Leave the option
+unset for an existing instance. This is an opt-in trial for fresh, disposable data:
+
+```bash
+trial=$(mktemp -d)
+install -d -m 0700 "$trial/credentials"
+export EIDETICA_DATA_DIR="$trial/data"
+export EIDETICA_CACHE_DIR="$trial/cache"
+export EIDETICA_DEVICE_KEY_DIR="$trial/credentials"
+eidetica daemon --backend sqlite init --username trial --passwordless
+eidetica daemon --backend sqlite --socket "$trial/service.sock"
+```
+
+Use the same device-key directory on each start and when running `info` or
+`db list`. The daemon refuses a missing, invalid or mismatched key. Do not put the
+credential file in the cache directory or delete it to retry startup. See
+[Device signing key trial](../internal/account_credentials.md#device-signing-key-trial)
+for scope and recovery limits.
+
 ## Environment Variables
 
-| Variable                | Description                                        | Default           |
-| ----------------------- | -------------------------------------------------- | ----------------- |
-| `EIDETICA_SOCKET`       | Unix socket path for daemon mode (`daemon`)        | auto-detected     |
-| `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `5942`            |
-| `EIDETICA_HOST`         | Bind address (`serve`)                             | `0.0.0.0`         |
-| `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`) | `sqlite`          |
-| `EIDETICA_DATA_DIR`     | Directory for database and data files              | current directory |
-| `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL                          | —                 |
+| Variable                  | Description                                                 | Default           |
+| ------------------------- | ----------------------------------------------------------- | ----------------- |
+| `EIDETICA_SOCKET`         | Unix socket path for daemon mode (`daemon`)                 | auto-detected     |
+| `EIDETICA_PORT`           | Port for the HTTP server (`serve`)                          | `5942`            |
+| `EIDETICA_HOST`           | Bind address (`serve`)                                      | `0.0.0.0`         |
+| `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)          | `sqlite`          |
+| `EIDETICA_DATA_DIR`       | Directory for database and data files                       | current directory |
+| `EIDETICA_DEVICE_KEY_DIR` | Separate device-key directory for a disposable SQLite trial | unset             |
+| `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL                                   | —                 |
 
 Command-line flags take precedence over environment variables.
 
@@ -201,8 +249,8 @@ eidetica daemon --socket "$XDG_RUNTIME_DIR/eidetica/service.sock"
 
 ### `db reset-local-verification` (offline trust reset)
 
-**Before upgrading an existing instance to new delegated-authorization verification
-rules**, stop the daemon/server and all writers and readers, back up the database,
+**Before adopting changed Store-parent, height or authorization verification
+rules on retained history**, stop the daemon/server and all writers and readers, back up the database,
 then run the reset with the same backend configuration as the instance:
 
 ```bash
@@ -212,7 +260,9 @@ eidetica db reset-local-verification --backend sqlite --data-dir /var/lib/eideti
 ```
 
 The command does not run during startup or schema migration. **Skipping it can
-leave old `Verified` labels trusted under the new rules.** It resets _all_
+leave old `Verified` labels trusted under the new rules, or retain `Failed`
+labels from a superseded ordinary-Store exact-frontier rule.** The reset is
+explicit and operator-managed, not an automatic trust-policy change. It resets _all_
 local statuses (`Verified` and `Failed` included) to `Unverified`, clears the
 retained Verified frontier in the same step, discards
 derived and incomplete Store-state namespaces, and keeps every immutable Entry
@@ -227,7 +277,12 @@ command; do not trust the old status labels. An in-memory persistence file
 must exist and parse successfully; a missing or corrupt file is never treated
 as an empty instance by this command.
 
-SQLite and PostgreSQL commit status and cache changes in one transaction.
+SQLite discards its separate disposable cache first, then commits status and
+retained-frontier changes together in H. A failure can leave a cold cache even
+when labels roll back; leave the service stopped and retry. PostgreSQL retains
+its single-transaction status/cache reset. With `--cache-backend`, the selected
+cache is discarded first, then the primary resets; the same cold-cache outcome
+applies on failure.
 The persisted in-memory backend writes a replacement JSON snapshot by atomic
 rename on POSIX; if writing fails before rename, the old file remains in
 place. Run the command with no other process or API user of the backend:
@@ -266,11 +321,13 @@ file or treats corrupt JSON as an empty instance.
 #### Storage compatibility and older candidate data
 
 SQL schema and InMemory persistence versions are independent internal integer
-format counters, not release versions or stability levels. SQL currently uses `3`
-and InMemory uses `2`. Mainline SQL schema `0` migrates directly to `3`; unversioned or explicit
-`_v: 0` InMemory files reconstruct retained state on load and write `2` on next save.
-Migration reuses conservative repair, not cryptographic re-verification; SQL schema,
-version, and label/tip changes commit together. Clean current-format opens load
+format counters, not release versions or stability levels. SQL currently uses `5`
+and InMemory uses `4`. Mainline SQL `0` migrates directly to `5`; unversioned or
+explicit `_v: 0` InMemory files reconstruct retained state on load and write `4`
+on next save. SQL `4` and JSON `3` mainline upgrades preserve account records and
+trust state, reconstructing only the non-Failed frontier (and InMemory child counts).
+The v0 upgrade reuses conservative repair, not cryptographic re-verification.
+SQL schema, version and any label/tip changes commit together. Clean current-format opens load
 persisted tips without a history scan. See the canonical
 [supported migration matrix](../design/verification.md#persistence-restart-and-forward-migration).
 The unreleased version-1 prefix-tracking format is **unsupported** and refused before
@@ -293,23 +350,24 @@ in-place version-1 conversion or automatic deletion is provided.
 
 #### Upgrading a verification-only version-2 database
 
-Existing tips-only version-2 SQL databases migrate atomically to **version 3**,
-adding `size_bytes` and `last_access_tick` when absent. Record sizes are backfilled
-once; existing valid durable ticks are preserved. This migration preserves Entries,
-statuses, retained Verified tips and authoritative records without verification
-repair. Only the supported v0 transition repairs verification closure. Ordinary
-v3 open does not backfill or repair. InMemory version-2 files are unchanged;
-derived records and recency remain ephemeral.
+Existing tips-only version-2 SQL databases migrate atomically to **version 5**,
+adding `size_bytes` and `last_access_tick` when absent and backfilling record
+sizes once. Version `3` adds empty native local-account storage without copying or
+deleting legacy keys. Versions `2`, `3` and `4` all add non-Failed tips without
+changing trust labels or Verified tips. Only the v0 transition repairs verification
+closure. Derived InMemory records and recency remain ephemeral.
 
 Stop all users of the backend and retain a consistent offline backup before
 upgrading. Snapshot digest keys miss old-key cache rows and rebuild from immutable
-Entries; old keys are never relabelled. Exclusive startup reclaims abandoned and
+Entries; old keys are never relabelled. SQLite moves only Derived storage to a
+separate disposable file and discards its legacy in-history cache rows. Exclusive startup reclaims abandoned and
 retired derived generations, seeds recency and enforces the configured budget
 before exposing storage. This does not require a trust reset.
 
-Pinned older version-2 constructors refuse the version-3 marker. Binary rollback
+Older SQL constructors refuse the version-5 marker; older InMemory readers refuse
+version-4 files. Binary rollback
 requires restoring a compatible pre-upgrade backup in a separate location, not
-lowering the marker or opening the upgraded database with old software. Malformed,
+lowering the marker or opening an unsupported layout with old software. Malformed,
 newer and unsupported version-1/prefix layouts are refused. No rollout or deployed
 client/server compatibility inventory is implied by these migration checks.
 

@@ -139,6 +139,9 @@ impl<'u> DatabaseBuilder<'u> {
     /// Resolve the key, run every store initializer inside a single genesis
     /// transaction, commit, then perform the account-side tracking write.
     /// Returns the new database and the public key it was created with.
+    /// If setup fails after genesis, [`crate::Error::DatabaseCreation`] retains
+    /// the committed root and underlying failure. See
+    /// [`AccountSession::create_database_with_init`] for the creation contract.
     pub async fn build(self) -> Result<(Database, PublicKey)> {
         let DatabaseBuilder {
             user,

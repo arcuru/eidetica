@@ -13,3 +13,13 @@ mod multi_account_tests;
 mod security_tests;
 
 mod root_reference_tests;
+
+mod credential_bundle_tests;
+
+mod signer_tests;
+
+mod local_state_tests;
+
+mod identity_tests;
+
+mod linked_accounts_tests;

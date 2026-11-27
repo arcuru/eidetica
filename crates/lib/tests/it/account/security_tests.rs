@@ -12,24 +12,18 @@ use eidetica::{Error, account::AccountError, auth::crypto::generate_keypair};
 // ===== PASSWORD EDGE CASES =====
 
 #[tokio::test]
-async fn test_empty_password_different_from_no_password() {
+async fn test_empty_password_is_an_ordinary_password() {
     let instance = setup_instance().await;
     let username = "alice";
 
-    // Create user with empty password (different from passwordless)
-    crate::helpers::create_account(&instance, username, Some(""))
+    crate::helpers::create_account(&instance, username, "")
         .await
         .expect("Create with empty password");
-
-    // Missing credentials are PasswordRequired locally, InvalidPassword over service.
-    let result = instance.login_account(username, None).await;
-    assert!(
-        matches!(result.expect_err("Missing password must fail"), Error::Account(e) if matches!(e.as_ref(), AccountError::PasswordRequired { .. } | AccountError::InvalidPassword))
-    );
+    assert!(instance.login_account(username, "not empty").await.is_err());
 
     // Should succeed with empty password
     let _user = instance
-        .login_account(username, Some(""))
+        .login_account(username, "")
         .await
         .expect("Login with empty password");
 }
@@ -38,15 +32,15 @@ async fn test_empty_password_different_from_no_password() {
 async fn test_case_sensitive_passwords() {
     let username = "bob";
     let password = "MyPassword";
-    let (instance, _) = setup_local_instance_with_user(username, Some(password)).await;
+    let (instance, _) = setup_local_instance_with_user(username, password).await;
 
     // Wrong case should fail
-    let result = instance.login_account(username, Some("mypassword")).await;
+    let result = instance.login_account(username, "mypassword").await;
     assert!(
         matches!(result.expect_err("Wrong-case password must fail"), Error::Account(e) if matches!(e.as_ref(), AccountError::DecryptionFailed { .. }))
     );
 
-    let result = instance.login_account(username, Some("MYPASSWORD")).await;
+    let result = instance.login_account(username, "MYPASSWORD").await;
     assert!(
         matches!(result.expect_err("Wrong-case password must fail"), Error::Account(e) if matches!(e.as_ref(), AccountError::DecryptionFailed { .. }))
     );
@@ -56,27 +50,27 @@ async fn test_case_sensitive_passwords() {
 async fn test_special_characters_in_password() {
     let username = "alice";
     let password = "p@ssw0rd!#$%^&*()";
-    let (instance, _) = setup_instance_with_user(username, Some(password)).await;
+    let (instance, _) = setup_instance_with_user(username, password).await;
 
-    let _user = login_account(&instance, username, Some(password)).await;
+    let _user = login_account(&instance, username, password).await;
 }
 
 #[tokio::test]
 async fn test_unicode_in_password() {
     let username = "alice";
     let password = "密码🔒パスワード";
-    let (instance, _) = setup_instance_with_user(username, Some(password)).await;
+    let (instance, _) = setup_instance_with_user(username, password).await;
 
-    let _user = login_account(&instance, username, Some(password)).await;
+    let _user = login_account(&instance, username, password).await;
 }
 
 #[tokio::test]
 async fn test_long_password() {
     let username = "alice";
     let password = "a".repeat(1000); // Very long password
-    let (instance, _) = setup_instance_with_user(username, Some(&password)).await;
+    let (instance, _) = setup_instance_with_user(username, &password).await;
 
-    let _user = login_account(&instance, username, Some(&password)).await;
+    let _user = login_account(&instance, username, &password).await;
 }
 
 // ===== KEY ISOLATION AND UNIQUENESS =====
@@ -84,11 +78,11 @@ async fn test_long_password() {
 #[tokio::test]
 async fn test_key_ids_are_unique_per_user() {
     let (instance, _) =
-        setup_local_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
+        setup_local_instance_with_users(&[("alice", ""), ("bob", ""), ("charlie", "")]).await;
 
-    let alice = login_account(&instance, "alice", None).await;
-    let bob = login_account(&instance, "bob", None).await;
-    let charlie = login_account(&instance, "charlie", None).await;
+    let alice = login_account(&instance, "alice", "").await;
+    let bob = login_account(&instance, "bob", "").await;
+    let charlie = login_account(&instance, "charlie", "").await;
 
     let alice_keys = alice.list_keys().expect("Alice keys");
     let bob_keys = bob.list_keys().expect("Bob keys");
@@ -149,8 +143,8 @@ async fn test_user_list_keys_only_shows_own_keys() {
 
 #[tokio::test]
 async fn test_generated_keys_are_unique() {
-    let (instance, username) = setup_instance_with_user("alice", None).await;
-    let mut user = login_account(&instance, &username, None).await;
+    let (instance, username) = setup_instance_with_user("alice", "").await;
+    let mut user = login_account(&instance, &username, "").await;
 
     // Generate multiple keys
     let key1 = add_user_key(&mut user, None).await;
@@ -183,8 +177,8 @@ async fn test_keys_from_different_users_are_unique() {
 
 #[tokio::test]
 async fn test_invalid_key_id_fails() {
-    let (instance, username) = setup_instance_with_user("alice", None).await;
-    let user = login_account(&instance, &username, None).await;
+    let (instance, username) = setup_instance_with_user("alice", "").await;
+    let user = login_account(&instance, &username, "").await;
 
     let (_, fake_key) = generate_keypair();
     let result = user.get_signing_key(&fake_key);
@@ -232,15 +226,15 @@ async fn test_database_access_requires_key() {
 
 #[tokio::test]
 async fn test_multiple_sessions_see_persisted_changes() {
-    let (instance, username) = setup_local_instance_with_user("alice", None).await;
+    let (instance, username) = setup_local_instance_with_user("alice", "").await;
 
     // Session 1: Add a key
-    let mut user1 = login_account(&instance, &username, None).await;
+    let mut user1 = login_account(&instance, &username, "").await;
     let key1 = add_user_key(&mut user1, Some("Key from session 1")).await;
     user1.logout().expect("Logout session 1");
 
     // Session 2: Should see the key that was persisted
-    let user2 = login_account(&instance, &username, None).await;
+    let user2 = login_account(&instance, &username, "").await;
     let user2_keys = user2.list_keys().expect("User2 keys");
 
     assert!(

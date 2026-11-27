@@ -60,7 +60,7 @@ Here's a simple example:
 }
 ```
 
-**Note**: This example uses a passwordless user for simplicity, which is perfect for embedded applications and CLI tools. For multi-user scenarios, create password-protected users with `NewAccount::with_password("alice", "pwd")` instead.
+**Note**: `NewAccount::passwordless("alice")` is sugar for `NewAccount::with_password("alice", "")`. All credentials use the encrypted bundle format, but an empty password provides no meaningful confidentiality against a bundle holder. Use a nonempty password when confidentiality is needed.
 
 The URL passed to [`Instance::connect_or_create`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.connect_or_create) selects the backend. Some other common forms:
 
@@ -88,7 +88,7 @@ async fn main() -> eidetica::Result<()> {
 
     let mut user = match maybe_user {
         Some(u) => u,
-        None => instance.login_account("alice", None).await?,
+        None => instance.login_account("alice", "").await?,
     };
     // ... all changes are automatically persisted to my_data.db
 
@@ -107,7 +107,7 @@ use eidetica::Instance;
 async fn main() -> eidetica::Result<()> {
     // Strict load — errors if the database isn't initialised yet.
     let instance = Instance::connect("sqlite://./my_data.db").await?;
-    let user = instance.login_account("alice", None).await?;
+    let user = instance.login_account("alice", "").await?;
     // ... data persists across restarts
 
     Ok(())
@@ -125,25 +125,25 @@ All database and key operations happen through an AccountSession after login. Th
 
 - **Clear separation**: Infrastructure management vs. contextual operations
 - **Strong isolation**: Each user has separate keys and preferences
-- **Flexible authentication**: Users can have passwords or not (passwordless mode)
+- **Uniform credential storage**: Every password string, including empty, uses the same authenticated encrypted bundle
 
 **Passwordless Users** (embedded/single-user apps):
 
 ```rust,ignore
-let admin = instance.login_account("admin", None).await?;
+let admin = instance.login_account("admin", "").await?;
 admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-let user = instance.login_account("alice", None).await?;
+let user = instance.login_account("alice", "").await?;
 ```
 
 **Password-Protected Users** (multi-user apps):
 
 ```rust,ignore
-let admin = instance.login_account("admin", None).await?;
+let admin = instance.login_account("admin", "").await?;
 admin.admin().await?.create_account(eidetica::NewAccount::with_password("bob", "password123")).await?;
-let user = instance.login_account("bob", Some("password123")).await?;
+let user = instance.login_account("bob", "password123").await?;
 ```
 
-The downside of password protection is a slow login. `instance.login_account` needs to verify the password and decrypt keys, which by design is a relatively slow operation.
+Every login, including an empty-password login, derives the wrapping key with Argon2id and decrypts the credential bundle. Signing uses the already unlocked keys, without repeating password entry or derivation.
 
 ## Working with Data
 

@@ -5,6 +5,9 @@ use crate::entry::ID;
 
 #[derive(Error, Debug)]
 pub enum AccountError {
+    #[error("Invalid installation-local account state")]
+    InvalidLocalState,
+
     #[error("Account not found: {username}")]
     AccountNotFound { username: String },
 
@@ -15,9 +18,6 @@ pub enum AccountError {
         "Multiple accounts detected with username '{username}' ({count} found). This indicates a race condition during account creation. Manual intervention required."
     )]
     DuplicateAccountsDetected { username: String, count: usize },
-
-    #[error("Invalid password")]
-    InvalidPassword,
 
     #[error("Key not found: {key_id}")]
     KeyNotFound { key_id: String },
@@ -75,9 +75,6 @@ pub enum AccountError {
     )]
     DatabaseAccessPending { database_id: ID },
 
-    #[error("Password required for operation: {operation}")]
-    PasswordRequired { operation: String },
-
     #[error("Invalid key format: {reason}")]
     InvalidKeyFormat { reason: String },
 
@@ -86,6 +83,32 @@ pub enum AccountError {
 
     #[error("Duplicate store name in DatabaseBuilder: {name}")]
     DuplicateBuilderStore { name: String },
+    #[error("Identity already exists: {name}")]
+    IdentityAlreadyExists { name: String },
+
+    #[error("Identity not found: {name}")]
+    IdentityNotFound { name: String },
+
+    #[error("Account reference already exists: {name}")]
+    AccountLinkAlreadyExists { name: String },
+
+    #[error("Owned-app {step} failed: {source}")]
+    OwnedAppSetup {
+        step: &'static str,
+        source: Box<crate::Error>,
+    },
+
+    #[error("Identity registration conflicts with the tracked root, key, or permission: {name}")]
+    IdentityRegistrationConflict { name: String },
+
+    #[error(
+        "Identity registration failed for {name}: {registration}; local cleanup also failed: {cleanup}"
+    )]
+    IdentityRegistrationCleanupFailed {
+        name: String,
+        registration: Box<crate::Error>,
+        cleanup: Box<crate::Error>,
+    },
 }
 
 impl AccountError {
@@ -97,6 +120,7 @@ impl AccountError {
                 | AccountError::KeyNotFound { .. }
                 | AccountError::DatabaseNotTracked { .. }
                 | AccountError::DatabaseNotFoundByName { .. }
+                | AccountError::IdentityNotFound { .. }
         )
     }
 }

@@ -140,6 +140,79 @@ before its parent. The receiver stores it regardless, and tip reconciliation
 completes once the parent arrives. That order-independence (proven by the delivery
 fuzzer) is exactly what lets arbitrarily-late, retry-driven delivery still land.
 
+## Run a seeded workload by hand
+
+`runtime-test` is a developer-only Cargo example, not a test in the Cargo or
+Nix CI suites. It needs the `testing`, `sqlite`, and `service` features, not a
+VM or external services. In the dev shell, build it once and then run it from
+the repo root:
+
+```bash
+cargo build --locked -p eidetica --features testing --example runtime-test
+# Workload, seed, and write count; GNU timeout caps runtime, not compilation.
+timeout --signal=KILL 30s ./target/debug/examples/runtime-test interleaved-sync 42 12
+```
+
+`interleaved-sync` writes one distinct key per step across two in-memory peers.
+The seed chooses the writer and whether to exchange before each write after
+the first. The work bound is 1–1000 writes and at most as many exchanges,
+including the final one. The runner checks that both peers agree on tips
+and have every entry the workload committed.
+
+The runner logs its inputs and each operation to stderr before executing it.
+Save that trace and the command on failure. Rebuild at the same revision and
+use the same workload, seed, step count, timeout, and flags to replay. The
+seed reproduces the operation order, not the signing keys, entry IDs, or
+wall-clock timing. A timeout can truncate the trace at a different point on
+another machine.
+
+To try replay without a product bug, omit the final exchange using the
+example's test-only flag. Both invocations below should fail the tip agreement
+check. Removing the flag should pass.
+
+```bash
+timeout --signal=KILL 30s ./target/debug/examples/runtime-test interleaved-sync 42 12 --skip-final-exchange 2>failure.log
+timeout --signal=KILL 30s ./target/debug/examples/runtime-test interleaved-sync 42 12 --skip-final-exchange 2>replay.log
+```
+
+### Daemon restart over SQLite
+
+`daemon-restart` runs the service daemon as a child process of the runner. The
+child is the runner binary itself, serving a SQLite file through
+`ServiceServer` on a Unix socket. It is not the `eidetica daemon` command and
+opens no sync transport. Both files live in a fresh private temporary
+directory, so concurrent runs share no state or endpoint.
+
+```bash
+timeout --signal=KILL 60s ./target/debug/examples/runtime-test daemon-restart 42 12
+```
+
+The workload connects with `Instance::connect`, creates one database, and
+writes one distinct key per step. Before some steps it reads back an earlier
+key. The seed chooses those reads, the restart step, and a delay of 0–50 ms.
+At the restart step the runner starts that step's write, sends the daemon
+SIGKILL after the delay, and starts a new daemon on the same file. It checks
+every write whose commit returned before the kill, then writes the remaining
+steps. STEPS is 2–1000, so at least one write follows the restart, and a
+final check reads back every acknowledged write.
+
+A write that was in flight when the daemon died is unacknowledged. The trace
+says whether it reached storage, and either result passes. Whether that write
+is acknowledged before the kill depends on OS scheduling, so the same seed can
+take either branch. SIGKILL tests process crashes, not power loss: data in
+the OS page cache survives. Each client operation and daemon start has a
+10-second limit. The daemon exits when the runner exits, even under SIGKILL,
+but then the temporary directory remains.
+
+To see a durability failure, the test-only flag kills the daemon after setup,
+copies its storage, and restarts from that copy at the fault. The check then
+reports every acknowledged write as missing:
+
+```bash
+timeout --signal=KILL 60s ./target/debug/examples/runtime-test daemon-restart 42 12 --restart-from-setup-snapshot 2>failure.log
+timeout --signal=KILL 60s ./target/debug/examples/runtime-test daemon-restart 42 12 --restart-from-setup-snapshot 2>replay.log
+```
+
 ## Where the tests live
 
 `tests/it/sync/`: `n_peer_convergence_tests`, `partition_heal_tests`,

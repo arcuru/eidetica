@@ -21,24 +21,21 @@ use eidetica::{
 
 #[tokio::test]
 async fn test_independent_users_coexist() {
-    let (instance, _) = setup_local_instance_with_users(&[
-        ("alice", None),
-        ("bob", Some("bob_pass")),
-        ("charlie", None),
-    ])
-    .await;
+    let (instance, _) =
+        setup_local_instance_with_users(&[("alice", ""), ("bob", "bob_pass"), ("charlie", "")])
+            .await;
 
     // All users login and create databases
     let mut alice = instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Alice login");
     let mut bob = instance
-        .login_account("bob", Some("bob_pass"))
+        .login_account("bob", "bob_pass")
         .await
         .expect("Bob login");
     let mut charlie = instance
-        .login_account("charlie", None)
+        .login_account("charlie", "")
         .await
         .expect("Charlie login");
 
@@ -96,11 +93,11 @@ async fn test_independent_users_coexist() {
 
 #[tokio::test]
 async fn test_multi_device_key_management_and_database_access() {
-    let (instance, username) = setup_local_instance_with_user("alice", None).await;
+    let (instance, username) = setup_local_instance_with_user("alice", "").await;
 
     // Session 1: Desktop - Create user's first database with default key
     let mut user1 = instance
-        .login_account(&username, None)
+        .login_account(&username, "")
         .await
         .expect("Desktop login");
     let default_key = user1.get_default_key().expect("Get default key");
@@ -120,7 +117,7 @@ async fn test_multi_device_key_management_and_database_access() {
 
     // Session 2: Laptop - AccountSession adds laptop key and creates another database
     let mut user2 = instance
-        .login_account(&username, None)
+        .login_account(&username, "")
         .await
         .expect("Laptop login");
     let laptop_key = add_user_key(&mut user2, Some("Laptop")).await;
@@ -154,7 +151,7 @@ async fn test_multi_device_key_management_and_database_access() {
 
     // Session 3: Phone - AccountSession adds phone key and verifies access to both databases
     let mut user3 = instance
-        .login_account(&username, None)
+        .login_account(&username, "")
         .await
         .expect("Phone login");
     let _phone_key = add_user_key(&mut user3, Some("Phone")).await;
@@ -181,19 +178,16 @@ async fn test_multi_device_key_management_and_database_access() {
 #[tokio::test]
 async fn test_team_scenario_multiple_users_own_databases() {
     let (instance, _) =
-        setup_local_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
+        setup_local_instance_with_users(&[("alice", ""), ("bob", ""), ("charlie", "")]).await;
 
     // Each team member creates their own project database
     let mut alice = instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Alice login");
-    let mut bob = instance
-        .login_account("bob", None)
-        .await
-        .expect("Bob login");
+    let mut bob = instance.login_account("bob", "").await.expect("Bob login");
     let mut charlie = instance
-        .login_account("charlie", None)
+        .login_account("charlie", "")
         .await
         .expect("Charlie login");
 
@@ -261,55 +255,63 @@ async fn test_team_scenario_multiple_users_own_databases() {
     assert_eq!(charlie_store.get("progress").await.expect("Read"), 90);
 }
 
+// Shared write phases; permission discovery, key mapping and post-commit reads
+// stay in each scenario so same-instance access and transport sync remain distinct.
+async fn initialize_team_workspace(alice_db: &Database) {
+    // Add global Write permission (signing key is already Admin(0))
+    set_global_auth_key(alice_db, AuthKey::active(None, Permission::Write(10))).await;
+
+    // Alice writes initial data
+    let tx = alice_db.new_transaction().await.expect("Alice transaction");
+    let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
+    store
+        .set("project", "Eidetica")
+        .await
+        .expect("Write project");
+    store
+        .set("status", "Alice started the workspace")
+        .await
+        .expect("Write status");
+    tx.commit().await.expect("Alice commits");
+}
+
+async fn contribute_as_bob(bob_db: &Database) {
+    let tx = bob_db
+        .new_transaction()
+        .await
+        .expect("Bob write transaction");
+    let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
+    store
+        .set("contributor", "Bob")
+        .await
+        .expect("Write contributor");
+    store
+        .set("status", "Bob joined and contributed")
+        .await
+        .expect("Update status");
+    tx.commit().await.expect("Bob commits changes");
+}
+
 // ===== GLOBAL PERMISSION COLLABORATIVE DATABASE SCENARIOS =====
 
 #[tokio::test]
 async fn test_collaborative_database_with_global_permissions() {
-    println!("\n🧪 TEST: End-to-end collaborative database with global Write permissions");
-
     // Setup two users on the same instance
     let alice_name = "alice";
     let bob_name = "bob";
-    let (instance, _) =
-        setup_local_instance_with_users(&[(alice_name, None), (bob_name, None)]).await;
+    let (instance, _) = setup_local_instance_with_users(&[(alice_name, ""), (bob_name, "")]).await;
 
     // Alice logs in and creates a database with global Write(10) permission
-    let mut alice = login_account(&instance, alice_name, None).await;
-    let alice_key = alice.get_default_key().expect("Alice get default key");
+    let mut alice = login_account(&instance, alice_name, "").await;
 
-    let mut alice_db_settings = Doc::new();
-    alice_db_settings.set("name", "Team Workspace");
-
-    // Create the new database with alice_key as the owner
-    let alice_db = alice
-        .create_database(alice_db_settings, &alice_key)
-        .await
-        .expect("Alice creates database");
+    let alice_db = create_named_database(&mut alice, "Team Workspace").await;
     let db_id = alice_db.root_id().clone();
-
-    // Add global Write permission (signing key is already Admin(0))
-    set_global_auth_key(&alice_db, AuthKey::active(None, Permission::Write(10))).await;
-
-    // Alice writes initial data
-    {
-        let tx = alice_db.new_transaction().await.expect("Alice transaction");
-        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
-        store
-            .set("project", "Eidetica")
-            .await
-            .expect("Write project");
-        store
-            .set("status", "Alice started the workspace")
-            .await
-            .expect("Write status");
-        tx.commit().await.expect("Alice commits");
-    }
-    println!("✅ Alice created database with global Write(10) permission and added initial data");
+    initialize_team_workspace(&alice_db).await;
 
     alice.logout().expect("Alice logout");
 
     // Bob logs in and discovers he can access the database
-    let mut bob = login_account(&instance, bob_name, None).await;
+    let mut bob = login_account(&instance, bob_name, "").await;
     let bob_key = bob.get_default_key().expect("Bob get default key");
 
     // Bob discovers available SigKeys for his public key
@@ -328,18 +330,15 @@ async fn test_collaborative_database_with_global_permissions() {
         &Permission::Write(10),
         "Should have Write(10) permission"
     );
-    println!("✅ Bob discovered global permission with Write(10)");
 
     // Bob adds the database key mapping to his user preferences using the discovered SigKey
     bob.map_key(&bob_key, &db_id, sigkey.clone())
         .await
         .expect("Bob adds database key mapping");
-    println!("✅ Bob configured key mapping for the database");
 
     // Bob loads the database
     let bob_db = bob.open_database(&db_id).await.expect("Bob loads database");
     assert_database_name(&bob_db, "Team Workspace").await;
-    println!("✅ Bob successfully loaded the database");
 
     // Bob reads Alice's data
     {
@@ -357,31 +356,14 @@ async fn test_collaborative_database_with_global_permissions() {
             Some("Alice started the workspace")
         );
     }
-    println!("✅ Bob read Alice's data successfully");
 
     // Bob makes changes (Write permission allows this)
-    {
-        let tx = bob_db
-            .new_transaction()
-            .await
-            .expect("Bob write transaction");
-        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
-        store
-            .set("contributor", "Bob")
-            .await
-            .expect("Write contributor");
-        store
-            .set("status", "Bob joined and contributed")
-            .await
-            .expect("Update status");
-        tx.commit().await.expect("Bob commits changes");
-    }
-    println!("✅ Bob committed changes successfully");
+    contribute_as_bob(&bob_db).await;
 
     bob.logout().expect("Bob logout");
 
     // Alice logs back in and sees Bob's changes
-    let alice2 = login_account(&instance, alice_name, None).await;
+    let alice2 = login_account(&instance, alice_name, "").await;
     let alice_db2 = alice2
         .open_database(&db_id)
         .await
@@ -406,21 +388,13 @@ async fn test_collaborative_database_with_global_permissions() {
             Some("Bob joined and contributed")
         );
     }
-    println!("✅ Alice sees Bob's changes - collaboration successful!");
-
-    println!("✅ End-to-end collaborative database flow complete");
 }
 
 #[tokio::test]
 async fn test_collaborative_database_with_sync_and_global_permissions() {
     use std::time::Duration;
 
-    println!(
-        "\n🧪 TEST: End-to-end AccountSession API collaborative database with sync and global permissions"
-    );
-
     // === ALICE'S INSTANCE (Server) ===
-    println!("\n👤 Setting up Alice's instance...");
     let alice_instance = test_instance().await;
     alice_instance
         .enable_sync()
@@ -428,45 +402,19 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         .expect("Failed to enable sync for Alice");
 
     // Create Alice's user account
-    crate::helpers::create_account(&alice_instance, "alice", None)
+    crate::helpers::create_account(&alice_instance, "alice", "")
         .await
         .expect("Failed to create Alice");
     let mut alice = alice_instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Failed to login Alice");
     let alice_key = alice.get_default_key().expect("Alice get default key");
 
     // Alice creates a database with global Write(10) permission
-    println!("📁 Alice creating collaborative database...");
-    let mut alice_db_settings = Doc::new();
-    alice_db_settings.set("name", "Team Workspace");
-
-    // Create the new database with alice_key as the owner
-    let alice_db = alice
-        .create_database(alice_db_settings, &alice_key)
-        .await
-        .expect("Alice creates database");
+    let alice_db = create_named_database(&mut alice, "Team Workspace").await;
     let db_id = alice_db.root_id().clone();
-
-    // Add global Write permission (signing key is already Admin(0))
-    set_global_auth_key(&alice_db, AuthKey::active(None, Permission::Write(10))).await;
-
-    // Alice writes initial data
-    {
-        let tx = alice_db.new_transaction().await.expect("Alice transaction");
-        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
-        store
-            .set("project", "Eidetica")
-            .await
-            .expect("Write project");
-        store
-            .set("status", "Alice started the workspace")
-            .await
-            .expect("Write status");
-        tx.commit().await.expect("Alice commits");
-    }
-    println!("✅ Alice created database {db_id} with global Write(10) permission");
+    initialize_team_workspace(&alice_db).await;
 
     // Enable sync for this database
     alice
@@ -496,15 +444,13 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
             .get_server_address()
             .await
             .expect("Failed to get server address");
-        let addr = Address::http(&bare_addr);
-        println!("🌐 Alice's server listening at: {bare_addr}");
-        addr
+
+        Address::http(&bare_addr)
     };
 
     alice.logout().expect("Alice logout");
 
     // === BOB'S INSTANCE (Client) ===
-    println!("\n👤 Setting up Bob's instance (separate from Alice)...");
     let bob_instance = test_instance().await;
     bob_instance
         .enable_sync()
@@ -512,17 +458,16 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         .expect("Failed to enable sync for Bob");
 
     // Create Bob's user account
-    crate::helpers::create_account(&bob_instance, "bob", None)
+    crate::helpers::create_account(&bob_instance, "bob", "")
         .await
         .expect("Failed to create Bob");
     let mut bob = bob_instance
-        .login_account("bob", None)
+        .login_account("bob", "")
         .await
         .expect("Failed to login Bob");
     let bob_key = bob.get_default_key().expect("Bob get default key");
 
     // Bob syncs with Alice's server to bootstrap the database
-    println!("\n🔄 Bob syncing with Alice's server to get the database...");
     {
         let bob_sync = bob_instance.sync().expect("Bob should have sync");
         bob_sync
@@ -538,10 +483,8 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     }
 
     tokio::time::sleep(Duration::from_millis(500)).await;
-    println!("✅ Bob synced with Alice's server");
 
     // Bob discovers available SigKeys for his public key
-    println!("\n🔍 Bob discovering available SigKeys...");
 
     let sigkeys = Database::find_sigkeys(&bob_instance, &db_id, &bob_key)
         .await
@@ -552,17 +495,14 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     let (sigkey, permission) = &sigkeys[0];
     assert!(sigkey.is_global(), "Should discover global permission");
     assert_eq!(permission, &Permission::Write(10));
-    println!("✅ Bob discovered global permission with Write(10)");
 
     // Bob adds the database key mapping to his user preferences using the discovered SigKey
     bob.map_key(&bob_key, &db_id, sigkey.clone())
         .await
         .expect("Bob adds database key mapping");
-    println!("✅ Bob configured key mapping for the database");
 
     // Bob loads the database
     let bob_db = bob.open_database(&db_id).await.expect("Bob loads database");
-    println!("✅ Bob successfully loaded the database");
 
     // Bob reads Alice's data
     {
@@ -580,29 +520,11 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
             Some("Alice started the workspace")
         );
     }
-    println!("✅ Bob read Alice's data successfully");
 
     // Bob makes changes
-    {
-        let tx = bob_db
-            .new_transaction()
-            .await
-            .expect("Bob write transaction");
-        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
-        store
-            .set("contributor", "Bob")
-            .await
-            .expect("Write contributor");
-        store
-            .set("status", "Bob joined and contributed")
-            .await
-            .expect("Update status");
-        tx.commit().await.expect("Bob commits changes");
-    }
-    println!("✅ Bob committed changes successfully");
+    contribute_as_bob(&bob_db).await;
 
     // Bob syncs changes back to Alice's server
-    println!("\n🔄 Bob syncing changes back to Alice...");
     {
         let bob_sync = bob_instance.sync().expect("Bob should have sync");
         bob_sync
@@ -612,14 +534,12 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     }
 
     tokio::time::sleep(Duration::from_millis(500)).await;
-    println!("✅ Bob synced changes back to Alice");
 
     bob.logout().expect("Bob logout");
 
     // === ALICE VERIFIES BOB'S CHANGES ===
-    println!("\n🔍 Alice logging back in to verify Bob's changes...");
     let alice2 = alice_instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Alice re-login");
     let alice_db2 = alice2
@@ -648,7 +568,6 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
             "Alice should see Bob's status update"
         );
     }
-    println!("✅ Alice sees Bob's changes - bidirectional sync successful!");
 
     // Cleanup
     {
@@ -658,10 +577,6 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
             .await
             .expect("Failed to stop Alice's server");
     }
-
-    println!(
-        "\n✅ TEST COMPLETED: AccountSession API end-to-end collaborative database with sync works!"
-    );
 }
 
 /// `Database::share()` on an instance with a running HTTP transport returns a
@@ -680,11 +595,11 @@ async fn test_share_with_attached_sync_includes_server_addresses() {
         .await
         .expect("Failed to start sync server");
 
-    crate::helpers::create_account(&instance, "alice", None)
+    crate::helpers::create_account(&instance, "alice", "")
         .await
         .expect("Failed to create alice");
     let mut alice = instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Failed to login alice");
     let alice_key = alice.get_default_key().expect("Get default key");

@@ -17,10 +17,11 @@
 
 /// Inputs needed to create a user account.
 ///
-/// Use the [`passwordless`](Self::passwordless) constructor for embedded or
-/// single-user applications where login latency matters and the surrounding
-/// process is already trusted; use [`with_password`](Self::with_password) for
-/// multi-user deployments where the root key must be encrypted at rest.
+/// All accounts store an authenticated encrypted credential bundle. Passwords
+/// may be any string, including empty, with no length or complexity restrictions.
+/// [`passwordless`](Self::passwordless) is sugar for an empty password, not a
+/// different storage mode. Empty-string wrapping provides no meaningful
+/// confidentiality against a bundle holder.
 ///
 /// The struct is marked `#[non_exhaustive]` so we can add fields
 /// (key algorithm, locale, initial roles, etc.) without a breaking API
@@ -31,31 +32,24 @@
 pub struct NewAccount {
     /// Login identifier for the user. Must be unique within the instance.
     pub username: String,
-    /// Optional password. `None` produces a passwordless user whose root key
-    /// is stored unencrypted (fine for embedded apps where the host process
-    /// is the trust boundary); `Some(_)` produces an Argon2id-derived
-    /// encryption key under which the root signing key is AES-256-GCM
-    /// encrypted at rest.
-    pub password: Option<String>,
+    /// Password used to encrypt the local credential bundle. Every string,
+    /// including empty, uses the same Argon2id and AES-256-GCM path.
+    pub password: String,
 }
 
 impl NewAccount {
-    /// Create a passwordless user. The root signing key will be stored
-    /// unencrypted in the user's credentials.
+    /// Create an empty-password account using the ordinary encrypted format.
+    /// This provides no meaningful confidentiality against a bundle holder.
     pub fn passwordless(name: impl Into<String>) -> Self {
-        Self {
-            username: name.into(),
-            password: None,
-        }
+        Self::with_password(name, "")
     }
 
-    /// Create a password-protected user. The root signing key will be
-    /// encrypted with an Argon2id-derived key at rest; the password is
-    /// required for every login.
+    /// Create an account with any password string, including empty.
+    /// The password is required for login; signing uses already unlocked keys.
     pub fn with_password(name: impl Into<String>, password: impl Into<String>) -> Self {
         Self {
             username: name.into(),
-            password: Some(password.into()),
+            password: password.into(),
         }
     }
 }

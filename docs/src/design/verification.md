@@ -56,8 +56,9 @@ Entry it submits.
 A local `Transaction::commit()` validates before storage, then stores the Entry
 through the Unverified-only ingest path and promotes it locally. On the service
 wire, `SubmitSignedEntry` stores `Unverified` and invokes the **server's**
-verification pass. Client-side signing is not server-side acceptance. A submit
-can retain an undecidable Entry without making it visible in default reads.
+verification pass. The call returns `EntryValidationFailed` if the Entry is
+not `Verified` after that pass. A rejected or undecidable Entry can remain
+stored without appearing in default reads.
 
 Privileged `BackendImpl` status methods are a trusted, local validator/maintenance
 surface, not an alternative public authorization API. They enforce ancestry but
@@ -96,6 +97,73 @@ recursively verifies another tree under the lock. Verify delegated dependencies
 first, then retry their dependents. A `VerifyReport` counts entries considered
 in that pass, not all stored failures; an empty report is not a health inventory.
 
+### Store-parent frontiers
+
+**Main links define causality; Store links define consumption.** An ordinary
+Store contribution may consume any subset of that Store's contributions in its
+main-parent ancestry. Observing a contribution through main links does not
+require consuming it. Empty Store parents start an independent Store branch,
+even if earlier contributions exist. Nonmaximal or redundant ancestor parents
+are also valid; there is no ordinary-Store exact-frontier equality requirement.
+
+Named Store parents must still belong to the same database, contain the same
+Store and be reachable through **main links alone**. A Store link cannot prove
+its own causal membership. A same-database sibling outside that cut, a wrong-Store
+target or a foreign-database reference is invalid. Each actual Store-parent edge
+must also satisfy the [effective-height rule](#height-monotonicity).
+
+For a selected accepted main-ancestry cut, the **Store frontier** is the Store
+contributions not named as a Store parent by another contribution in that cut.
+It is not the subset occurring at the main frontier. For example:
+
+```text
+Main:       A(X) -> B(X) -> C(X) -> D(X)
+X parents:  A.X: []
+            B.X: [A.X]
+            C.X: [A.X]
+            D.X: [B.X, C.X]
+```
+
+A, B and C all verify. At main snapshot `{C}`, the X frontier is `{B.X, C.X}`:
+C observes B but does not consume B.X. Reads merge both branches, retaining both
+contributions under the Store's CRDT rules. Only D's explicit Store join replaces
+both tips with `{D.X}`. An intermediate Entry that does not touch X does not
+consume either tip. Concurrent main branches follow the same Store-edge rule.
+Normal transactions discover all Store tips at their selected main boundary;
+that authoring default is not an acceptance restriction on received Entries.
+
+**`_settings` is deliberately stricter.** A settings write must consume exactly
+its main parents' complete causal `_settings` frontier, and every Entry's signed
+`settings_tips` pin must identify that pre-write frontier. Omitting ordinary
+Store tips is valid; omitting authority context is not. Snapshot comparisons for
+settings are set comparisons, not list-order comparisons. The genesis exception
+and historical signature, permission and delegation rules remain unchanged.
+
+Local commits and received Entries use the same validation before acceptance.
+Missing or Unverified main ancestry remains retryable, never proof of membership
+or non-membership. Conclusive invalid evidence takes precedence over incomplete
+proof. Once the main cut is complete, an outside Store reference is invalid even
+if its bytes have not arrived. Raw storage still retains rejected and undecidable
+Entries. Verification is whole-Entry: every Store contribution in a Verified
+Entry is accepted; there is no contribution-local status, sparse verification,
+automatic dependency fetching or recovery/splicing policy.
+
+#### Why ordinary Store links are independent
+
+Requiring a write to consume every observed Store tip would make a complete view
+of that Store a prerequisite for writing to it. Independent links remove that
+requirement from the Store graph. A goal for future selective sync is to let an
+explicitly authorized client sync `_settings` and the Stores it reads, then append
+to a separate, large log Store without downloading all its prior contents. Such
+an append would not claim to replace unseen log tips. The client would still need
+the required causal and authority evidence; see the
+[selective sync design direction](synchronization.md#selective-sync-design-direction).
+
+The same separation leaves room for Stores or their CRDTs to define which prior
+contributions a write needs and how to validate it. It does not give them
+independent verification status today, or let Store rules bypass database
+authorization.
+
 ### Height monotonicity
 
 Before promotion, the verifier requires the main-tree height to be strictly
@@ -104,12 +172,25 @@ heights produce `Failed`, as does a `Failed` parent; missing or `Unverified`
 parents otherwise leave the Entry retryable. Heights need not equal
 `max(parent heights) + 1`: timestamp heights and gaps remain valid.
 
-This checks main-tree heights only. Store heights have independent strategy
-and inheritance rules. Height-based consumers such as `Database::ids_added`
-retain their best-effort behavior for raw, unsettled history. Existing
-`Verified` entries are not rechecked automatically; use the
-[offline trust reset](#explicit-trust-reset-on-verification-rule-upgrades)
-before relying on the new rule for previously accepted history.
+Every Store-parent edge also requires strict growth of the **effective Store
+height**: an explicit Store height when present, otherwise the main-tree height.
+A valid main height cannot hide an equal or decreasing Store height. Independent
+Store heights are compared with that Store's parents, not unrelated main parents;
+positive gaps remain valid. Verification does not mandate a particular strategy
+or an exact `max + 1` calculation.
+
+Authoring follows the configured [height strategy](height_strategy.md). Returning
+a Store to inheritance with `set_height_strategy(None)` includes its prior
+effective parent heights in the main height calculation. Incremental then takes
+`max(relevant parent heights) + 1`, so a previous Timestamp override can cause a
+main-height gap rather than a height regression.
+
+Height-based consumers such as `Database::ids_added` retain their best-effort
+behavior for raw, unsettled history. Neither these height checks nor Store-parent
+membership and settings-frontier checks automatically recheck existing `Verified` history. Use the
+[offline trust reset](#explicit-trust-reset-on-verification-rule-upgrades) and
+dependency-first re-verification before relying on the new rules for previously
+accepted history; a format migration or closure repair is not that revalidation.
 
 ### Backend: same-tree ancestor closure
 
@@ -141,7 +222,30 @@ Concrete InMemory and SQL backends retain **only the Verified tips**, not a
 second membership set for the entire accepted history. Authoritative per-entry
 labels establish interior membership. Promotion removes direct parents from the
 retained tips and inserts the child; forks retain multiple tips and a verified
-join replaces them. This operation does not scan accepted history.
+main join replaces them. This operation does not scan accepted history. Store
+frontiers are derived separately from explicit Store edges within that accepted
+main cut; a main join alone does not consume an ordinary Store branch.
+
+### Non-Failed storage frontier
+
+`BackendImpl::non_failed_snapshot(tree)` supplies a separate retained frontier:
+present `Unverified` or `Verified` vertices with no same-tree non-Failed direct
+child. Rejecting a leaf restores surviving parents when their last non-Failed
+child disappears. Children arriving before their parents are accounted for, and
+foreign-tree references cannot consume another tree's tips.
+
+This selection is not ancestor closure or a historical materialization filter:
+a selected Unverified vertex can still refer to Failed or missing ancestry.
+Raw structural tips and immutable Snapshot identity do not change. The storage
+capability is separate from the Database read and notification selection below.
+
+InMemory retains tips plus direct non-Failed child counts, including references
+to missing parents. SQL retains tips and uses indexed direct edges. Put and
+failure publication share the storage mutation lock/transaction; normal frontier
+maintenance adds no history walk. InMemory's existing raw-tip recomputation is
+unchanged, so this does not claim that its entire put path is scan-free.
+Migration, explicit repair and offline reset can reconstruct this local index;
+ordinary current-format reads and reopen never do.
 
 ### Default reads and `.allow_unverified()`
 
@@ -151,14 +255,15 @@ walk or per-entry status probes. If a raw tip is unsettled, access can attempt
 best-effort verification before selecting the read boundary. A read is therefore
 not a promise that no validation work occurs; only the settled path is scan-free.
 
-`.allow_unverified()` opts into raw tips with `Failed` **tips** removed, rather
-than the Verified frontier. It is a diagnostic/partial-data view, not proof of
-an accepted prefix. The filter does not recursively prune every failed or
-missing ancestor from arbitrary raw history. Low-level Entry retrieval also
+`.allow_unverified()` selects the retained non-Failed frontier instead.
+If a tip fails, its surviving non-Failed parents can become selected tips;
+rejection does not simply drop the raw tip and leave an empty view.
+This is a diagnostic/partial-data view, not proof of an accepted prefix.
+It does not recursively prune Failed or missing ancestry from immutable history. Low-level Entry retrieval also
 retains rejected data. No status deletes immutable bytes.
 
-A remote service handle's `snapshot()` returns the server-selected Verified
-frontier; the client does not run local status machinery. Service operations
+A remote service handle's `snapshot()` returns the server-selected frontier
+for that handle's scope; the client does not run local status machinery. Service operations
 that carry a `ReadScope`, such as transaction context and Store-entry queries,
 let the server select the requested scope. Calling `.allow_unverified()` is
 not a wire-level status override. See [service read scope](../internal/service.md#read-scope).
@@ -225,10 +330,21 @@ already-acquired readers or retroactively invalidate cached historical state.
 Acquire a new default boundary to observe the repaired frontier; offline trust
 reset requires stopping all readers as well as writers.
 
-`WriteEvent`/notification cursors remain **raw DAG frontiers**. Verification can
-emit a batched settled-write notification without changing those raw tips.
-A cursor is not a Verified membership proof; consumers use the appropriate
-Database read projection rather than treating notification IDs as accepted data.
+`Database::on_write` delivers the initial selected Snapshot, then changes to
+that handle's selected frontier. Default and opt-in registrations remain
+distinct, even on one tree. Verification promotion can change the default
+frontier without a raw-tip change; failure can change the opt-in frontier.
+Unchanged selected frontiers produce no event. Pending updates coalesce
+latest-wins, with initial delivery always ordered first.
+Application work runs outside tree locks and is asynchronous to commits.
+Callers own processing checkpoints; these are not previous/latest brackets,
+removal streams or acknowledgments. Historical Snapshot identity is unchanged.
+
+Sync does not use these application cursors. It owns per-peer/database queueing
+checkpoints over the retained Verified frontier. Bootstrap, incremental responses
+and periodic pulls select Verified tips; outgoing enumeration excludes other
+statuses, and explicit sends and retries recheck local acceptance before transport
+submission. The receiver still validates every received Entry independently.
 
 ## Worked examples
 
@@ -269,28 +385,36 @@ replace Doc's deterministic conflict resolution.
 ## Persistence, restart and forward migration
 
 SQL `schema_version` and InMemory JSON `_v` are **independent internal integer
-format revision counters**. SQL uses `3` and InMemory uses `2`; they are not release
+format revision counters**. SQL uses `5` and InMemory uses `4`; they are not release
 versions, SemVer or a stability scale. A format change requiring migration
 advances the relevant counter and supplies an explicit supported forward path.
 Do not renumber existing data or infer a migration merely from integer ordering.
 The current supported matrix is:
 
-| Stored format                                             | Open/load behavior                                                                                                                              |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fresh SQL database (no version row)                       | Initialize current schema and marker `3`. This is initialization, not a promise to repair unmarked populated SQL databases.                     |
-| Mainline SQL `0`                                          | Migrate directly to `3`: create retained tips/cache accounting, conservatively repair each tree, publish schema/labels/tips/version atomically. |
-| SQL `2`                                                   | Add/backfill cache accounting and advance to `3`, preserving labels and Verified tips without verification repair.                              |
-| SQL `3`                                                   | Use persisted labels, Verified tips and cache accounting; no recurring backfill or history repair.                                              |
-| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported experimental prefix-tracking layout before schema initialization.                                                        |
-| SQL above `3`, or below `0`                               | Refuse: newer schema or unknown migration path.                                                                                                 |
-| InMemory absent `_v` or explicit `_v: 0`                  | Reconstruct Verified tips from Entries and labels on load, conservatively demoting inconsistent Verified regions. Next save writes `2`.         |
-| InMemory `_v: 2`                                          | Load persisted labels/tips without history repair.                                                                                              |
-| InMemory other `_v`                                       | Refuse; this includes experimental `1` and future versions. Invalid/out-of-range encodings also fail deserialization.                           |
+| Stored format                                             | Open/load behavior                                                                                                        |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Fresh SQL database (no version row)                       | Initialize schema `5`. This does not repair populated unversioned databases.                                              |
+| Mainline SQL `0`                                          | Migrate directly to `5`, conservatively repairing Verified state and building the non-Failed frontier.                    |
+| SQL `2`                                                   | Add/backfill cache accounting, add empty native account storage, and build the non-Failed frontier.                       |
+| SQL `3`                                                   | Add empty native account storage and build the non-Failed frontier without cache backfill.                                |
+| Mainline SQL `4`                                          | Build only the non-Failed frontier; preserve local accounts, cache accounting and trust state.                            |
+| SQL `5`                                                   | Use both persisted frontiers with no history repair or backfill.                                                          |
+| SQL `1`, or any SQL database containing `verified_prefix` | Refuse the unsupported prefix-tracking candidate before schema initialization.                                            |
+| SQL above `5`, or below `0`                               | Refuse: newer schema or unknown migration path.                                                                           |
+| InMemory absent `_v` or explicit `_v: 0`                  | Reconstruct both frontiers, conservatively demoting inconsistent Verified regions. Next save writes `4`.                  |
+| InMemory `_v: 2`                                          | Reconstruct only the non-Failed frontier and child counts; next save writes `4` with empty local-account storage.         |
+| Mainline InMemory `_v: 3`                                 | Reconstruct only the non-Failed frontier and child counts; preserve local accounts and trust state. Next save writes `4`. |
+| InMemory `_v: 4`                                          | Use persisted labels, frontiers, child counts and local accounts without history repair.                                  |
+| InMemory other `_v`                                       | Refuse; includes experimental `1` and future versions. Invalid encodings also fail deserialization.                       |
 
 SQL migration preserves immutable Entry bytes, parent/subtree records, raw tips,
 instance metadata/secrets and existing Store-state namespaces/records. It changes
 only inconsistent Verified labels and the retained Verified frontier on the v0
-transition; v2→v3 changes cache accounting and its marker, not trust state.
+transition. SQL upgrades from `2`, `3`, and `4` advance to `5` without changing
+trust decisions or Verified tips. These upgrades neither copy nor delete existing
+keys. Native local-account records survive cache clearing and trust reset.
+The divergent experimental SQL `4` and JSON `3` non-Failed formats are not
+supported mainline upgrade sources.
 Exclusive startup may reclaim disposable retired/abandoned cache rows. Failed decisions remain Failed. Failure rolls back
 the migration; version refusal is not a wholly read-only open, since ownership
 bookkeeping and SQLite WAL setup can precede the schema check.
@@ -311,14 +435,25 @@ Keep an offline backup and follow the
 rather than editing markers or dropping tables to bypass refusal. Downgrading a
 binary does not undo persisted migrations; restore a compatible backup instead.
 
+SQLite's history file uses schema v5 with native local accounts and the retained
+non-Failed frontier. Separating Derived storage does not require an additional
+history schema revision. Old in-history Derived rows may be reclaimed; all
+Authoritative records and local credentials stay durable. The
+unreleased history-identity candidate layout is refused, not treated as mainline
+v4. For an offline reset, C is cleared before the H transaction resets labels and
+retained frontiers. Failure may discard reconstructible cache state without
+changing labels; successful reset cannot retain old C state. PostgreSQL keeps its
+single-transaction behavior. No global freshness/lineage token is introduced.
+
 ## Explicit trust reset on verification-rule upgrades
 
 Format migration is **not** authorization revalidation. When upgrading to new
 verification rules, stop all users, back up the backend and run the offline
 [`db reset-local-verification` command](../user_guide/cli.md#db-reset-local-verification-offline-trust-reset)
 before trusting old decisions under the new rules. It clears old Verified and
-Failed labels, retained tips, derived and incomplete Store state, while keeping
-immutable Entries and authoritative Store state. It does not verify or fetch.
+Failed labels, Verified tips, derived and incomplete Store state, while keeping
+immutable Entries and authoritative Store state. It rebuilds non-Failed tips with
+every Entry now Unverified. It does not verify or fetch.
 
 Then use the [dependency-first SDK procedure](../user_guide/cli.md#re-verification-after-reset-or-incomplete-proof),
 inspect unresolved/rejected branches and acquire new read boundaries. There is

@@ -5,6 +5,8 @@
 //! for better maintainability.
 
 mod basic_operations;
+#[cfg(unix)]
+mod credential_store;
 mod database_management;
 mod database_operations;
 mod helpers;

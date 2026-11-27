@@ -4,6 +4,31 @@ use super::*;
 use crate::auth::types::{AuthInfo, DelegationStep, KeyHint, SigKey};
 
 #[test]
+fn test_committed_at_ms_reads_only_unsigned_integer_timestamps() {
+    let entry = Entry::root_builder().build().unwrap();
+    assert_eq!(entry.committed_at_ms(), None);
+    for (json, expected) in [
+        (r#"{"settings_tips":[],"entropy":123}"#, None),
+        (r#"{"settings_tips":[],"ts":0}"#, Some(0)),
+        (
+            r#"{"settings_tips":[],"ts":18446744073709551615}"#,
+            Some(u64::MAX),
+        ),
+        (r#"{"settings_tips":[],"ts":18446744073709551616}"#, None),
+        (r#"{"settings_tips":[],"ts":-1}"#, None),
+        (r#"{"settings_tips":[],"ts":"42"}"#, None),
+        (r#"{"settings_tips":[],"ts":1.5}"#, None),
+        (r#"{"settings_tips":[],"ts":null}"#, None),
+        (r#"{"settings_tips":[],"ts":1,"ts":2}"#, None),
+        (r#"{"settings_tips":[],"ts":1"#, None),
+        ("[42]", None),
+    ] {
+        let entry = Entry::root_builder().set_metadata(json).build().unwrap();
+        assert_eq!(entry.committed_at_ms(), expected, "{json}");
+    }
+}
+
+#[test]
 fn test_builder_genesis_requires_marker_no_main_parents_and_no_root() {
     let root = Entry::root_builder();
     assert!(root.is_root());
@@ -129,8 +154,8 @@ fn test_validate_subtree_with_empty_parent_id_fails() {
 }
 
 #[test]
-fn test_validate_non_root_with_empty_subtree_parents_logs_but_passes() {
-    // Non-root entries with empty subtree parents should log but pass validation
+fn test_validate_non_root_independent_subtree_root() {
+    // Empty ordinary Store parents start an independent branch
     // This is deferred to transaction layer for deeper validation
     let entry = Entry::builder(ID::from_bytes("tree"))
         .add_parent(ID::from_bytes("main_parent"))
@@ -562,6 +587,45 @@ fn test_id_memo_is_invalidated_by_set_auth() {
 }
 
 #[test]
+fn test_sign_attaches_verifiable_signature_and_invalidates_memo() {
+    use crate::auth::crypto::{PrivateKey, sign_entry, verify_entry_signature};
+
+    let key = PrivateKey::generate();
+    let entry = Entry::root_builder()
+        .set_subtree_data("test", b"value")
+        .set_auth(AuthInfo::from_pubkey(&key.public_key()))
+        .build()
+        .expect("Root entry should build successfully");
+    let expected_signature = sign_entry(&entry, &key).unwrap();
+    let unsigned_id = entry.id();
+
+    let signed = entry.sign(&key).unwrap();
+
+    assert_eq!(signed.auth().signature, Some(expected_signature));
+    verify_entry_signature(&signed, &key.public_key()).unwrap();
+    assert_eq!(signed.id(), uncached_id(&signed));
+    assert_ne!(signed.id(), unsigned_id);
+}
+
+#[test]
+fn test_sign_replaces_existing_signature() {
+    use crate::auth::crypto::{PrivateKey, verify_entry_signature};
+
+    let first = PrivateKey::generate();
+    let second = PrivateKey::generate();
+    let entry = Entry::root_builder()
+        .set_subtree_data("test", b"value")
+        .set_auth(AuthInfo::from_pubkey(&second.public_key()))
+        .build()
+        .expect("Root entry should build successfully");
+
+    let resigned = entry.sign(&first).unwrap().sign(&second).unwrap();
+
+    verify_entry_signature(&resigned, &second.public_key()).unwrap();
+    assert!(verify_entry_signature(&resigned, &first.public_key()).is_err());
+}
+
+#[test]
 fn test_id_memo_does_not_leak_across_canonical_for_signing() {
     let entry = Entry::root_builder()
         .set_subtree_data("test", b"value")
@@ -662,12 +726,10 @@ fn test_delegated_dagcbor_wire_format_is_pinned() {
     let entry = Entry::builder(ID::from_bytes("root"))
         .add_parent(ID::from_bytes("parent"))
         .set_subtree_data("test", b"value")
-        .set_auth(
-            AuthInfo::builder()
-                .key(key)
-                .signature("fixed-signature")
-                .build(),
-        )
+        .set_auth(AuthInfo {
+            signature: Some("fixed-signature".to_string()),
+            key,
+        })
         .build()
         .unwrap();
     let bytes = entry.to_dagcbor().unwrap();

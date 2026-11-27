@@ -30,6 +30,7 @@ pub mod instance;
 #[cfg(all(unix, feature = "service"))]
 pub mod service;
 pub mod snapshot;
+pub mod state;
 pub mod store;
 pub mod sync;
 #[cfg(any(test, feature = "testing"))]
@@ -44,7 +45,7 @@ pub use clock::{ClockHold, FixedClock};
 pub use database::{Database, DatabaseKey};
 pub use entry::{Entry, ID};
 pub use height::HeightStrategy;
-pub use instance::{Instance, NewAccount, WeakInstance, WriteCallback, WriteEvent, WriteSource};
+pub use instance::{Instance, NewAccount, WeakInstance, WriteCallback, WriteSource};
 pub use snapshot::Snapshot;
 pub use store::{Registered, Store};
 #[cfg(any(test, feature = "testing"))]
@@ -66,18 +67,34 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Common error type for the Eidetica library.
 ///
+/// Match the variants you handle and use a fallback for future variants.
+///
 /// All domain-specific error variants are boxed to keep `Result<T, Error>` small
 /// on the stack. The box allocation only occurs on the error (cold) path.
 ///
 /// `#[error(transparent)]` works with `Box<impl Error>` because `thiserror`
 /// delegates `Display` and `source()` through the wrapper.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     #[error("Serialization error: {0}")]
     Serialize(#[from] serde_json::Error),
+
+    /// Genesis committed, but a later database creation step failed.
+    ///
+    /// The ID identifies the committed root, not a replacement to create. The
+    /// original error is retained in `source`; inspect it for cause/category.
+    #[error("Database {root_id} was created, but setup failed: {source}")]
+    DatabaseCreation {
+        /// Exact committed genesis entry ID.
+        root_id: Box<ID>,
+        /// Failure after genesis committed.
+        #[source]
+        source: Box<Error>,
+    },
 
     /// Structured authentication errors from the auth module
     #[error(transparent)]
@@ -102,6 +119,10 @@ pub enum Error {
     /// Structured transaction errors from the transaction module
     #[error(transparent)]
     Transaction(Box<transaction::TransactionError>),
+
+    /// Serving a snapshot-bound State request failed.
+    #[error(transparent)]
+    State(state::StateError),
 
     /// Structured synchronization errors from the sync module
     #[error(transparent)]
@@ -145,6 +166,26 @@ impl From<account::AccountError> for Error {
 }
 
 impl Error {
+    /// The committed root when database creation failed after genesis.
+    ///
+    /// This is repair context, not an access grant or evidence that tracking,
+    /// key registration, or sync setup completed. Errors before genesis is
+    /// acknowledged retain their original form and return `None`; a transport
+    /// failure during commit can still have an unknown outcome.
+    pub fn created_database_id(&self) -> Option<&ID> {
+        match self {
+            Error::DatabaseCreation { root_id, .. } => Some(root_id),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn after_database_creation(self, root_id: &ID) -> Self {
+        Error::DatabaseCreation {
+            root_id: Box::new(root_id.clone()),
+            source: Box::new(self),
+        }
+    }
+
     /// Get the originating module for this error.
     pub fn module(&self) -> &'static str {
         match self {
@@ -154,12 +195,14 @@ impl Error {
             Error::CRDT(_) => "crdt",
             Error::Store(_) => "store",
             Error::Transaction(_) => "transaction",
+            Error::State(_) => "state",
             Error::Sync(_) => "sync",
             Error::Entry(_) => "entry",
             Error::Id(_) => "id",
             Error::Account(_) => "account",
             Error::Io(_) => "io",
             Error::Serialize(_) => "serialize",
+            Error::DatabaseCreation { .. } => "database",
         }
     }
 
@@ -190,6 +233,7 @@ impl Error {
         match self {
             Error::Auth(auth_err) => auth_err.is_permission_denied(),
             Error::Transaction(transaction_err) => transaction_err.is_authentication_error(),
+            Error::State(state::StateError::Denied) => true,
             _ => false,
         }
     }
@@ -206,6 +250,7 @@ impl Error {
     pub fn is_authentication_error(&self) -> bool {
         match self {
             Error::Auth(_) => true,
+            Error::State(state::StateError::Denied) => true,
             Error::Instance(base_err) => base_err.is_authentication_error(),
             Error::Transaction(transaction_err) => transaction_err.is_authentication_error(),
             _ => false,

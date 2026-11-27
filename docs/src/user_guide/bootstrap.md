@@ -7,6 +7,8 @@ The Bootstrap system provides secure key management for Eidetica databases by co
 1. **Global Wildcard Permissions** - Databases with global '\*' permissions automatically approve bootstrap requests without adding new keys
 2. **Manual Approval** - Bootstrap requests are queued for administrator review and explicit approval
 
+This page describes ordinary database access. [Identity membership](identity_guide.md) uses the same request lifecycle but requires an explicit active member key, even when a global grant allows reading the database.
+
 ## Global Permission Bootstrap
 
 Global '\*' permissions provide the simplest and most flexible approach for collaborative or public databases:
@@ -105,7 +107,7 @@ Success returns a `Database` after recording the selected user key's SigKey mapp
 Success means the finite supplied response and its ancestry have verified locally and the selected key currently satisfies the requested permission; it is not global catch-up.
 Identical completed Account settings and established routing are not written again.
 Newer preferences observed after the network wait are preserved, and legacy provisional mappings are not deleted on Pending or rejection.
-An error, dropped future or disconnected caller can leave a peer request, replicated entries, routing or a committed Account Entry without its acknowledgement.
+An error, dropped future or disconnected caller can leave a peer request, replicated entries, routing or a persisted local account record without its acknowledgement.
 Reconnect and retry explicitly; a failed call does not imply rollback.
 There is no cancellation API, automatic restart-safe completion, or device enrollment.
 The client holds and signs with the user's private keys; the daemon owns networking, without a second client sync engine.

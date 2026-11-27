@@ -21,7 +21,8 @@ fn reset(dir: &std::path::Path, confirm: bool) -> std::process::Output {
         "inmemory",
         "--data-dir",
     ])
-    .arg(dir);
+    .arg(dir)
+    .env("EIDETICA_CACHE_DIR", dir.join("cache"));
     if confirm {
         cmd.arg("--confirm");
     }
@@ -78,6 +79,7 @@ async fn cli_sqlite_reset_survives_reopen() {
             "--data-dir",
         ])
         .arg(dir.path())
+        .env("EIDETICA_CACHE_DIR", dir.path().join("cache"))
         .arg("--confirm")
         .output()
         .unwrap();
@@ -109,6 +111,7 @@ fn repair(
         "--data-dir",
     ])
     .arg(dir)
+    .env("EIDETICA_CACHE_DIR", dir.join("cache"))
     .arg("--tree")
     .arg(tree.to_string());
     if confirm {

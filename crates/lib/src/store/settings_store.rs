@@ -11,6 +11,7 @@ use crate::{
         settings::AuthSettings,
         types::{AuthKey, DelegatedTreeRef, KeyStatus},
     },
+    constants::ENTRY_TIMESTAMPS,
     crdt::{CRDTError, Doc, doc},
     height::HeightStrategy,
     store::DocStore,
@@ -143,6 +144,26 @@ impl SettingsStore {
             .await
     }
 
+    /// Whether automatic commit timestamps are enabled in this settings view.
+    ///
+    /// Only an explicit boolean `true` enables timestamps. Missing settings and
+    /// values of other types are treated as disabled.
+    pub async fn entry_timestamps_enabled(&self) -> Result<bool> {
+        Ok(matches!(
+            self.inner.try_get(ENTRY_TIMESTAMPS).await?,
+            Some(doc::Value::Bool(true))
+        ))
+    }
+
+    /// Set whether new entries carry an advisory author-clock timestamp.
+    ///
+    /// This takes effect on the commit that writes the setting and on commits
+    /// that inherit it. Timestamps are visible to peers even for encrypted data;
+    /// changing this setting does not change any existing entry.
+    pub async fn set_entry_timestamps(&self, enabled: bool) -> Result<()> {
+        self.inner.set(ENTRY_TIMESTAMPS, enabled).await
+    }
+
     /// Get a snapshot of the current authentication settings
     ///
     /// Returns a **cloned** `AuthSettings` built from the merged CRDT state.
@@ -172,6 +193,11 @@ impl SettingsStore {
     /// Writes are incremental: only the specific key path is written to the
     /// entry, not the full auth state. The CRDT merge produces the correct
     /// merged view when reading.
+    ///
+    /// Authorization is enforced at transaction commit, not by this setter.
+    /// The signer's effective permission must cover both the causal pre-write
+    /// grant and the resulting grant. The shared entry validator applies the
+    /// same check to remote entries and raw settings deltas.
     ///
     /// # Arguments
     /// * `pubkey` - The public key
@@ -241,6 +267,9 @@ impl SettingsStore {
 
     /// Revoke an authentication key in the settings
     ///
+    /// Commit requires an admin with at least the target's pre-write permission,
+    /// just as for [`Self::set_auth_key`]. Revocation is causal, not retroactive.
+    ///
     /// # Arguments
     /// * `pubkey` - The public key of the key to revoke
     ///
@@ -256,6 +285,8 @@ impl SettingsStore {
     /// Add a delegated tree reference to the settings
     ///
     /// The delegation is stored by root tree ID, extracted from `tree_ref.tree.root`.
+    /// Commit checks the signer's effective permission against the old and new
+    /// bounds, including a minimum bound that raises delegated permissions.
     ///
     /// # Arguments
     /// * `tree_ref` - The delegated tree reference to add

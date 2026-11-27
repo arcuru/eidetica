@@ -27,9 +27,9 @@ use crate::{
 /// The only per-handle state is the acting identity: `None` means "use the
 /// connection's current session identity" (the instance-level backend), and
 /// `Some(k)` means "act as `k`" (a `Database` handle opened with key `k`).
-/// Every clone shares the same socket and session — additional keys are
-/// proof-of-possession registered into the connection's keyset by the handle
-/// constructors, not by holding a separate connection.
+/// Every clone shares the same socket and session. Keyed handles retain their
+/// own client-side signer to renew possession when reauthentication replaces
+/// the connection keyset, without retaining the login's entire bundle.
 ///
 /// Tree-scoped methods use the `tree` argument the caller already supplies
 /// (`Transaction` passes the owning database's root), so no root is bound here.
@@ -282,6 +282,16 @@ impl Backend for RemoteBackend {
             Err(e) if main_snapshot.is_empty() && e.is_not_found() => Ok(Snapshot::EMPTY),
             Err(e) => Err(e),
         }
+    }
+
+    async fn try_verified_store_snapshot(
+        &self,
+        tree: &ID,
+        store: &str,
+    ) -> Result<Option<Snapshot>> {
+        self.conn
+            .try_verified_store_snapshot(tree.clone(), self.identity(), store.to_owned())
+            .await
     }
 
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {

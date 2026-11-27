@@ -256,9 +256,13 @@ pub struct InstanceSecrets {
 // Category modules
 pub mod database;
 pub mod errors;
+pub(crate) mod private_cache;
+mod split;
 
 // Re-export main types for easier access
 pub use errors::BackendError;
+pub(crate) use split::derived_cache_storage_via;
+pub use split::{DerivedCacheStorage, SplitBackend};
 
 /// Verdict of a bounded, tree-scoped reachability query
 /// ([`check_targets_reachable_from`](BackendImpl::check_targets_reachable_from)).
@@ -393,6 +397,36 @@ impl VerificationStatus {
 /// signature, causal-settings and delegation checks.
 #[async_trait]
 pub trait BackendImpl: Send + Sync + Any {
+    /// Whether login-scoped Derived builds have storage-owned per-login and
+    /// aggregate admission across Begin, Stage and Publish. The service refuses
+    /// optional uploads on engines that do not provide this boundary.
+    fn supports_private_cache_admission(&self) -> bool {
+        false
+    }
+
+    /// Read installation-local account data. These bytes are not Entries, Store
+    /// state, or part of any sync/export tree. Callers encrypt credentials before
+    /// persistence; backend-file access remains a trusted boundary.
+    async fn local_account_record(&self, _name: &str) -> Result<Option<Vec<u8>>> {
+        Err(BackendError::LocalAccountStorageUnsupported.into())
+    }
+
+    /// Atomically insert (expected `None`) or replace an exact observed record.
+    /// A stale observation returns `false` without writing. No history is kept.
+    async fn compare_exchange_local_account_record(
+        &self,
+        _name: &str,
+        _expected: Option<&[u8]>,
+        _replacement: &[u8],
+    ) -> Result<bool> {
+        Err(BackendError::LocalAccountStorageUnsupported.into())
+    }
+
+    /// List local login names, without returning credential contents.
+    async fn local_account_names(&self) -> Result<Vec<String>> {
+        Err(BackendError::LocalAccountStorageUnsupported.into())
+    }
+
     /// Look up the published cached state for an exact request. Private
     /// builds are never returned.
     async fn resolve_store_state(
@@ -564,6 +598,16 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `tree` - The root ID of the tree to snapshot.
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot>;
 
+    /// Returns the retained non-Failed frontier of `tree`: present Unverified
+    /// or Verified entries with no same-tree non-Failed direct child.
+    ///
+    /// Unlike the ancestor-closed Verified view, this is a selected-vertex
+    /// frontier, not a proof about ancestry or a filter on historical Snapshot
+    /// materialization. Missing parents and Failed ancestors may still be
+    /// referenced by selected entries. Storage/status mutations publish this
+    /// frontier atomically; reads must not scan history.
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot>;
+
     /// Returns the retained verified [`Snapshot`] of `tree` — the tips of the
     /// maximal ancestor-closed, all-`Verified` prefix of the DAG — without
     /// scanning history.
@@ -675,10 +719,24 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `store` - The name of the store for which to find tips.
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot>;
 
+    /// Read the indexed tips of a named Store only when the raw main frontier
+    /// and the retained verified main frontier agree in the same backend view.
+    /// Return `None` if unavailable; never reconstruct either frontier here.
+    async fn try_verified_store_snapshot(
+        &self,
+        _tree: &ID,
+        _store: &str,
+    ) -> Result<Option<Snapshot>> {
+        Ok(None)
+    }
+
     /// Returns the store snapshot as of a specific main-tree snapshot.
     ///
-    /// Finds all store entries reachable from the boundary's tips, then filters
-    /// to the ones that are tips within the store.
+    /// Finds Store contributions in the boundary's main ancestry, then removes
+    /// those consumed by explicit Store-parent edges in that cut. A main
+    /// descendant alone must not hide an unconsumed Store tip.
+    /// This raw traversal does not certify verification status; default
+    /// transactions supply an accepted main boundary.
     ///
     /// # Arguments
     /// * `tree` - The root ID of the parent tree.

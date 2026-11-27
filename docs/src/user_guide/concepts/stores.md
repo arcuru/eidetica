@@ -20,8 +20,25 @@ Stores offer several advantages:
 - **Type Safety**: Each store implementation provides appropriate methods for its data type
 - **Isolation**: Changes to different stores can be tracked separately
 - **Composition**: Multiple data structures can exist within a single Database
-- **Efficiency**: Only relevant stores need to be loaded or synchronized
+- **Efficiency**: Only relevant Store state needs to be loaded; sync still transfers whole Entries
 - **Atomic Operations**: Changes across multiple stores can be committed atomically
+
+## Store History and Tips
+
+Main Entry links define causal ancestry; ordinary Store links independently
+select consumed contributions. In main `A(X) -> B(X) -> C(X)` with B.X and C.X
+both parenting A.X, X's frontier is `{B.X, C.X}`, not just C.X. Reads merge both
+contributions under X's CRDT rules. A later write parenting both tips explicitly
+joins them. Ordinary empty, nonmaximal or redundant parents are allowed, provided
+named parents have the same Store/database, lie in main ancestry, and have lower
+effective Store heights.
+
+Transactions normally discover all unconsumed Store tips at their fixed main
+snapshot. `_settings` is stricter: both its write parents and every Entry's
+signed pre-write settings pin must match the complete causal settings frontier.
+The status remains whole-Entry; independent Store branches do not implement
+sparse verification or hide other payloads in that Entry. See the
+[verification contract](../../design/verification.md#store-parent-frontiers).
 
 ## Available Store Types
 
@@ -74,10 +91,60 @@ store.set_path(path!("database.port"), "5432").await?;
 let version = store.get("version").await?; // Returns a Value
 let host = store.get_path(path!("database.host")).await?; // Returns Value
 
+// External names can be single literal keys, even when they contain dots.
+store.set_literal("database.host", "literal name").await?;
+assert_eq!(store.get_literal("database.host").await?, "literal name");
+assert_eq!(store.get("database.host").await?, "localhost"); // Still a nested path
+assert!(store.delete_literal("database.host").await?); // Leaves the nested path intact
+
 txn.commit().await?;
 # Ok(())
 # }
 ```
+
+`set`, `get` and `delete` interpret dotted strings as paths, just like the
+explicit path methods. Use `set_literal`, `get_literal` and `delete_literal`
+for one exact top-level key, including empty strings, leading/trailing dots and
+Unicode names. These methods do not escape or normalize names. Missing/deleted
+literal keys return `KeyNotFound` on get; deleting one returns `false` if it is
+already absent. Writes use the same transaction and authentication checks.
+
+For an in-memory `Doc`, use `set_literal`, `get_literal` and `remove_literal`.
+Build it with repeated `set_literal` calls; collecting key/value pairs into a
+`Doc` retains the existing path behavior. `initialize_doc` copies its top-level
+keys literally. No historical paths or stored bytes are automatically converted.
+
+#### Optional reads and safe fallback
+
+Use `try_get` or `try_get_path` when a missing/deleted value permits a default,
+but an unreadable Store must stop the operation:
+
+```rust,no_run
+# use eidetica::{Result, crdt::doc::{Value, path}, store::DocStore};
+# async fn example(store: &DocStore) -> Result<()> {
+let theme = store.try_get("theme").await?
+    .unwrap_or_else(|| Value::Text("system".into()));
+let language = store.try_get_path(path!("user.language")).await?
+    .unwrap_or_else(|| Value::Text("en".into()));
+# let _ = (theme, language);
+# Ok(())
+# }
+```
+
+`Ok(None)` means the requested key/path is absent or deleted, not that its
+history failed to load.
+Backend failures (including missing historical Entries), permission, decoding,
+and transaction errors remain errors; propagate or handle them explicitly.
+These strict reads use the merged document from `get_all`, so staged deletions
+and ancestor replacements hide older values.
+They read history even when a value is staged locally; a history failure is not
+hidden by a local default or tombstone.
+These methods do not change path syntax, persisted Doc payloads, DAG-CBOR Entry
+encoding, IDs, or signatures.
+The compatibility methods `get_option` and `get_path_option` discard **all**
+errors, not just absence; do not use them for error-sensitive fallback.
+Likewise, `get_or_insert` is not a strict optional-read replacement: it may write
+a default after a read or type error.
 
 #### Important: Path Operations Create Nested Structures
 

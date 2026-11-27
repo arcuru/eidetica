@@ -17,12 +17,10 @@ use super::{
 };
 use crate::{
     Database, Entry, Result,
-    account::types::AccountInfo,
     auth::Permission,
     auth::crypto::{PrivateKey, PublicKey},
     crdt::Doc,
     entry::ID,
-    store::Table,
 };
 
 use super::utils::collect_ancestors_to_send;
@@ -219,7 +217,11 @@ impl Sync {
 
         // Step 2: Check if server is missing entries from us
         let backend = self.backend()?;
-        let our_snapshot = backend.snapshot(&response.tree_id).await?;
+        let our_snapshot = backend
+            .local_engine()
+            .expect("sync requires local backend")
+            .verified_snapshot(&response.tree_id)
+            .await?;
         let their_tips = &response.their_tips;
 
         // Find tips they don't have
@@ -345,7 +347,8 @@ impl Sync {
     /// Send a batch of entries to a sync peer (async version).
     ///
     /// # Arguments
-    /// * `entries` - The entries to send
+    /// * `entries` - Locally held, Verified entries to send. The entire batch
+    ///   is rechecked immediately before transport submission.
     /// * `address` - The address of the peer to send to
     ///
     /// # Returns
@@ -390,7 +393,8 @@ impl Sync {
     ///
     /// # Arguments
     /// * `peer_id` - The peer ID to send to
-    /// * `entries` - The specific entries to send (no filtering applied)
+    /// * `entries` - The specific locally Verified entries to send. Queueing is
+    ///   not acknowledgment: the send/retry path rechecks local verification.
     ///
     /// # Returns
     /// A Result indicating whether the command was successfully queued for background processing.
@@ -448,16 +452,12 @@ impl Sync {
     /// This is the core method that implements automatic sync-on-commit behavior.
     ///
     /// # Arguments
-    /// * `event` - The write event containing the newly committed entries
-    /// * `database` - The database where the entries were committed
+    /// * `database` - The database where entries were committed. Its application
+    ///   visibility is not used to choose outgoing entries.
     ///
     /// # Returns
     /// Ok(()) on success, or an error if settings lookup fails
-    pub(crate) async fn on_local_write(
-        &self,
-        event: &crate::instance::WriteEvent,
-        database: &Database,
-    ) -> Result<()> {
+    pub(crate) async fn on_local_write(&self, database: &Database) -> Result<()> {
         // Early return if background sync not running
         if self.background_tx.get().is_none() {
             return Ok(());
@@ -496,27 +496,25 @@ impl Sync {
             return Ok(());
         }
 
-        // Queue each entry for sync with each peer. The event no longer
-        // carries entry payloads — expand the cursor advance back into a
-        // concrete set of IDs by walking the DAG diff. Cost is bounded
-        // by the cursor delta, not the full tree.
+        // Sync owns its checkpoints, not the application's delivered events.
+        // Read after taking the cursor lock so concurrent hook tasks cannot
+        // regress a checkpoint by processing an older event after a newer one.
         let tree_id = database.root_id();
-
-        let new_ids = database
-            .ids_added(event.previous_tips(), event.post_tips())
+        let mut cursors = self.write_cursors.lock().await;
+        let latest = self
+            .instance()?
+            .require_local_engine()?
+            .verified_snapshot(tree_id)
             .await?;
-
-        for entry_id in &new_ids {
-            debug!(
-                database_id = %tree_id,
-                entry_id = %entry_id,
-                peer_count = peers.len(),
-                "Queueing entry for automatic sync"
-            );
-
-            for peer_id in &peers {
-                self.queue_entry_for_sync(peer_id, entry_id, tree_id)?;
+        for peer in peers {
+            let cursor = cursors.entry((peer.clone(), tree_id.clone())).or_default();
+            let new_ids = database.ids_added(cursor, &latest).await?;
+            for entry_id in new_ids {
+                self.queue_entry_for_sync(&peer, &entry_id, tree_id)?;
             }
+            // Queued, not acknowledged. Send failures use the retry queue; a
+            // process restart recovers with periodic Verified DAG comparison.
+            *cursor = latest.clone();
         }
 
         Ok(())
@@ -525,54 +523,22 @@ impl Sync {
     /// Initialize combined settings for all users.
     ///
     /// This is called during Sync initialization. For new sync trees (just created),
-    /// it scans the _users database to register all existing users. For existing
+    /// it scans native local login records to register existing users. For existing
     /// sync trees (loaded), it updates combined settings for already-tracked users.
     pub(super) async fn initialize_account_settings(&self) -> Result<()> {
         self.reconcile_account_settings().await
     }
 
-    /// Reconcile the persisted user directory and every tracked preferences tree.
-    ///
-    /// The daemon calls this at startup and whenever a service client changes
-    /// either source tree. It is intentionally idempotent: `sync_account` compares
-    /// the persisted preferences cursor before updating combined settings.
+    /// Reconcile native installation logins at startup. Subsequent supported
+    /// preference writes call `sync_account` for their exact login directly.
+    /// Activation tokens suppress unchanged combined-setting writes.
     pub(crate) async fn reconcile_account_settings(&self) -> Result<()> {
-        let _guard = self.reconciliation.lock().await;
-
         let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
-        let users_db = instance.users_db().await?;
-        let users_table = users_db
-            .get_store_viewer::<Table<AccountInfo>>("users")
-            .await?;
-
-        // Always scan `_users`, not only when the sync tree is empty. A daemon
-        // may already track some users when another account is created through
-        // the service socket.
-        for (login_id, account_info) in users_table.search(|_| true).await? {
+        for (login_id, account_info) in crate::account::local_logins::records(&instance).await? {
             self.sync_account(&login_id, &account_info.account_id)
                 .await?;
         }
-
         Ok(())
-    }
-
-    /// Whether a local write can change the persisted user sync intent.
-    pub(crate) async fn is_reconciliation_source(&self, database_id: &ID) -> Result<bool> {
-        let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
-        if instance.users_db_id() == database_id {
-            return Ok(true);
-        }
-        let users_db = instance.users_db().await?;
-        let users_table = users_db
-            .get_store_viewer::<Table<AccountInfo>>("users")
-            .await?;
-
-        Ok(users_table
-            .search(|user| &user.account_id == database_id)
-            .await?
-            .into_iter()
-            .next()
-            .is_some())
     }
 
     /// Send a sync request to a peer and get a response (async version).
@@ -803,7 +769,9 @@ impl Sync {
     pub(super) async fn tree_pull_tips(&self, tree_id: &ID) -> Result<crate::Snapshot> {
         let backend = self.backend()?;
         let tips = backend
-            .snapshot(tree_id)
+            .local_engine()
+            .expect("sync requires local backend")
+            .verified_snapshot(tree_id)
             .await
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
         match backend.get(tree_id).await {
@@ -880,6 +848,10 @@ impl Sync {
             .clone()
             .zip(request.requested_permission);
         let pull_only = requested_access.is_some() && request.our_tips.is_empty();
+        let require_direct_key = request
+            .auth
+            .as_ref()
+            .is_some_and(SyncRequestAuth::requires_direct_key);
         let request = SyncRequest::SyncTree(request);
 
         // Send request via background sync command
@@ -992,7 +964,14 @@ impl Sync {
         }
 
         if let Some((key, permission)) = requested_access
-            && !Database::can_access(&self.instance()?, &tree_id, &key, &permission).await?
+            && !super::bootstrap::request_satisfied(
+                &self.instance()?,
+                &tree_id,
+                &key,
+                &permission,
+                require_direct_key,
+            )
+            .await?
         {
             return Err(SyncError::AuthenticationFailed(
                 "verified transfer does not grant the requested permission".to_string(),

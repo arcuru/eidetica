@@ -44,7 +44,7 @@ SQLite uses a cooperative advisory lock on a stable `.eidetica-owner` sidecar ne
 
 PostgreSQL stores an ownership token in the active schema: every pooled session holds a shared namespace lock and validates that token, while takeover requires the exclusive namespace lock. A surviving old session therefore blocks takeover, and a stale pool cannot reconnect after ownership changes. The operating system or database server releases the locks when their sessions exit or crash. Dropping a PostgreSQL backend closes its sessions without waiting for the server, so an immediate reopen of the same namespace can still briefly fail with `BackendError::StorageAlreadyOwned`.
 
-Both SQL backends use an internal integer schema counter, independent of releases and the InMemory file counter. Mainline schema `0` migrates directly to current `2`; current opens reuse persisted Verified tips. The experimental `1` prefix format is unsupported. See the [migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
+Both SQL backends use an internal integer schema counter, independent of releases and the InMemory file counter. Mainline schema `0` migrates directly to current `5`; current opens reuse both persisted frontiers and local-account records. The experimental `1` prefix format is unsupported. See the [migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
 Both SQL backends reject a stored schema version newer than the supported version before creating schema tables or indexes or running migrations.
 Refusal leaves the version marker, Entries, instance metadata and Store-state records unchanged.
 The error names both versions.
@@ -66,6 +66,125 @@ use eidetica::backend::database::Sqlite;
 let backend = Sqlite::open("my_data.db").await?;
 let instance = Instance::open_backend(Box::new(backend)).await?;
 ```
+
+#### Disposable SQLite cache
+
+SQLite keeps immutable Entries, verification state, instance metadata/secrets,
+local account credentials and Authoritative Store state in the primary history
+file. Only reconstructible Derived records and their unpublished builds use a
+second SQLite database. PostgreSQL keeps its own cache in its tables unless a
+[separate cache engine](#separate-cache-engine) is selected.
+
+The CLI resolves `--cache-dir` / `EIDETICA_CACHE_DIR` to an application directory:
+
+| Platform           | Default directory                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| Linux / other Unix | `$XDG_CACHE_HOME/eidetica`, or `$HOME/.cache/eidetica` when XDG is unset or relative |
+| macOS              | `$HOME/Library/Caches/eidetica`                                                      |
+| Windows            | `%LOCALAPPDATA%/eidetica`                                                            |
+| Packaged container | `/cache` (explicit environment setting)                                              |
+
+Initialized instances use `<hex-encoded-prefixed-device-public-key>.sqlite`
+beneath that directory, with the normal SQLite sidecars and a stable
+`.eidetica-owner` sidecar. Independent instances have different existing device
+keys and therefore different files under a shared root. Copies retaining the
+same device key are the same instance for this purpose: use different cache
+roots if running such copies independently. No new storage identifier is saved.
+
+First initialization has no complete instance identity yet. It uses an in-memory
+Derived cache until the backend is reopened, then selects the file from complete
+persisted metadata. It never saves placeholder metadata to obtain a filename.
+The host creates the designated application directory as needed, but does not
+change existing ownership/group permissions. That directory and its files must
+be writable by the service account. Cache contents may be sensitive, including
+plaintext unencrypted Store values; provision access accordingly. No private
+permission mode or ownership changes are imposed by the backend.
+
+Library constructors do not inspect host environment variables. `Sqlite::open`
+and SQLite Instance URLs default to `<history-filename>.cache` adjacent to history.
+`Sqlite::open_with_cache_path` accepts an explicit low-level filename and policy;
+`SqlxBackend::open_sqlite_with_cache_dir` accepts an existing directory and policy
+with the instance-key/bootstrap behavior above. In-memory SQLite keeps both pools
+in memory and refuses a persistent cache location.
+
+The canonical Snapshot digest plus database, Store, projection/version and trust
+scope identifies a cache entry. Historical Snapshots remain reusable across
+unrelated writes and restarts; there is no global history freshness token.
+Verification can change the selected Snapshot, not the hash of an unchanged
+Snapshot. Cache storage errors propagate rather than silently becoming misses;
+an unrelated, corrupt or unsupported file is refused, never erased on open.
+
+##### Backup and offline recreation
+
+Back up durable history using SQLite's backup API, or stop every owner/reader
+and take a consistent primary image including any outstanding WAL. Cache files
+are optional backups. Restoring history alone can reuse matching immutable
+Snapshot caches; other keys remain separate and cannot stand in for the selected
+Snapshot. The cache is not an authorization or verification proof.
+
+To reclaim physical cache space, stop the service and every direct user first.
+Remove only the selected instance's `.sqlite` (or explicit low-level cache file)
+and its `-wal`, `-shm`, and `-journal` sidecars. Keep the stable ownership sidecar.
+Reopening recreates C and rebuilds values on demand without losing history,
+credentials or Authoritative state. Never unlink, replace or copy a live SQLite
+image, its sidecars or its ownership lock. Do not remove an entire shared XDG root.
+Online `clear_derived_store_state` instead preserves a generation for live readers;
+its byte limit is live payload, not a physical filesystem quota. WAL/NORMAL
+synchronous defaults are unchanged for both files.
+
+The history file uses schema **5**, including `local_accounts` and the non-Failed
+frontier. The v4 upgrade preserves local records and trust decisions; SQLite discards
+legacy single-file Derived rows on open while retaining Authoritative records.
+No extra H schema bump is required. The unreleased `history_identity` H layout
+and `cache_binding` C format from an earlier candidate are unsupported and refused,
+not silently converted. Preserve those files and use their matching candidate
+binary for recovery; this is not approval to migrate live candidate data.
+
+#### Separate cache engine
+
+The Derived cache can use a different engine from primary storage. `SplitBackend`
+composes any primary backend with any `DerivedCacheStorage`: `SqliteCache` (a
+file or in-memory SQLite database holding only Derived state) or `InMemory`.
+PostgreSQL, SQLite and InMemory primaries can therefore use a SQLite or
+in-memory cache, and a future engine needs only its own implementation of the
+one trait, not a pair-specific integration.
+
+```rust,ignore
+use eidetica::backend::{DerivedCachePolicy, SplitBackend};
+use eidetica::backend::database::{Postgres, SqliteCache};
+
+let off = DerivedCachePolicy { max_namespaces: 0, max_bytes: 0 };
+let primary = Postgres::connect_with_cache_policy(url, off).await?;
+let metadata = primary.get_instance_metadata().await?;
+let cache = SqliteCache::open_for_instance(cache_dir, metadata.as_ref(),
+    DerivedCachePolicy::persistent()).await?;
+let backend = SplitBackend::new(Box::new(primary), Box::new(cache));
+let instance = Instance::open_backend(Box::new(backend)).await?;
+```
+
+Entries, verification, instance metadata/secrets, local credentials and
+Authoritative Store state stay in the primary. Only Derived records and their
+builds use the cache, with the cache engine's own dialect, schema, startup
+validation, publication, bounds/eviction and ownership. Opaque record views and
+staging tokens carry their owner and are refused by the other storage. Cache
+bounds come from the cache; open a split primary with retention disabled (as
+above, or `Sqlite::open_with_memory_cache` for SQLite history). PostgreSQL then
+reclaims Derived rows from an earlier configuration on open; an earlier SQLite
+cache file is left untouched for offline removal. Offline trust
+reset discards the cache, then resets the primary; a failure can leave a cold
+cache, never a reset with old cached state. Other caches holding the same
+instance (for example on another host sharing a PostgreSQL primary) are not
+reached: stop and recreate them offline before trusting reads there.
+
+Instance isolation follows the SQLite cache rule above. `open_for_instance`
+names a file by the instance's existing device key and uses memory before first
+initialization completes; `SqliteCache::open` takes an explicit filename, which
+must belong to exactly one instance and is exclusively owned while open.
+A persistent cache requires a persistent primary: the host refuses
+`--backend inmemory --cache-backend sqlite`, and library callers must not pair
+a persistent cache with ephemeral primary storage. An ephemeral primary uses an
+in-memory cache. The engine shown by `as_any` (and the health endpoint) is the
+primary's.
 
 ### PostgreSQL
 
@@ -92,7 +211,7 @@ The in-process backend is intended for tests, examples, and embedded apps that d
 
 **Not for production.** Prefer `sqlite://` (file-backed) or `postgres://` for any deployed workload. Specifically:
 
-- JSON snapshots use internal integer format counter `_v` (currently `2`), not a release version or stability promise. Mainline unversioned/`0` files reconstruct Verified tips on load; experimental `1` and future formats are refused. See the [supported migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
+- JSON snapshots use internal integer format counter `_v` (currently `4`), not a release version or stability promise. Mainline unversioned/`0` files reconstruct both frontiers on load; versions `2` and `3` reconstruct only the non-Failed frontier and child counts. Experimental `1` and future formats are refused. See the [supported migration matrix](../../design/verification.md#persistence-restart-and-forward-migration).
 - The snapshot serializes the device signing key **in plaintext**. For `memory:///path.json`, that key ends up on disk in cleartext — fine for tests, unsafe for production.
 - Every `flush()` rewrites the full backend state; there's no incremental persistence, MVCC, or multi-process access.
 
@@ -153,7 +272,8 @@ The `service` feature must be enabled (included in the default `full` feature se
 The `Database` trait (`eidetica::backend::Database`) defines the core interface required for storage. Beyond simple `get` and `put` for entries, it includes methods crucial for navigating the database's history and structure:
 
 - `snapshot(tree_id)`: Finds the latest entries in a specific `Database`.
-- `store_snapshot(tree_id, subtree_name)`: Finds the latest entries _for a specific `Store`_ within a `Database`.
+- `store_snapshot(tree_id, subtree_name)`: Finds unconsumed tips by explicit Store-parent edges, not by filtering main tips. These low-level tips include raw ingested history.
+- `store_snapshot_at(tree_id, subtree_name, main_snapshot)`: Derives Store tips in the given main-ancestry cut. Transactions use a Verified cut by default; an unconsumed Store tip remains visible even when another tip's Entry is its main descendant. See [Store frontiers](../../design/verification.md#store-parent-frontiers).
 - `all_roots()`: Finds all top-level `Database` roots stored in the database.
 - `get_tree(tree_id)` / `get_subtree(...)`: Retrieve all entries for a database/store, typically sorted topologically (required for some history operations, potentially expensive).
 

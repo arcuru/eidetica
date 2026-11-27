@@ -196,7 +196,7 @@ async fn test_delete_operations_with_helpers() {
     .await;
 
     // Test delete operation helper
-    let delete_id = test_delete_operation(&tree, "data", "delete_me").await;
+    let delete_id = commit_key_deletion(&tree, "data", "delete_me").await;
     assert!(!delete_id.to_string().is_empty());
 
     // Verify deletion with new operation
@@ -217,7 +217,7 @@ async fn test_nested_map_operations() {
     let ctx = TestContext::new().with_database().await;
 
     // Test nested map creation helper
-    let nested_value = create_nested_map(&[("key1", "val1"), ("key2", "val2")]);
+    let nested_value = create_doc_value(&[("key1", "val1"), ("key2", "val2")]);
 
     match nested_value {
         Value::Doc(map) => {

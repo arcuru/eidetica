@@ -67,7 +67,7 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     let peer_addr = Address::http(peer_sync.get_server_address_for("http").await?);
 
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
-    let mut client = service.login_account("alice", None).await?;
+    let mut client = service.login_account("alice", "").await?;
     let key = client.get_default_key()?;
     let mut settings = Doc::new();
     settings.set("name", "created-by-service-client");
@@ -142,20 +142,25 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
     let (service_shutdown, service_handle) = start_service(restarted.clone(), &socket).await;
 
     let service = Instance::connect(format!("unix://{}", socket.display())).await?;
-    let client = service.login_account("alice", None).await?;
+    let client = service.login_account("alice", "").await?;
     let client_db = client.open_database(&tree).await?;
     let (fired_tx, mut fired_rx) = tokio::sync::mpsc::unbounded_channel();
     let _callback = client_db
         .on_write(move |event, _db| {
-            let source = event.source();
+            let snapshot = event.clone();
             let tx = fired_tx.clone();
             async move {
-                let _ = tx.send(source);
+                let _ = tx.send(snapshot);
                 Ok(())
             }
         })
         .await?;
 
+    let initial = tokio::time::timeout(Duration::from_secs(2), fired_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(initial, client_db.snapshot().await?);
     peer_db
         .with_transaction(|tx| async move {
             tx.get_store::<DocStore>("data")
@@ -166,11 +171,12 @@ async fn service_client_database_syncs_and_restart_preserves_callback_delivery()
         .await?;
     peer.flush_sync().await?;
 
-    let source = tokio::time::timeout(Duration::from_secs(2), fired_rx.recv())
+    let latest = tokio::time::timeout(Duration::from_secs(2), fired_rx.recv())
         .await
         .expect("reconnected client did not receive the synced write callback")
         .expect("callback channel closed");
-    assert_eq!(source, eidetica::instance::WriteSource::Remote);
+    assert_ne!(latest, initial);
+    assert_eq!(latest, client_db.snapshot().await?);
     assert_eq!(
         client_db
             .get_store_viewer::<DocStore>("data")

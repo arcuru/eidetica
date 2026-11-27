@@ -11,9 +11,13 @@
 //! in a transaction, the system must determine the correct parent entries for that subtree.
 //! This involves:
 //!
-//! 1. Checking for existing subtree tips (leaf nodes)
-//! 2. If no tips exist, traversing the DAG to find reachable subtree entries
-//! 3. Setting appropriate parent relationships (empty for first entry, or proper parents)
+//! 1. Fixing the main-parent boundary at transaction creation
+//! 2. Finding all unconsumed Store contributions in that main ancestry
+//! 3. Selecting those Store tips as the authored parents (empty for no history)
+//!
+//! This selection default is not ordinary Store validation: a received write
+//! may omit observed tips or start an independent Store branch. `_settings`
+//! writes and signed pins retain exact causal-frontier validation.
 
 pub mod errors;
 
@@ -35,12 +39,12 @@ use crate::{
     Database, Error, Result, Snapshot, Store,
     auth::{
         AuthSettings,
-        crypto::{PrivateKey, sign_entry},
+        crypto::PrivateKey,
         types::{AuthInfo, SigKey},
         validation::AuthValidator,
     },
     backend::{RecordMutations, RecordRange, RecordView, VerificationStatus},
-    constants::{INDEX, ROOT, SETTINGS},
+    constants::{ENTRY_TIMESTAMPS, INDEX, ROOT, SETTINGS},
     crdt::{CRDT, Codec, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
     height::HeightStrategy,
@@ -135,8 +139,9 @@ pub(crate) trait Encryptor: Send + Sync {
 pub(crate) struct EntryMetadata {
     /// Snapshot of the `_settings` subtree at the time this entry was created.
     /// This is the entry's **pin**: the exact `_settings` state its
-    /// signature must be validated against. Used for sync performance,
-    /// sparse-checkout validation, and deferred re-verification.
+    /// signature must be validated against. It must equal the independently
+    /// derived causal pre-write settings frontier, not a signer-selected subset.
+    /// Verification still requires whole Entries and complete main ancestry.
     ///
     /// Wire name remains `settings_tips` for on-disk stability — `Snapshot`
     /// serializes as a bare ID array, identical to the legacy `Vec<ID>` shape.
@@ -144,6 +149,9 @@ pub(crate) struct EntryMetadata {
     pub(crate) settings_snapshot: Snapshot,
     /// Random entropy for ensuring unique IDs for root entries
     pub(crate) entropy: Option<u64>,
+    // Read only via Entry::committed_at_ms. Verification must not interpret it.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    ts: Option<u64>,
 }
 
 /// Represents a single, atomic transaction for modifying a `Database`.
@@ -501,6 +509,7 @@ impl Transaction {
             .unwrap_or(EntryMetadata {
                 settings_snapshot: Snapshot::EMPTY,
                 entropy: None,
+                ts: None,
             });
 
         // Set entropy
@@ -1509,7 +1518,7 @@ impl Transaction {
 
         // VALIDATION: Ensure that the new settings state (after this transaction) doesn't corrupt auth
         // This prevents committing entries that would corrupt the database's auth configuration
-        if has_settings_update {
+        let post_write_settings = if has_settings_update {
             // Compute what the new settings state will be after merging local changes
             let local_settings = self.get_local_data::<Doc>(SETTINGS)?.unwrap_or_default();
             let new_settings = effective_settings_for_validation.merge(&local_settings)?;
@@ -1526,7 +1535,10 @@ impl Transaction {
                 }
             }
             // If auth is None (not configured), that's fine - we allow empty auth
-        }
+            Some(new_settings)
+        } else {
+            None
+        };
 
         // Ensure _index constraint: subtrees referenced in _index must appear in Entry.
         // This adds subtrees with None data if they're referenced in _index but not yet in builder.
@@ -1596,24 +1608,6 @@ impl Transaction {
             builder_from_cell.clone()
         };
 
-        // Parse existing metadata if present, or create new
-        let mut metadata = builder
-            .metadata()
-            .and_then(|m| serde_json::from_slice::<EntryMetadata>(m).ok())
-            .unwrap_or(EntryMetadata {
-                settings_snapshot: Snapshot::EMPTY,
-                entropy: None,
-            });
-
-        // Update settings snapshot
-        metadata.settings_snapshot = settings_snapshot;
-
-        // Serialize the metadata
-        let metadata_json = serde_json::to_vec(&metadata)?;
-
-        // Add metadata to the entry builder
-        builder.set_metadata_mut(metadata_json);
-
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured
 
@@ -1649,27 +1643,23 @@ impl Transaction {
             }
         }
 
-        // Extract height strategy from settings (defaults to Incremental)
-        // If this transaction includes settings updates, merge them to get the effective strategy
-        let settings_for_height = if has_settings_update {
-            let local_settings = self.get_local_data::<Doc>(SETTINGS)?.unwrap_or_default();
-            effective_settings_for_validation.merge(&local_settings)?
-        } else {
-            effective_settings_for_validation.clone()
-        };
-        let height_strategy: HeightStrategy = settings_for_height
+        // Unlike auth, authoring policy includes this transaction's staged settings.
+        let authoring_settings = post_write_settings
+            .as_ref()
+            .unwrap_or(&effective_settings_for_validation);
+        let height_strategy: HeightStrategy = authoring_settings
             .get_json("height_strategy")
             .unwrap_or_default();
+        let instance = self.db.instance()?;
 
         // Compute heights from parent entries using the configured strategy
         {
             let backend = self.db.ops();
-            let instance = self.db.instance()?;
             let calculator = height_strategy.into_calculator(instance.clock_arc());
 
             // Compute main tree height using the height strategy
             let main_parents = builder.parents().unwrap_or_default();
-            let max_parent_height = if main_parents.is_empty() {
+            let mut max_parent_height = if main_parents.is_empty() {
                 None
             } else {
                 let mut max_height = 0u64;
@@ -1680,8 +1670,6 @@ impl Transaction {
                 }
                 Some(max_height)
             };
-            let tree_height = calculator.calculate_height(max_parent_height);
-            builder.set_height_mut(tree_height);
 
             // Compute subtree heights based on per-subtree settings from _index
             // System subtrees (prefixed with _) always inherit from tree.
@@ -1707,36 +1695,53 @@ impl Transaction {
                     None
                 };
 
+                let subtree_parents = builder.subtree_parents(&subtree_name)?;
+                let mut max_subtree_parent_height: Option<u64> = None;
+                for parent_id in &subtree_parents {
+                    let height = backend
+                        .get(parent_id)
+                        .await?
+                        .subtree_height(&subtree_name)?;
+                    max_subtree_parent_height =
+                        Some(max_subtree_parent_height.map_or(height, |h| h.max(height)));
+                }
                 match subtree_strategy {
                     None => {
-                        // Inherit from tree - height stays None (default)
-                        // Entry.subtree_height() will return tree height
+                        // Returning to inheritance must still exceed the previous
+                        // effective Store height, even after an independent override.
+                        if let Some(height) = max_subtree_parent_height {
+                            max_parent_height =
+                                Some(max_parent_height.map_or(height, |h| h.max(height)));
+                        }
+                        builder.set_subtree_height_mut(&subtree_name, None);
                     }
                     Some(strategy) => {
-                        // Calculate independent height from subtree parents
                         let subtree_calculator = strategy.into_calculator(instance.clock_arc());
-                        let subtree_parents =
-                            builder.subtree_parents(&subtree_name).unwrap_or_default();
-                        let max_subtree_parent_height = if subtree_parents.is_empty() {
-                            None
-                        } else {
-                            let mut max_height = 0u64;
-                            for parent_id in &subtree_parents {
-                                if let Ok(parent) = backend.get(parent_id).await
-                                    && let Ok(height) = parent.subtree_height(&subtree_name)
-                                {
-                                    max_height = max_height.max(height);
-                                }
-                            }
-                            Some(max_height)
-                        };
                         let subtree_height =
                             subtree_calculator.calculate_height(max_subtree_parent_height);
                         builder.set_subtree_height_mut(&subtree_name, Some(subtree_height));
                     }
                 }
             }
+            builder.set_height_mut(calculator.calculate_height(max_parent_height));
         }
+
+        let entropy = builder
+            .metadata()
+            .and_then(|m| serde_json::from_slice::<EntryMetadata>(m).ok())
+            .and_then(|md| md.entropy);
+        // Read the clock after height calculation so this additional read cannot
+        // affect the height of the entry being authored.
+        let ts = matches!(
+            authoring_settings.get(ENTRY_TIMESTAMPS),
+            Some(Value::Bool(true))
+        )
+        .then(|| instance.clock().now_millis());
+        builder.set_metadata_mut(serde_json::to_vec(&EntryMetadata {
+            settings_snapshot,
+            entropy,
+            ts,
+        })?);
 
         // Build the final immutable Entry
         let mut entry = builder.build()?;
@@ -1756,11 +1761,13 @@ impl Transaction {
         // This catches any issues early in the transaction, providing clear error
         // messages before the entry is signed or reaches the backend storage layer.
         entry.validate()?;
+        if !self.db.validate_entry_parents(&entry).await? {
+            return Err(TransactionError::EntryValidationFailed.into());
+        }
 
         // Sign the entry if we have a signing key
         if let Some(signing_key) = signing_key {
-            let signature = sign_entry(&entry, &signing_key)?;
-            entry = entry.with_auth(|auth| auth.signature = Some(signature));
+            entry = entry.sign(&signing_key)?;
         }
 
         // Validate authentication (all entries must be authenticated)
@@ -1795,15 +1802,26 @@ impl Transaction {
             }
         };
 
-        let instance = self.db.instance()?;
-
-        // Validate entry (signature + permissions)
-        let is_valid = validator
-            .validate_entry(&entry, &auth_settings_for_validation, Some(&instance))
-            .await?;
-
-        if !is_valid {
-            return Err(TransactionError::EntryValidationFailed.into());
+        // Connected clients have no local engine for delegated proof resolution.
+        // SubmitSignedEntry verifies on the daemon and acknowledges only Verified
+        // entries. Keep direct-key client validation as an additional early check.
+        #[cfg(all(unix, feature = "service"))]
+        let validate_locally = instance.remote_connection().is_none()
+            || !matches!(
+                self.provided_signing_key
+                    .as_ref()
+                    .map(|(_, identity)| identity),
+                Some(SigKey::Delegation { .. })
+            );
+        #[cfg(not(all(unix, feature = "service")))]
+        let validate_locally = true;
+        if validate_locally {
+            let is_valid = validator
+                .validate_entry(&entry, &auth_settings_for_validation, Some(&instance))
+                .await?;
+            if !is_valid {
+                return Err(TransactionError::EntryValidationFailed.into());
+            }
         }
 
         let verification_status = VerificationStatus::Verified;
@@ -1812,7 +1830,6 @@ impl Transaction {
         let id = entry.id();
 
         // Write entry through Instance which handles backend storage and callback dispatch
-        let instance = self.db.instance()?;
         if let Some(guard) = guard {
             instance
                 .put_entry_under_tree_lock(

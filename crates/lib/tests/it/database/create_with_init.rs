@@ -62,15 +62,18 @@ async fn test_init_callback_error_aborts_create() {
     let instance = test_local_instance().await;
     let (signing_key, _) = generate_keypair();
 
+    let engine = instance.backend().local_engine().unwrap();
+    let before = engine.all_roots().await.unwrap();
     let result = Database::create_with_init(&instance, signing_key, Doc::new(), async |_txn| {
         Err(std::io::Error::other("init failed").into())
     })
     .await;
 
-    assert!(
-        result.is_err(),
-        "create_with_init should propagate init errors"
-    );
+    let error = result.unwrap_err();
+    assert!(error.created_database_id().is_none());
+    assert!(matches!(&error, eidetica::Error::Io(cause) if cause.to_string() == "init failed"));
+    assert!(error.is_io_error());
+    assert_eq!(engine.all_roots().await.unwrap(), before);
 }
 
 #[tokio::test]

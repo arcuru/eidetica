@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::BackendError;
 use crate::entry::ID;
 use crate::instance::InstanceError;
+use crate::state::StateError;
 
 /// Wire-format error for the service protocol.
 ///
@@ -89,6 +90,14 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
         ("instance", "InstanceAlreadyExists") => InstanceError::InstanceAlreadyExists.into(),
         ("instance", "DeviceKeyNotFound") => InstanceError::DeviceKeyNotFound.into(),
         ("instance", "AuthenticationRequired") => InstanceError::AuthenticationRequired.into(),
+        ("transaction", "EntryValidationFailed") => {
+            crate::transaction::TransactionError::EntryValidationFailed.into()
+        }
+        ("state", "Refused") => StateError::Refused.into(),
+        ("state", "Denied") => StateError::Denied.into(),
+        ("state", "InvalidBoundary") => StateError::InvalidBoundary.into(),
+        ("state", "UnavailableHistory") => StateError::UnavailableHistory.into(),
+        ("state", "UnsupportedProjection") => StateError::UnsupportedProjection.into(),
         _ => {
             // Fall back to an IO error carrying the original message
             crate::Error::Io(std::io::Error::other(format!(
@@ -112,6 +121,7 @@ fn error_kind_name(err: &crate::Error) -> String {
     match err {
         crate::Error::Io(_) => "Io".to_string(),
         crate::Error::Serialize(_) => "Serialize".to_string(),
+        crate::Error::DatabaseCreation { .. } => "DatabaseCreation".to_string(),
         crate::Error::Auth(e) => format!("{e:?}")
             .split_once(|c: char| !c.is_alphanumeric())
             .map_or_else(|| format!("{e:?}"), |(name, _)| name.to_string()),
@@ -130,6 +140,7 @@ fn error_kind_name(err: &crate::Error) -> String {
         crate::Error::Transaction(e) => format!("{e:?}")
             .split_once(|c: char| !c.is_alphanumeric())
             .map_or_else(|| format!("{e:?}"), |(name, _)| name.to_string()),
+        crate::Error::State(e) => format!("{e:?}"),
         crate::Error::Sync(e) => format!("{e:?}")
             .split_once(|c: char| !c.is_alphanumeric())
             .map_or_else(|| format!("{e:?}"), |(name, _)| name.to_string()),
@@ -261,6 +272,14 @@ mod tests {
             crate::Error::Instance(Box::new(InstanceError::InstanceAlreadyExists)),
             crate::Error::Instance(Box::new(InstanceError::DeviceKeyNotFound)),
             crate::Error::Instance(Box::new(InstanceError::AuthenticationRequired)),
+            crate::Error::Transaction(Box::new(
+                crate::transaction::TransactionError::EntryValidationFailed,
+            )),
+            StateError::Refused.into(),
+            StateError::Denied.into(),
+            StateError::InvalidBoundary.into(),
+            StateError::UnavailableHistory.into(),
+            StateError::UnsupportedProjection.into(),
         ];
 
         for original in &cases {
@@ -288,12 +307,16 @@ mod tests {
         match err {
             crate::Error::Io(_) => {}
             crate::Error::Serialize(_) => {}
+            // Creation context is attached client-side after the genesis RPC.
+            // The existing generic wire fallback is sufficient if forwarded.
+            crate::Error::DatabaseCreation { .. } => {}
             crate::Error::Auth(_) => {}
             crate::Error::Backend(_) => {}
             crate::Error::Instance(_) => {}
             crate::Error::CRDT(_) => {}
             crate::Error::Store(_) => {}
             crate::Error::Transaction(_) => {}
+            crate::Error::State(_) => {}
             crate::Error::Sync(_) => {}
             crate::Error::Entry(_) => {}
             crate::Error::Id(_) => {}

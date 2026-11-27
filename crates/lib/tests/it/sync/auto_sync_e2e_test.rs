@@ -64,8 +64,8 @@ async fn test_auto_sync_between_instances() -> Result<()> {
         .await?;
 
     // Create user on instance1
-    crate::helpers::create_account(&instance1, "alice", None).await?;
-    let mut user1 = instance1.login_account("alice", None).await?;
+    crate::helpers::create_account(&instance1, "alice", "").await?;
+    let mut user1 = instance1.login_account("alice", "").await?;
 
     // Create a database
     let mut db_settings = Doc::new();
@@ -179,11 +179,11 @@ async fn test_bidirectional_auto_sync() -> Result<()> {
     sync2.add_peer_address(&peer1_pubkey, address1).await?;
 
     // Create users on both instances
-    crate::helpers::create_account(&instance1, "alice", None).await?;
-    let mut user1 = instance1.login_account("alice", None).await?;
+    crate::helpers::create_account(&instance1, "alice", "").await?;
+    let mut user1 = instance1.login_account("alice", "").await?;
 
-    crate::helpers::create_account(&instance2, "bob", None).await?;
-    let mut user2 = instance2.login_account("bob", None).await?;
+    crate::helpers::create_account(&instance2, "bob", "").await?;
+    let mut user2 = instance2.login_account("bob", "").await?;
 
     // Create database on instance1
     let mut db_settings = Doc::new();
@@ -271,8 +271,8 @@ async fn test_enable_sync_after_user_setup() -> Result<()> {
     let instance2 = test_instance().await;
 
     // Create user and add database preferences BEFORE enabling sync
-    crate::helpers::create_account(&instance1, "alice", None).await?;
-    let mut user1 = instance1.login_account("alice", None).await?;
+    crate::helpers::create_account(&instance1, "alice", "").await?;
+    let mut user1 = instance1.login_account("alice", "").await?;
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "notes");
@@ -394,8 +394,8 @@ async fn test_auto_sync_after_restart() -> Result<()> {
         .await?;
 
     // Create user and configure database preferences
-    crate::helpers::create_account(&instance1, "alice", None).await?;
-    let mut user1 = instance1.login_account("alice", None).await?;
+    crate::helpers::create_account(&instance1, "alice", "").await?;
+    let mut user1 = instance1.login_account("alice", "").await?;
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "persistent_notes");
@@ -436,7 +436,7 @@ async fn test_auto_sync_after_restart() -> Result<()> {
 
     // Phase 2: Simulate restart - login again WITHOUT calling add_database
     // This tests that login-time registration and settings update work
-    let user1_relogin = instance1.login_account("alice", None).await?;
+    let user1_relogin = instance1.login_account("alice", "").await?;
 
     println!("✅ AccountSession logged in after 'restart'");
 
@@ -492,31 +492,24 @@ async fn a_synced_write_fires_the_receiving_side_callback() -> Result<()> {
     let mut net = Cluster::builder().peers(2).build().await?;
     let (room, dbs) = cluster_shared_database(&mut net, "registry").await?;
 
-    let fires = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counter = fires.clone();
-    // Held to the end of the test: dropping the handle unsubscribes.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let _cb = dbs[0]
-        .on_write(move |event, _db| {
-            // Count only remote-sourced fires. A bare counter would also catch
-            // this peer's own bookkeeping writes during the exchange and pass
-            // whether or not the synced write ever fired anything.
-            let remote = event.source() == eidetica::instance::WriteSource::Remote;
-            let counter = counter.clone();
-            async move {
-                if remote {
-                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                }
-                Ok(())
-            }
+        .on_write(move |snapshot, _| {
+            let _ = tx.send(snapshot.clone());
+            async { Ok(()) }
         })
         .await?;
-
+    let initial = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
     cluster_put(&dbs[1], "from_the_writer", "1").await?;
     net.exchange(1, 0, &room).await?;
-
-    assert!(
-        fires.load(std::sync::atomic::Ordering::SeqCst) > 0,
-        "a write that arrived over sync did not fire the receiving side's on_write"
-    );
+    let latest = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(latest, initial);
+    assert_eq!(latest, dbs[0].snapshot().await?);
     Ok(())
 }

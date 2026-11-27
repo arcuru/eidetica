@@ -3,7 +3,7 @@
 //! The default read view (`verified_snapshot`) must equal a cold full
 //! rebuild after every insertion and promotion order, on every backend.
 //! `Database::snapshot()` must serve the settled state without rescanning
-//! history; `GetVerifiedTips` inherits that path with no protocol change.
+//! history; service selected reads and watches inherit the retained path.
 
 use std::{
     any::Any,
@@ -613,6 +613,23 @@ struct Counting {
 
 #[async_trait::async_trait]
 impl BackendImpl for Counting {
+    async fn local_account_record(&self, name: &str) -> eidetica::Result<Option<Vec<u8>>> {
+        self.inner.local_account_record(name).await
+    }
+    async fn local_account_names(&self) -> eidetica::Result<Vec<String>> {
+        self.inner.local_account_names().await
+    }
+    async fn compare_exchange_local_account_record(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> eidetica::Result<bool> {
+        self.inner
+            .compare_exchange_local_account_record(name, expected, replacement)
+            .await
+    }
+
     async fn get(&self, id: &ID) -> eidetica::Result<Entry> {
         self.inner.get(id).await
     }
@@ -645,6 +662,10 @@ impl BackendImpl for Counting {
 
     async fn snapshot(&self, tree: &ID) -> eidetica::Result<Snapshot> {
         self.inner.snapshot(tree).await
+    }
+
+    async fn non_failed_snapshot(&self, tree: &ID) -> eidetica::Result<Snapshot> {
+        self.inner.non_failed_snapshot(tree).await
     }
 
     async fn verified_snapshot(&self, tree: &ID) -> eidetica::Result<Snapshot> {
@@ -822,8 +843,8 @@ async fn settled_snapshot_reads_are_scan_free() {
     )
     .await
     .unwrap();
-    create_account(&instance, "reader", None).await.unwrap();
-    let mut user = instance.login_account("reader", None).await.unwrap();
+    create_account(&instance, "reader", "").await.unwrap();
+    let mut user = instance.login_account("reader", "").await.unwrap();
     let key = user.get_default_key().expect("default key");
 
     let mut settings = Doc::new();
@@ -849,6 +870,80 @@ async fn settled_snapshot_reads_are_scan_free() {
         counters.counts(),
         (0, 0),
         "settled snapshots must perform no full-tree load and no per-entry status read"
+    );
+}
+
+/// Registration and accepted-write fan-out use only retained frontiers, even
+/// with both views and a long history. No per-commit history/status walk.
+#[tokio::test]
+async fn snapshot_watch_selected_registration_and_write_fanout_are_scan_free() {
+    let counters = Arc::new(HotPathCounters::default());
+    let (instance, _) = Instance::create_backend(
+        Box::new(Counting {
+            inner: test_backend().await,
+            counters: counters.clone(),
+        }),
+        NewAccount::passwordless("watch"),
+    )
+    .await
+    .unwrap();
+    let root = root_entry();
+    let tree = root.id();
+    instance
+        .put_entry(
+            &tree,
+            VerificationStatus::Verified,
+            root,
+            eidetica::WriteSource::Local,
+        )
+        .await
+        .unwrap();
+    let mut tip = tree.clone();
+    for height in 1..=256 {
+        let entry = child_entry(
+            &tree,
+            std::slice::from_ref(&tip),
+            &height.to_string(),
+            height,
+        );
+        tip = entry.id();
+        instance
+            .put_entry(
+                &tree,
+                VerificationStatus::Verified,
+                entry,
+                eidetica::WriteSource::Local,
+            )
+            .await
+            .unwrap();
+    }
+    let db = eidetica::Database::open(&instance, &tree).await.unwrap();
+    counters.reset();
+    let _verified = db.on_write(|_, _| async { Ok(()) }).await.unwrap();
+    let _opted = db
+        .clone()
+        .allow_unverified()
+        .on_write(|_, _| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(counters.counts(), (0, 0));
+    for height in 257..=264 {
+        let entry = child_entry(&tree, &[tip], &height.to_string(), height);
+        tip = entry.id();
+        instance
+            .put_entry(
+                &tree,
+                VerificationStatus::Verified,
+                entry,
+                eidetica::WriteSource::Local,
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        counters.counts(),
+        (0, 0),
+        "watch fan-out scanned history or probed per-entry status"
     );
 }
 
@@ -967,4 +1062,50 @@ async fn promotion_rejects_nonroot_parent_used_as_tree_root() {
     );
     assert_retained(&*backend, &a, &[]).await;
     assert_verified(&*backend, &tree, &[b, c]).await;
+}
+
+/// A retained frontier read plus incremental outgoing enumeration must not
+/// load history. The peer's previous cut stops the walk after one new entry.
+#[tokio::test]
+async fn verified_sync_retained_frontier_and_delta_do_not_scan_history() {
+    let counters = Arc::new(HotPathCounters::default());
+    let backend: Box<dyn BackendImpl> = Box::new(Counting {
+        inner: test_backend().await,
+        counters: Arc::clone(&counters),
+    });
+    let root = root_entry();
+    let tree = root.id();
+    backend.put_verified(root).await.unwrap();
+    let mut tip = tree.clone();
+    for height in 1..=256 {
+        let entry = child_entry(
+            &tree,
+            std::slice::from_ref(&tip),
+            &height.to_string(),
+            height,
+        );
+        tip = entry.id();
+        backend.put_verified(entry).await.unwrap();
+    }
+    let previous = Snapshot::new(vec![tip.clone()]);
+    let next = child_entry(&tree, &[tip], "next", 257);
+    backend.put_verified(next.clone()).await.unwrap();
+    counters.reset();
+    let latest = backend.verified_snapshot(&tree).await.unwrap();
+    let sent = eidetica::sync::utils::collect_ancestors_to_send(
+        backend.as_ref(),
+        latest.tips(),
+        previous.tips(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sent.iter().map(Entry::id).collect::<Vec<_>>(),
+        vec![next.id()]
+    );
+    assert_eq!(
+        counters.counts(),
+        (0, 1),
+        "one delta status read, no history load"
+    );
 }

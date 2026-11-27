@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     Result,
-    backend::BackendImpl,
+    backend::{BackendImpl, VerificationStatus},
     entry::{Entry, ID},
     sync::error::SyncError,
 };
@@ -104,7 +104,8 @@ pub async fn collect_missing_ancestors(
 /// * `their_tips` - Entry IDs that the peer already has
 ///
 /// # Returns
-/// Vec of entries that need to be sent (including ancestors)
+/// Locally Verified entries that need to be sent (including ancestors).
+/// Non-Verified seeds are excluded; a peer's tips are only traversal boundaries.
 ///
 /// # Example
 /// ```rust,ignore
@@ -138,6 +139,12 @@ pub async fn collect_ancestors_to_send(
         }
         visited.insert(entry_id.clone());
 
+        // Selection is local trust, never the application's opt-in view. A
+        // non-Verified seed must not smuggle itself or its branch onto the wire.
+        if backend.get_verification_status(&entry_id).await? != VerificationStatus::Verified {
+            continue;
+        }
+
         match backend.get(&entry_id).await {
             Ok(entry) => {
                 entries_to_send.insert(entry_id.clone(), entry.clone());
@@ -166,6 +173,26 @@ pub async fn collect_ancestors_to_send(
     let entries: Vec<Entry> = entries_to_send.into_values().collect();
 
     Ok(entries)
+}
+
+/// Recheck queued/retried payloads at the send boundary. A status may have
+/// changed since enumeration, and callers can supply explicit entry bodies.
+/// Refuse the whole batch rather than claiming a partial transfer succeeded.
+pub(super) async fn require_verified_entries(
+    backend: &dyn BackendImpl,
+    entries: &[Entry],
+) -> Result<()> {
+    for entry in entries {
+        let status = backend.get_verification_status(&entry.id()).await?;
+        if status != VerificationStatus::Verified {
+            return Err(SyncError::InvalidEntry(format!(
+                "outgoing entry {} is {status:?}, not Verified",
+                entry.id()
+            ))
+            .into());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -235,6 +262,10 @@ mod tests {
 
         // Store the entry
         backend.put(entry.clone()).await.unwrap();
+        backend
+            .update_verification_status(&entry_id, VerificationStatus::Verified)
+            .await
+            .unwrap();
 
         let result = collect_ancestors_to_send(backend.as_ref(), &[entry_id], &[])
             .await

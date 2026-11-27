@@ -41,10 +41,10 @@ fn test_auth_key_serialization() {
 
 #[test]
 fn test_sig_info_serialization() {
-    let sig_info = AuthInfo::builder()
-        .key(SigKey::from_name("KEY_LAPTOP"))
-        .signature("signature_base64_encoded_string_here")
-        .build();
+    let sig_info = AuthInfo {
+        signature: Some("signature_base64_encoded_string_here".to_string()),
+        key: SigKey::from_name("KEY_LAPTOP"),
+    };
 
     let json = serde_json::to_string(&sig_info).unwrap();
     let deserialized: AuthInfo = serde_json::from_str(&json).unwrap();
@@ -172,10 +172,10 @@ fn test_sig_key_delegation_roundtrip() {
 
 #[test]
 fn test_sig_info_nested_value_roundtrip() {
-    let original = AuthInfo::builder()
-        .key(SigKey::from_name("KEY_LAPTOP"))
-        .signature("signature_here")
-        .build();
+    let original = AuthInfo {
+        signature: Some("signature_here".to_string()),
+        key: SigKey::from_name("KEY_LAPTOP"),
+    };
     let mut nested = Doc::new();
     nested.set_json("sig_info", &original).unwrap();
     let parsed: AuthInfo = nested.get_json("sig_info").unwrap();
@@ -532,10 +532,10 @@ fn test_permission_methods() {
 #[test]
 fn test_sig_info_with_global_serialization() {
     let pubkey = PublicKey::random();
-    let sig_info = AuthInfo::builder()
-        .key(SigKey::global(&pubkey))
-        .signature("signature_base64_encoded_string_here")
-        .build();
+    let sig_info = AuthInfo {
+        signature: Some("signature_base64_encoded_string_here".to_string()),
+        key: SigKey::global(&pubkey),
+    };
 
     let json = serde_json::to_string(&sig_info).unwrap();
     let deserialized: AuthInfo = serde_json::from_str(&json).unwrap();
@@ -546,49 +546,29 @@ fn test_sig_info_with_global_serialization() {
 }
 
 #[test]
-fn test_sig_info_builder_basic() {
-    let sig_info = AuthInfo::builder()
-        .key(SigKey::from_name("KEY_LAPTOP"))
-        .signature("test_signature")
-        .build();
-
-    assert!(sig_info.key.has_name_hint("KEY_LAPTOP"));
-    assert_eq!(sig_info.signature, Some("test_signature".to_string()));
-}
-
-#[test]
 fn test_sig_info_builder_with_pubkey_hint() {
     let pubkey = PublicKey::random();
-    let sig_info = AuthInfo::builder()
-        .pubkey_hint(&pubkey)
-        .signature("test_signature")
-        .build();
+    let sig_info = AuthInfo::builder().pubkey_hint(&pubkey).build();
 
     assert!(sig_info.key.has_pubkey_hint(&pubkey));
-    assert_eq!(sig_info.signature, Some("test_signature".to_string()));
+    assert_eq!(sig_info.signature, None);
 }
 
 #[test]
 fn test_sig_info_builder_with_name_hint() {
-    let sig_info = AuthInfo::builder()
-        .name_hint("my_key")
-        .signature("test_signature")
-        .build();
+    let sig_info = AuthInfo::builder().name_hint("my_key").build();
 
     assert!(sig_info.key.has_name_hint("my_key"));
-    assert_eq!(sig_info.signature, Some("test_signature".to_string()));
+    assert_eq!(sig_info.signature, None);
 }
 
 #[test]
 fn test_sig_info_builder_with_global_hint() {
     let pubkey = PublicKey::random();
-    let sig_info = AuthInfo::builder()
-        .global_hint(&pubkey)
-        .signature("test_signature")
-        .build();
+    let sig_info = AuthInfo::builder().global_hint(&pubkey).build();
 
     assert!(sig_info.is_global());
-    assert_eq!(sig_info.signature, Some("test_signature".to_string()));
+    assert_eq!(sig_info.signature, None);
 }
 
 #[test]
@@ -604,7 +584,7 @@ fn test_sig_info_builder_minimal() {
 #[test]
 #[should_panic(expected = "key is required for AuthInfo")]
 fn test_sig_info_builder_missing_key() {
-    AuthInfo::builder().signature("test_signature").build();
+    AuthInfo::builder().build();
 }
 
 #[test]
@@ -617,13 +597,10 @@ fn test_sig_info_builder_delegation() {
         hint: KeyHint::from_name("KEY_LAPTOP"),
     };
 
-    let sig_info = AuthInfo::builder()
-        .key(delegation.clone())
-        .signature("test_signature")
-        .build();
+    let sig_info = AuthInfo::builder().key(delegation.clone()).build();
 
     assert_eq!(sig_info.key, delegation);
-    assert_eq!(sig_info.signature, Some("test_signature".to_string()));
+    assert_eq!(sig_info.signature, None);
 }
 
 #[test]

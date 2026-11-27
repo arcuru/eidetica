@@ -1,287 +1,55 @@
-> ✅ **Status: Implemented**
->
-> This design is fully implemented and functional.
-
 # Subtree Index (\_index)
 
-This document describes the `_index` subtree registry system, which maintains metadata about all user-created subtrees in an Eidetica database.
+`_index` is a DocStore in the Database's history. It records how to open a named Store. It is not a backend index of every Entry that mentions the name, nor is it the Database's [authority configuration](settings_storage.md#entry-metadata).
 
-## Table of Contents
+## From genesis to the first registration
 
-- [Overview](#overview)
-- [Design Goals](#design-goals)
-- [Metadata Travels With Data](#metadata-travels-with-data)
-- [How It Works](#how-it-works)
-- [API Reference](#api-reference)
-- [Examples](#examples)
+`Database::create_with_init` stages `_settings` and `_root` before running the initializer. These two names and `_index` bypass auto-registration; the registry does not register itself. Opening a user Store through `Transaction::get_store` can register it during the initializer or in a later transaction. A settings-only rename needs no registration.
 
-## Overview
+`get_store` initializes the named Store's parents at the transaction's main snapshot, then reads its registration:
 
-The `_index` subtree is a special system subtree that serves as a registry for all user-created subtrees in a database. It stores metadata about each subtree, including its Store type identifier and configuration data. This enables type discovery, versioning, and configuration management for subtrees.
+- **Missing named key in `_index`:** call `Store::register`. The default loads the Store and calls `Registry::set_entry` with its type ID and default config.
+- **Existing registration:** check `Registered::supports_type_id` and load the Store only if compatible. Reading a type ID does not migrate data.
+- **Malformed registration or another read error:** return the error, not a fresh registration. Use `get_entry` when the distinction matters; `contains` reports only whether `get_entry` succeeded.
 
-**Key Features**:
+For a single-segment Store name, the corresponding top-level key holds a nested `Doc`: `type` is a text identifier such as `docstore:v0`, `config` is the Store's configuration `Doc`, and optional `settings` carries the [height override](height_strategy.md#what-is-stored). For example, `PasswordStoreConfig` is an atomic `Doc` in `config`: its fields are replaced together. It belongs in the registration, not in the database-wide `_settings`. `Registry::get_entry` returns these as typed fields. When reading config, missing or non-Doc, non-text values default to an empty `Doc`; legacy text `"{}"` also means empty, but other text is an error. `Registry::list` reads the keys of the materialized index rather than scanning all Entry subtrees.
 
-- **Automatic Registration**: Subtrees are automatically registered when first accessed via `get_store()`
-- **Type Metadata**: Stores the Store type identifier (e.g., "docstore:v0", "table:v0")
-- **Configuration Storage**: Stores Store-specific configuration as a `Doc`
-- **Query API**: Provides Registry for querying registered subtrees
+## Metadata travels with data
 
-## Design Goals
+For each top-level name in the staged `_index` Doc, the transaction includes the corresponding subtree, using its parents at the chosen main boundary if it was not already in the Entry builder. Even a registration with **no Store payload** participates in that Store's history. The Entry carries `_index` data and a named subtree whose `data` is `None`. This is not an encoded tombstone; an unreferenced, untouched Store need not appear at all. Use single-segment names for this coupling: `set_entry("team.notes", …)` writes a nested Doc path, but commit and `list` inspect top-level keys (`team`), not the dotted string.
 
-The `_index` subtree provides essential metadata capabilities for Eidetica databases:
-
-1. **Type Discovery**: Every subtree has an associated type identifier in `_index`, enabling generic tooling to understand what Store type manages each subtree
-2. **Versioning**: Type identifiers include arbitrary version information (e.g., "docstore:v0"), supporting schema migrations and format evolution
-3. **Configuration**: Store-specific settings are stored alongside type information, enabling per-subtree customization
-4. **Discoverability**: The Registry API enables querying all registered subtrees, supporting database browsers and tooling
-
-These capabilities enable:
-
-- Generic database browsers that understand subtree types
-- Schema migrations when Store formats evolve
-- Tooling that enumerates and understands database structure
-
-## Metadata Travels With Data
-
-> **Subtree metadata is cryptographically verified as part of the same DAG as the subtree data itself—without requiring the full database DAG.**
-
-When you sync a subtree (like `users`) from another peer, you automatically receive all `_index` metadata about that subtree. This is guaranteed by a simple architectural constraint: any Entry that modifies `_index` for a subtree must also include that subtree.
-
-**Why this matters:**
-
-- **No orphaned metadata**: You can't have `_index` entries for subtrees you haven't synced
-- **No missing metadata**: When you have a subtree's data, you have its metadata too
-- **Cryptographic verification**: The metadata is verified by the same Merkle-DAG that verifies the data
-- **Enable Efficient sync**: Sync just the subtrees you need and their metadata comes along automatically
-
-This constraint leverages Eidetica's Merkle-DAG structure: the Entry containing the `_index` update becomes part of the subtree's parent DAG, is verified by the same cryptographic properties, and is automatically included when syncing that subtree.
-
-> **"Cryptographically verified" here means content-addressed integrity** —
-> the `_index` metadata cannot be tampered with or separated from its data
-> because it is hash-chained into the same Merkle-DAG. This is independent of
-> an entry's **`VerificationStatus`** (whether this node has validated the
-> entry's _signature and permissions_ against the `_settings` it pins). A
-> synced `_index`-bearing entry still arrives `Unverified` and is promoted by
-> `Database::verify()` like any other entry.
-
-## How It Works
-
-### The `_index` Subtree
-
-The `_index` subtree is a special system subtree (like `_settings` and `_root`) that uses DocStore to maintain a registry of subtree metadata:
-
-- **Name**: `_index` (reserved system name)
-- **Store Type**: DocStore internally
-- **Not Self-Registering**: System subtrees (`_index`, `_settings`, `_root`) are excluded from auto-registration to avoid circular dependencies
-
-Each registered subtree has an entry in `_index` with the following structure:
-
-```json
-{
-  "_index": {
-    "users": {
-      "type": "table:v0",
-      "config": {}
-    },
-    "documents": {
-      "type": "ydoc:v0",
-      "config": { "compression": "zstd" }
-    }
-  }
-}
-```
-
-**Fields**:
-
-- `type`: The Store type identifier from `Registered::type_id()` (e.g., "docstore:v0")
-- `config`: Store-specific configuration as a `Doc`
-
-### Auto-Registration
-
-`Transaction::get_store()` calls `Store::register()` only when the named `_index` entry is missing.
-For an existing registration, it checks `Registered::supports_type_id()` before calling `Store::load()`.
-Malformed metadata and registry read errors propagate without loading or registering the Store, so catching an error and committing does not replace the registration.
-System subtrees bypass registration; their locking rules still apply.
-
-The registry reader preserves its existing config defaults: missing config and values other than `Doc` or text default to an empty `Doc`.
-Legacy text `"{}"` also normalizes to an empty `Doc`; other text config is rejected.
-
-Manual registration via `Registry::set_entry()` allows pre-configuring subtrees with custom settings before first access.
-
-### The Index-Subtree Coupling Constraint
-
-**Core Rule**: When `_index` is modified for a subtree, that subtree MUST appear in the same Entry.
-
-This is what enables [metadata to travel with data](#metadata-travels-with-data). The constraint ensures:
-
-1. **DAG Inclusion**: The Entry containing the `_index` update becomes part of the subtree's parent DAG
-2. **Verification**: The Entry is verified by the Merkle-DAG properties of the subtree's parent tree
-3. **Sync Completeness**: When syncing a subtree's DAG, all Entries pertaining to that subtree are included, including any `_index` metadata about it
-
-To support this constraint, `SubTreeNode.data` is `Option<RawData>`, where `RawData` is opaque bytes (`Vec<u8>`):
-
-- `None`: Subtree participates in this Entry but makes no data changes
-- `Some(vec![])`: Explicit empty data (e.g., CRDT tombstone)
-- `Some(data)`: Actual serialized bytes in the store's chosen format (JSON, CBOR, raw binary, etc.)
-
-This allows subtrees to appear in Entries purely to satisfy the constraint without requiring data changes.
-
-## API Reference
-
-### Registered Trait
-
-The `Registered` trait provides type identification for registry integration:
-
-- **`type_id()`**: Returns unique identifier with version (e.g., "docstore:v0", "table:v0")
-- **`supports_type_id()`**: Check if this type can load from a stored type_id (for version migration)
-
-### Store Trait Extensions
-
-The `Store` trait extends `Registered` and provides methods for registry integration:
-
-- **`default_config()`**: Returns default configuration as a `Doc`
-- **`load()`**: Creates a Store handle without registering it
-- **`register()`**: Creates a Store and registers its type and default config in `_index`
-- **`get_config()` / `set_config()`**: Read/write configuration in `_index`
-
-### Registry API
-
-`Registry` provides query and management operations for the `_index`:
-
-- `get_entry(name)`: Get type and config for a subtree
-- `contains(name)`: Check if registered
-- `set_entry(name, type_id, config)`: Register or update
-- `list()`: Get all registered subtree names
-
-Access via `Transaction::get_index()`.
-
-## Examples
-
-### Basic Auto-Registration
-
-<!-- Code block testable: Shows auto-registration during normal store access -->
+For example, pre-register a DocStore without writing any documents, then open it in a second transaction:
 
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::Sqlite, crdt::Doc};
-#
+# use eidetica::{Instance, NewAccount, backend::database::Sqlite, crdt::Doc, store::DocStore};
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create_backend(
-#     backend,
-#     eidetica::NewAccount::passwordless("alice"),
+# let (_instance, mut user) = Instance::create_backend(
+#     Box::new(Sqlite::in_memory().await?), NewAccount::passwordless("alice"),
 # ).await?;
-# let mut settings = Doc::new();
-# settings.set("name", "test_db");
-# let default_key = user.get_default_key()?;
-# let db = user.create_database(settings, &default_key).await?;
-#
-// First access to "config" subtree - will be auto-registered
-let txn = db.new_transaction().await?;
-let config: DocStore = txn.get_store("config").await?;
-config.set("theme", "dark").await?;
-txn.commit().await?;
-
-// After commit, "config" is registered in _index
+# let key = user.get_default_key()?;
+# let db = user.create_database(Doc::new(), &key).await?;
 let txn = db.new_transaction().await?;
 let index = txn.get_index().await?;
-assert!(index.contains("config").await);
+index.set_entry("notes", "docstore:v0", Doc::new()).await?;
+let registration = txn.commit().await?;
+let entry = db.get_entry(registration.clone()).await?;
+assert!(entry.data("_index").is_ok());
+assert!(entry.subtree_parents("notes")?.is_empty()); // present, with no parents
+assert!(entry.data("notes").is_err()); // no payload
 
-let info = index.get_entry("config").await?;
-assert_eq!(info.type_id, "docstore:v0");
-assert!(info.config.is_empty());
+let txn = db.new_transaction().await?;
+assert_eq!(txn.get_index().await?.get_entry("notes").await?.type_id, "docstore:v0");
+let notes: DocStore = txn.get_store("notes").await?;
+notes.set("title", "First note").await?;
+let write = db.get_entry(txn.commit().await?).await?;
+assert_eq!(write.subtree_parents("notes")?, vec![registration]);
 # Ok(())
 # }
 ```
 
-### Manual Registration with Custom Config
+The registration delta and the Store node are persisted in **one signed Entry**. The current registration and the Store's current tips are derived at a snapshot. Main parents record what the writer observed; ordinary Store parents select what it consumed. A Store branch can therefore omit an observed registration-bearing Entry from its own parent chain. The coupling above is an authoring rule, not a promise that a single Store chain contains all registry metadata.
 
-<!-- Code block testable: Shows manual registration with custom configuration -->
-
-```rust
-# extern crate eidetica;
-# extern crate tokio;
-# use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::Sqlite, crdt::Doc};
-#
-# #[tokio::main]
-# async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create_backend(
-#     backend,
-#     eidetica::NewAccount::passwordless("alice"),
-# ).await?;
-# let mut settings = Doc::new();
-# settings.set("name", "test_db");
-# let default_key = user.get_default_key()?;
-# let db = user.create_database(settings, &default_key).await?;
-#
-// Pre-register subtree with custom configuration
-let txn = db.new_transaction().await?;
-let index = txn.get_index().await?;
-
-let mut config = Doc::new();
-config.set("compression", "zstd");
-config.set("cache_size", "1024");
-index.set_entry(
-    "documents",
-    "ydoc:v0",
-    config,
-).await?;
-
-txn.commit().await?;
-
-// Later access uses the registered configuration
-let txn = db.new_transaction().await?;
-let index = txn.get_index().await?;
-let info = index.get_entry("documents").await?;
-assert_eq!(info.type_id, "ydoc:v0");
-assert!(info.config.contains_key("compression"));
-# Ok(())
-# }
-```
-
-### Querying Registered Subtrees
-
-<!-- Code block testable: Shows querying all registered subtrees -->
-
-```rust
-# extern crate eidetica;
-# extern crate tokio;
-# use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::Sqlite, crdt::Doc};
-#
-# #[tokio::main]
-# async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create_backend(
-#     backend,
-#     eidetica::NewAccount::passwordless("alice"),
-# ).await?;
-# let mut settings = Doc::new();
-# settings.set("name", "test_db");
-# let default_key = user.get_default_key()?;
-# let db = user.create_database(settings, &default_key).await?;
-#
-// Create several subtrees with data
-let txn = db.new_transaction().await?;
-let users: DocStore = txn.get_store("users").await?;
-users.set("count", "0").await?;
-let posts: DocStore = txn.get_store("posts").await?;
-posts.set("count", "0").await?;
-let comments: DocStore = txn.get_store("comments").await?;
-comments.set("count", "0").await?;
-txn.commit().await?;
-
-// Query all registered subtrees
-let txn = db.new_transaction().await?;
-let index = txn.get_index().await?;
-let subtrees = index.list().await?;
-
-// All three subtrees should be registered
-assert!(subtrees.contains(&"users".to_string()));
-assert!(subtrees.contains(&"posts".to_string()));
-assert!(subtrees.contains(&"comments".to_string()));
-# Ok(())
-# }
-```
+Sync transfers whole Entries. Verification covers the Entry, not just the `_index` payload: promotion requires complete causal ancestry and the corresponding historical authority evidence. A type ID or a matching content hash is not that evidence. See [Store-parent frontiers](verification.md#store-parent-frontiers) for the implemented checks and [selective sync](synchronization.md#selective-sync-design-direction) for the proposed, not shipped, Store-only use case.

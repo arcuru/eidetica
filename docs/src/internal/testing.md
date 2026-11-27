@@ -66,6 +66,20 @@ uses the same five-minute idle lifetime for both.
 The service Table test asserts that a first point read publishes individual row
 records rather than falling back to a whole-`Doc` response.
 
+## Shistory capture tests
+
+Run shistory's service tests with `cargo test -p shistory --all-features --test service`.
+The opt-in `shistory/testing` feature adds a hidden `--test-capture-deadline-ms` option.
+CLI correctness tests use 30 seconds so runner contention does not turn their
+assertions into a latency gate; dedicated deadline tests keep explicit budgets.
+Status correctness tests likewise use a 30-second per-lookup budget through the
+hidden `--test-status-deadline-ms` option, separate from capture timing.
+Dedicated stalled-daemon tests exercise the default and an explicit short override.
+Normal builds retain the one-second capture and diagnostic deadlines and do not
+accept either test option.
+The ignored `populated_sql_capture_profile` test keeps the default deadline and reports
+latency separately when explicitly run with `SHISTORY_BASELINE_BIN`.
+
 ## Writing Tests
 
 1. Add tests to appropriate module in `tests/it/`

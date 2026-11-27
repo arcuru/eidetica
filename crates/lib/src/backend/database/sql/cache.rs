@@ -4,7 +4,7 @@
 //! Evicted and clear-unlinked generations retain their separate lifetimes.
 
 use crate::Result;
-use crate::backend::StoreStateLifecycle;
+use crate::backend::{StoreStateLifecycle, private_cache};
 
 use super::{SqlxBackend, SqlxResultExt};
 
@@ -28,7 +28,7 @@ pub(crate) async fn ensure_tick_seeded(backend: &SqlxBackend) -> Result<()> {
     }
     let row: (i64,) =
         sqlx::query_as("SELECT COALESCE(MAX(last_access_tick), 0) FROM store_state_namespaces")
-            .fetch_one(backend.pool())
+            .fetch_one(backend.cache_pool())
             .await
             .sql_context("Failed to seed Store-state recency clock")?;
     backend
@@ -82,7 +82,7 @@ pub(crate) fn record_published(backend: &SqlxBackend, namespace_id: &str, tick: 
 pub(crate) async fn flush_dirty(backend: &SqlxBackend) -> Result<()> {
     let batch = backend.cache_recency.lock().unwrap().pending();
     for chunk in batch.chunks(BATCH_CHUNK) {
-        flush_chunk(backend.pool(), chunk).await?;
+        flush_chunk(backend.cache_pool(), chunk).await?;
         backend.cache_recency.lock().unwrap().acknowledge(chunk);
     }
     if !batch.is_empty() {
@@ -161,6 +161,67 @@ pub(crate) async fn lock_maintenance(
             .sql_context("Failed to lock Store-state admission")?;
     }
     Ok(())
+}
+
+// Count across connections and databases under the storage-maintenance lock.
+// The scope key is distinct from the admission bucket for proof-only sessions.
+async fn private_usage(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    lifecycle: StoreStateLifecycle,
+    status: i64,
+    login: Option<&str>,
+) -> Result<(usize, u64)> {
+    let (count, bytes): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), CAST(COALESCE(SUM(size_bytes), 0) AS BIGINT)
+         FROM store_state_namespaces WHERE lifecycle = $1 AND status = $2
+         AND scope_user_uuid <> '' AND (CAST($3 AS TEXT) IS NULL OR scope_user_uuid = $3
+             OR ($3 = $4 AND scope_user_uuid LIKE $5))",
+    )
+    .bind(lifecycle.as_db_int())
+    .bind(status)
+    .bind(login)
+    .bind(private_cache::SIGNER_SCOPE_PREFIX)
+    .bind(format!("{}%", private_cache::SIGNER_SCOPE_PREFIX))
+    .fetch_one(&mut **tx)
+    .await
+    .sql_context("Failed to measure private Store-state usage")?;
+    Ok((count as usize, bytes as u64))
+}
+
+pub(super) async fn check_private_staging(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    login: &str,
+    new_count: usize,
+    charge: u64,
+) -> Result<()> {
+    let (count, bytes) = private_usage(tx, StoreStateLifecycle::Staging, 0, None).await?;
+    private_cache::check(
+        private_cache::STAGING_TOTAL,
+        count + new_count,
+        bytes + charge,
+        "daemon private staging budget",
+    )?;
+    let (count, bytes) = private_usage(tx, StoreStateLifecycle::Staging, 0, Some(login)).await?;
+    private_cache::check(
+        private_cache::STAGING_PER_LOGIN,
+        count + new_count,
+        bytes + charge,
+        "login private staging budget",
+    )
+}
+
+pub(super) async fn check_private_retention(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    login: &str,
+    size: u64,
+) -> Result<()> {
+    let (count, bytes) = private_usage(tx, StoreStateLifecycle::Derived, 1, Some(login)).await?;
+    private_cache::check(
+        private_cache::RETAINED,
+        count + 1,
+        bytes + size,
+        "private cache retention budget",
+    )
 }
 
 /// Copied recency and reclaimed IDs to acknowledge only after commit.
@@ -296,7 +357,7 @@ pub(crate) async fn startup(backend: &SqlxBackend) -> Result<()> {
         "SELECT COUNT(*) FROM store_state_namespaces WHERE size_bytes < 0 OR last_access_tick < 0 OR size_bytes IS NULL OR last_access_tick IS NULL"
     };
     let (invalid,): (i64,) = sqlx::query_as(invalid_query)
-        .fetch_one(backend.pool())
+        .fetch_one(backend.cache_pool())
         .await
         .sql_context("Failed to validate cache accounting")?;
     if invalid != 0 {
@@ -307,7 +368,7 @@ pub(crate) async fn startup(backend: &SqlxBackend) -> Result<()> {
     }
     ensure_tick_seeded(backend).await?;
     let mut tx = backend
-        .pool()
+        .cache_pool()
         .begin()
         .await
         .sql_context("Failed to begin cache startup")?;
@@ -322,6 +383,29 @@ pub(crate) async fn startup(backend: &SqlxBackend) -> Result<()> {
         .bind(StoreStateLifecycle::Staging.as_db_int())
         .bind(StoreStateLifecycle::Derived.as_db_int())
         .execute(&mut *tx).await.sql_context("Failed to reclaim abandoned Store state")?;
+    // Exclusive startup has no readers to preserve. Trim pre-limit private
+    // state in recency order without changing Shared or Authoritative rows.
+    sqlx::query(
+        "DELETE FROM store_state_namespaces WHERE namespace_id IN (
+            SELECT namespace_id FROM (
+                SELECT namespace_id, ROW_NUMBER() OVER bucket AS namespaces,
+                       SUM(size_bytes) OVER bucket AS payload
+                FROM store_state_namespaces WHERE lifecycle = $1 AND status = 1 AND scope_user_uuid <> ''
+                WINDOW bucket AS (
+                    PARTITION BY CASE WHEN scope_user_uuid LIKE $2 THEN $3 ELSE scope_user_uuid END
+                    ORDER BY last_access_tick DESC, namespace_id DESC ROWS UNBOUNDED PRECEDING
+                )
+            ) AS ranked WHERE namespaces > $4 OR payload > $5
+        )",
+    )
+    .bind(StoreStateLifecycle::Derived.as_db_int())
+    .bind(format!("{}%", private_cache::SIGNER_SCOPE_PREFIX))
+    .bind(private_cache::SIGNER_SCOPE_PREFIX)
+    .bind(private_cache::RETAINED.max_namespaces as i64)
+    .bind(private_cache::RETAINED.max_bytes as i64)
+    .execute(&mut *tx)
+    .await
+    .sql_context("Failed to trim private Store-state cache")?;
     let maintenance = evict_in_tx(backend, &mut tx, None).await?;
     sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 AND status = 3")
         .bind(StoreStateLifecycle::Derived.as_db_int())
@@ -337,7 +421,7 @@ pub(crate) async fn startup(backend: &SqlxBackend) -> Result<()> {
 
 #[cfg(all(test, feature = "testing"))]
 async fn evict_derived(backend: &SqlxBackend, protect: Option<&str>) -> Result<()> {
-    let mut tx = backend.pool().begin().await.unwrap();
+    let mut tx = backend.cache_pool().begin().await.unwrap();
     if backend.is_sqlite() {
         sqlx::query("COMMIT; BEGIN IMMEDIATE")
             .execute(&mut *tx)
@@ -401,7 +485,7 @@ mod tests {
             "SELECT last_access_tick FROM store_state_namespaces WHERE namespace_id = $1",
         )
         .bind(&view.namespace_id)
-        .fetch_one(backend.pool())
+        .fetch_one(backend.cache_pool())
         .await
         .unwrap();
         tick as u64
@@ -417,7 +501,7 @@ mod tests {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "SELECT namespace_id, status FROM store_state_namespaces ORDER BY namespace_id",
         )
-        .fetch_all(backend.pool())
+        .fetch_all(backend.cache_pool())
         .await
         .unwrap();
         assert!(
@@ -482,7 +566,7 @@ mod tests {
         assert_eq!(persisted_tick(backend, hot).await, newest);
         // Resume the old batch through the same SQL helper used by both flush
         // paths. Test transactional execution too, not just the pool executor.
-        let mut tx = backend.pool().begin().await.unwrap();
+        let mut tx = backend.cache_pool().begin().await.unwrap();
         flush_chunk(&mut *tx, &older).await.unwrap();
         tx.commit().await.unwrap();
         newest
@@ -500,7 +584,7 @@ mod tests {
         assert_eq!(persisted_tick(&backend, &cold).await, newest - 1);
         // Equal/repeated batches and missing rows are harmless as well.
         flush_chunk(
-            backend.pool(),
+            backend.cache_pool(),
             &[
                 (hot.namespace_id.clone(), newest),
                 ("missing".to_string(), newest + 1),
@@ -509,7 +593,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(persisted_tick(&backend, &hot).await, newest);
-        flush_chunk(backend.pool(), &[]).await.unwrap();
+        flush_chunk(backend.cache_pool(), &[]).await.unwrap();
     }
 
     #[tokio::test]
@@ -524,7 +608,7 @@ mod tests {
         // must still see this hit in the live order, not just durable ticks.
         let in_flight = backend.cache_recency.lock().unwrap().pending();
         assert_hot_survives(&backend, &hot, &cold).await;
-        flush_chunk(backend.pool(), &in_flight).await.unwrap();
+        flush_chunk(backend.cache_pool(), &in_flight).await.unwrap();
     }
 
     #[tokio::test]
@@ -639,10 +723,10 @@ mod tests {
     async fn fail_tick_writes(backend: &SqlxBackend) {
         use sqlx::Executor;
         if backend.is_sqlite() {
-            backend.pool().execute("CREATE TRIGGER fail_tick BEFORE UPDATE OF last_access_tick ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'injected tick failure'); END").await.unwrap();
+            backend.cache_pool().execute("CREATE TRIGGER fail_tick BEFORE UPDATE OF last_access_tick ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'injected tick failure'); END").await.unwrap();
         } else {
-            backend.pool().execute("CREATE FUNCTION fail_tick() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected tick failure'; END $$").await.unwrap();
-            backend.pool().execute("CREATE TRIGGER fail_tick BEFORE UPDATE OF last_access_tick ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_tick()").await.unwrap();
+            backend.cache_pool().execute("CREATE FUNCTION fail_tick() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected tick failure'; END $$").await.unwrap();
+            backend.cache_pool().execute("CREATE TRIGGER fail_tick BEFORE UPDATE OF last_access_tick ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_tick()").await.unwrap();
         }
     }
 
@@ -652,7 +736,10 @@ mod tests {
         } else {
             "DROP TRIGGER fail_tick ON store_state_namespaces"
         };
-        sqlx::query(ddl).execute(backend.pool()).await.unwrap();
+        sqlx::query(ddl)
+            .execute(backend.cache_pool())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -700,7 +787,7 @@ mod tests {
         touch(&backend, &view.namespace_id).await.unwrap();
         // Hold the row (Postgres) / sole connection (SQLite). Poll the real
         // flush until it has copied the batch and yielded, then cancel it.
-        let mut blocker = backend.pool().begin().await.unwrap();
+        let mut blocker = backend.cache_pool().begin().await.unwrap();
         sqlx::query("UPDATE store_state_namespaces SET last_access_tick = last_access_tick WHERE namespace_id = $1")
             .bind(&view.namespace_id).execute(&mut *blocker).await.unwrap();
         let mut flush = Box::pin(flush_dirty(&backend));
@@ -722,7 +809,7 @@ mod tests {
         };
         let view = publish(&backend, "ack-race").await;
         touch(&backend, &view.namespace_id).await.unwrap();
-        let mut tx = backend.pool().begin().await.unwrap();
+        let mut tx = backend.cache_pool().begin().await.unwrap();
         let older = flush_dirty_in_tx(&backend, &mut tx).await.unwrap();
         // Cancellation of the surrounding publication rolls back this write.
         tx.rollback().await.unwrap();
@@ -749,10 +836,10 @@ mod tests {
         let current = publish(&backend, "current").await;
         // This fault used to happen after publication's successful commit.
         if backend.is_sqlite() {
-            backend.pool().execute("CREATE TRIGGER fail_reclaim BEFORE DELETE ON store_state_namespaces WHEN OLD.lifecycle = 0 BEGIN SELECT RAISE(ABORT, 'injected reclaim failure'); END").await.unwrap();
+            backend.cache_pool().execute("CREATE TRIGGER fail_reclaim BEFORE DELETE ON store_state_namespaces WHEN OLD.lifecycle = 0 BEGIN SELECT RAISE(ABORT, 'injected reclaim failure'); END").await.unwrap();
         } else {
-            backend.pool().execute("CREATE FUNCTION fail_reclaim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.lifecycle = 0 THEN RAISE EXCEPTION 'injected reclaim failure'; END IF; RETURN OLD; END $$").await.unwrap();
-            backend.pool().execute("CREATE TRIGGER fail_reclaim BEFORE DELETE ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_reclaim()").await.unwrap();
+            backend.cache_pool().execute("CREATE FUNCTION fail_reclaim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.lifecycle = 0 THEN RAISE EXCEPTION 'injected reclaim failure'; END IF; RETURN OLD; END $$").await.unwrap();
+            backend.cache_pool().execute("CREATE TRIGGER fail_reclaim BEFORE DELETE ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_reclaim()").await.unwrap();
         }
         let mut request = StoreStateRequest {
             database: ID::from_bytes("recency-db"),
@@ -770,7 +857,11 @@ mod tests {
             .await
             .unwrap();
         let error = backend.publish_store_state(token).await.unwrap_err();
-        assert!(error.is_store_state_not_retained(), "{error}");
+        assert_eq!(
+            error.is_store_state_not_retained(),
+            !backend.is_sqlite(),
+            "{error}"
+        );
         assert_eq!(
             backend.resolve_store_state(&request).await.unwrap(),
             None,
@@ -803,12 +894,12 @@ mod tests {
         let Some(backend) = backend().await else {
             return;
         };
-        backend.pool().execute("CREATE TABLE commit_guard (parent TEXT REFERENCES store_state_namespaces(namespace_id) DEFERRABLE INITIALLY DEFERRED)").await.unwrap();
+        backend.cache_pool().execute("CREATE TABLE commit_guard (parent TEXT REFERENCES store_state_namespaces(namespace_id) DEFERRABLE INITIALLY DEFERRED)").await.unwrap();
         if backend.is_sqlite() {
-            backend.pool().execute("CREATE TRIGGER fail_commit AFTER UPDATE OF status ON store_state_namespaces WHEN NEW.status = 1 BEGIN INSERT INTO commit_guard (parent) VALUES ('missing'); END").await.unwrap();
+            backend.cache_pool().execute("CREATE TRIGGER fail_commit AFTER UPDATE OF status ON store_state_namespaces WHEN NEW.status = 1 BEGIN INSERT INTO commit_guard (parent) VALUES ('missing'); END").await.unwrap();
         } else {
-            backend.pool().execute("CREATE FUNCTION fail_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO commit_guard (parent) VALUES ('missing'); RETURN NEW; END $$").await.unwrap();
-            backend.pool().execute("CREATE TRIGGER fail_commit AFTER UPDATE OF status ON store_state_namespaces FOR EACH ROW WHEN (NEW.status = 1) EXECUTE FUNCTION fail_commit()").await.unwrap();
+            backend.cache_pool().execute("CREATE FUNCTION fail_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO commit_guard (parent) VALUES ('missing'); RETURN NEW; END $$").await.unwrap();
+            backend.cache_pool().execute("CREATE TRIGGER fail_commit AFTER UPDATE OF status ON store_state_namespaces FOR EACH ROW WHEN (NEW.status = 1) EXECUTE FUNCTION fail_commit()").await.unwrap();
         }
         let request = StoreStateRequest {
             database: ID::from_bytes("commit-db"),
@@ -863,7 +954,7 @@ mod tests {
             .begin_store_state_staging(target.clone())
             .await
             .unwrap();
-        let mut tx = backend.pool().begin().await.unwrap();
+        let mut tx = backend.cache_pool().begin().await.unwrap();
         if backend.is_sqlite() {
             sqlx::query("COMMIT; BEGIN IMMEDIATE")
                 .execute(&mut *tx)
@@ -890,7 +981,7 @@ mod tests {
         };
         let (status,): (i64,) = sqlx::query_as(status_sql)
             .bind(&keep.namespace_id)
-            .fetch_one(backend.pool())
+            .fetch_one(backend.cache_pool())
             .await
             .unwrap();
         assert_eq!(
