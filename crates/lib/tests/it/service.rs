@@ -32,6 +32,9 @@ use tokio::sync::watch;
 use crate::helpers::LocalBackendTestExt;
 
 mod compatibility;
+mod notifications;
+mod private_cache;
+mod retirement;
 
 /// Read the next server frame and unwrap it as a `ServiceResponse`. Tests
 /// that drive the server at the raw protocol layer don't subscribe to
@@ -86,7 +89,7 @@ async fn start_test_server_with_token_ttls(
 
 /// Helper: log in as the bootstrap admin and create a user server-side.
 async fn create_user_via_admin(server: &Instance, username: &str) {
-    crate::helpers::create_account(server, username, None)
+    crate::helpers::create_account(server, username, "")
         .await
         .unwrap();
 }
@@ -103,18 +106,18 @@ async fn setup_db(
     username: &str,
 ) -> (Instance, eidetica::entry::ID, eidetica::auth::types::SigKey) {
     // Admin was created by Instance::open_backend bootstrap — use it to create the test user.
-    crate::helpers::create_account(server, username, None)
+    crate::helpers::create_account(server, username, "")
         .await
         .unwrap();
 
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_account(username, None).await.unwrap();
+    let user = instance.login_account(username, "").await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
     // Create db server-side
-    let mut server_user = server.login_account(username, None).await.unwrap();
+    let mut server_user = server.login_account(username, "").await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", format!("{username}_db"));
     let server_key = server_user.get_default_key().unwrap();
@@ -151,7 +154,7 @@ async fn test_connect_and_create_instance() {
 async fn test_user_lifecycle() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     // Admin is bootstrapped — use it to create test user
-    crate::helpers::create_account(&server, "alice", None)
+    crate::helpers::create_account(&server, "alice", "")
         .await
         .unwrap();
 
@@ -159,11 +162,11 @@ async fn test_user_lifecycle() {
         .await
         .unwrap();
 
-    let user = instance.login_account("alice", None).await.unwrap();
+    let user = instance.login_account("alice", "").await.unwrap();
     assert_eq!(user.username(), "alice");
 
     // Create a database server-side
-    let mut server_user = server.login_account("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", "").await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "test_db");
     let default_key = server_user.get_default_key().unwrap();
@@ -184,7 +187,7 @@ async fn test_error_propagation() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_account("err-test", None).await.unwrap();
+    let user = instance.login_account("err-test", "").await.unwrap();
 
     let pubkey = user.get_default_key().unwrap();
     let root_id = eidetica::ID::from_bytes("nonexistent-db");
@@ -235,8 +238,8 @@ async fn test_concurrent_clients() {
         .await
         .unwrap();
 
-    let _user1 = instance1.login_account("bob", None).await.unwrap();
-    let user2 = instance2.login_account("bob", None).await.unwrap();
+    let _user1 = instance1.login_account("bob", "").await.unwrap();
+    let user2 = instance2.login_account("bob", "").await.unwrap();
     assert_eq!(user2.username(), "bob");
 }
 
@@ -268,7 +271,7 @@ async fn two_service_clients_share_one_sqlite_daemon() {
     assert_eq!(client1.id(), server.id());
     assert_eq!(client2.id(), server.id());
 
-    let mut admin1 = client1.login_account("admin", None).await.unwrap();
+    let mut admin1 = client1.login_account("admin", "").await.unwrap();
     let key = admin1.get_default_key().unwrap();
     let database = admin1.create_database(Doc::new(), &key).await.unwrap();
     let root_id = database.root_id().clone();
@@ -281,7 +284,7 @@ async fn two_service_clients_share_one_sqlite_daemon() {
         .await
         .unwrap();
 
-    let admin2 = client2.login_account("admin", None).await.unwrap();
+    let admin2 = client2.login_account("admin", "").await.unwrap();
     let database = admin2.open_database(&root_id).await.unwrap();
     let transaction = database.new_transaction().await.unwrap();
     let store = transaction.get_store::<DocStore>("shared").await.unwrap();
@@ -324,6 +327,7 @@ async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHal
         &mut writer,
         &Handshake {
             protocol_version: PROTOCOL_VERSION,
+            protocol_revision: eidetica::service::protocol::PROTOCOL_REVISION,
         },
     )
     .await
@@ -337,7 +341,7 @@ async fn test_trusted_login_challenge_response_round_trip() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
 
     create_user_via_admin(&server, "alice").await;
-    let alice = server.login_account("alice", None).await.unwrap();
+    let alice = server.login_account("alice", "").await.unwrap();
     let alice_pubkey = alice.get_default_key().unwrap();
     let alice_signing_key = alice.get_signing_key(&alice_pubkey).unwrap();
 
@@ -420,13 +424,154 @@ fn remote_conn(instance: &Instance) -> eidetica::service::client::RemoteConnecti
         .expect("test server always creates Remote backend")
 }
 
+#[tokio::test]
+async fn snapshot_first_service_signer_state_without_credentials() -> eidetica::Result<()> {
+    use eidetica::{
+        Database, Error,
+        account::AccountSigner,
+        auth::types::AuthKey,
+        crdt::Codec,
+        state::{StateError, StateOperation},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let dir = tempfile::tempdir()?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    let socket = dir.path().join("state.sock");
+    let instance = crate::helpers::test_local_instance().await;
+    let (owner, _) = generate_keypair();
+    let (reader_key, reader_pubkey) = generate_keypair();
+    let db = Database::create(&instance, owner.clone(), Doc::new()).await?;
+    let root = db.root_id().clone();
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?
+            .set_auth_key(&reader_pubkey, AuthKey::active(None, Permission::Read))
+            .await
+    })
+    .await?;
+
+    let refuse = Arc::new(AtomicBool::new(false));
+    let running_policy = refuse.clone();
+    let service = ServiceServer::bind(instance.clone(), &socket)
+        .await?
+        .without_credentials()
+        .with_state_admission(Arc::new(move |_, op| {
+            !(matches!(op, StateOperation::ReadDoc { store: "_index" })
+                && running_policy.load(Ordering::Relaxed))
+        }));
+    let (shutdown, rx) = watch::channel(());
+    let task = tokio::spawn(service.run(rx));
+
+    let url = format!("unix://{}", socket.display());
+    let unauthenticated = Instance::connect(&url).await?;
+    assert!(unauthenticated.login_account("admin", "").await.is_err());
+    let reader = AccountSigner::new(root.clone(), reader_key);
+    let identity = reader.identity().clone();
+    assert!(matches!(
+        remote_conn(&unauthenticated)
+            .get_store_state(root.clone(), identity.clone(), "_index".into())
+            .await,
+        Err(Error::State(StateError::Denied))
+    ));
+    let client = reader.connect(&url).await?;
+    let conn = remote_conn(&client);
+    let read_index = || conn.get_store_state(root.clone(), identity.clone(), "_index".into());
+    assert!(serde_json::from_value::<Doc>(read_index().await?)?.is_empty());
+    refuse.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        read_index().await,
+        Err(Error::State(StateError::Refused))
+    ));
+    refuse.store(false, Ordering::Relaxed);
+    assert!(serde_json::from_value::<Doc>(read_index().await?)?.is_empty());
+
+    // Even a writer session's own ready projection must not become engine
+    // output. First prove the private projection really exists and is readable.
+    let writer = AccountSigner::new(root.clone(), owner);
+    let writer_client = writer.connect(&url).await?;
+    let writer_conn = remote_conn(&writer_client);
+    let writer_identity = writer.identity().clone();
+    let mut private = Doc::new();
+    private.set("not-engine-state", "private projection");
+    db.with_transaction(|tx| async move {
+        tx.get_store::<DocStore>("data")
+            .await?
+            .set("key", "from history")
+            .await
+    })
+    .await?;
+    let mut request = derived_request(&root, "data");
+    request.projection.name = "eidetica/opaque".into();
+    request.source_key = instance
+        .backend()
+        .store_snapshot_at(&root, "data", &db.snapshot().await?)
+        .await?
+        .cache_key_bytes();
+    let bytes = private.encode()?;
+    publish_remote_state(
+        &writer_conn,
+        &writer_identity,
+        request.clone(),
+        bytes.clone(),
+    )
+    .await;
+    let view = writer_conn
+        .resolve_store_state(writer_identity.clone(), request)
+        .await?
+        .unwrap();
+    assert_eq!(
+        writer_conn
+            .store_state_record_get(root.clone(), writer_identity.clone(), view, vec![0])
+            .await?,
+        Some(bytes)
+    );
+    let computed = writer_conn
+        .get_store_state(root.clone(), writer_identity.clone(), "data".into())
+        .await?;
+    let computed = serde_json::from_value::<Doc>(computed)?;
+    assert_eq!(
+        computed.get("key").and_then(|v| v.as_text()),
+        Some("from history")
+    );
+    assert!(computed.get("not-engine-state").is_none());
+    assert!(
+        matches!(
+            conn.get_store_state(root.clone(), writer_identity, "_index".into())
+                .await,
+            Err(Error::State(StateError::Denied))
+        ),
+        "a different session cannot borrow the writer identity"
+    );
+
+    let reader_pubkey = reader.key_id();
+    db.with_transaction(
+        |tx| async move { tx.get_settings()?.revoke_auth_key(&reader_pubkey).await },
+    )
+    .await?;
+    // This adapter only takes a Store name, so it still needs current Read.
+    assert!(matches!(
+        read_index().await,
+        Err(Error::State(StateError::Denied))
+    ));
+
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap()?;
+    Ok(())
+}
+
 /// Exercise `DatabaseOp::BeginTransaction` end-to-end over the wire.
 #[tokio::test]
 async fn test_database_begin_transaction() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_account("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", "").await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "test_db");
     let server_key = server_user.get_default_key().unwrap();
@@ -439,7 +584,7 @@ async fn test_database_begin_transaction() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_account("alice", None).await.unwrap();
+    let user = instance.login_account("alice", "").await.unwrap();
 
     let pubkey = user.get_default_key().unwrap();
     let sigkeys = eidetica::Database::find_sigkeys(&server, &root_id, &pubkey)
@@ -482,7 +627,7 @@ async fn test_database_get_verified_tips() {
     let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     // Add a commit server-side so tips diverge.
-    let server_user = server.login_account("alice", None).await.unwrap();
+    let server_user = server.login_account("alice", "").await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -512,7 +657,7 @@ async fn test_database_get_store_state() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_account("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", "").await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "test_db");
     let server_key = server_user.get_default_key().unwrap();
@@ -535,7 +680,7 @@ async fn test_database_get_store_state() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_account("alice", None).await.unwrap();
+    let user = instance.login_account("alice", "").await.unwrap();
 
     let pubkey = user.get_default_key().unwrap();
     let sigkeys = eidetica::Database::find_sigkeys(&server, &root_id, &pubkey)
@@ -566,7 +711,7 @@ async fn test_database_get_store_entries() {
     let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     // Write data server-side.
-    let server_user = server.login_account("alice", None).await.unwrap();
+    let server_user = server.login_account("alice", "").await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -629,7 +774,7 @@ async fn test_database_submit_signed_entry() {
         .await
         .unwrap();
 
-    let user = instance.login_account("alice", None).await.unwrap();
+    let user = instance.login_account("alice", "").await.unwrap();
     let key = user.get_default_key().unwrap();
     let signing_key = user.get_signing_key(&key).unwrap();
 
@@ -638,8 +783,17 @@ async fn test_database_submit_signed_entry() {
     let entry = Entry::builder(root_id.clone())
         .set_parents(parents)
         .set_subtree_data("submitted", b"{\"submitted\":true}")
+        .set_height(ctx.main_parents.iter().map(|(_, h)| *h).max().unwrap_or(0) + 1)
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": ctx.settings_tips,
+                "entropy": serde_json::Value::Null,
+            }))
+            .unwrap(),
+        )
         .build()
         .unwrap();
+    let entry = entry.with_auth(|auth| auth.key = identity.clone());
     let signature = sign_entry(&entry, &signing_key).unwrap();
     let entry = entry.with_auth(|auth| auth.signature = Some(signature));
     let entry_id = entry.id();
@@ -678,7 +832,7 @@ async fn test_database_encrypted_store_roundtrip() {
     let secret_data = "top-secret-value";
 
     // Write encrypted data server-side.
-    let server_user = server.login_account("alice", None).await.unwrap();
+    let server_user = server.login_account("alice", "").await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -765,7 +919,7 @@ async fn test_backend_snapshot_denied_for_unauthorised_user() {
     let bob_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let bob_user = bob_inst.login_account("bob", None).await.unwrap();
+    let bob_user = bob_inst.login_account("bob", "").await.unwrap();
     let bob_key = bob_user.get_default_key().unwrap();
     let bob_identity = eidetica::auth::types::SigKey::from_pubkey(&bob_key);
     let conn = remote_conn(&bob_inst);
@@ -800,7 +954,7 @@ async fn test_backend_get_denied_cross_tree() {
     let bob_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let bob_user = bob_inst.login_account("bob", None).await.unwrap();
+    let bob_user = bob_inst.login_account("bob", "").await.unwrap();
     let bob_key = bob_user.get_default_key().unwrap();
     let bob_identity = eidetica::auth::types::SigKey::from_pubkey(&bob_key);
     let bob_conn = remote_conn(&bob_inst);
@@ -824,7 +978,7 @@ async fn test_set_instance_metadata_allowed_for_admin() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _admin = instance.login_account("admin", None).await.unwrap();
+    let _admin = instance.login_account("admin", "").await.unwrap();
 
     let current = instance
         .backend()
@@ -848,7 +1002,7 @@ async fn test_set_instance_metadata_denied_for_non_admin() {
     let bob_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _bob = bob_inst.login_account("bob", None).await.unwrap();
+    let _bob = bob_inst.login_account("bob", "").await.unwrap();
 
     let current = bob_inst
         .backend()
@@ -919,7 +1073,7 @@ async fn test_remote_database_ops_e2e() {
     let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     // Write data server-side.
-    let server_user = server.login_account("alice", None).await.unwrap();
+    let server_user = server.login_account("alice", "").await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -1019,7 +1173,7 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
 
     // Bob owns a database (created server-side, bob is Admin(0) on it).
     create_user_via_admin(&server, "bob").await;
-    let mut server_bob = server.login_account("bob", None).await.unwrap();
+    let mut server_bob = server.login_account("bob", "").await.unwrap();
     let bob_pub = server_bob.get_default_key().unwrap();
     let bob_sk = server_bob.get_signing_key(&bob_pub).unwrap();
     let mut settings = eidetica::crdt::Doc::new();
@@ -1036,7 +1190,7 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
     let admin_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _admin_user = admin_inst.login_account("admin", None).await.unwrap();
+    let _admin_user = admin_inst.login_account("admin", "").await.unwrap();
     let conn = remote_conn(&admin_inst);
 
     // Resolve bob's SigKey in his own tree (the same shape `setup_db`
@@ -1244,7 +1398,7 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
     let client = Instance::connect(format!("unix://{}", receiver_socket.display()))
         .await
         .unwrap();
-    let _admin_user = client.login_account("admin", None).await.unwrap();
+    let _admin_user = client.login_account("admin", "").await.unwrap();
     remote_conn(&client)
         .submit_signed_entry(
             fixture.target_root.clone(),
@@ -1252,7 +1406,7 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
             fixture.delegated_entry,
         )
         .await
-        .expect("submission stays accepted while verification remains incomplete");
+        .expect_err("unsettled submission must not acknowledge a successful commit");
 
     assert_eq!(
         receiver
@@ -1372,11 +1526,11 @@ async fn test_submit_delegated_snapshot_regression_is_failed() {
     let client = Instance::connect(format!("unix://{}", receiver_socket.display()))
         .await
         .unwrap();
-    let _admin_user = client.login_account("admin", None).await.unwrap();
+    let _admin_user = client.login_account("admin", "").await.unwrap();
     remote_conn(&client)
         .submit_signed_entry(fixture.target_root, regressed.auth().key.clone(), regressed)
         .await
-        .unwrap();
+        .expect_err("quarantined snapshot regression must report commit rejection");
     assert_eq!(
         receiver
             .backend()
@@ -1392,8 +1546,8 @@ async fn test_submit_delegated_snapshot_regression_is_failed() {
 }
 
 /// An authenticated session submitting an entry whose signer holds no key
-/// on the target tree's auth: accepted at the socket (Change A skips the
-/// gate), but the server's verification pass marks it `Failed`/leaves
+/// on the target tree's auth: persisted for verification, but rejected in the
+/// response. The server's verification pass marks it `Failed`/leaves
 /// `Unverified`, so it never appears in the Verified frontier or any
 /// default read. Correctness is preserved by verification, not the gate.
 #[tokio::test]
@@ -1401,7 +1555,7 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
 
     create_user_via_admin(&server, "bob").await;
-    let mut server_bob = server.login_account("bob", None).await.unwrap();
+    let mut server_bob = server.login_account("bob", "").await.unwrap();
     let bob_pub = server_bob.get_default_key().unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "bob_db");
@@ -1417,7 +1571,7 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let admin_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let admin_user = admin_inst.login_account("admin", None).await.unwrap();
+    let admin_user = admin_inst.login_account("admin", "").await.unwrap();
     let admin_pub = admin_user.get_default_key().unwrap();
     let admin_sk = admin_user.get_signing_key(&admin_pub).unwrap();
     let conn = remote_conn(&admin_inst);
@@ -1432,11 +1586,13 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let entry_id = entry.id();
     let admin_identity = eidetica::auth::types::SigKey::from_pubkey(&admin_pub);
 
-    // Accepted at the socket — Change A's relaxation. Verification is the
-    // boundary the server still enforces.
-    conn.submit_signed_entry(bob_root.clone(), admin_identity, entry)
+    // Stored for verification, but rejection must reach the transaction caller.
+    let error = conn
+        .submit_signed_entry(bob_root.clone(), admin_identity, entry)
         .await
-        .expect("submit accepted at socket; verification rejects in-handler");
+        .expect_err("verification rejection must not be reported as a successful commit");
+    assert!(matches!(error, eidetica::Error::Transaction(error)
+        if matches!(*error, eidetica::transaction::TransactionError::EntryValidationFailed)));
 
     // Bob's Verified frontier is unchanged: the unauthorized entry never
     // graduated past Unverified/Failed and is excluded from default reads.
@@ -1471,7 +1627,7 @@ async fn test_daemon_survives_abrupt_client_disconnect() {
         let instance = Instance::connect(format!("unix://{}", socket_path.display()))
             .await
             .unwrap();
-        let _user = instance.login_account("alice", None).await.unwrap();
+        let _user = instance.login_account("alice", "").await.unwrap();
         // Drop instance — the underlying UnixStream tears down without the
         // server ever seeing an EOF-after-request boundary.
     }
@@ -1482,7 +1638,7 @@ async fn test_daemon_survives_abrupt_client_disconnect() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_account("alice", None).await.unwrap();
+    let user = instance.login_account("alice", "").await.unwrap();
     assert_eq!(user.username(), "alice");
 }
 
@@ -1519,7 +1675,7 @@ async fn test_daemon_survives_malformed_frame_from_client() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_account("alice", None).await.unwrap();
+    let user = instance.login_account("alice", "").await.unwrap();
     assert_eq!(user.username(), "alice");
 }
 
@@ -1550,7 +1706,7 @@ async fn test_daemon_survives_half_written_request_frame() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_account("alice", None).await.unwrap();
+    let user = instance.login_account("alice", "").await.unwrap();
     assert_eq!(user.username(), "alice");
 }
 
@@ -1572,7 +1728,7 @@ async fn login_client(socket_path: &std::path::Path, username: &str) -> Instance
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    instance.login_account(username, None).await.unwrap();
+    instance.login_account(username, "").await.unwrap();
     instance
 }
 
@@ -1653,7 +1809,7 @@ async fn test_remote_store_state_round_trip_survives_reconnect() {
     let reconnected = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let _user = reconnected.login_account("alice", None).await.unwrap();
+    let _user = reconnected.login_account("alice", "").await.unwrap();
     let conn = remote_conn(&reconnected);
     let view = conn
         .resolve_store_state(identity.clone(), request)
@@ -1880,7 +2036,7 @@ async fn test_historical_table_service_reads_use_row_record_set() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_account("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", "").await.unwrap();
     let key = server_user.get_default_key().unwrap();
     let database = server_user.create_database(Doc::new(), &key).await.unwrap();
     let root_id = database.root_id().clone();
@@ -1956,7 +2112,7 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_account("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", "").await.unwrap();
     let key = server_user.get_default_key().unwrap();
     let database = server_user.create_database(Doc::new(), &key).await.unwrap();
     let root_id = database.root_id().clone();
@@ -1991,9 +2147,11 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
         .unwrap()
         .0;
     let client = login_client(&socket_path, "alice").await;
-    let remote = eidetica::Database::open_remote(&client, remote_conn(&client), &root_id, identity)
-        .await
-        .unwrap();
+    let connection = remote_conn(&client);
+    let remote =
+        eidetica::Database::open_remote(&client, connection.clone(), &root_id, identity.clone())
+            .await
+            .unwrap();
 
     // First use publishes the encrypted row projection into this session's
     // cache. A fresh transaction below proves the already-published path.
@@ -2024,6 +2182,14 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
         memory.store_state_record_count(&root_id, "encrypted_rows"),
         4
     );
+    assert!(matches!(
+        connection
+            .get_store_state(root_id.clone(), identity, "encrypted_rows".into())
+            .await,
+        Err(eidetica::Error::State(
+            eidetica::state::StateError::UnsupportedProjection
+        ))
+    ));
     let tx = remote.new_transaction().await.unwrap();
     let mut encrypted = tx
         .get_store::<PasswordStore<Table<ServiceTodo>>>("encrypted_rows")
@@ -2061,7 +2227,7 @@ async fn test_connected_table_recovers_after_published_view_expiry() {
             .await;
     create_user_via_admin(&server, "alice").await;
 
-    let mut server_user = server.login_account("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", "").await.unwrap();
     let key = server_user.get_default_key().unwrap();
     let database = server_user.create_database(Doc::new(), &key).await.unwrap();
     let root_id = database.root_id().clone();
@@ -2122,944 +2288,6 @@ async fn test_connected_table_recovers_after_published_view_expiry() {
     assert_eq!(page.rows[1].0, "b");
 }
 
-// =============================================================================
-// Server-push write notifications (`Notification::DatabaseWrite`).
-//
-// Exercises the end-to-end path: client `Database::on_write` registration sends
-// `DatabaseOp::SubscribeWrites`, daemon's global write callback fans events
-// out to subscribed connections, client reader task routes notifications into
-// the local callback registry.
-//
-// Generous timeouts: the notification is asynchronous to `commit().await` on a
-// connected instance (by design — see `Database::on_write` docs § Callback
-// timing). 2s is enormous for a Unix-socket round-trip but absorbs CI jitter.
-// =============================================================================
-
-/// Helper: drain a callback-fed channel until `min` events arrive (or timeout).
-async fn collect_events<T>(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<T>,
-    min: usize,
-    timeout_secs: u64,
-) -> Vec<T> {
-    let mut out = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-    while out.len() < min {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        match tokio::time::timeout(remaining, rx.recv()).await {
-            Ok(Some(v)) => out.push(v),
-            Ok(None) => break, // channel closed
-            Err(_) => break,   // timeout
-        }
-    }
-    out
-}
-
-#[tokio::test]
-async fn test_on_write_fires_for_local_commit_on_connected_instance() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
-    let pubkey = user.get_default_key().unwrap();
-
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set("name", "callback_test");
-    let db = user.create_database(settings, &pubkey).await.unwrap();
-
-    // Single fire per submit under the fire-on-Verified model — no
-    // need to filter on verification state, every notification we
-    // receive here is settled.
-    let (event_tx, mut event_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(usize, eidetica::instance::WriteSource)>();
-    let _cb = db
-        .on_write(move |event, db| {
-            let prev = event.previous_tips().clone();
-            let post = event.post_tips().clone();
-            let db = db.clone();
-            let source = event.source();
-            let tx = event_tx.clone();
-            async move {
-                let count = db.ids_added(&prev, &post).await?.len();
-                let _ = tx.send((count, source));
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-    db.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v").await?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
-    let events = collect_events(&mut event_rx, 1, 2).await;
-    assert_eq!(events.len(), 1, "exactly one Verified notification");
-    assert_eq!(events[0].0, 1, "exactly one entry in the event");
-    assert_eq!(
-        events[0].1,
-        eidetica::instance::WriteSource::Local,
-        "a service-client commit is local to the daemon peer"
-    );
-}
-
-#[tokio::test]
-async fn test_on_write_fires_across_clients_on_same_daemon() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    // Set up a database server-side so both clients have the same root_id.
-    let mut server_user = server.login_account("alice", None).await.unwrap();
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set("name", "cross_client_test");
-    let server_key = server_user.get_default_key().unwrap();
-    let server_db = server_user
-        .create_database(settings, &server_key)
-        .await
-        .unwrap();
-    let root_id = server_db.root_id().clone();
-
-    // Observer client: registers on_write, waits.
-    let observer = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let observer_user = observer.login_account("alice", None).await.unwrap();
-    let observer_db = observer_user.open_database(&root_id).await.unwrap();
-
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-    let _cb = observer_db
-        .on_write(move |_event, _db| {
-            let tx = event_tx.clone();
-            async move {
-                let _ = tx.send(());
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-    // Writer client: connects, commits an entry. The observer must see it.
-    let writer = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let writer_user = writer.login_account("alice", None).await.unwrap();
-    let writer_db = writer_user.open_database(&root_id).await.unwrap();
-    writer_db
-        .with_transaction(|tx| async move {
-            let store = tx.get_store::<DocStore>("data").await?;
-            store.set("from", "writer").await?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-
-    let events = collect_events(&mut event_rx, 1, 2).await;
-    assert_eq!(
-        events.len(),
-        1,
-        "observer must see writer's commit via daemon push"
-    );
-}
-
-#[tokio::test]
-async fn test_on_write_previous_tips_populated_on_connected_instance() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
-    let pubkey = user.get_default_key().unwrap();
-
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set("name", "prev_tips_test");
-    let db = user.create_database(settings, &pubkey).await.unwrap();
-
-    // Single fire per commit under fire-on-Verified — no filter needed.
-    let (event_tx, mut event_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(Vec<eidetica::entry::ID>, eidetica::Snapshot)>();
-    let _cb = db
-        .on_write(move |event, db| {
-            let prev_tips = event.previous_tips().clone();
-            let post_tips = event.post_tips().clone();
-            let db = db.clone();
-            let tx = event_tx.clone();
-            async move {
-                let entries = db.ids_added(&prev_tips, &post_tips).await?;
-                let _ = tx.send((entries, prev_tips));
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-    // Two sequential commits; the second's previous_tips must include the
-    // first entry's id (and must not be empty — the V1 behavior before this
-    // change).
-    db.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v1").await?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    db.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v2").await?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
-    let events = collect_events(&mut event_rx, 2, 2).await;
-    assert_eq!(events.len(), 2, "both commits must surface as callbacks");
-    let (entries_1, _prev_1) = &events[0];
-    let (_entries_2, prev_2) = &events[1];
-    assert!(
-        !prev_2.is_empty(),
-        "second callback's previous_tips must be populated (got empty — daemon push not delivering canonical tips)"
-    );
-    assert!(
-        prev_2.tips().contains(&entries_1[0]),
-        "second callback's previous_tips must include the first commit's entry id; got prev={prev_2:?}, first_entry={:?}",
-        entries_1[0]
-    );
-}
-
-#[tokio::test]
-async fn test_on_write_dropped_handle_stops_callback() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
-    let pubkey = user.get_default_key().unwrap();
-
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set("name", "drop_test");
-    let db = user.create_database(settings, &pubkey).await.unwrap();
-
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-    let cb = db
-        .on_write(move |_event, _db| {
-            let tx = event_tx.clone();
-            async move {
-                let _ = tx.send(());
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-    // First commit: callback fires.
-    db.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v1").await?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let first = collect_events(&mut event_rx, 1, 2).await;
-    assert_eq!(first.len(), 1, "first commit must fire callback");
-
-    // Drop the WriteCallback handle — unregisters from the local registry.
-    // The daemon may still push (subscription persists on the connection),
-    // but with no callback registered the dispatch is a no-op.
-    drop(cb);
-
-    db.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v2").await?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
-    // Give the daemon round-trip a moment to complete; if a callback were
-    // going to fire (regression), it would do so well within 500ms on a
-    // local Unix socket.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let after_drop = collect_events(&mut event_rx, 1, 0).await;
-    assert!(
-        after_drop.is_empty(),
-        "dropped WriteCallback must stop firing user code; got {after_drop:?}"
-    );
-}
-
-#[tokio::test]
-async fn test_on_write_only_fires_for_subscribed_tree() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
-    let pubkey = user.get_default_key().unwrap();
-
-    let mut settings_a = eidetica::crdt::Doc::new();
-    settings_a.set("name", "tree_a");
-    let db_a = user.create_database(settings_a, &pubkey).await.unwrap();
-
-    let mut settings_b = eidetica::crdt::Doc::new();
-    settings_b.set("name", "tree_b");
-    let db_b = user.create_database(settings_b, &pubkey).await.unwrap();
-
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-    let _cb = db_a
-        .on_write(move |_event, _db| {
-            let tx = event_tx.clone();
-            async move {
-                let _ = tx.send(());
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-    // Commit to tree B; tree A's callback must not fire.
-    db_b.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v").await?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let cross_tree = collect_events(&mut event_rx, 1, 0).await;
-    assert!(
-        cross_tree.is_empty(),
-        "callback on tree A must not fire for writes to tree B; got {cross_tree:?}"
-    );
-
-    // Now commit to tree A — the callback must fire.
-    db_a.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v").await?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let same_tree = collect_events(&mut event_rx, 1, 2).await;
-    assert_eq!(
-        same_tree.len(),
-        1,
-        "callback on tree A must fire for tree A's own commit"
-    );
-}
-
-/// Race two `on_write` registrations on the same tree from separate tasks,
-/// then commit immediately after both await-points return. Both callbacks
-/// must observe the commit — i.e. the second-to-arrive registration must
-/// have waited for the in-flight `SubscribeWrites` to land before returning,
-/// not raced ahead with the daemon still unsubscribed.
-#[tokio::test]
-async fn test_on_write_concurrent_registrations_both_observe_commit() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
-    let pubkey = user.get_default_key().unwrap();
-
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set("name", "race_test");
-    let db = user.create_database(settings, &pubkey).await.unwrap();
-
-    let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel::<()>();
-    let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel::<()>();
-
-    let db_for_a = db.clone();
-    let db_for_b = db.clone();
-    let reg_a = tokio::spawn(async move {
-        db_for_a
-            .on_write(move |_event, _db| {
-                let tx = tx_a.clone();
-                async move {
-                    let _ = tx.send(());
-                    Ok(())
-                }
-            })
-            .await
-            .unwrap()
-    });
-    let reg_b = tokio::spawn(async move {
-        db_for_b
-            .on_write(move |_event, _db| {
-                let tx = tx_b.clone();
-                async move {
-                    let _ = tx.send(());
-                    Ok(())
-                }
-            })
-            .await
-            .unwrap()
-    });
-    let (_cb_a, _cb_b) = tokio::try_join!(reg_a, reg_b).unwrap();
-
-    // Both `on_write().await` calls have returned. A commit issued now must
-    // be visible to both callbacks — if the follower returned without
-    // awaiting the leader's subscribe, this commit could land before the
-    // daemon recognized the subscription and one callback (or both) would
-    // miss it.
-    db.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v").await?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
-    let events_a = collect_events(&mut rx_a, 1, 2).await;
-    let events_b = collect_events(&mut rx_b, 1, 2).await;
-    assert_eq!(
-        events_a.len(),
-        1,
-        "first registration must observe the commit; got {events_a:?}"
-    );
-    assert_eq!(
-        events_b.len(),
-        1,
-        "second (concurrent) registration must observe the commit; got {events_b:?}"
-    );
-}
-
-/// Regression: dropping the last per-tree callback transitions the wire
-/// subscription to `Idle`; a re-registration inside the grace window
-/// avoids a wire round-trip; once the grace window elapses the sweep
-/// sends `UnsubscribeWrites` to the daemon.
-///
-/// Uses `set_idle_grace_window_for_test` and
-/// `set_sweep_interval_for_test` (gated behind the `testing` feature)
-/// to shrink the windows so the test runs in ~250ms instead of waiting
-/// the production-default 60s grace.
-#[tokio::test]
-async fn test_lazy_unsubscribe_after_grace_window() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-
-    // Shrink the grace + sweep windows for this test. The setters are
-    // process-global OnceLocks gated behind the `testing` feature;
-    // nextest runs each integration-test binary in its own process so
-    // no other test sees the override.
-    eidetica::service::client::set_idle_grace_window_for_test(std::time::Duration::from_millis(
-        100,
-    ));
-    eidetica::service::client::set_sweep_interval_for_test(std::time::Duration::from_millis(50));
-
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    // Count daemon-side per-tree callback registrations as a proxy
-    // for "the daemon is subscribed for this tree." Each
-    // `SubscribeWrites` adds one; `UnsubscribeWrites` removes one.
-    // Track via the daemon's internal `Instance::register_write_callback`
-    // detected indirectly via a global callback that observes writes
-    // — but that's a side measurement. Simpler: just count
-    // notifications received on the client. Before sweep:
-    // commit fires a notification. After sweep: commit fires nothing.
-    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
-    let pubkey = user.get_default_key().unwrap();
-
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set("name", "lazy_unsub_test");
-    let db = user.create_database(settings, &pubkey).await.unwrap();
-
-    // Register a callback, then drop it, then commit. The commit
-    // should still fire (subscription is Idle, daemon still pushing,
-    // but no local callback to invoke — so we measure differently).
-    //
-    // Instead, after the grace window elapses, register a *new*
-    // callback. By that time the sweep should have unsubscribed —
-    // but `on_write_at_tips` then re-subscribes via the leader path.
-    // Verify a subsequent commit still fires that new callback (proves
-    // the subscribe round-trip happens correctly post-unsubscribe).
-    let received = Arc::new(AtomicUsize::new(0));
-
-    {
-        let received_clone = received.clone();
-        let _cb = db
-            .on_write(move |_event, _db| {
-                let n = received_clone.clone();
-                async move {
-                    n.fetch_add(1, AtomicOrdering::Relaxed);
-                    Ok(())
-                }
-            })
-            .await
-            .unwrap();
-
-        // Fire one commit while callback is alive.
-        db.with_transaction(|tx| async move {
-            let store = tx.get_store::<DocStore>("data").await?;
-            store.set("k", "v1").await?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-
-        // Give the notification time to round-trip.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(
-            received.load(AtomicOrdering::Relaxed) >= 1,
-            "callback should fire while subscribed"
-        );
-
-        // `cb` drops here → transition_to_idle.
-    }
-
-    // Wait past the grace window so the sweep runs UnsubscribeWrites.
-    // Grace is 100ms, sweep interval is 50ms, so by 300ms we're
-    // guaranteed to have swept.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    // Now register a fresh callback. This should re-subscribe via
-    // the leader path (entry was removed by the sweep). Then commit
-    // and assert the new callback fires.
-    let received2 = Arc::new(AtomicUsize::new(0));
-    let received2_clone = received2.clone();
-    let _cb2 = db
-        .on_write(move |_event, _db| {
-            let n = received2_clone.clone();
-            async move {
-                n.fetch_add(1, AtomicOrdering::Relaxed);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-    db.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v2").await?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert!(
-        received2.load(AtomicOrdering::Relaxed) >= 1,
-        "re-registered callback after sweep must fire on subsequent commit"
-    );
-}
-
-/// Regression: per-tree dispatch on the client means a slow callback on
-/// tree A does not stall callbacks on tree B. The single-drain-task
-/// shape this replaced would have serialised them.
-#[tokio::test]
-async fn test_on_write_per_tree_concurrent_dispatch() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
-    let pubkey = user.get_default_key().unwrap();
-
-    let mut settings_a = eidetica::crdt::Doc::new();
-    settings_a.set("name", "tree_a_slow");
-    let db_a = user.create_database(settings_a, &pubkey).await.unwrap();
-    let mut settings_b = eidetica::crdt::Doc::new();
-    settings_b.set("name", "tree_b_fast");
-    let db_b = user.create_database(settings_b, &pubkey).await.unwrap();
-
-    // A's callback sleeps for 300ms before flipping `a_done`. B's
-    // callback runs immediately and records whether `a_done` is set at
-    // the moment it observes the write. If dispatch were serial across
-    // trees, B's callback would only run *after* A's sleep completes
-    // (a_done == true). Per-tree dispatch means B's callback runs
-    // independently and should see a_done == false.
-    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-    let a_done = std::sync::Arc::new(AtomicBool::new(false));
-    let b_observed: std::sync::Arc<std::sync::Mutex<Option<bool>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(None));
-
-    let a_done_for_a = a_done.clone();
-    let _cb_a = db_a
-        .on_write(move |_event, _db| {
-            let a_done = a_done_for_a.clone();
-            async move {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                a_done.store(true, AtomicOrdering::Relaxed);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-    let a_done_for_b = a_done.clone();
-    let b_observed_for_b = b_observed.clone();
-    let _cb_b = db_b
-        .on_write(move |_event, _db| {
-            let a_done = a_done_for_b.clone();
-            let observed = b_observed_for_b.clone();
-            async move {
-                let snapshot = a_done.load(AtomicOrdering::Relaxed);
-                *observed.lock().unwrap() = Some(snapshot);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-    // Commit to both trees. Order doesn't matter; the daemon's per-tree
-    // callback fires push notifications independently.
-    let commit_a = db_a.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v_a").await?;
-        Ok(())
-    });
-    let commit_b = db_b.with_transaction(|tx| async move {
-        let store = tx.get_store::<DocStore>("data").await?;
-        store.set("k", "v_b").await?;
-        Ok(())
-    });
-    tokio::try_join!(commit_a, commit_b).unwrap();
-
-    // Wait long enough for B's notification to round-trip and its
-    // callback to record, but well before A's 300ms sleep finishes.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let observation = *b_observed.lock().unwrap();
-    assert_eq!(
-        observation,
-        Some(false),
-        "B's callback must run before A's slow callback finishes; per-tree dispatch broken if Some(true) or None: {observation:?}",
-    );
-}
-
-/// Regression: notifications dispatched to user callbacks on a connected
-/// client must arrive in daemon-canonical order, even under burst load.
-///
-/// Pre-fix: every notification spawned its own dispatch task, so the
-/// callback for notification N+1 could start before notification N's
-/// callback finished — and could even run on a different worker thread.
-/// A user counting `event.entries()[0]` height (or similar) would see
-/// arrivals interleaved by the scheduler, not by the daemon's send
-/// order.
-///
-/// Post-fix: a single per-connection drain task `await`s each callback
-/// before the next, so the order observed by the user matches the order
-/// the daemon pushed.
-#[tokio::test]
-async fn test_on_write_preserves_daemon_canonical_order_under_burst() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let mut user = instance.login_account("alice", None).await.unwrap();
-    let pubkey = user.get_default_key().unwrap();
-
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set("name", "ordering_test");
-    let db = user.create_database(settings, &pubkey).await.unwrap();
-
-    // Each callback yields *before* it records its arrival index, then
-    // sleeps for a tiny stagger to make it easy for a per-notification
-    // `tokio::spawn` to land out of order. The serial dispatcher must
-    // serialise them so the recorded order is monotonic.
-    // One fire per commit under fire-on-Verified; no need to filter on
-    // verification status. Per-fire ordering is what this test asserts.
-    let arrivals: std::sync::Arc<std::sync::Mutex<Vec<u64>>> = Default::default();
-    let next_seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let arrivals_for_cb = arrivals.clone();
-    let next_seq_for_cb = next_seq.clone();
-    let _cb = db
-        .on_write(move |_event, _db| {
-            let arrivals = arrivals_for_cb.clone();
-            let next_seq = next_seq_for_cb.clone();
-            async move {
-                // Yield + sleep stagger: maximise the window for an
-                // out-of-order dispatcher to reorder if it could.
-                tokio::task::yield_now().await;
-                tokio::time::sleep(Duration::from_millis(2)).await;
-                let seq = next_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                arrivals.lock().unwrap().push(seq);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-    // Burst commits. Each one is its own daemon-side write, so each
-    // becomes a separate notification frame, pushed in order.
-    let n: u64 = 12;
-    for i in 0..n {
-        db.with_transaction(move |tx| async move {
-            let store = tx.get_store::<DocStore>("data").await?;
-            store.set("k", format!("v{i}")).await?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    }
-
-    // Wait for all callbacks to land.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if arrivals.lock().unwrap().len() >= n as usize {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-
-    let recorded = arrivals.lock().unwrap().clone();
-    assert_eq!(
-        recorded.len(),
-        n as usize,
-        "every commit must surface as a callback (serialiser must not drop events)"
-    );
-    // The serial dispatcher guarantees the i'th callback to fire records
-    // sequence `i`, monotonically. Pre-fix this assertion would fail
-    // intermittently under the yield+sleep stagger.
-    for (expected, got) in recorded.iter().enumerate() {
-        assert_eq!(
-            *got as usize, expected,
-            "callbacks must fire in daemon-canonical order; got {recorded:?}"
-        );
-    }
-}
-
-/// Regression (#2): notifications for a single tree must reach a subscriber
-/// in daemon-canonical order even when **multiple** connections write that
-/// tree concurrently — not just under a single writer's burst.
-///
-/// The daemon serialises the writes themselves under the tree lock, but the
-/// subscription's frame send used to run inside a detached `tokio::spawn`
-/// dispatched *after* the lock dropped. Two concurrent writers' send tasks
-/// could then race, delivering `post_tips` out of order — the client would
-/// observe a `post_tips` that regresses behind the one before it.
-///
-/// Post-fix: the subscription callback's synchronous `frame_tx.send` runs
-/// under the tree lock in cursor-advance order, so the observed `post_tips`
-/// sequence for the subscribed callback is monotonically forward. This test
-/// asserts exactly that invariant via ancestry (`ids_added`), which is
-/// timing-independent once both writers have drained.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_on_write_canonical_order_under_concurrent_writers() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    // Two independent client connections, same user, same tree — each is a
-    // distinct daemon-side connection, so their writes race at the fan-out.
-    let writer1 = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let mut user1 = writer1.login_account("alice", None).await.unwrap();
-    let pubkey = user1.get_default_key().unwrap();
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set("name", "concurrent_writers");
-    let db1 = user1.create_database(settings, &pubkey).await.unwrap();
-    let root_id = db1.root_id().clone();
-
-    let writer2 = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let user2 = writer2.login_account("alice", None).await.unwrap();
-    let db2 = user2.open_database(&root_id).await.unwrap();
-
-    // Subscriber records each event's post_tips in fire order.
-    let observed: std::sync::Arc<std::sync::Mutex<Vec<eidetica::snapshot::Snapshot>>> =
-        Default::default();
-    let observed_for_cb = observed.clone();
-    let _cb = db1
-        .on_write(move |event, _db| {
-            let post = event.post_tips().clone();
-            let observed = observed_for_cb.clone();
-            async move {
-                observed.lock().unwrap().push(post);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-    // Both connections commit to the tree concurrently, interleaved.
-    let n: usize = 8;
-    let c1 = async {
-        for i in 0..n {
-            db1.with_transaction(move |tx| async move {
-                let store = tx.get_store::<DocStore>("data").await?;
-                store.set("w1", format!("v{i}")).await?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        }
-    };
-    let c2 = async {
-        for i in 0..n {
-            db2.with_transaction(move |tx| async move {
-                let store = tx.get_store::<DocStore>("data").await?;
-                store.set("w2", format!("v{i}")).await?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        }
-    };
-    tokio::join!(c1, c2);
-
-    // Let the notification stream quiesce. We deliberately do NOT assert an
-    // exact fire count: fire-on-Verified batches, so two entries promoted in a
-    // single verify pass surface as one notification whose `post_tips` covers
-    // both. The number of fires for `2n` concurrent commits is therefore
-    // `<= 2n` and load-dependent — not a stable invariant. What IS stable is
-    // the *order* of whatever fires do arrive, which is what this test pins.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let posts = observed.lock().unwrap().clone();
-    assert!(
-        posts.len() >= 2,
-        "concurrent writers should surface several notifications; got {}",
-        posts.len()
-    );
-
-    // Canonical order ⇔ the total number of entries reachable from each observed
-    // `post_tips` strictly increases every fire. Measured via
-    // `ids_added(EMPTY, post)` — the full ancestor closure, a valid ancestry
-    // count in either topology (fork or linear). Each fire advances the daemon's
-    // subscription cursor forward by at least one entry, so a correctly-ordered
-    // stream is strictly increasing; a reordered send delivers an older
-    // `post_tips` after a newer one, which would regress the count. This is
-    // timing-independent: it holds no matter how the two writers interleave, as
-    // long as delivery is in canonical order.
-    //
-    // Note: this pins the invariant but is not a red-before/green-after repro of
-    // the reorder — the race only manifests on a multi-thread runtime and even
-    // then only intermittently, so it can't be relied on to fail pre-fix. The
-    // fix makes ordering hold *by construction* (synchronous send under the tree
-    // lock in cursor order); this guards against a future regression of it.
-    let mut prev_count = 0usize;
-    for post in &posts {
-        let count = db1
-            .ids_added(&eidetica::snapshot::Snapshot::EMPTY, post)
-            .await
-            .unwrap()
-            .len();
-        assert!(
-            count > prev_count,
-            "reachable-entry count must strictly increase each fire (reorder regresses it); \
-             got {count} after {prev_count} for {post:?} in sequence {posts:?}"
-        );
-        prev_count = count;
-    }
-}
-
-/// Regression: a client request issued *after* the reader task has exited
-/// (because the daemon shut down its side) must surface
-/// `ConnectionAborted` promptly instead of hanging forever on a oneshot
-/// no one will pop.
-///
-/// Pre-fix: the client checked nothing — it took the writer lock, pushed
-/// a sender into the pending FIFO, wrote the frame (which could still
-/// succeed against an OS write buffer briefly after peer close), and then
-/// awaited a response from a dead connection. The dispatcher's `clear()`
-/// had already run by then, so no one would ever fulfil the sender.
-#[tokio::test]
-async fn test_request_after_reader_exit_returns_connection_aborted() {
-    let (socket_path, tx_shutdown, _server, _dir) = start_test_server().await;
-    create_user_via_admin(&_server, "alice").await;
-
-    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-        .await
-        .unwrap();
-    let _user = instance.login_account("alice", None).await.unwrap();
-    let conn = remote_conn(&instance);
-
-    // Shut the daemon down and wait for the reader task to actually observe
-    // the closed socket. The post-exit `ConnectionAborted` contract holds
-    // only once the reader has run `mark_dead`; a request issued before
-    // that passes the `closed` checks and its frame write fails with
-    // `BrokenPipe` against the already-closed socket — the fixed sleep
-    // this test used to rely on loses that race under scheduler load.
-    drop(tx_shutdown);
-    tokio::time::timeout(Duration::from_secs(2), conn.wait_closed_for_test())
-        .await
-        .expect("reader must observe server shutdown and mark the connection closed");
-
-    // Any new request must bail with `ConnectionAborted` within the
-    // timeout — emphatically *not* hang waiting for a response.
-    let result = tokio::time::timeout(Duration::from_secs(2), conn.get_instance_metadata())
-        .await
-        .expect("request after reader exit must not hang");
-    let err = result.expect_err("request after reader exit must return Err");
-    assert!(
-        matches!(&err, eidetica::Error::Io(e) if e.kind() == std::io::ErrorKind::ConnectionAborted),
-        "expected ConnectionAborted, got: {err:?}",
-    );
-}
-
-/// Regression: dropping the last client handle must close the socket so the
-/// daemon tears the connection down.
-///
-/// The reader task holds a strong `Arc<RemoteConnectionInner>` and `inner`
-/// owns the socket's `WriteHalf`, so without an explicit teardown token the
-/// two halves pin each other: the reader parks in `read_frame` until the
-/// daemon EOFs, and the daemon only EOFs once the client's socket closes.
-/// The daemon-side subscription — a per-database write callback on its
-/// `Instance` — would then survive forever, with the daemon fanning
-/// notifications into a channel nobody drains.
-#[tokio::test]
-async fn test_client_drop_releases_daemon_subscription() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    create_user_via_admin(&server, "alice").await;
-
-    {
-        let instance = Instance::connect(format!("unix://{}", socket_path.display()))
-            .await
-            .unwrap();
-        let mut user = instance.login_account("alice", None).await.unwrap();
-        let pubkey = user.get_default_key().unwrap();
-
-        let mut settings = eidetica::crdt::Doc::new();
-        settings.set("name", "drop_release_test");
-        let db = user.create_database(settings, &pubkey).await.unwrap();
-
-        // Detach so the subscription outlives the callback handle: this
-        // asserts teardown comes from the connection closing, not from
-        // `WriteCallback::drop` unregistering.
-        db.on_write(|_event, _db| async { Ok(()) })
-            .await
-            .unwrap()
-            .detach();
-
-        assert!(
-            format!("{server:?}").contains("<1 per-db callbacks>"),
-            "daemon should hold the subscription while the client is alive: {server:?}"
-        );
-    }
-
-    // The daemon scrubs via its `ConnectionGuard` once it sees EOF.
-    for _ in 0..100 {
-        if format!("{server:?}").contains("<0 per-db callbacks>") {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("daemon still holds the subscription after the client dropped: {server:?}");
-}
-
 /// A user's non-default, per-database key must be usable to open that database
 /// over a service connection.
 ///
@@ -3079,7 +2307,7 @@ async fn test_open_database_with_non_login_per_database_key() {
     // Server-side: give the database its own key, distinct from alice's
     // default (login) key, and create it under that key so the tree's auth
     // settings bind only the per-database key.
-    let mut server_user = server.login_account("alice", None).await.unwrap();
+    let mut server_user = server.login_account("alice", "").await.unwrap();
     let login_key = server_user.get_default_key().unwrap();
     let per_db_key = server_user.add_private_key(Some("per-db")).await.unwrap();
     assert_ne!(
@@ -3101,7 +2329,7 @@ async fn test_open_database_with_non_login_per_database_key() {
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = instance.login_account("alice", None).await.unwrap();
+    let user = instance.login_account("alice", "").await.unwrap();
     assert_eq!(
         user.get_default_key().unwrap(),
         login_key,
@@ -3130,25 +2358,33 @@ async fn test_open_database_with_non_login_per_database_key() {
 /// keys.
 #[tokio::test]
 async fn test_open_database_with_unheld_key_is_rejected() {
+    use eidetica::instance::backend::{Backend, RemoteBackend};
+
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "alice").await;
     create_user_via_admin(&server, "mallory").await;
 
-    let mut alice_server = server.login_account("alice", None).await.unwrap();
+    let mut alice_server = server.login_account("alice", "").await.unwrap();
     let alice_db_key = alice_server.add_private_key(Some("per-db")).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "alices_database");
-    let root_id = alice_server
+    let database = alice_server
         .create_database(settings, &alice_db_key)
         .await
-        .unwrap()
-        .root_id()
-        .clone();
+        .unwrap();
+    let root_id = database.root_id().clone();
+    assert_eq!(
+        database
+            .try_verified_store_snapshot("_settings")
+            .await
+            .unwrap(),
+        Some(eidetica::Snapshot::from([root_id.clone()]))
+    );
 
     let mallory_inst = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let mallory = mallory_inst.login_account("mallory", None).await.unwrap();
+    let mallory = mallory_inst.login_account("mallory", "").await.unwrap();
 
     let err = mallory
         .open_database_with_key(&root_id, &alice_db_key)
@@ -3158,6 +2394,15 @@ async fn test_open_database_with_unheld_key_is_rejected() {
     assert!(
         msg.contains("key") || msg.contains("permission") || msg.contains("auth"),
         "expected a key/permission error, got: {err}",
+    );
+    let remote = RemoteBackend::new(remote_conn(&mallory_inst), None);
+    let result = remote
+        .try_verified_store_snapshot(&root_id, "_settings")
+        .await;
+    assert!(
+        matches!(result, Err(eidetica::Error::Io(ref e))
+            if e.to_string().contains("[auth::PermissionDenied]")),
+        "{result:?}"
     );
 }
 
@@ -3223,7 +2468,7 @@ async fn zero_budget_daemon_keeps_client_history_reads_available() {
     let (shutdown, rx) = watch::channel(());
     let task = tokio::spawn(service.run(rx));
     let (client, root, _) = setup_db(&server, &socket, "cache_reader").await;
-    let user = client.login_account("cache_reader", None).await.unwrap();
+    let user = client.login_account("cache_reader", "").await.unwrap();
     let database = user.open_database(&root).await.unwrap();
     let tx = database.new_transaction().await.unwrap();
     let doc = tx.get_store::<DocStore>("data").await.unwrap();
@@ -3245,4 +2490,786 @@ async fn zero_budget_daemon_keeps_client_history_reads_available() {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+/// AccountSession's checked lookup uses the login-scoped native service path,
+/// not replicated Store state or a default-filled client cache.
+#[tokio::test]
+async fn test_checked_tracking_lookup_service_read_scope_and_denial() {
+    let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let mut owner = server.login_account("alice", "").await.unwrap();
+    let key = owner.get_default_key().unwrap();
+    let selected = owner.create_database(Doc::new(), &key).await.unwrap();
+    for _ in 0..8 {
+        owner.create_database(Doc::new(), &key).await.unwrap();
+    }
+    let missing = eidetica::ID::from_bytes("not-tracked");
+    let client = login_client(&socket_path, "alice").await;
+    let user = client.login_account("alice", "").await.unwrap();
+    assert!(
+        user.tracked_database(selected.root_id())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let snapshot = owner.account().database().snapshot().await.unwrap();
+    let engine = server.backend().local_engine().unwrap();
+    let memory = engine.as_any().downcast_ref::<InMemory>().unwrap();
+    let before = memory.store_state_read_counts();
+    let history = memory.store_history_read_count();
+    let row = user
+        .tracked_database(selected.root_id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.database_id, *selected.root_id());
+    assert_eq!(user.tracked_database(&missing).await.unwrap(), None);
+    let after = memory.store_state_read_counts();
+    assert_eq!(
+        after, before,
+        "native lookup must not read replicated records"
+    );
+    let name = format!("account-state:{}", owner.login_id());
+    let bytes = engine.local_account_record(&name).await.unwrap().unwrap();
+    assert!(
+        engine
+            .compare_exchange_local_account_record(&name, Some(&bytes), b"invalid native state")
+            .await
+            .unwrap()
+    );
+    for id in [selected.root_id(), &missing] {
+        assert!(
+            user.tracked_database(id).await.is_err(),
+            "native read failure is not absence"
+        );
+    }
+    assert!(
+        engine
+            .compare_exchange_local_account_record(&name, Some(b"invalid native state"), &bytes)
+            .await
+            .unwrap()
+    );
+    assert_eq!(memory.store_history_read_count(), history);
+    assert_eq!(
+        owner.account().database().snapshot().await.unwrap(),
+        snapshot
+    );
+
+    // Rebinding the connection cannot use a retained session to read a foreign
+    // login's native state. Native login scope is separate from per-tree Auth;
+    // live delegated target revocation is exercised by the test below.
+    create_user_via_admin(&server, "bob").await;
+    let _bob = client.login_account("bob", "").await.unwrap();
+    let snapshot = owner.account().database().snapshot().await.unwrap();
+    for id in [selected.root_id(), &missing] {
+        let err = user
+            .tracked_database(id)
+            .await
+            .expect_err("denial is not absence");
+        // Existing service errors preserve auth failures as an IO error with
+        // their module/kind prefix; this API does not redesign that contract.
+        assert!(
+            matches!(err, eidetica::Error::Io(ref e)
+            if e.to_string().starts_with("[account::InsufficientPermissions]")),
+            "{err:?}"
+        );
+    }
+    assert_eq!(
+        owner.account().database().snapshot().await.unwrap(),
+        snapshot
+    );
+}
+
+#[tokio::test]
+async fn test_checked_tracking_lookup_service_connection_failure_is_not_absence() {
+    let (socket_path, shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let client = login_client(&socket_path, "alice").await;
+    let mut user = client.login_account("alice", "").await.unwrap();
+    let key = user.get_default_key().unwrap();
+    let selected = user.create_database(Doc::new(), &key).await.unwrap();
+    assert!(
+        user.tracked_database(selected.root_id())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let conn = remote_conn(&client);
+    drop(shutdown);
+    tokio::time::timeout(Duration::from_secs(2), conn.wait_closed_for_test())
+        .await
+        .unwrap();
+    for id in [selected.root_id(), &eidetica::ID::from_bytes("not-tracked")] {
+        let result = tokio::time::timeout(Duration::from_secs(2), user.tracked_database(id))
+            .await
+            .expect("closed connection must not hang");
+        assert!(
+            matches!(result, Err(eidetica::Error::Io(ref e))
+            if e.kind() == std::io::ErrorKind::ConnectionAborted),
+            "{result:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn live_delegation_service_rechecks_retained_session_identity() {
+    use crate::auth::live_authority::live_delegation_pair;
+    use eidetica::{
+        Database,
+        auth::types::{AuthKey, Permission, SigKey},
+    };
+
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "live-member").await;
+    let client = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let user = client.login_account("live-member", "").await.unwrap();
+    let member = user.get_default_key().unwrap();
+    let (identity, target, sigkey) = live_delegation_pair(&server, &member).await;
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("secret", "private target")
+        .await
+        .unwrap();
+    let secret_entry = txn.commit().await.unwrap();
+    let conn = remote_conn(&client);
+    let retained = Database::open_remote(&client, conn.clone(), target.root_id(), sigkey.clone())
+        .await
+        .unwrap();
+    assert!(!retained.snapshot().await.unwrap().is_empty());
+    let retained_store = retained.get_store_viewer::<DocStore>("data").await.unwrap();
+    assert_eq!(
+        retained_store.try_get("secret").await.unwrap(),
+        Some("private target".into())
+    );
+    assert_eq!(retained_store.try_get("absent").await.unwrap(), None);
+    conn.db_get_entry(
+        target.root_id().clone(),
+        sigkey.clone(),
+        secret_entry.clone(),
+    )
+    .await
+    .unwrap();
+
+    let txn = identity.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .revoke_auth_key(&member)
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    identity.verify().await.unwrap();
+    assert!(
+        retained.snapshot().await.is_err(),
+        "a logged-in, identity-bound handle must lose access after accepted removal"
+    );
+    // Even a warmed optional reader must surface revocation, for present and
+    // absent keys alike. The wire's existing auth-error mapping stays intact.
+    for key in ["secret", "absent"] {
+        for result in [
+            retained_store.try_get(key).await,
+            retained_store.try_get_path(key).await,
+        ] {
+            assert!(
+                matches!(result, Err(eidetica::Error::Io(ref e))
+                if e.to_string().contains("[auth::PermissionDenied]")),
+                "{result:?}"
+            );
+        }
+    }
+    let old_claim_error = conn
+        .db_get_entry(
+            target.root_id().clone(),
+            sigkey.clone(),
+            secret_entry.clone(),
+        )
+        .await
+        .unwrap_err();
+    let outsider_error = conn
+        .db_get_entry(
+            target.root_id().clone(),
+            SigKey::from_pubkey(&member),
+            secret_entry,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        old_claim_error.to_string(),
+        outsider_error.to_string(),
+        "denial must not reveal which resolution sub-check failed"
+    );
+
+    // Public identity metadata remains readable, but cannot confer target membership.
+    let public_identity = Database::open_remote(
+        &client,
+        conn.clone(),
+        identity.root_id(),
+        SigKey::from_pubkey(&member),
+    )
+    .await
+    .unwrap();
+    assert!(!public_identity.snapshot().await.unwrap().is_empty());
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(&member, AuthKey::active(None, Permission::Read))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let direct = Database::open_remote(
+        &client,
+        conn,
+        target.root_id(),
+        SigKey::from_pubkey(&member),
+    )
+    .await
+    .unwrap();
+    assert!(!direct.snapshot().await.unwrap().is_empty());
+    assert!(
+        retained.snapshot().await.is_err(),
+        "a direct grant does not repair the removed delegated path"
+    );
+}
+
+#[tokio::test]
+async fn test_signer_authentication_requires_fresh_proof_without_login_record() {
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (key, pubkey) = generate_keypair();
+    let (wrong, _) = generate_keypair();
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+    write_frame(
+        &mut writer,
+        &ServiceRequest::SignerChallenge {
+            pubkey: pubkey.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let first = match read_response(&mut reader).await {
+        ServiceResponse::SignerChallenge { challenge } => challenge,
+        other => panic!("expected proof-only challenge, got {other:?}"),
+    };
+    assert_eq!(first.len(), 32);
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&first, &wrong),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::Error(_)
+    ));
+    // Failed proof consumes the challenge, even when retried with the right key.
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&first, &key),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::Error(_)
+    ));
+    write_frame(
+        &mut writer,
+        &ServiceRequest::SessionKeyChallenge {
+            pubkey: pubkey.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::Error(_)
+    ));
+    write_frame(&mut writer, &ServiceRequest::SignerChallenge { pubkey })
+        .await
+        .unwrap();
+    let second = match read_response(&mut reader).await {
+        ServiceResponse::SignerChallenge { challenge } => challenge,
+        other => panic!("expected proof-only challenge, got {other:?}"),
+    };
+    assert_ne!(first, second);
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&second, &key),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+}
+
+#[tokio::test]
+async fn test_local_account_state_requires_exact_login_and_preserves_conflicts() {
+    let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "local-alice").await;
+    create_user_via_admin(&server, "local-bob").await;
+    let alice = server.login_account("local-alice", "").await.unwrap();
+    let bob = server.login_account("local-bob", "").await.unwrap();
+    let native = server.backend().local_engine().unwrap();
+    let alice_name = format!("account-state:{}", alice.login_id());
+    let bob_name = format!("account-state:{}", bob.login_id());
+    let alice_bytes = native
+        .local_account_record(&alice_name)
+        .await
+        .unwrap()
+        .unwrap();
+    let bob_bytes = native
+        .local_account_record(&bob_name)
+        .await
+        .unwrap()
+        .unwrap();
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LocalAccountState {
+            login_id: alice.login_id().to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(read_response(&mut reader).await, ServiceResponse::Error(_)),
+        "pre-auth read succeeded"
+    );
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginAccount {
+            username: "local-alice".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("expected challenge, got {other:?}"),
+    };
+    let signer = alice
+        .get_signing_key(&alice.get_default_key().unwrap())
+        .unwrap();
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, &signer),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    for request in [
+        ServiceRequest::LocalAccountState {
+            login_id: bob.login_id().to_owned(),
+        },
+        ServiceRequest::ExchangeLocalAccountState {
+            login_id: bob.login_id().to_owned(),
+            expected: Some(bob_bytes.clone()),
+            value: alice_bytes.clone(),
+        },
+        ServiceRequest::ListLocalAccounts,
+        ServiceRequest::RegisterLocalAccount {
+            login_id: uuid::Uuid::new_v4().to_string(),
+            account_info: Box::new(alice.account_info().unwrap().clone()),
+        },
+    ] {
+        write_frame(&mut writer, &request).await.unwrap();
+        assert!(
+            matches!(read_response(&mut reader).await, ServiceResponse::Error(_)),
+            "foreign state or admin operation succeeded"
+        );
+    }
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LocalAccountState {
+            login_id: alice.login_id().to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(read_response(&mut reader).await, ServiceResponse::LocalAccountState(Some(bytes)) if bytes == alice_bytes)
+    );
+    for (expected, exchanged) in [(Some(vec![0]), false), (Some(alice_bytes.clone()), true)] {
+        write_frame(
+            &mut writer,
+            &ServiceRequest::ExchangeLocalAccountState {
+                login_id: alice.login_id().to_owned(),
+                expected,
+                value: alice_bytes.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(read_response(&mut reader).await, ServiceResponse::LocalAccountStateExchanged(actual) if actual == exchanged)
+        );
+    }
+    assert_eq!(
+        native.local_account_record(&bob_name).await.unwrap(),
+        Some(bob_bytes)
+    );
+    assert_eq!(
+        native.local_account_record(&alice_name).await.unwrap(),
+        Some(alice_bytes)
+    );
+    for entry in native
+        .get_tree(
+            &native
+                .get_instance_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .users_db,
+        )
+        .await
+        .unwrap()
+    {
+        assert!(!entry.in_subtree("users"));
+        assert!(!entry.in_subtree("last_login"));
+    }
+}
+
+#[tokio::test]
+async fn creation_registration_failure_retains_committed_root() {
+    use eidetica::service::error::ServiceError;
+    use eidetica::{Database, Error, account::AccountSigner, auth::crypto::verify_entry_signature};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tokio::net::UnixListener;
+
+    let (socket, shutdown, owner, dir) = start_test_server().await;
+    let proxy_path = dir.path().join("creation-proxy.sock");
+    let listener = UnixListener::bind(&proxy_path).unwrap();
+    let refuse = Arc::new(AtomicBool::new(false));
+    let proxy_refuse = refuse.clone();
+    // Forward real daemon traffic unchanged except for one explicit handshake
+    // refusal. No successful possession proof or signed commit is fabricated.
+    let proxy = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            let (mut client, _) = listener.accept().await.unwrap();
+            let mut server = UnixStream::connect(socket).await.unwrap();
+            let hello: Handshake = read_frame(&mut client).await.unwrap().unwrap();
+            write_frame(&mut server, &hello).await.unwrap();
+            let ack: HandshakeAck = read_frame(&mut server).await.unwrap().unwrap();
+            write_frame(&mut client, &ack).await.unwrap();
+            while let Some(request) = read_frame::<_, ServiceRequest>(&mut client).await.unwrap() {
+                if matches!(request, ServiceRequest::SessionKeyChallenge { .. })
+                    && proxy_refuse.swap(false, Ordering::SeqCst)
+                {
+                    let response =
+                        ServerFrame::Response(Box::new(ServiceResponse::Error(ServiceError {
+                            module: "io".into(),
+                            kind: "Io".into(),
+                            message: "fixture registration refusal".into(),
+                        })));
+                    write_frame(&mut client, &response).await.unwrap();
+                    continue;
+                }
+                write_frame(&mut server, &request).await.unwrap();
+                loop {
+                    let frame: ServerFrame = read_frame(&mut server).await.unwrap().unwrap();
+                    write_frame(&mut client, &frame).await.unwrap();
+                    if matches!(frame, ServerFrame::Response(_)) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+    });
+    let client = Instance::connect(format!("unix://{}", proxy_path.display()))
+        .await
+        .unwrap();
+    let mut user = client.login_account("admin", "").await.unwrap();
+    let key = user.add_private_key(Some("creation-repair")).await.unwrap();
+    let signer = user.get_signing_key(&key).unwrap().clone();
+    let engine = owner.backend().local_engine().unwrap();
+
+    // Both public entry points preserve the inner constructor's root context.
+    for via_account in [false, true] {
+        let before = engine.all_roots().await.unwrap();
+        refuse.store(true, Ordering::SeqCst);
+        // Use a fresh key per creation so registration cannot hit the client cache.
+        let signing_key = if via_account {
+            let key = user.add_private_key(None).await.unwrap();
+            user.get_signing_key(&key).unwrap().clone()
+        } else {
+            signer.clone()
+        };
+        let pubkey = signing_key.public_key();
+        let result = if via_account {
+            user.create_database(Doc::new(), &pubkey).await
+        } else {
+            Database::create(&client, signing_key.clone(), Doc::new()).await
+        };
+        let error = result.unwrap_err();
+        assert!(
+            !refuse.load(Ordering::SeqCst),
+            "registration fault was not reached"
+        );
+        let id = error
+            .created_database_id()
+            .expect("committed repair ID")
+            .clone();
+        let Error::DatabaseCreation { source, .. } = error else {
+            unreachable!()
+        };
+        assert!(matches!(*source, Error::Io(_)));
+        assert!(source.to_string().contains("fixture registration refusal"));
+        let created: Vec<_> = engine
+            .all_roots()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|root| !before.contains(root))
+            .collect();
+        assert_eq!(created, vec![id.clone()]);
+        verify_entry_signature(&owner.backend().get(&id).await.unwrap(), &pubkey).unwrap();
+        assert!(user.tracked_database(&id).await.unwrap().is_none());
+        // Login authority alone is not authority over the new root.
+        assert!(Database::open(&client, &id).await.is_err());
+        let reopened = AccountSigner::new(id.clone(), signing_key)
+            .open_database(&client, &id)
+            .await
+            .unwrap();
+        assert_eq!(reopened.root_id(), &id);
+        reopened
+            .new_transaction()
+            .await
+            .unwrap()
+            .commit()
+            .await
+            .unwrap();
+        assert_eq!(engine.all_roots().await.unwrap().len(), before.len() + 1);
+    }
+    // Explicitly end the proxy task; RemoteConnection's reader retains its socket.
+    proxy.abort();
+    assert!(proxy.await.unwrap_err().is_cancelled());
+    shutdown.send(()).unwrap();
+}
+
+/// A disconnected service must not enable settings/default fallback.
+#[tokio::test]
+async fn test_docstore_optional_service_connection_failure() {
+    let (socket_path, shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let client = login_client(&socket_path, "alice").await;
+    let mut user = client.login_account("alice", "").await.unwrap();
+    let key = user.get_default_key().unwrap();
+    let database = user.create_database(Doc::new(), &key).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("key", "value")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let viewer = database.get_store_viewer::<DocStore>("data").await.unwrap();
+    assert_eq!(viewer.try_get("key").await.unwrap(), Some("value".into()));
+    assert_eq!(viewer.try_get("absent").await.unwrap(), None);
+    let conn = remote_conn(&client);
+    drop(shutdown);
+    tokio::time::timeout(Duration::from_secs(2), conn.wait_closed_for_test())
+        .await
+        .unwrap();
+    for key in ["key", "absent"] {
+        for result in [viewer.try_get(key).await, viewer.try_get_path(key).await] {
+            assert!(
+                matches!(result, Err(eidetica::Error::Io(ref e))
+                if e.kind() == std::io::ErrorKind::ConnectionAborted),
+                "{result:?}"
+            );
+        }
+    }
+}
+
+/// A valid session/signature does not authorize malformed Store edges. The
+/// daemon retains submitted bytes but owns their acceptance decision.
+#[tokio::test]
+async fn test_submit_signed_entry_validates_store_membership_and_height() {
+    let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket_path, "store-writer").await;
+    let user = server.login_account("store-writer", "").await.unwrap();
+    let signing_key = user
+        .get_signing_key(&user.get_default_key().unwrap())
+        .unwrap();
+    let db = eidetica::Database::open(&server, &root)
+        .await
+        .unwrap()
+        .with_key(signing_key.clone());
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("k", "v")
+        .await
+        .unwrap();
+    let parent_id = tx.commit().await.unwrap();
+    let parent = db.get_entry(&parent_id).await.unwrap();
+    for (parents, height, expected) in [
+        (vec![], None, VerificationStatus::Verified),
+        (
+            vec![parent_id.clone()],
+            Some(parent.subtree_height("data").unwrap()),
+            VerificationStatus::Failed,
+        ),
+        (
+            vec![parent_id.clone()],
+            Some(100),
+            VerificationStatus::Verified,
+        ),
+    ] {
+        let entry = Entry::builder(root.clone())
+            .set_parents(vec![parent_id.clone()])
+            .set_height(parent.height() + 1)
+            .set_metadata(parent.metadata().unwrap().to_vec())
+            .set_subtree_parents("data", parents)
+            .set_subtree_height("data", height)
+            .set_subtree_data("data", b"{}")
+            .build()
+            .unwrap()
+            .with_auth(|auth| auth.key = identity.clone())
+            .sign(&signing_key)
+            .unwrap();
+        let id = entry.id();
+        let submit = remote_conn(&client)
+            .submit_signed_entry(root.clone(), identity.clone(), entry.clone())
+            .await;
+        if expected == VerificationStatus::Verified {
+            submit.unwrap();
+        } else {
+            let error = submit.expect_err("an invalid Store edge must fail the submit");
+            assert!(matches!(error, eidetica::Error::Transaction(error)
+                if matches!(*error, eidetica::transaction::TransactionError::EntryValidationFailed)));
+        }
+        assert_eq!(
+            server.backend().get_verification_status(&id).await.unwrap(),
+            expected
+        );
+        assert_eq!(server.backend().get(&id).await.unwrap(), entry);
+        assert_eq!(
+            db.snapshot().await.unwrap().contains(&id),
+            expected == VerificationStatus::Verified
+        );
+    }
+}
+
+/// The real SubmitSignedEntry and remote read paths preserve the Store fork
+/// even when its two tips are a main ancestor and descendant.
+#[tokio::test]
+async fn test_service_store_main_descendant_keeps_unconsumed_tip() {
+    use eidetica::{Database, Snapshot};
+
+    let (socket, _shutdown, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket, "branch-writer").await;
+    let user = server.login_account("branch-writer", "").await.unwrap();
+    let key = user
+        .get_signing_key(&user.get_default_key().unwrap())
+        .unwrap();
+    let db = Database::open(&server, &root)
+        .await
+        .unwrap()
+        .with_key(key.clone());
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("a", "a")
+        .await
+        .unwrap();
+    let a = tx.commit().await.unwrap();
+    let first = db.get_entry(&a).await.unwrap();
+    let conn = remote_conn(&client);
+    let mut main_parent = a.clone();
+    let mut tips = Vec::new();
+    for (offset, name) in [(1, "b"), (2, "c")] {
+        let mut data = Doc::new();
+        data.set(name, name);
+        let entry = Entry::builder(root.clone())
+            .set_parents(vec![main_parent])
+            .set_height(first.height() + offset)
+            .set_metadata(first.metadata().unwrap().to_vec())
+            .set_subtree_parents("data", vec![a.clone()])
+            .set_subtree_data("data", serde_json::to_vec(&data).unwrap())
+            .build()
+            .unwrap()
+            .with_auth(|auth| auth.key = identity.clone())
+            .sign(&key)
+            .unwrap();
+        let id = entry.id();
+        conn.submit_signed_entry(root.clone(), identity.clone(), entry)
+            .await
+            .unwrap();
+        assert_eq!(
+            server.backend().get_verification_status(&id).await.unwrap(),
+            VerificationStatus::Verified
+        );
+        main_parent = id.clone();
+        tips.push(id);
+    }
+    let remote = Database::open_remote(&client, conn.clone(), &root, identity.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        remote.snapshot().await.unwrap(),
+        Snapshot::from([main_parent.clone()])
+    );
+    assert_eq!(
+        conn.store_snapshot_at(
+            root.clone(),
+            identity.clone(),
+            "data".into(),
+            vec![main_parent]
+        )
+        .await
+        .unwrap(),
+        Snapshot::from(tips.clone())
+    );
+    let context = conn
+        .begin_transaction(
+            root.clone(),
+            identity.clone(),
+            vec!["data".into()],
+            ReadScope::Verified,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        Snapshot::from(
+            context.subtree_parents["data"]
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        ),
+        Snapshot::from(tips)
+    );
+    for _ in 0..2 {
+        let view = remote.get_store_viewer::<DocStore>("data").await.unwrap();
+        for name in ["a", "b", "c"] {
+            assert_eq!(
+                view.get(name).await.unwrap(),
+                eidetica::crdt::doc::Value::Text(name.into())
+            );
+        }
+    }
 }

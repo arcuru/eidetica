@@ -14,6 +14,7 @@ This document outlines the authentication and authorization scheme for Eidetica,
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
   - [Authentication Modes and Bootstrap Behavior](#authentication-modes-and-bootstrap-behavior)
+    - [Explicit Genesis Authority](#explicit-genesis-authority)
     - [Unsigned Mode (No Authentication)](#unsigned-mode-no-authentication)
     - [Signed Mode (Mandatory Authentication)](#signed-mode-mandatory-authentication)
     - [Future: Overlay Databases](#future-overlay-databases)
@@ -81,7 +82,30 @@ The authentication system is **not** implemented as a pure consumer of the datab
 ## Authentication Modes and Bootstrap Behavior
 
 The entry validator distinguishes unauthenticated histories from histories with configured authentication.
-`Database::create` bootstraps a signing key in the genuine genesis entry; a later signed settings write cannot bootstrap its own authority.
+`Database::create` validates a signing key against the genuine genesis Auth; a later signed settings write cannot bootstrap its own authority.
+
+### Explicit Genesis Authority
+
+Database creation accepts explicit initial Auth and an actual signer, including an exact `DatabaseKey` delegation identity.
+Only omission of `auth` selects the convenience default of direct signer `Admin(0)`.
+Explicit direct-only, delegation-only and mixed Auth are used without adding a creator key or elevating its permission.
+Explicit empty, malformed or deleted Auth cannot obtain that default.
+Every configured delegation pointer requires complete locally Verified proof, including when a direct key signs.
+Delegation-only Auth is signed mode: unsigned genesis and descendants fail, while signatures must resolve active authority at the claimed snapshots under the existing bounds and causal rules.
+
+Genesis establishes a new authority state, rather than changing an existing owner's grants.
+An effective `Admin(20)` signer may therefore initialize explicit owner `Admin(0)` authority, directly or through a pre-existing owner-bearing delegation.
+It must still sign with an actual authorized Admin key and supply valid proof; a Write-only key cannot initialize settings.
+The ceiling `max Admin(0), min none` preserves `Admin(20)` rather than promoting it.
+Subsequent entries validate against causal pre-write Auth and must outrank every old and new grant they change.
+This permits lower-priority app initialization without letting that app revoke, replace, demote or bypass the stronger owner later.
+New staged Auth never authorizes a non-genesis entry, even the first Auth update in an otherwise unauthenticated history.
+
+The constructor and raw remote ingest share the native validator; Account/Identity wrappers do not supply this protection.
+Missing/unverified proof is unresolved, not permission; foreign, empty or Failed proof is rejected.
+No globally latest revocation rule, unseen-root trust enrollment, historical rewrite or live migration follows from these primitives.
+Older validators lacking delegation-only detection must be upgraded before consuming such new histories; existing verification labels are not reset automatically.
+See [runnable creation examples](../user_guide/authentication_guide.md#creating-with-explicit-authority), [internal flow and regression map](../internal/authentication.md#explicit-genesis-flow), and [Account integration status](accounts.md#explicit-genesis-authority).
 
 ### Unsigned Mode (No Authentication)
 
@@ -89,7 +113,7 @@ Databases are in **unsigned mode** when created without authentication configura
 
 - The `_settings.auth` key is either missing or contains an empty `Doc` (`{"auth": {}}`)
 - Both states are equivalent and treated identically by the system
-- **Unsigned operations succeed**: Transactions without signatures are allowed
+- **Unsigned operations succeed at the low-level validator**: normal transaction APIs still require a signing key
 - **No validation overhead**: Authentication validation is skipped for performance
 - **Suitable for**: Local-only databases, temporary workspaces, development environments, overlay networks
 
@@ -104,7 +128,7 @@ Unsigned mode enables use cases where authentication overhead is unnecessary, su
 
 Once authentication is configured, databases are in **signed mode** where:
 
-- The `_settings.auth` key contains at least one authentication key
+- The `_settings.auth` key configures keys, delegations or a global permission
 - **All operations require valid signatures**: Only authenticated and transactions are valid
 - **Fail-safe validation**: Corrupted or deleted auth configuration causes all transactions to fail
 - **Permanent transition**: Cannot return to unsigned mode (would require creating a new database)
@@ -348,6 +372,16 @@ Priority values are u32 integers where lower values indicate higher priority:
 - Higher numbers = lower priority
 - Keys can only modify other keys with equal or lower priority (equal or higher number)
 
+Entry validation enforces this for every `_settings` write, on both local commit and remote verification.
+The validator applies the entry's `_settings` delta to its causal pre-write auth state and compares the two.
+Each grant whose stored value changes — added, removed, revoked, renamed, replaced, or dropped by a whole-map or tombstone write — requires the signer's effective permission to be at least both the grant's old and new permission.
+Delegations count at their permission bounds and the global `*` grant at its permission.
+Malformed resulting grants (for example a lone `permissions` field) and malformed auth containers are rejected, including writes signed by `Admin(0)`.
+A settings entry must inherit its main-tree height for `_settings`; settings replay orders by that height, so a different explicit height is rejected rather than allowed to replay the delta outside its causal position.
+So a signer can neither weaken or remove a stronger grant nor create one above its own level; delegated signers are judged at their clamped permission.
+Genesis is unchanged: it validates against its own settings, so it has no prior grants to compare.
+Regression coverage: `crates/lib/tests/it/auth/priority_enforcement.rs` (local raw/typed writes, positive controls, remote ingest) and `test_delegated_admin_respects_priority` in `crates/lib/tests/it/auth/delegated_trees.rs`.
+
 **Important**: Priority **only** affects administrative operations (key management). It does **not** influence CRDT merge conflict resolution, which uses Last Write Wins semantics based on the DAG structure.
 
 ### Key Naming and Aliasing
@@ -548,7 +582,12 @@ The delegated databases also enforce their own causal rules when their entries a
 
 #### Causal Snapshot Validation
 
-For an entry `E`, validation follows these boundaries:
+For an entry `E`, validation follows these boundaries. The exact-frontier rules
+below apply to `_settings`, not to ordinary Store consumption. An ordinary Store
+may omit an observed tip or start an independent branch; its named parents still
+require same-Store/database membership, main-only containment and strict effective
+height growth. None of that permits omitting pre-write authority from a signed
+settings pin. See [Store-parent frontiers](verification.md#store-parent-frontiers).
 
 1. **Pre-write authority.** Derive the complete canonical `_settings` frontier from `E`'s main parents and require its signed `settings_tips` metadata to equal that frontier. A signer cannot choose an older settings pin to evade a revocation already in its parents. Only a genuine genesis entry may authorize itself with its own initial settings.
 2. **Resulting settings.** A settings write must consume exactly its main parents' `_settings` frontier as its signed subtree parents. Fold the actual settings DAG, including `E`'s delta, to determine effective declarations after the entry. This post-entry state is not its pre-write signature pin and is never read from an unrelated live head.
@@ -919,6 +958,7 @@ AuthKey {
 2. **Delegated Databases**: ✅ Fully implemented with comprehensive test coverage
 3. **Permission Clamping**: ✅ Functional for delegation chains
 4. **Delegation Depth Limits**: ✅ Implemented with MAX_DELEGATION_STEPS=10 — a delegation path is a flat list, so its length is the chain depth, and it is bounded before any delegated database is loaded
+5. **Admin Priority Enforcement**: ✅ Checked per entry against its causal pre-write auth state (see §Priority System). This judges each write in isolation: concurrent branches still merge by Last Write Wins, so a permitted lower-priority write can win a merge over a concurrent higher-priority one (see §Conflict Resolution and Merging)
 
 ### Future Enhancements
 

@@ -73,7 +73,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 iroh = "1.0"
 iroh-mdns-address-lookup = "0.6"
 iroh-tickets = "1.0"
-sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "postgres", "any"] }
+sqlx = { version = "0.9.1", features = ["runtime-tokio", "sqlite", "postgres", "any"] }
 # CLI dependencies
 clap = { version = "4.5", features = ["derive", "env"] }
 url = "2.5"

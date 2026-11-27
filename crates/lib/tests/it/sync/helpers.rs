@@ -25,6 +25,17 @@ use eidetica::{
 };
 use iroh::RelayMode;
 
+/// Transport-only fixtures must still have locally Verified custody before
+/// the sync API may send them. These synthetic bodies do not test validation.
+pub async fn hold_verified_entries(sync: &Sync, entries: &[Entry]) {
+    use crate::helpers::TestVerify;
+    let instance = sync.instance().unwrap();
+    let engine = instance.backend().local_engine().unwrap();
+    for entry in entries {
+        engine.put_verified(entry.clone()).await.unwrap();
+    }
+}
+
 // ===== SETUP HELPERS =====
 
 /// Create an Instance with authentication key.
@@ -37,7 +48,7 @@ use iroh::RelayMode;
 /// `setup_db` contract.
 pub async fn setup_db() -> Instance {
     let instance = crate::helpers::test_local_instance().await;
-    crate::helpers::create_account(&instance, "test_user", None)
+    crate::helpers::create_account(&instance, "test_user", "")
         .await
         .expect("Failed to create test user");
     instance
@@ -506,10 +517,10 @@ pub async fn setup_server_with_bootstrap_database(
     db_name: &str,
 ) -> (Instance, AccountSession, PublicKey, Database, ID) {
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_account(&server_instance, username, None)
+    crate::helpers::create_account(&server_instance, username, "")
         .await
         .unwrap();
-    let mut server_user = server_instance.login_account(username, None).await.unwrap();
+    let mut server_user = server_instance.login_account(username, "").await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
     let mut settings = Doc::new();
@@ -572,11 +583,11 @@ pub async fn setup_server_with_bootstrap_database(
 pub async fn setup_indexed_client(index: usize) -> (Instance, AccountSession, PublicKey) {
     let client_instance = setup_instance_with_initialized().await;
     let client_username = format!("client_user_{index}");
-    crate::helpers::create_account(&client_instance, &client_username, None)
+    crate::helpers::create_account(&client_instance, &client_username, "")
         .await
         .unwrap();
     let mut client_user = client_instance
-        .login_account(&client_username, None)
+        .login_account(&client_username, "")
         .await
         .unwrap();
 
@@ -708,10 +719,10 @@ pub async fn setup_sync_enabled_server(
     db_name: &str,
 ) -> (Instance, AccountSession, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_account(&server_instance, username, None)
+    crate::helpers::create_account(&server_instance, username, "")
         .await
         .unwrap();
-    let mut server_user = server_instance.login_account(username, None).await.unwrap();
+    let mut server_user = server_instance.login_account(username, "").await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
     let mut settings = Doc::new();
@@ -787,10 +798,10 @@ pub async fn setup_sync_enabled_client(
     key_name: &str,
 ) -> (Instance, AccountSession, PublicKey, Arc<Sync>) {
     let client_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_account(&client_instance, username, None)
+    crate::helpers::create_account(&client_instance, username, "")
         .await
         .unwrap();
-    let mut client_user = client_instance.login_account(username, None).await.unwrap();
+    let mut client_user = client_instance.login_account(username, "").await.unwrap();
     let client_key_id = client_user.add_private_key(Some(key_name)).await.unwrap();
 
     let sync = client_instance.sync().expect("Sync should be initialized");
@@ -975,10 +986,10 @@ pub async fn setup_public_sync_enabled_server(
     db_name: &str,
 ) -> (Instance, AccountSession, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_account(&server_instance, username, None)
+    crate::helpers::create_account(&server_instance, username, "")
         .await
         .unwrap();
-    let mut server_user = server_instance.login_account(username, None).await.unwrap();
+    let mut server_user = server_instance.login_account(username, "").await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
     // Create database settings for public access

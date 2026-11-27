@@ -22,9 +22,9 @@ Every Eidetica database requires authentication. Here's the minimal setup:
 #
 // Create and login a passwordless user via the bootstrapped admin
 // (the new user gets an Ed25519 keypair automatically)
-let admin = instance.login_account("admin", None).await?;
+let admin = instance.login_account("admin", "").await?;
 admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-let mut user = instance.login_account("alice", None).await?;
+let mut user = instance.login_account("alice", "").await?;
 
 // Create a database using the user's default key
 let mut settings = Doc::new();
@@ -39,6 +39,129 @@ txn.commit().await?;  // Automatically signed
 # Ok(())
 # }
 ```
+
+## Creating with explicit authority
+
+`Database::create` and `Database::create_with_init` accept initial `auth` settings and an actual unlocked signer.
+Supplying Auth preserves exactly those grants: there is no additional creator key or creator `Admin(0)` privilege.
+Without an `auth` field, the convenience default grants the supplied key `Admin(0)`.
+Explicit empty, deleted, malformed or unauthorized Auth is an error, not a request for that default.
+
+### Direct keys: no Identity required
+
+An app `Admin(20)` can sign genesis while preserving a stronger owner `Admin(0)`.
+That does not let the app revoke, replace or demote the owner afterward.
+The signer must have Admin permission for genesis, even when the initial application data needs only Write permission later.
+
+```rust
+use eidetica::{Database, Instance, backend::database::InMemory, crdt::Doc};
+use eidetica::auth::{AuthSettings, AuthKey, Permission, crypto::PrivateKey};
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+let (instance, _) = Instance::create_backend(
+    Box::new(InMemory::new()), eidetica::NewAccount::passwordless("example"),
+).await?;
+let owner = PrivateKey::generate();
+let app = PrivateKey::generate();
+let mut auth = AuthSettings::new();
+auth.add_key(&owner.public_key(), AuthKey::active(None, Permission::Admin(0)))?;
+auth.add_key(&app.public_key(), AuthKey::active(None, Permission::Admin(20)))?;
+let mut initial = Doc::new();
+initial.set("name", "app data");
+initial.set("auth", auth.as_doc().clone());
+let db = Database::create(&instance, app, initial).await?;
+assert_eq!(db.current_permission().await?, Permission::Admin(20));
+let txn = db.new_transaction().await?;
+txn.get_settings()?.revoke_auth_key(&owner.public_key()).await?;
+assert!(txn.commit().await.is_err());
+# Ok(())
+# }
+```
+
+### Delegation-only and mixed Auth
+
+A delegation source is an existing database declaring membership; it can be an Identity database.
+Creating that Identity is separate, and a reference to one is not itself an Auth grant.
+Both its configured pointer and the signer's claimed snapshot need complete locally Verified history.
+In this self-contained example, normal creation/commits establish that history first.
+On another instance, acquire and verify the proof before creating the target; creation does not fetch it for you.
+
+```rust
+use eidetica::{Database, Instance, backend::database::InMemory, crdt::Doc, database::DatabaseKey};
+use eidetica::auth::{AuthSettings, AuthKey, Permission, crypto::PrivateKey};
+use eidetica::auth::types::{DelegatedTreeRef, DelegationStep, KeyHint, PermissionBounds, SigKey, TreeReference};
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+let (instance, _) = Instance::create_backend(
+    Box::new(InMemory::new()), eidetica::NewAccount::passwordless("example"),
+).await?;
+let owner = PrivateKey::generate();
+let app = PrivateKey::generate();
+let identity = Database::create(&instance, owner, Doc::new()).await?;
+let txn = identity.new_transaction().await?;
+txn.get_settings()?.set_auth_key(&app.public_key(), AuthKey::active(None, Permission::Admin(20))).await?;
+txn.commit().await?;
+let tips = identity.snapshot().await?.into_tips();
+let delegation = DelegatedTreeRef {
+    tree: TreeReference { root: identity.root_id().clone(), tips: tips.clone() },
+    permission_bounds: PermissionBounds { max: Permission::Admin(0), min: None },
+};
+let mut auth = AuthSettings::new();
+auth.add_delegated_tree(delegation)?;
+let mut initial = Doc::new();
+initial.set("auth", auth.as_doc().clone());
+let identity_path = SigKey::Delegation {
+    path: vec![DelegationStep { tree: identity.root_id().clone(), tips }],
+    hint: KeyHint::from_pubkey(&app.public_key()),
+};
+let delegated = Database::create(&instance,
+    DatabaseKey::with_identity(app.clone(), identity_path), initial).await?;
+assert!(delegated.get_settings().await?.auth_snapshot().await?.get_all_keys()?.is_empty());
+let txn = delegated.new_transaction().await?;
+txn.get_store::<eidetica::store::DocStore>("data").await?.set("message", "signed by app").await?;
+txn.commit().await?;
+
+// Mixed Auth: owner administration through the same Identity, app directly.
+auth.add_key(&app.public_key(), AuthKey::active(None, Permission::Admin(20)))?;
+let mut initial = Doc::new();
+initial.set("auth", auth.as_doc().clone());
+let mixed = Database::create(&instance, app, initial).await?;
+assert_eq!(mixed.current_permission().await?, Permission::Admin(20));
+# Ok(())
+# }
+```
+
+`max: Admin(0), min: None` is a ceiling, not a promotion: the delegated app remains `Admin(20)` while the owner retains `Admin(0)`.
+The app can create permitted equal/lower-priority grants afterward but cannot alter the stronger owner-bearing delegation.
+`max: Write(20)` would instead clamp Admin to Write and cannot authorize genesis.
+No new minimum-bound or public-wildcard semantics are introduced.
+
+Pass a `DatabaseKey` for an exact name/global/delegation identity, or a `PrivateKey` for its direct identity.
+A name-only hint is pinned to that signer's public key; an invalid path never falls back to a separate direct grant or connection login key.
+The returned handle retains the signer and path for later reads and writes.
+`create_with_init` uses the same Auth rules and keeps ordinary store initialization in the single genesis entry; its callback cannot open system stores.
+
+Connected instances use the same API: the client signs and the daemon verifies before acknowledging a successful commit.
+The new handle proves possession of its signer and uses its selected identity rather than the connection's login identity.
+The existing delegated `current_permission` client-side introspection is not supported on connected instances; exercise actual operations instead.
+A connected historical `verify_entry_signature` query also needs its acting identity to pass Read gates on each proof database, independently of successful commit validation.
+See [credential and service boundaries](account_credentials.md#embedded-and-service-use).
+
+### Failure and compatibility limits
+
+- Unknown, revoked or wrong signing keys, insufficient permissions and invalid paths cannot create an authorized root.
+- Missing or present-but-Unverified delegated history is unresolved: local creation returns an error; raw ingest retains the target as Unverified for a later retry.
+  An empty snapshot, foreign-tree proof, failed proof or invalid signature is rejected.
+  A connected submission that is not Verified returns an error, never a successful creation acknowledgement.
+- A later entry cannot use newly staged Auth to authorize itself, even if it is the first Auth write in that history.
+- This is causal authorization, not globally latest revocation or unseen-root trust enrollment.
+  Existing live data and verification labels are not migrated, rewritten or deleted.
+  Older validators that do not recognize delegation-only Auth must be upgraded before receiving new delegation-only histories.
+- These are native database primitives, not a new Account provisioning, enrollment or recovery workflow.
+  See [Account design](../design/accounts.md#explicit-genesis-authority) for the integration boundary.
+
+The native/raw and connected regressions are in `crates/lib/tests/it/auth/genesis.rs`; subsequent priority cases remain in `auth/priority_enforcement.rs`.
+The [internal flow](../internal/authentication.md#explicit-genesis-flow) and [design invariants](../design/authentication.md#explicit-genesis-authority) explain the shared enforcement.
 
 ## Key Concepts
 
@@ -55,7 +178,14 @@ txn.commit().await?;  // Automatically signed
 - **Write**: Can read and write data
 - **Read**: Can only read data
 
-**Key Storage**: Private keys are stored in Instance, public keys in database settings.
+**Key Storage**: Public keys belong in database Auth settings; private-key custody is separate.
+The login convenience path stores authenticated encrypted credential bundles in native installation-local records, not replicated Account Entries.
+Passwords are required string values; every string is accepted, including empty, without length/complexity restrictions or an insecure-use acknowledgement.
+`NewAccount::passwordless(name)` is sugar for `NewAccount::with_password(name, "")`; login uses `login_account(name, "")`.
+Empty-string wrapping uses the same Argon2id/AES-256-GCM format, but provides no meaningful confidentiality against a bundle holder.
+Unlocked signers remain usable without re-entering the password; rewrapping a password is not signing-key revocation.
+There is no automatic migration or old plaintext-format import.
+For explicit caller-held keys and daemon-independent signing, see [credential bundles and signers](account_credentials.md).
 
 ## Common Tasks
 
@@ -185,7 +315,7 @@ use eidetica::{Instance, backend::database::Sqlite};
 let instance = Instance::open_backend(Box::new(Sqlite::in_memory().await?)).await?;
 
 // Log in as an existing user
-let mut user = instance.login_account("bob", None).await?;
+let mut user = instance.login_account("bob", "").await?;
 
 let database_root_id = /* ID from existing collaborative database */;
 
@@ -249,7 +379,15 @@ transaction.commit().await?;
 # }
 ```
 
-Note: Historical entries created by revoked keys remain valid.
+Historical entries created by revoked keys remain valid.
+
+### Removing a key from a delegated identity
+
+1. Call `Identity::revoke_key` with an authorized identity handle. Once a serving replica verifies that commit, the key no longer has **current** Read through that identity. It cannot discover the database or capture a new Snapshot on the strength of that membership alone.
+2. In each database that delegates to the identity, use a signer authorized to update its Settings. In a transaction, read the existing delegation, keep its permission bounds, and use `Identity::as_delegation` with those bounds to build the updated reference. Check that the new identity Snapshot includes the revocation and advances the existing pin, then call `SettingsStore::add_delegated_tree` and commit. Syncing the identity alone does not write this commit for the delegating database.
+3. To confirm the cutoff on a replica, check its Verified database Snapshot: the committed delegation must point to identity history that includes the revocation. An explicit read at that cut can no longer use the removed membership. A cut that still pins the grant remains readable, **even if it contains data written after the identity revoked the key**. Advancing the pin does not change those earlier cuts.
+
+This cutoff is per database and causal, not a timestamp or a guarantee about offline replicas. It does not withdraw an independent grant or erase data already disclosed.
 
 ### Historical Signatures and Operating Keys
 
@@ -645,6 +783,18 @@ This allows:
 - Readable key names for human-friendly lookups
 - Fine-grained access control based on how the key is referenced
 
+### Causal settings pins and ordinary Store branches
+
+Every Entry's signed `settings_tips` identifies its complete causal pre-write
+`_settings` frontier. Validation derives that frontier independently; a signed
+stale, omitted or forged pin is not authority. Settings writes must also consume
+that exact frontier, with a genesis-only bootstrap exception. This is stricter
+than ordinary Stores, whose omitted observed tips remain readable as independent
+branches. Both still require named parents in the same Store/database and main
+ancestry, and strictly increasing effective Store heights. The status is for
+the whole Entry, not separate contributions or sparse verification. See the
+[verification contract](../design/verification.md#store-parent-frontiers).
+
 ### Upgrade prerequisite
 
 Before trusting an existing database under these rules, follow the
@@ -679,10 +829,17 @@ Clearing only the derived cache is not a substitute.
 - Returns KeyNameConflict error if key name exists with different public key
 - Use `get_auth_key()` to check existing key before deciding action
 
-**"Cannot modify key"**: Admin operations require:
+**Settings commit rejected with `EntryValidationFailed`**: Changing a key, delegation or global permission requires:
 
 - Admin-level permissions
-- Equal or higher priority than the target key
+- Equal or higher priority than the grant being changed, both before and after the change (you cannot grant more than you hold)
+
+These checks run on signed entries at commit and remote verification, including raw settings writes.
+They use the entry's causal pre-write settings, not unrelated newer grants or revocations on another branch.
+Delegated signers use their clamped permission; changing a delegation is checked at its old and new bounds.
+Raw fragments that leave malformed grants or auth containers are rejected, even for `Admin(0)`.
+Partial updates remain allowed when the resulting grant is complete and valid.
+See the [priority rules and regression coverage](../design/authentication.md#priority-system).
 
 **Multi-device conflicts**: During bootstrap sync between devices:
 

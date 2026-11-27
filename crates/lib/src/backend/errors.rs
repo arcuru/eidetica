@@ -18,6 +18,10 @@ use crate::entry::ID;
 #[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum BackendError {
+    /// Installation-local credential storage is unavailable on this backend.
+    #[error("Local account storage is not supported by this backend")]
+    LocalAccountStorageUnsupported,
+
     /// Another Eidetica backend already owns this storage namespace.
     #[error(
         "Eidetica storage `{namespace}` is already owned; connect through the owning Eidetica service instead"

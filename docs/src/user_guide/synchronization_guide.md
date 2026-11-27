@@ -53,6 +53,15 @@ sync.sync_with_ticket(&ticket).await?;
 The system automatically detects whether you need full bootstrap or incremental sync.
 Tickets embed the database ID, so `sync_with_ticket` requires no separate tree ID.
 
+Transfer and acceptance are separate: received whole Entries start `Unverified`.
+Missing main/settings/delegated proof stays pending until it arrives and a later
+verification pass succeeds. Store-only sparse verification is not implemented.
+Main links observe history, while ordinary Store links consume contributions;
+omitting an observed ordinary tip leaves it available to reads. `_settings`
+still requires its exact causal pre-write frontier and signed pin. See
+[Store-parent frontiers](../design/verification.md#store-parent-frontiers) and the
+[verification examples](examples_snippets.md#10-verifying-synced-data).
+
 ### 4. Share a Database
 
 Sharing has two caller-visible operations: save this user's durable signed
@@ -209,9 +218,9 @@ For persistent sync relationships:
 #     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_account("admin", None).await?;
+# let admin = instance.login_account("admin", "").await?;
 # admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-# let mut user = instance.login_account("alice", None).await?;
+# let mut user = instance.login_account("alice", "").await?;
 # let default_key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &default_key).await?;
 # let tree_id = db.root_id().clone();
@@ -252,9 +261,9 @@ Configure per-database sync behavior:
 #     eidetica::NewAccount::passwordless("admin"),
 # ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_account("admin", None).await?;
+# let admin = instance.login_account("admin", "").await?;
 # admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-# let mut user = instance.login_account("alice", None).await?;
+# let mut user = instance.login_account("alice", "").await?;
 # let key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &key).await?;
 # let db_id = db.root_id().clone();

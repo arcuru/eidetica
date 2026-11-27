@@ -520,8 +520,12 @@ nix action='check' target='':
             nix build ".#${action}.${target:-default}" --print-build-logs --no-link
             ;;
         test-all)
-            # Force re-run all hermetic test backends
-            nix build .#test.sqlite .#test.inmemory .#test.minimal --rebuild --print-build-logs --no-link
+            # Rebuild checks directly; rebuilding test.all only reruns the aggregate.
+            backends=(.#test.sqlite .#test.inmemory .#test.minimal)
+            if [ "$(uname -s)" = Linux ]; then
+                backends+=(.#test.service .#test.postgres)
+            fi
+            nix build "${backends[@]}" --rebuild --print-build-logs --no-link
             ;;
         bench)
             # Force re-run hermetic benchmarks (rebuild even if cached)

@@ -21,7 +21,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Nix
-        uses: ./.github/actions/setup-nix
+        uses: $/.github/actions/setup-nix
 
       - name: Coverage
         run: |

@@ -44,6 +44,9 @@ pub(crate) struct DerivedFloors {
 pub(crate) fn causal_settings_frontier(entries: &[Entry], tips: &[ID]) -> Result<Snapshot> {
     fn prune(candidates: Vec<ID>, nodes: &HashMap<ID, &Entry>) -> Result<Snapshot> {
         let candidates = Snapshot::from(candidates);
+        if candidates.len() <= 1 {
+            return Ok(candidates);
+        }
         let mut dominated = HashSet::new();
         for tip in &candidates {
             let mut stack = vec![tip.clone()];

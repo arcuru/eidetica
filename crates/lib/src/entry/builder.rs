@@ -473,8 +473,9 @@ impl EntryBuilder {
     /// main data model and is not merged between entries. It's used primarily for
     /// improving efficiency of operations and for experimentation.
     ///
-    /// For example, metadata can contain references to the current tips of the settings
-    /// subtree, allowing for efficient verification in sparse checkout scenarios.
+    /// Transactions use metadata to sign the causal pre-write `_settings` pin.
+    /// Its correctness is independently checked against complete main ancestry;
+    /// this does not implement sparse verification.
     ///
     /// # Arguments
     /// * `metadata` - Opaque metadata bytes for the main tree node.
@@ -584,10 +585,12 @@ impl EntryBuilder {
     /// This method:
     /// 1. Sorts all parent lists in both the main tree and subtrees
     /// 2. Sorts the subtrees list by name
-    /// 3. Removes any empty subtrees
-    /// 4. Creates the immutable `Entry`
-    /// 5. Validates the entry structure
-    /// 6. Returns the validated entry or an error
+    /// 3. Creates the immutable `Entry`
+    /// 4. Validates the entry structure
+    /// 5. Returns the validated entry or an error
+    ///
+    /// Subtrees with empty data or no data are preserved. To explicitly remove empty
+    /// subtrees before building, use [`Self::remove_empty_subtrees`].
     ///
     /// After calling this method, the builder is consumed and cannot be used again.
     /// The returned `Entry` is immutable and its parts cannot be modified.

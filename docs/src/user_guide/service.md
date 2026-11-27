@@ -20,6 +20,9 @@ For single-process applications, `Instance::open_backend()` with a local backend
 The `eidetica daemon` command starts a service server:
 
 ```bash
+# Initialize with an explicit administrator (prompts for a password)
+eidetica daemon init --username ops
+
 # Start with default socket path and SQLite backend
 eidetica daemon
 
@@ -29,6 +32,29 @@ eidetica daemon --socket /tmp/my-eidetica.sock
 # Use a specific backend
 eidetica daemon --backend postgres --postgres-url "postgresql://user:pass@host/db"
 ```
+
+For a custom layout, use the same settings for every direct command:
+
+```bash
+export EIDETICA_DATA_DIR="$HOME/.local/share/eidetica"
+export EIDETICA_CACHE_DIR="$HOME/.cache/eidetica"
+eidetica daemon init --username ops
+eidetica daemon
+# After stopping the daemon:
+eidetica info
+eidetica db list
+```
+
+History/credentials remain in `eidetica.db` under the data directory; only Derived
+state uses the cache directory. Native platform defaults apply when no cache
+override is set. The NixOS module provisions `/var/cache/eidetica` using systemd
+`CacheDirectory`; existing administrator directory permissions are not changed by
+the application. Its `cacheBackend` option sets `EIDETICA_CACHE_BACKEND` for a
+[separate cache engine](concepts/backends.md#separate-cache-engine), such as a
+PostgreSQL backend with a SQLite cache there.
+See [SQLite cache storage](concepts/backends.md#disposable-sqlite-cache)
+and [Docker](docker.md) for directory layout, separate mounts and offline cleanup.
+Do not run direct commands against a live service's owned files; use socket clients.
 
 The daemon prints its socket path on startup and runs until interrupted (SIGINT/SIGTERM).
 
@@ -68,7 +94,7 @@ the daemon's web session memory; do not enable the dashboard if the daemon
 must never hold plaintext keys. Every web form POST requires an `Origin` that
 matches the request's `Host`; requests without one are rejected.
 
-A passwordless account can be logged into by **anyone who can reach the
+A passwordless account uses the ordinary encrypted bundle with an empty-string password; this provides no meaningful confidentiality against a bundle holder. It can be logged into by **anyone who can reach the
 dashboard**: other local users, other hosts if the bind allows it, and web
 pages open in a local browser through DNS rebinding. Use passwords for any
 account a dashboard can reach. The separately launched `serve` command remains
@@ -83,6 +109,49 @@ NixOS module opens the port when `openFirewall = true` and a web listener
 at `dataDir/service.sock` (not in systemd's private `/tmp`); client processes
 need owner-approved access to that directory.
 
+### Dashboard Account information
+
+The dashboard distinguishes the stable **Account Root ID** from the
+instance-local **Username** and **Login ID**.
+Public keys are shown by ID and optional display name; private keys and login
+credentials are not displayed.
+An Account is a private root database, while an Identity declares keys and
+delegation under its own Auth policy; they need not correspond one-to-one.
+
+To open an owned app, sign in with your personal login and choose **Browse
+linked Accounts** on the dashboard. The Account list shows names you have
+linked under `accounts`. Choose a locally active owner Identity, then open
+an Account reference. The signed-in user, acting Identity, and viewed Account
+are shown separately. Browsing does not log you in as the app or load its
+credentials.
+
+Follow a nested Account or choose a data reference from the viewed Account.
+Each opened target needs Read through a delegation to the selected Identity,
+even when its parent Account is readable. A missing or unreadable target is
+shown as inaccessible or unavailable. The dashboard does not sync it, try
+another signer, or follow child references automatically. Use **Back** to
+return to the previous Account or **Account list** to choose another Identity.
+
+Data previews use the first ten rows of a selected plain `Table` store. You
+can choose another store if the first one has no preview. Oversized values
+are omitted, and internal and encrypted stores are not previewed. This is a
+view of local data, not a database history browser or a guarantee of sync
+freshness. See [Linked Accounts and app login](linked_accounts.md) for setup
+and examples of separate Account and data Auth.
+
+Tracked-database list failures are reported separately from an empty list.
+A database that cannot be opened remains visible as an unavailable row.
+Failed name or Entry reads show an error rather than an empty name or zero count.
+The detail page shows locally stored state, not runtime sync health.
+It still loads the full Entry list before displaying the first 100 IDs.
+
+Self-service registration is disabled.
+The login and registration pages explain that the operator creates the initial
+account with `eidetica daemon init`; further accounts require an administrator
+through the existing Account administration API.
+The web interface does not provide an account-creation form.
+Use the [linked Account API](linked_accounts.md#provision-an-owned-app-and-log-in) to provision an app and give it a separate ordinary daemon login.
+
 ### Dashboard sync preferences
 
 Open a tracked database's detail page to edit **your account's** sync-enabled,
@@ -95,7 +164,7 @@ Only an already tracked database whose recorded key/mapping still authorizes rea
 can be updated; this form cannot create a tracking record or repair access.
 
 These are preferences, not global daemon switches or a report of network health.
-The ordinary signed write and daemon reconciliation combine the enabled accounts'
+Native local persistence and daemon reconciliation combine the enabled accounts'
 preferences: sync-on-commit uses OR and explicit intervals use the minimum.
 Another account can therefore keep requesting sync after you disable it.
 Disabling neither cancels in-flight work nor revokes access.
@@ -103,14 +172,14 @@ The current background scheduler uses a shared timer, so this is not an exact
 per-database deadline.
 
 Requests from one browser session hold its write lock through the complete
-read/modify/commit; reads in that session take the corresponding read lock.
-Separate logins, socket clients and replicas do not share that browser lock.
-They use normal snapshot transactions and the Table's row-level LWW merge,
-not distributed compare-and-swap or stale-form detection.
+read/modify/persist; reads in that session take the corresponding read lock.
+Separate logins and socket clients do not share that browser lock.
+Native observed-value compare/exchange preserves unrelated local changes;
+preferences do not replicate to other installations. This is not distributed
+compare-and-swap or stale-form detection.
 Saving submits all three displayed preferences, so an older form can replace a
-newer edit; concurrent updates to the same row need not preserve each other's fields.
-Reload before editing to see current values.
-A commit error or lost response is not proof of rollback: the error page links to
+newer edit to those fields. Reload before editing to see current values.
+A persistence error or lost response is not proof of rollback: the error page links to
 reload the actual preferences before retrying.
 
 ### Default Socket Path
@@ -161,9 +230,9 @@ let instance = Instance::connect(eidetica::service::default_socket_url()).await?
 // an initial admin user via `eidetica daemon init --username ops`
 // (see the CLI reference); log in as that user, then create application
 // users via the admin path.
-let admin = instance.login_account("ops", None).await?;
+let admin = instance.login_account("ops", "").await?;
 admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
-let mut user = instance.login_account("alice", None).await?;
+let mut user = instance.login_account("alice", "").await?;
 
 let default_key = user.get_default_key()?;
 let db = user.create_database(eidetica::crdt::Doc::new(), &default_key).await?;
@@ -220,12 +289,12 @@ Multiple clients can connect to the same daemon simultaneously. Each client main
 ```rust,ignore
 // Client 1: an admin session creates the new user via the InstanceAdmin path.
 let instance1 = Instance::connect(eidetica::service::default_socket_url()).await?;
-let admin = instance1.login_account("ops", None).await?;
+let admin = instance1.login_account("ops", "").await?;
 admin.admin().await?.create_account(eidetica::NewAccount::passwordless("alice")).await?;
 
 // Client 2 (separate process or task): log in as the user that was just created.
 let instance2 = Instance::connect(eidetica::service::default_socket_url()).await?;
-let user = instance2.login_account("alice", None).await?;
+let user = instance2.login_account("alice", "").await?;
 ```
 
 All clients share the same underlying storage through the daemon's backend.
@@ -235,8 +304,34 @@ verification pass — `update_verification_status` and the verification-status
 queries are not exposed over the socket. The daemon's Instance stores synced
 entries as `Unverified`, runs `Database::verify()`, and serves reads from the
 resulting **Verified frontier**. Every connected client therefore sees the
-same verified view; there is no per-client `allow_unverified()` toggle over
-the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
+same default Verified view. A handle can opt into the retained non-Failed
+frontier with `.allow_unverified()`; its watches inherit the same scope without
+changing the daemon's trust decisions. Store reads derive their own unconsumed tips within that cut,
+not just Store data at main tips. Client-signed ordinary writes may branch
+without consuming observed tips, but `_settings` pins and write parents retain
+exact causal validation. No per-Store status or sparse verification is added.
+See [Core Concepts](core_concepts.md) and [service read scope](../internal/service.md#read-scope).
+
+## Retiring a failed connection
+
+Call `instance.remote_connection().unwrap().retire()` to permanently close a
+connected Instance's transport, including every clone and Database sharing it.
+The synchronous, idempotent call shuts down both socket directions without
+waiting for a writer lock, another response, or other handles to drop.
+Pending response waits fail with `ConnectionAborted`; blocked frame writes
+surface native I/O errors, and queued requests cannot reuse the stream.
+
+Retirement does not roll back server work or prove that a write did not commit.
+Keep ownership of started writes, await their results, and reconcile uncertain
+outcomes before retrying; the library does not replay them. A response already
+delivered may still succeed. Retirement cancels attached watches without waiting
+for callback work to finish; it does not cancel or join server operations.
+
+To reconnect, call `Instance::connect` with the socket URL again, log in, and
+reopen the required handles. The old Instance and its handles remain retired;
+retiring them again does not affect the fresh connection. Local Instances have
+no remote connection, so callers supporting both modes should handle `None`
+instead of unwrapping.
 
 ## Configuration Reference
 
@@ -257,10 +352,11 @@ the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
 - **Unix-only.** The service module requires Unix domain sockets and is not available on Windows.
 - **Feature flag required.** The `service` feature must be enabled (included in the default `full` feature set).
 
-For the `Database::on_write` semantics on a connected Instance — including
-the deliberate trade that callbacks fire asynchronously to `commit()` in
-exchange for a single daemon-canonical event ordering — see [Write
-Callbacks](transactions.md#write-callbacks).
+Watches deliver an ordered initial Snapshot and latest selected-frontier
+updates, asynchronously to commits on both local and connected Instances.
+See [Write Callbacks](transactions.md#write-callbacks).
+The service protocol is v0.1; clients and daemon must upgrade together.
+Legacy v0 connections are rejected rather than falling back to bracket events.
 
 ## Dashboard access requests
 

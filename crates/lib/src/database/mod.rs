@@ -28,13 +28,16 @@ use crate::{
     constants::{ROOT, SETTINGS},
     crdt::{CRDT, Codec, Doc},
     entry::{Entry, ID},
-    instance::{WriteCallback, WriteEvent, WriteSource, backend::Backend, errors::InstanceError},
-    store::{SettingsStore, Store, Table},
+    instance::{WriteCallback, WriteSource, backend::Backend, errors::InstanceError},
+    store::{SettingsStore, Store},
     sync::DatabaseTicket,
 };
 
 #[cfg(test)]
 mod tests;
+mod validation;
+
+use validation::ParentSettings;
 
 tokio::task_local! {
     /// Set while a `verify()`/validation pass is on the call stack.
@@ -193,7 +196,7 @@ pub struct Database {
     /// Private user context carried only by handles opened or created through
     /// an [`AccountSession`](crate::account::AccountSession) session. This owns caller-local sharing
     /// preferences; ordinary database handles remain context-free.
-    account_database: Option<Box<Database>>,
+    local_account: Option<(String, ID)>,
     /// When `false` (default), reads expose only the maximal all-`Verified`
     /// prefix of the DAG (the "Verified frontier"). When `true`, reads also
     /// include `Unverified` entries. `Failed` entries are dropped regardless.
@@ -208,7 +211,7 @@ impl Database {
             instance,
             ops,
             key: None,
-            account_database: None,
+            local_account: None,
             allow_unverified: false,
         }
     }
@@ -226,20 +229,27 @@ impl Database {
     ///
     /// # Auth Bootstrapping
     ///
-    /// Auth is always bootstrapped with the signing key as `Admin(0)`. Passing auth
-    /// configuration in `initial_settings` is an error — additional keys must be added
-    /// via follow-up transactions after creation.
+    /// When `initial_settings` contains `auth`, that configuration is used exactly:
+    /// no creator grant is inserted. The actual signer must have active Admin authority
+    /// in that Auth, with locally Verified proof for every configured delegation.
+    /// A lower-priority administrator may initialize stronger owner grants at genesis;
+    /// subsequent changes must satisfy the ordinary Auth priority rules.
+    ///
+    /// Without `auth`, the convenience default grants the signer `Admin(0)`.
+    /// Pass a [`DatabaseKey`] to select an explicit name, global or delegation identity;
+    /// a [`PrivateKey`] selects its own direct public key. The returned handle retains
+    /// that exact signer and identity. Identity creation is separate and optional.
     ///
     /// # Arguments
     /// * `instance` - Instance handle for storage and coordination
-    /// * `signing_key` - The signing key to use for the initial commit and subsequent operations.
-    ///   This key should already be decrypted and ready to use. The public key is derived
-    ///   automatically and used as the key identifier in auth settings.
+    /// * `signing_key` - An unlocked private key or explicit [`DatabaseKey`] used for
+    ///   genesis and subsequent operations. No backend/default signer is selected.
     /// * `initial_settings` - `Doc` CRDT containing the initial settings for the database.
     ///   Use `Doc::new()` for an empty settings document.
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance configured with a `DatabaseKey`.
+    /// See [`Self::create_with_init`] for post-genesis error context.
     ///
     /// # Example
     /// ```rust,no_run
@@ -265,7 +275,7 @@ impl Database {
     /// ```
     pub async fn create(
         instance: &Instance,
-        signing_key: PrivateKey,
+        signing_key: impl Into<DatabaseKey>,
         initial_settings: Doc,
     ) -> Result<Self> {
         Self::create_with_init(instance, signing_key, initial_settings, async |_| Ok(())).await
@@ -288,12 +298,18 @@ impl Database {
     ///
     /// # Arguments
     /// * `instance` - Instance handle for storage and coordination
-    /// * `signing_key` - The private key for this database (becomes Admin(0))
-    /// * `initial_settings` - Initial settings document (must not contain auth)
+    /// * `signing_key` - Actual signer and optional explicit Auth identity, as in [`Self::create`]
+    /// * `initial_settings` - Initial settings, including optional explicit Auth
     /// * `init` - Callback run against the genesis transaction before commit
+    ///
+    /// # Errors
+    /// If genesis succeeds but connected session-key registration fails, returns
+    /// [`Error::DatabaseCreation`] with the committed root and original cause.
+    /// Failures before genesis succeeds are returned unchanged. This does not
+    /// resolve an unknown commit outcome after transport loss.
     pub async fn create_with_init<F>(
         instance: &Instance,
-        signing_key: PrivateKey,
+        signing_key: impl Into<DatabaseKey>,
         initial_settings: Doc,
         init: F,
     ) -> Result<Self>
@@ -301,21 +317,23 @@ impl Database {
         F: AsyncFnOnce(&Transaction) -> Result<()>,
     {
         let mut initial_settings = initial_settings;
+        let (signing_key, mut identity) = signing_key.into().into_parts();
         let pubkey = signing_key.public_key();
-
-        // Reject preconfigured auth — Database::create owns auth bootstrapping entirely.
-        if initial_settings.get("auth").is_some() {
-            return Err(Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
-                reason: "initial_settings must not contain auth configuration; \
-                         Database::create bootstraps auth with the signing key as Admin(0)"
-                    .to_string(),
-            })));
+        // Pin name-only hints to the actual signer, including on connected handles
+        // whose login key may be unrelated. Never change the chosen authority path.
+        if identity.hint().pubkey.is_none() {
+            identity.hint_mut().pubkey = Some(pubkey.clone());
         }
+        let key = DatabaseKey::with_identity(signing_key.clone(), identity.clone());
 
-        // Bootstrap auth with the signing key as Admin(0)
-        let mut auth_settings = AuthSettings::new();
-        auth_settings.add_key(&pubkey, AuthKey::active(None, Permission::Admin(0)))?;
-        initial_settings.set("auth", auth_settings.as_doc().clone());
+        // Only absent Auth opts into the convenience default. Explicit empty,
+        // malformed or unauthorized Auth must fail native validation, not gain
+        // a fallback creator grant. A tombstone is also explicit, not absence.
+        if initial_settings.get("auth").is_none() && !initial_settings.is_tombstone("auth") {
+            let mut auth_settings = AuthSettings::new();
+            auth_settings.add_key(&pubkey, AuthKey::active(None, Permission::Admin(0)))?;
+            initial_settings.set("auth", auth_settings.as_doc().clone());
+        }
 
         // Create the initial root entry using a temporary Database and Transaction.
         // This placeholder ID should not exist in the backend, so snapshot will be empty.
@@ -334,8 +352,8 @@ impl Database {
             root: ID::from_bytes(bootstrap_placeholder_id.as_bytes()),
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
-            key: Some(DatabaseKey::new(signing_key.clone())),
-            account_database: None,
+            key: Some(key.clone()),
+            local_account: None,
             allow_unverified: false,
         };
 
@@ -369,35 +387,23 @@ impl Database {
         // Commit the initial entry
         let new_root_id = txn.commit().await?;
 
-        // Construct the returned Database, wiring its `ops` to match the
-        // instance's flavour:
-        //
-        // - **Connected (remote) instance** — bind a `RemoteBackend` to the
-        //   *new database's* identity (the signing-key's pubkey, self-signed
-        //   as `Admin(0)` by the genesis). The connection's login pubkey is
-        //   the *caller's* (e.g. the registering admin), which is **not** a
-        //   member of the new tree's auth. If we cloned the instance's
-        //   session backend here, every read `Transaction::commit` performs
-        //   on this database would carry the connection's login identity, and
-        //   the server's per-tree gate would deny it. A per-database identity
-        //   makes all reads use the tree's own member key — but the server's
-        //   gate also requires that key to be in the connection's *session
-        //   keyset*, so we `register_session_key(signing_key)` first to do the
-        //   proof-of-possession handshake that adds it.
-        // - **Local instance** — clone the instance's backend, unchanged.
+        // Connected reads must use the same proven signer and authority path as
+        // genesis, never the connection's unrelated login key or a direct-key
+        // fallback. Registration proves possession; it does not grant tree Auth.
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = instance.remote_connection() {
-            let pubkey_for_identity = signing_key.public_key();
-            conn.register_session_key(&signing_key).await?;
+            conn.register_session_key(&signing_key)
+                .await
+                .map_err(|error| error.after_database_creation(&new_root_id))?;
             return Ok(Self {
                 root: new_root_id.clone(),
                 instance: instance.downgrade(),
                 ops: Arc::new(RemoteBackend::new(
-                    conn,
-                    Some(SigKey::from_pubkey(&pubkey_for_identity)),
+                    conn.with_signer(signing_key.clone()),
+                    Some(identity),
                 )),
-                key: Some(DatabaseKey::new(signing_key)),
-                account_database: None,
+                key: Some(key),
+                local_account: None,
                 allow_unverified: false,
             });
         }
@@ -406,8 +412,8 @@ impl Database {
             root: new_root_id,
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
-            key: Some(DatabaseKey::new(signing_key)),
-            account_database: None,
+            key: Some(key),
+            local_account: None,
             allow_unverified: false,
         })
     }
@@ -454,7 +460,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: None,
-            account_database: None,
+            local_account: None,
             allow_unverified: false,
         })
     }
@@ -492,7 +498,7 @@ impl Database {
             instance: instance.downgrade(),
             ops,
             key: None,
-            account_database: None,
+            local_account: None,
             allow_unverified: false,
         })
     }
@@ -515,9 +521,9 @@ impl Database {
         }
     }
 
-    pub(crate) fn with_account_database(self, account_database: Database) -> Self {
+    pub(crate) fn with_local_account(self, login_id: &str, account_id: &ID) -> Self {
         Self {
-            account_database: Some(Box::new(account_database)),
+            local_account: Some((login_id.to_owned(), account_id.clone())),
             ..self
         }
     }
@@ -576,8 +582,7 @@ impl Database {
     /// to fail fast on an invalid key should call
     /// [`current_permission`](Self::current_permission), which wraps this.
     async fn validate_key(&self, key: &DatabaseKey) -> Result<Permission> {
-        let settings_store = self.get_settings().await?;
-        let auth_settings = settings_store.auth_snapshot().await?;
+        let auth_settings = self.live_auth_settings().await?;
         let actual_pubkey = key.public_key();
         let instance = match key.identity() {
             // Delegation resolution needs an Instance for cross-tree lookups;
@@ -592,6 +597,34 @@ impl Database {
             instance.as_ref(),
         )
         .await
+    }
+
+    /// Live authority ignores diagnostic read scopes and verification's raw view.
+    /// Pin the accepted frontier before reading settings; never cache a permission
+    /// verdict or recursively verify another database under the caller's lock.
+    pub(crate) async fn live_auth_settings(&self) -> Result<AuthSettings> {
+        let instance = self.instance()?;
+        let snapshot = match instance.backend().local_engine() {
+            Some(backend) => {
+                // Preserve access-time verification of completed local writes
+                // (including retries after interrupted status publication), but
+                // never use a raw diagnostic/verification view as authority.
+                if !auto_verify_suppressed() {
+                    self.snapshot().await?;
+                }
+                backend.verified_snapshot(self.root_id()).await?
+            }
+            None => self.snapshot().await?, // The service returns its Verified frontier.
+        };
+        self.auth_settings_at(&snapshot).await
+    }
+
+    pub(crate) async fn auth_settings_at(&self, snapshot: &Snapshot) -> Result<AuthSettings> {
+        self.new_transaction_at(snapshot)
+            .await?
+            .get_settings()?
+            .auth_snapshot()
+            .await
     }
 
     /// Find all SigKeys that a public key can use to access a database.
@@ -651,73 +684,45 @@ impl Database {
         pubkey: &PublicKey,
     ) -> Result<Vec<(SigKey, Permission)>> {
         use crate::auth::{
-            types::DelegationStep,
-            validation::{AuthValidator, permissions::select_effective_permission},
+            types::{DelegationStep, KeyHint},
+            validation::permissions::resolve_identity_permission,
         };
 
         // Create temporary database to load settings (no key source needed for reading)
         let temp_db = Self::open(instance, root_id).await?;
 
-        // Load auth settings
-        let settings_store = temp_db.get_settings().await?;
-        let auth_settings = settings_store.auth_snapshot().await?;
+        let auth_settings = temp_db.live_auth_settings().await?;
 
         // Find direct SigKeys for this pubkey
         let mut results = auth_settings.find_all_sigkeys_for_pubkey(pubkey);
 
-        // Scan single-hop delegation paths. Resolution — permission-bounds
-        // clamping, key status, the tip floor — is delegated to the validator,
-        // the single delegation walker, so this stays pure discovery: find which
-        // delegated trees list the pubkey, then resolve each through the shared
-        // path at the delegated tree's *current* tips.
-        // FIXME: deep nested delegations can't use this
+        // Discovery remains single-hop; authorization uses the same current-
+        // accepted-state resolver as retained identities and service requests.
+        // A delegated wildcard is metadata access, not concrete membership.
         if let Ok(delegated_trees) = auth_settings.get_all_delegated_trees() {
-            let mut validator = AuthValidator::new();
             for delegated_root_id in delegated_trees.keys() {
-                // Load the delegated tree's auth to see which of the pubkey's
-                // hints it lists (enumeration only — the validator re-resolves).
-                let delegated_auth = match Self::open(instance, delegated_root_id).await {
-                    Ok(db) => match db.get_settings().await {
-                        Ok(s) => match s.auth_snapshot().await {
-                            Ok(a) => a,
-                            Err(_) => continue,
-                        },
-                        Err(_) => continue,
-                    },
-                    Err(_) => continue,
-                };
-                let delegated_sigkeys = delegated_auth.find_all_sigkeys_for_pubkey(pubkey);
-                if delegated_sigkeys.is_empty() {
+                let Ok(delegated_db) = Self::open(instance, delegated_root_id).await else {
                     continue;
-                }
-
-                // Current tips = the "live authority" question (caller-supplied),
-                // distinct from a signature's claimed tips. They are at or above
-                // the committed floor, so the validator's floor check passes.
-                let tips = match instance.backend().snapshot(delegated_root_id).await {
-                    Ok(snap) => snap.tips().to_vec(),
-                    Err(_) => continue,
                 };
-
-                for (delegated_sk, _) in delegated_sigkeys {
-                    let delegation_sigkey = SigKey::Delegation {
-                        path: vec![DelegationStep {
-                            tree: delegated_root_id.clone(),
-                            tips: tips.clone(),
-                        }],
-                        hint: delegated_sk.hint().clone(),
-                    };
-                    // Resolve through the single delegation walker; bounds,
-                    // status, and the tip floor all live there, not here.
-                    let Ok(resolved) = validator
-                        .resolve_sig_key(&delegation_sigkey, &auth_settings, Some(instance))
-                        .await
-                    else {
-                        continue;
-                    };
-                    if let Some(perm) = select_effective_permission(&resolved, pubkey) {
-                        results.push((delegation_sigkey, perm));
-                    }
+                let Ok(tips) = delegated_db.verified_frontier().await else {
+                    continue;
+                };
+                let delegation_sigkey = SigKey::Delegation {
+                    path: vec![DelegationStep {
+                        tree: delegated_root_id.clone(),
+                        tips,
+                    }],
+                    hint: KeyHint::from_pubkey(pubkey),
+                };
+                if let Ok(permission) = resolve_identity_permission(
+                    pubkey,
+                    &delegation_sigkey,
+                    &auth_settings,
+                    Some(instance),
+                )
+                .await
+                {
+                    results.push((delegation_sigkey, permission));
                 }
             }
         }
@@ -761,242 +766,113 @@ impl Database {
         self.key.as_ref().map(|k| &k.identity)
     }
 
-    /// Register a callback to be invoked when entries are written to this database.
+    /// Watch this handle's selected frontier, initially and whenever it changes.
     ///
-    /// The callback fires for **both** local writes (transaction commits) and remote
-    /// writes (sync). Branch on [`WriteEvent::source`](crate::WriteEvent::source) inside
-    /// the closure if you only care about one.
+    /// The payload is the latest [`Snapshot`] only. Visibility is inherited
+    /// from this handle: Verified by default, or the non-Failed frontier with
+    /// [`allow_unverified`](Self::allow_unverified). Registrations are distinct
+    /// even on the same tree. The callback receives a read-only handle with
+    /// the same view and remote acting identity as the registering handle.
     ///
-    /// Returns a [`WriteCallback`] handle. **Drop it to unregister.** Call
-    /// [`WriteCallback::detach`] to leave the callback registered for the life
-    /// of the [`Instance`] without holding the handle.
+    /// Initial selection and registration are atomic with tree mutations. The
+    /// initial Snapshot is delivered first, even on a quiet tree; subsequent
+    /// pending updates may coalesce latest-wins. Each registration has at most
+    /// one initial, one in-flight and one pending Snapshot. User work (including
+    /// the closure's synchronous prefix) runs outside tree locks, sequentially
+    /// per registration. Neither local nor service commits await application
+    /// callbacks. Different registrations progress independently.
     ///
-    /// **Important:** Callbacks are registered at the Instance level and fire for all
-    /// writes to the database tree (identified by root ID), regardless of which
-    /// `Database` handle performed the write or registered the callback.
+    /// Keep your own last-successfully-processed checkpoint. There is no replay,
+    /// acknowledgment, removed-entry stream or every-transition promise. A
+    /// failure is logged; it does not advance your checkpoint on your behalf.
+    /// Snapshot identity is immutable: selection excludes Failed vertices, but
+    /// materializing a previously selected Snapshot still uses its ancestry.
     ///
-    /// # Callback contract
+    /// Drop the returned [`WriteCallback`] to cancel, including pending and
+    /// in-flight work; [`WriteCallback::detach`] keeps it for the Instance's life.
+    /// Service notification transport queues remain asynchronous to commits.
     ///
-    /// - **Local writes**: fires once per transaction commit. The
-    ///   [`WriteEvent`] carries cursor brackets only — call
-    ///   [`Database::ids_added`] with `event.previous_tips()` and
-    ///   `event.post_tips()` to enumerate the single new entry.
-    /// - **Remote writes**: fires once per sync batch (not per entry).
-    ///   `ids_added(prev, post)` yields the full set of new IDs in topo
-    ///   order.
-    /// - All entries that fall inside the cursor advance are fully
-    ///   persisted before the callback fires.
-    /// - Errors are logged but do not prevent other callbacks from running.
-    /// - The `db` argument is a **read-only** [`Database`] handle (no
-    ///   [`DatabaseKey`] configured): you can read settings, entries, and
-    ///   metadata, but cannot commit transactions through it. To write from
-    ///   inside a callback, resolve through `db.instance()?` and open the
-    ///   database with the appropriate key.
-    /// - **Reentrance**: writes are serialized per-tree via an async lock
-    ///   that is held while callbacks run. A callback must not commit a
-    ///   transaction on the same tree it was invoked for — that would
-    ///   deadlock. Spawn a task or write to a different tree instead.
-    ///
-    /// # Callback timing
-    ///
-    /// On a **local** [`Instance`], callbacks complete before
-    /// [`Transaction::commit`](crate::Transaction::commit)`.await` returns —
-    /// the firing path is inline with the write and the per-tree lock is
-    /// held the whole way.
-    ///
-    /// On a **connected** [`Instance`] (one built via
-    /// [`Instance::connect`](crate::Instance::connect)), callbacks fire
-    /// when a `Notification::DatabaseWrite` arrives back from the daemon —
-    /// typically microseconds after `commit().await` returns, but
-    /// asynchronous to it. This is by design: the daemon is the **sole
-    /// orderer** of writes on a connected setup, so every subscriber —
-    /// including the committing client — observes callbacks in the same
-    /// daemon-canonical order. Two clients submitting concurrently see
-    /// each other's writes in the same sequence; a single client's
-    /// callbacks never race a remote-source event into a different
-    /// observable order than the daemon has it. The trade-off is a small
-    /// asynchrony at the commit boundary — if you need a synchronous
-    /// "callback fired before commit returned" guarantee, use a local
-    /// [`Instance`].
-    ///
-    /// Ordering is preserved end-to-end, per tree. On the daemon the
-    /// per-tree write lock is held across the callback fan-out, and each
-    /// subscription's notification is emitted by a *synchronous* channel
-    /// send inside that locked section (see the `SubscribeWrites` handler
-    /// in `service::server`), so two clients writing the same tree
-    /// concurrently cannot interleave their frames. On the client,
-    /// notifications are routed by `root_id` to a per-tree worker that
-    /// `await`s each user callback to completion before pulling the next —
-    /// so two callbacks for the *same* tree never overlap and never
-    /// reorder. Callbacks for *different* trees run on independent workers
-    /// and progress concurrently: a slow callback on one tree does not
-    /// stall another. Spawn from inside the callback if you need fanout
-    /// within a single tree.
-    ///
-    /// # Settled-state trigger — but not a settled-state bracket
-    ///
-    /// Callbacks fire **only for entries that have passed local
-    /// verification** — i.e. entries the system considers `Verified`.
-    /// Direct `put_entry(Verified, _)` (local commits, trusted
-    /// in-process writes) fires immediately. Off-node entries that
-    /// arrive `Unverified` (sync ingest, wire-submitted entries) are
-    /// stored silently; the subsequent verification pass is where
-    /// promotion to `Verified` happens, and a Verified fire follows
-    /// from there once that pass runs.
-    ///
-    /// Both ingest paths run that pass inline: `put_remote_entries`
-    /// (sync) and the service `SubmitSignedEntry` handler each call
-    /// `verify()` immediately after storing the batch, so a promoted
-    /// entry fires its `Verified` event without waiting for a reader to
-    /// trigger the access-time auto-verify hook. A listen-only
-    /// subscriber therefore sees sync-arrived content promptly.
-    ///
-    /// What fires is settled; what the event *brackets* is not. The
-    /// event's cursors are raw DAG frontiers, so an `Unverified` or
-    /// `Failed` entry that happens to be a tip lands inside the bracket
-    /// and [`Self::ids_added`] will enumerate it. Filter on
-    /// `Backend::get_verification_status` before acting on IDs derived
-    /// from a bracket if your callback ingests entry contents.
-    ///
-    /// On a connected instance the first `on_write` registration for a
-    /// given tree lazily sends a `SubscribeWrites` op to the daemon;
-    /// further registrations on the same tree reuse that subscription.
-    /// Dropping the last callback for a tree marks the subscription idle
-    /// rather than unsubscribing immediately, so a quick re-registration
-    /// costs no round-trip; a sweep sends `UnsubscribeWrites` once the
-    /// grace window elapses. Disconnecting the client unsubscribes
-    /// everything.
-    ///
-    /// # Example
     /// ```rust,no_run
     /// # use eidetica::*;
-    /// # use eidetica::crdt::Doc;
-    /// # use eidetica::backend::database::InMemory;
-    /// # use eidetica::auth::crypto::PrivateKey;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<()> {
-    /// let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
-    /// # let signing_key = PrivateKey::generate();
-    /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
-    ///
-    /// let cb = database.on_write(|event, db| {
-    ///     let source = event.source();
-    ///     let prev = event.previous_tips().clone();
-    ///     let post = event.post_tips().clone();
+    /// # async fn example(db: Database) -> Result<()> {
+    /// let callback = db.on_write(|latest, db| {
+    ///     let latest = latest.clone();
     ///     let db = db.clone();
     ///     async move {
-    ///         let new_ids = db.ids_added(&prev, &post).await?;
-    ///         println!("{} entries written to {} ({source:?})", new_ids.len(), db.root_id());
+    ///         println!("{}: {:?}", db.root_id(), latest);
     ///         Ok(())
     ///     }
     /// }).await?;
-    ///
-    /// // Drop `cb` to unregister, or:
-    /// cb.detach(); // keep registered for the life of the Instance
-    /// # Ok(())
-    /// # }
+    /// # Ok(()) }
     /// ```
-    ///
-    /// If a callback needs the [`Instance`], call [`Database::instance`] on
-    /// the `db` argument.
     pub async fn on_write<F, Fut>(&self, callback: F) -> Result<WriteCallback>
     where
-        F: for<'a> Fn(&'a WriteEvent, &'a Database) -> Fut + Send + std::marker::Sync + 'static,
-        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
-    {
-        // Convenience: read current tips, then register at those tips.
-        //
-        // The "current tips" here come from this method's own
-        // `get_tips` call, **not** from any read the caller may have
-        // done before calling `on_write`. If the caller built initial
-        // state from a separate read at some `T0`, a write may have
-        // landed between that read and this `get_tips`, putting the
-        // cursor at `T1 ≥ T0`. The first callback fire's
-        // `previous_tips` will then be `T1`, not `T0`, and the caller
-        // observes `previous_tips != their_initial_tips` (a small
-        // race-window mismatch — typically one lock-acquisition apart
-        // on a local instance).
-        //
-        // Use [`Self::on_write_at_tips`] to close that window: pass
-        // exactly the tips your initial-state read used, and the first
-        // fire's `previous_tips` will match.
-        // Propagate rather than defaulting: `Snapshot::EMPTY` is the
-        // documented "I have no initial state; replay from the beginning"
-        // cursor, so masking a transient read error here would silently turn
-        // "subscribe from now" into a full-history replay on the first fire.
-        let tips = self.snapshot().await?;
-        self.on_write_at_tips(tips, callback).await
-    }
-
-    /// Register a callback with an explicit initial cursor.
-    ///
-    /// Primitive form of [`Self::on_write`]. The `tips` you pass become
-    /// this callback's initial cursor, and the first event the
-    /// callback receives will have `previous_tips = tips`. Subsequent
-    /// events' `previous_tips` are the previous event's post-write
-    /// tips — each callback owns its own continuous timeline.
-    ///
-    /// Use this when you need a hard guarantee that the cursor matches
-    /// some other tip set you've already used (typically the tips
-    /// returned by an initial-state read you did before subscribing):
-    ///
-    /// ```rust,no_run
-    /// # use eidetica::*;
-    /// # async fn doit(db: Database) -> Result<()> {
-    /// let tips = db.snapshot().await?;
-    /// // ... read initial state at `tips` ...
-    /// let _cb = db.on_write_at_tips(tips, |_event, _db| async move { Ok(()) }).await?;
-    /// // First callback fire's previous_tips will exactly equal the
-    /// // `tips` we read at — no race-window mismatch with subsequent
-    /// // commits.
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn on_write_at_tips<F, Fut>(
-        &self,
-        tips: Snapshot,
-        callback: F,
-    ) -> Result<WriteCallback>
-    where
-        F: for<'a> Fn(&'a WriteEvent, &'a Database) -> Fut + Send + std::marker::Sync + 'static,
+        F: Fn(&Snapshot, &Database) -> Fut + Send + std::marker::Sync + 'static,
         Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
         let instance = self.instance()?;
-        let tree_id = self.root_id().clone();
-        // Local registry uses `tips` as the per-callback cursor; the
-        // wire path (if any) also needs it so the daemon-side
-        // subscription cursor is pinned at the same value. Clone once
-        // here; a `Snapshot` is a tiny tip-set.
-        let id = instance.register_write_callback(tree_id.clone(), tips.clone(), callback);
-        let cb = WriteCallback::new_per_database(instance.downgrade(), tree_id.clone(), id);
-
-        // On a connected (daemon-backed) instance, ensure the daemon is
-        // pushing notifications for this tree before returning — otherwise
-        // an immediately-following commit could race the subscribe and
-        // lose its notification, since the daemon doesn't replay missed
-        // events. `subscribe_writes` is itself concurrency-safe and
-        // idempotent: it short-circuits when the tree is already
-        // subscribed and serialises racing registrations through a
-        // per-tree `Notify`, so every caller observes the subscription
-        // as live before returning. Database handles built with a key
-        // carry an explicit identity; keyless handles fall back to
-        // `SigKey::default()`, which the daemon resolves to the
-        // connection's login pubkey.
-        //
-        // The `tips` we hand to `subscribe_writes` become the daemon's
-        // subscription cursor, so the first notification's
-        // `previous_tips` exactly equals the tips this caller passed
-        // in — no race-window mismatch between the daemon's view and
-        // the client's local cursor.
+        let mut database = self.clone();
+        database.key = None;
+        database.local_account = None;
         #[cfg(all(unix, feature = "service"))]
-        if let Some(conn) = instance.remote_connection() {
-            let identity = self.auth_identity().cloned().unwrap_or_default();
-            conn.subscribe_writes(tree_id, identity, tips).await?;
-        } else {
-            let _ = tips;
+        if let Some(conn) = self.ops().remote_connection() {
+            let id = instance.register_write_callback(database, callback);
+            let cb = WriteCallback::new_per_database(instance.downgrade(), self.root.clone(), id);
+            let identity = self.ops().remote_identity();
+            conn.subscribe_writes(id, self.root.clone(), identity, self.read_scope())
+                .await?;
+            return Ok(cb);
         }
+        // Allow opportunistic verification before taking the mutation lock.
+        // Re-select under the lock so any intervening write is included.
+        self.snapshot().await?;
+        let lock = instance.tree_lock(self.root_id());
+        let _guard = lock.lock().await;
+        let initial = self.selected_snapshot().await?;
+        let id = instance.register_write_callback(database, callback);
+        instance.deliver_snapshot(self.root_id(), id, initial);
+        Ok(WriteCallback::new_per_database(
+            instance.downgrade(),
+            self.root.clone(),
+            id,
+        ))
+    }
 
-        Ok(cb)
+    #[cfg(all(unix, feature = "service"))]
+    pub(crate) fn read_scope(&self) -> crate::service::protocol::ReadScope {
+        use crate::service::protocol::ReadScope;
+        if self.allow_unverified {
+            ReadScope::AllowUnverified
+        } else {
+            ReadScope::Verified
+        }
+    }
+
+    #[cfg(all(unix, feature = "service"))]
+    async fn remote_snapshot(
+        &self,
+        scope: crate::service::protocol::ReadScope,
+    ) -> Result<Snapshot> {
+        self.ops()
+            .remote_connection()
+            .expect("remote snapshot requires connection")
+            .get_snapshot(self.root.clone(), self.ops().remote_identity(), scope)
+            .await
+    }
+
+    pub(crate) fn includes_unverified(&self) -> bool {
+        self.allow_unverified
+    }
+
+    /// Retained selected state only: safe while the tree lock is held.
+    pub(crate) async fn selected_snapshot(&self) -> Result<Snapshot> {
+        let instance = self.instance()?;
+        let backend = instance.require_local_engine()?;
+        if self.allow_unverified {
+            backend.non_failed_snapshot(self.root_id()).await
+        } else {
+            backend.verified_snapshot(self.root_id()).await
+        }
     }
 
     /// Get the ID of the root entry
@@ -1069,7 +945,7 @@ impl Database {
     /// Read this handle owner's private synchronization preferences.
     ///
     /// Database settings belong to the replicated database. Synchronization
-    /// preferences instead live in the owning user's private database, so only
+    /// preferences instead live in the owning login's native local record, so only
     /// handles returned by [`AccountSession::create_database`](crate::account::AccountSession::create_database)
     /// or [`AccountSession::open_database`](crate::account::AccountSession::open_database) carry this
     /// capability.
@@ -1090,24 +966,20 @@ impl Database {
     /// [`Self::sync_settings`] again.
     pub async fn set_shared(&self, shared: bool) -> Result<()> {
         self.authorize_sharing().await?;
-        let account_database = self.account()?;
-        let tx = account_database.new_transaction().await?;
-        let table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
-        let key = self.root_id().to_string();
-        let mut tracked = table
-            .get(&key)
-            .await
-            .map_err(|_| AccountError::DatabaseNotTracked {
-                database_id: self.root_id().clone(),
-            })?;
-
-        if tracked.sync_settings.sync_enabled == shared {
-            return Ok(());
-        }
-
-        tracked.sync_settings.sync_enabled = shared;
-        table.set(&key, tracked).await?;
-        tx.commit().await?;
+        let (login_id, account_id) = self.account()?;
+        let instance = self.instance()?;
+        crate::account::local_state::update(&instance, login_id, |state| {
+            let tracked = state
+                .databases
+                .get_mut(&self.root_id().to_string())
+                .ok_or_else(|| AccountError::DatabaseNotTracked {
+                    database_id: self.root_id().clone(),
+                })?;
+            tracked.sync_settings.sync_enabled = shared;
+            Ok(())
+        })
+        .await?;
+        crate::account::local_state::refresh_sync(&instance, login_id, account_id).await?;
         Ok(())
     }
 
@@ -1143,23 +1015,26 @@ impl Database {
         crate::account::ticket_locator(&self.instance()?, self.root_id()).await
     }
 
-    fn account(&self) -> Result<&Database> {
-        self.account_database.as_deref().ok_or_else(|| {
-            AccountError::MissingDatabaseCapability {
-                database_id: self.root_id().clone(),
-            }
-            .into()
-        })
+    fn account(&self) -> Result<(&str, &ID)> {
+        self.local_account
+            .as_ref()
+            .map(|(login, account)| (login.as_str(), account))
+            .ok_or_else(|| {
+                AccountError::MissingDatabaseCapability {
+                    database_id: self.root_id().clone(),
+                }
+                .into()
+            })
     }
 
     async fn tracked_database(&self) -> Result<TrackedDatabase> {
-        let account_database = self.account()?;
-        account_database
-            .get_store_viewer::<Table<TrackedDatabase>>("databases")
+        let (login_id, _) = self.account()?;
+        crate::account::local_state::read(&self.instance()?, login_id)
             .await?
+            .databases
             .get(&self.root_id().to_string())
-            .await
-            .map_err(|_| {
+            .cloned()
+            .ok_or_else(|| {
                 AccountError::DatabaseNotTracked {
                     database_id: self.root_id().clone(),
                 }
@@ -1217,6 +1092,10 @@ impl Database {
         Ok(txn)
     }
 
+    /// Legacy write-preparation bundle for the JSON service.
+    /// For a lightweight, authorized boundary with no prepared write data,
+    /// use [`crate::state::StateReader::capture`] instead.
+    ///
     /// Gather everything a client needs to build and sign a transaction
     /// locally for the given stores, with parents drawn from `scope`'s
     /// projection.
@@ -1226,8 +1105,8 @@ impl Database {
     /// `Transaction::commit`'s build-sign path has one source of truth for
     /// context gathering.
     ///
-    /// `scope=AllowUnverified` opens against the raw DAG (only `Failed`
-    /// dropped); the default `Verified` scope uses the Verified frontier.
+    /// `scope=AllowUnverified` selects the retained non-Failed frontier;
+    /// the default `Verified` scope uses the Verified frontier.
     /// The returned [`TransactionContext`] carries everything needed for
     /// one round-trip transaction build: main parents + heights, per-store
     /// subtree parents + heights, settings tips, and the merged `_settings`
@@ -1291,14 +1170,14 @@ impl Database {
         })
     }
 
-    /// Server-materialized merged state of an **unencrypted** store, as a
+    /// Legacy trusted-engine helper for merged state of an **unencrypted** store, as a
     /// `serde_json::Value` against the database's Verified frontier.
+    /// This assumes a Doc-encoded Store. For authorized, checked projection
+    /// reads use [`crate::state::StateReader::read_doc`] instead.
     ///
     /// Creates an ephemeral transaction, deserializes every entry's
     /// store data as [`Doc`], and merges them via Doc's LWW merge —
-    /// the same merge `Store<T>` would perform client-side. All current
-    /// store types (DocStore, Table, Settings) serialize their data as
-    /// JSON, so `Doc`-typed deserialization works universally.
+    /// the same merge Doc-backed Stores perform client-side.
     ///
     /// # Encrypted stores
     ///
@@ -1409,7 +1288,15 @@ impl Database {
         let instance = self.instance()?;
         let id = entry.id();
 
-        instance.put(entry).await?;
+        let tree = entry.root().unwrap_or_else(|| id.clone());
+        instance
+            .put_entry(
+                &tree,
+                VerificationStatus::Unverified,
+                entry,
+                WriteSource::Local,
+            )
+            .await?;
 
         Ok(id)
     }
@@ -1442,13 +1329,14 @@ impl Database {
     ///   ancestor-closed, all-`Verified` prefix of the DAG. A still-`Unverified`
     ///   tip is replaced by its nearest `Verified` ancestors; anything reachable
     ///   only through an `Unverified` entry is excluded.
-    /// - **[`allow_unverified`](Self::allow_unverified)** — the raw tips with
-    ///   only `Failed` tips dropped (`Unverified` tips are kept). This is not
-    ///   a recursively sanitized accepted prefix.
+    /// - **[`allow_unverified`](Self::allow_unverified)** — the retained
+    ///   non-Failed frontier. Rejection removes a tip and can restore its
+    ///   surviving parents. This selects vertices, not sanitized ancestry;
+    ///   materializing any Snapshot still follows its immutable history.
     ///
     /// While a [`verify`](Self::verify) pass is on the stack the frontier is
     /// bypassed (its own reads must see the raw DAG to reconstruct pinned
-    /// `_settings`). A remote handle returns the server's Verified frontier;
+    /// `_settings`). A remote handle returns the server's selected frontier;
     /// the server owns verification, not the client.
     ///
     /// # Returns
@@ -1457,7 +1345,7 @@ impl Database {
         let instance = self.instance()?;
 
         // On a remote instance the server owns verification: `snapshot`
-        // already returns the server-side Verified frontier (or empty for a
+        // returns the server-side selected frontier (or empty for a
         // not-yet-propagated tree, e.g. `Database::create`'s bootstrap
         // placeholder root — `EntryNotFound` is mapped to empty to match
         // `Backend::snapshot`'s contract). Return it directly: the local
@@ -1477,7 +1365,7 @@ impl Database {
         // backend, keeping the session-identity semantics for that path.
         #[cfg(all(unix, feature = "service"))]
         if instance.remote_connection().is_some() {
-            return match self.ops().snapshot(&self.root).await {
+            return match self.remote_snapshot(self.read_scope()).await {
                 Ok(snap) => Ok(snap),
                 Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
                 Err(e) => Err(e),
@@ -1506,15 +1394,6 @@ impl Database {
             return Ok(verified);
         }
 
-        // Verification status ops are local-only. On a remote backend the
-        // server owns verification (and stores everything Unverified until
-        // it verifies); the client returns verified tips unchanged.
-        if let Some(first) = raw.tips().first()
-            && backend.get_verification_status(first).await.is_err()
-        {
-            return Ok(raw);
-        }
-
         // Access-time opportunistic verification: if any tip is still
         // Unverified, attempt to resolve it now. Best-effort — a failure or a
         // still-incomplete pin must not block the read.
@@ -1538,9 +1417,7 @@ impl Database {
             if !self.allow_unverified {
                 return backend.verified_snapshot(self.root_id()).await;
             }
-            return self
-                .drop_failed(&self.ops().snapshot(&self.root).await?.into_tips())
-                .await;
+            return backend.non_failed_snapshot(self.root_id()).await;
         }
 
         // Default view: the retained Verified frontier — a single indexed
@@ -1549,12 +1426,11 @@ impl Database {
             return Ok(verified);
         }
 
-        // `allow_unverified` view: keep Unverified tips, drop only Failed.
-        self.drop_failed(&raw.into_tips()).await
+        backend.non_failed_snapshot(self.root_id()).await
     }
 
     /// Keep every tip except `Failed` ones.
-    async fn drop_failed(&self, tips: &[ID]) -> Result<Snapshot> {
+    pub(crate) async fn drop_failed(&self, tips: &[ID]) -> Result<Snapshot> {
         let instance = self.instance()?;
         let backend = instance.require_local_engine()?;
         let mut visible = Vec::with_capacity(tips.len());
@@ -1598,6 +1474,26 @@ impl Database {
             entries.push(instance.get(id).await?);
         }
         Ok(entries)
+    }
+
+    /// Try to read the indexed tips of one named Store without walking its history.
+    ///
+    /// `None` means no indexed verified tips are available, for example when
+    /// the Store is absent or the raw and verified database frontiers differ.
+    /// It does not prove the Store is empty.
+    /// This lookup only returns verified tips, even on a handle that permits
+    /// unverified reads. An empty Store name returns `None`.
+    ///
+    /// Use [`Self::get_entry`] to read a returned tip's metadata. This loads
+    /// the whole Entry, not just its metadata. A tip may participate in the
+    /// Store without changing its data; see [`Entry::data`].
+    pub async fn try_verified_store_snapshot(&self, store: &str) -> Result<Option<Snapshot>> {
+        if store.is_empty() {
+            return Ok(None);
+        }
+        self.ops()
+            .try_verified_store_snapshot(self.root_id(), store)
+            .await
     }
 
     /// Get a single entry by ID from this database.
@@ -1837,6 +1733,12 @@ impl Database {
         let instance = self.instance()?;
         let backend = instance.backend();
 
+        let expected = match self.validate_parent_settings(entry).await? {
+            ParentSettings::Incomplete(_) => return Ok(PinnedSettings::Incomplete),
+            ParentSettings::Invalid => return Ok(PinnedSettings::Invalid),
+            ParentSettings::Complete(settings) => settings,
+        };
+
         // The pin: `_settings` snapshot recorded in the entry's signed metadata.
         let settings_tips: Vec<ID> = match entry.metadata() {
             Some(raw) => match serde_json::from_slice::<crate::transaction::EntryMetadata>(raw) {
@@ -1851,40 +1753,6 @@ impl Database {
         // pre-write settings frontier from the entry's MAIN parents. This
         // remains historical even if a revocation has landed on another branch.
         let parents = entry.parents()?;
-        // The Backend seam has no raw tree walk on a remote handle. Walk
-        // every main edge here so missing ancestors cannot become a partial
-        // SQL/in-memory store snapshot, then process parents before children.
-        let mut stack = parents.clone();
-        let mut seen = std::collections::HashSet::new();
-        let mut ancestry = Vec::new();
-        while let Some(id) = stack.pop() {
-            if !seen.insert(id.clone()) {
-                continue;
-            }
-            let ancestor = match backend.get(&id).await {
-                Ok(entry) => entry,
-                Err(e) if e.is_not_found() => return Ok(PinnedSettings::Incomplete),
-                Err(e) => return Err(e),
-            };
-            if !ancestor.in_tree(self.root_id()) {
-                return Ok(PinnedSettings::Invalid);
-            }
-            stack.extend(ancestor.parents()?);
-            ancestry.push(ancestor);
-        }
-        ancestry.sort_by(|a, b| {
-            a.height()
-                .cmp(&b.height())
-                .then_with(|| a.id().cmp(&b.id()))
-        });
-        let expected =
-            match crate::auth::validation::floors::causal_settings_frontier(&ancestry, &parents) {
-                Ok(frontier) => frontier,
-                Err(Error::Auth(e)) if matches!(*e, AuthError::InvalidAuthConfiguration { .. }) => {
-                    return Ok(PinnedSettings::Invalid);
-                }
-                Err(e) => return Err(e),
-            };
         if Snapshot::from(settings_tips) != expected {
             return Ok(PinnedSettings::Invalid);
         }
@@ -1943,14 +1811,10 @@ impl Database {
     /// Return the IDs of entries reachable from `post_tips` but not from
     /// `previous_tips`, in topological order (parents before children).
     ///
-    /// This is the canonical way to enumerate the entries added between two
-    /// cursors of this database — typically the cursors supplied by a
-    /// [`WriteEvent`](crate::instance::WriteEvent)'s
-    /// [`previous_tips()`](crate::instance::WriteEvent::previous_tips) and
-    /// [`post_tips()`](crate::instance::WriteEvent::post_tips). Callbacks that
-    /// only care that *something* changed can ignore this; callbacks that
-    /// need to enumerate or fetch entry contents call this to expand the
-    /// cursor advance into a concrete set of IDs.
+    /// Enumerate relative to a caller-owned checkpoint and a newer Snapshot,
+    /// including one delivered by [`Self::on_write`]. Advance the checkpoint
+    /// only after processing succeeds. This is an ancestry walk, not a removed-
+    /// entry stream or an acknowledgment/replay protocol.
     ///
     /// The walk is bounded by the cursor diff — cost is proportional to the
     /// number of entries *added* between the two cursors, not to the full
@@ -1963,12 +1827,11 @@ impl Database {
     ///   `post_tips` (i.e. the full ancestor closure of those tips).
     /// - If `post_tips` references an entry that does not exist locally,
     ///   returns an `EntryNotFound` error.
-    /// - Verification status is **not** filtered, and event-driven callers
-    ///   are not exempt. `WriteEvent` is *triggered* only by Verified
-    ///   writes, but its cursors are raw DAG frontiers, so an `Unverified`
-    ///   or `Failed` entry sitting as a tip is inside the bracket and is
-    ///   enumerated here. Every caller that fetches or ingests these IDs
-    ///   should filter via `Backend::get_verification_status`.
+    /// - Verification status is not filtered: a Snapshot names immutable
+    ///   ancestry. Default watch Snapshots select the Verified prefix; opt-in
+    ///   or explicitly supplied Snapshots can reach Failed/missing ancestors.
+    ///   Rebuild the selected view if handling a non-Failed frontier that has
+    ///   moved backward; this method does not enumerate removals.
     ///
     /// # Errors
     ///
@@ -1997,11 +1860,9 @@ impl Database {
         // the entries added between the two cursors — not the full DAG. (Same
         // shape as `sync::utils::collect_ancestors_to_send`.)
         //
-        // The callback cursor model always advances `previous_tips` as a
-        // complete frontier (a cut), so halting at its members is exact. A
-        // partial or stale `previous_tips` can only over-report — never
-        // under-report, since any genuinely-new entry is reached before the walk
-        // meets the frontier — which is the conservative direction.
+        // Callers own their checkpoints. Literal boundary membership can
+        // over-report for an interior fork; exact forked diff/resume semantics
+        // are separate from Snapshot watch delivery.
         let boundary: HashSet<ID> = previous_tips.tips().iter().cloned().collect();
 
         // Routes through `self.ops()` so handles built via
@@ -2132,7 +1993,9 @@ impl Database {
     /// - an ancestor is still `Unverified`, or not held locally yet (partial
     ///   sync) → left `Unverified` (retried once the ancestor verifies / the
     ///   missing entry arrives);
-    /// - height not strictly greater than a Verified parent's → `Failed`;
+    /// - main or effective Store height not strictly greater than its Verified parent's → `Failed`;
+    /// - named Store parents outside main ancestry, the database or the Store → `Failed`;
+    /// - `_settings` parents differ from the complete causal settings frontier → `Failed`;
     /// - pinned `_settings` not fully held locally → left `Unverified`
     ///   (a later pass retries once the set syncs in);
     /// - signature + permissions valid → promoted to `Verified`;
@@ -2148,14 +2011,10 @@ impl Database {
     /// Local-only — verification is a per-node decision
     /// and is never delegated to a peer.
     pub async fn verify(&self) -> Result<VerifyReport> {
-        self.verify_with_source(WriteSource::Remote, None).await
+        self.verify_with_source(WriteSource::Remote).await
     }
 
-    pub(crate) async fn verify_with_source(
-        &self,
-        source: WriteSource,
-        previous_tips: Option<Snapshot>,
-    ) -> Result<VerifyReport> {
+    pub(crate) async fn verify_with_source(&self, source: WriteSource) -> Result<VerifyReport> {
         use std::collections::{HashMap, HashSet, VecDeque};
 
         let instance = self.instance()?;
@@ -2172,7 +2031,7 @@ impl Database {
         // Suppress the access-time auto-verify hook for the whole pass:
         // validation reads the database (delegation → settings → tips) and
         // must not recurse back into verification.
-        let (report, any_promoted, fire_tips) = IN_VERIFY
+        let (report, any_promoted) = IN_VERIFY
             .scope(true, async move {
                 let backend = instance.require_local_engine()?;
 
@@ -2259,39 +2118,6 @@ impl Database {
                 let mut any_promoted = false;
                 for id in &order {
                     let entry = unverified.get(id).expect("topo id is in set");
-                    let parents = entry.parents().unwrap_or_default();
-                    let mut compromised = false;
-                    let mut blocked = false;
-                    for p in &parents {
-                        match backend.get_verification_status(p).await {
-                            Ok(VerificationStatus::Verified) => {
-                                let parent = backend.get(p).await?;
-                                // Both height strategies require strict growth; gaps
-                                // are valid, but equal or decreasing heights are not.
-                                if !parent.in_tree(self.root_id())
-                                    || entry.height() <= parent.height()
-                                {
-                                    compromised = true;
-                                }
-                            }
-                            Ok(VerificationStatus::Failed) => compromised = true,
-                            Ok(VerificationStatus::Unverified) => blocked = true,
-                            Err(e) if e.is_not_found() => blocked = true,
-                            Err(e) => return Err(e),
-                        }
-                    }
-                    if compromised {
-                        backend
-                            .update_verification_status(id, VerificationStatus::Failed)
-                            .await?;
-                        report.failed += 1;
-                        continue;
-                    }
-                    if blocked {
-                        report.still_unverified += 1;
-                        continue;
-                    }
-
                     match self.get_historical_settings_for_entry(entry).await? {
                         PinnedSettings::Incomplete => report.still_unverified += 1,
                         PinnedSettings::Invalid => {
@@ -2329,49 +2155,18 @@ impl Database {
                     }
                 }
 
-                Ok::<_, crate::Error>((report, any_promoted, raw_tips))
+                Ok::<_, crate::Error>((report, any_promoted))
             })
             .await?;
 
-        // Fire one batched `Verified` event for the promotion, if any.
-        // Outside the IN_VERIFY scope so the callbacks' own reads aren't
-        // suppressed. Still under the per-tree write lock — the lock is
-        // dropped when this method returns.
-        //
-        // Pre- and post-pass tips are *the same* raw backend tips: verify
-        // only mutates verification statuses, never the DAG structure.
-        // For per-callback cursor advancement that means the cursor moves
-        // to `pre_tips` (which includes the just-promoted entries), which
-        // is the correct frontier — subscribers see the same
-        // `previous_tips` they'd see for any subsequent fire until
-        // something else writes to the tree.
-        let joins = if any_promoted {
-            let instance = self.instance()?;
-            Some(
-                instance
-                    .spawn_write_callbacks(
-                        self.root_id(),
-                        previous_tips.as_ref().unwrap_or(&fire_tips),
-                        &fire_tips,
-                        source,
-                    )
-                    .await,
-            )
-        } else {
-            None
-        };
-
-        // Release the per-tree lock before awaiting the user callbacks. The
-        // cursor advances were already committed under the lock by
-        // `spawn_write_callbacks` (which is what preserves event ordering);
-        // the closures must run lock-free, because a callback that reads
-        // tips can trip the access-time auto-verify hook → `verify()` →
-        // `tree_lock` and would deadlock against a still-held `_guard`.
+        // Failure changes the opt-in frontier too. Mailboxes suppress any
+        // unchanged view; sync remains independent and runs only on promotion.
+        let mut joins = self
+            .instance()?
+            .publish_write(self.root_id(), source, any_promoted)
+            .await?;
         drop(_guard);
-
-        if let Some(mut joins) = joins {
-            while joins.join_next().await.is_some() {}
-        }
+        while joins.join_next().await.is_some() {}
 
         Ok(report)
     }

@@ -33,7 +33,7 @@ fn test_doc_basic_operations() {
         &[("b", "updated_b"), ("c", "value_c")],
     );
 
-    let merged = test_merge_result(
+    let merged = assert_merge_result(
         &map1,
         &map2,
         &[("a", "value_a"), ("b", "updated_b"), ("c", "value_c")],

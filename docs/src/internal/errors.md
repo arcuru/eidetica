@@ -15,6 +15,23 @@ The `Error` enum uses a modular approach with structured error types from each c
 
 The use of `#[error(transparent)]` allows for zero-cost conversion from module-specific errors into `crate::Error` using the `?` operator. Helper methods like `is_not_found()`, `is_permission_denied()`, and `is_authentication_error()` enable categorized error handling without pattern matching on specific variants.
 
+## Database Creation Failures
+
+`Error::DatabaseCreation { root_id, source }` adds context when genesis succeeded but a later creation step failed.
+`root_id` is the exact committed root, and `source` is the original typed `Error`, also available through the standard error source chain.
+`Error::created_database_id()` returns that ID without destructuring the error.
+The wrapper reports module `database`; inspect `source` for the underlying error category.
+
+`Database::create` and `create_with_init` attach this context to connected session-key registration failures after genesis.
+`AccountSession::create_database`, `create_database_with_init`, and `DatabaseBuilder::build` also retain it for subsequent local tracking, key installation, and sync setup failures.
+The wrapper is constructed locally by the SDK, including on connected clients; it does not add a service request or change the wire format.
+Pre-genesis failures keep their original error, without a created ID.
+A failed commit acknowledgement can still have an unknown outcome; this is not response-loss recovery.
+
+The ID grants no authority and does not imply that tracking, key registration, or sync setup completed.
+Repair must use the retained credentials and normal Auth checks, not create a replacement root.
+See [Database Sharing](../user_guide/database_management.md#creation-failures) for caller handling.
+
 ## Cross-Process Error Propagation
 
 When using the [service (daemon) mode](service.md), errors must cross a Unix socket boundary. The `ServiceError` wire type captures the originating module, discriminant name, and display message:

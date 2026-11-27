@@ -2,8 +2,9 @@
 
 This chapter describes `PasswordStore` as implemented. It covers content encryption and encrypted
 derived Store-state caches. Account signing-key encryption is a separate use of Argon2id and
-AES-256-GCM in `user/crypto.rs`; its salt handling, envelope, and lifetime are not the
+AES-256-GCM in `account/crypto.rs`; its salt handling, envelope, and lifetime are not the
 `PasswordStore` format described here.
+The explicit local bundle format and its memory owners are described in [local credential ownership](account_credentials.md#bundle-format-and-key-lifetimes).
 
 The main implementation is in `crates/lib/src/store/password_store.rs`. Transaction integration is
 in `crates/lib/src/transaction/mod.rs`, and the Store-state substrate is in

@@ -22,17 +22,19 @@ use crate::auth::errors::AuthError;
 use crate::auth::types::{Permission, SigKey};
 use crate::auth::validation::permissions::resolve_identity_permission;
 use crate::backend::{
-    CacheScope, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
+    BackendError, CacheScope, StagingToken, StoreStateLifecycle, StoreStateRequest,
+    VerificationStatus, private_cache::SIGNER_SCOPE_PREFIX,
 };
 use crate::database::Database;
 use crate::entry::ID;
-use crate::instance::{CallbackId, WriteSource};
+use crate::instance::{WriteCallback, WriteSource};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, HandshakeAck, IncomingRequest, MergeState, Notification,
-    PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, TicketBootstrapOutcome,
-    TicketBootstrapRequest, read_frame, write_frame,
+    PROTOCOL_REVISION, PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse,
+    TicketBootstrapOutcome, TicketBootstrapRequest, read_frame, write_frame,
 };
+use crate::state::{StateAdmission, StateError, StateReader};
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
 
 /// Connection identifier. Monotonic per server-run; reused only after
@@ -41,9 +43,10 @@ use crate::sync::{SyncError, protocol::SyncTreeRequest};
 /// callback refactor.
 type ConnectionId = u64;
 
-/// How long an idle session token survives before the next dispatch reclaims
-/// its backend resources.
+/// How long idle session tokens survive.
 const TOKEN_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
+/// Bound retry bookkeeping even for empty chunks, which cost no record bytes.
+const MAX_STAGING_CHUNKS: usize = 4096;
 
 /// One server-issued Store-state capability, bound to the session that minted
 /// it. `published` distinguishes a readable view from a staging namespace that
@@ -53,47 +56,44 @@ struct SessionStaging {
     login_id: String,
     database: ID,
     published: bool,
-    chunks: HashMap<u64, Vec<u8>>,
+    chunks: HashMap<u64, blake3::Hash>,
     last_used: Instant,
 }
 
-/// Per-connection context carried through the dispatch chain. Holds:
-///
-/// - `tx`: the writer-channel sender — both `ServerFrame::Response`s from
-///   the dispatcher and `ServerFrame::Notification`s from subscribed
-///   per-db callbacks ride through this same channel, so the order
-///   observed by the client is the order frames hit `frame_tx`.
-/// - `instance`: needed in `Drop` to call `remove_write_callback` for
-///   the connection's registered subscriptions.
-/// - `subscribed`: `root_id -> CallbackId` for every `SubscribeWrites`
-///   this connection has done. Cleaned up on disconnect (via the guard's
-///   `Drop`) and on explicit `UnsubscribeWrites`.
-///
-/// There is no per-connection registry on the server. Each subscription
-/// is just a per-db callback registered against the daemon's Instance
-/// (`Instance::register_write_callback`); the daemon's existing
-/// `fire_write_callbacks` dispatch path handles fan-out by walking the
-/// per-tree callback list, no separate fan-out mechanism required.
+/// Per-connection writer and session capabilities. Each subscription ID owns
+/// one handle-scoped callback; dropping the connection releases every handle.
 struct ConnectionContext {
     conn_id: ConnectionId,
     tx: mpsc::UnboundedSender<ServerFrame>,
     instance: Instance,
-    subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
+    subscribed: std::sync::Mutex<HashMap<u64, (ID, SigKey, ReadScope, WriteCallback)>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
+    capabilities: Capabilities,
 }
 
 impl ConnectionContext {
-    fn subscribed_lock(&self) -> std::sync::MutexGuard<'_, HashMap<ID, CallbackId>> {
+    fn subscribed_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<u64, (ID, SigKey, ReadScope, WriteCallback)>> {
         self.subscribed
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Drop session tokens that have gone idle, returning the backend staging
-    /// tokens whose namespaces the caller must abort.
-    fn cleanup_expired(&self) -> Vec<StagingToken> {
+    fn next_staging_expiry(&self) -> Option<Instant> {
+        self.staging
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|value| !value.published)
+            .map(|value| value.last_used + self.staging_idle_ttl)
+            .min()
+    }
+
+    /// Drop idle capabilities and reclaim their underlying private builds.
+    async fn cleanup_expired(&self) {
         let now = Instant::now();
         let mut expired = Vec::new();
         self.staging.lock().unwrap().retain(|_, value| {
@@ -102,37 +102,35 @@ impl ConnectionContext {
             } else {
                 self.staging_idle_ttl
             };
-            let keep = now.duration_since(value.last_used) <= ttl;
+            let keep = now.duration_since(value.last_used) < ttl;
             if !keep && !value.published {
                 expired.push(value.backend.clone());
             }
             keep
         });
-        expired
+        for token in expired {
+            let _ = self.instance.backend().abort_store_state(token).await;
+        }
     }
 }
 
-/// RAII cleanup: on connection drop (clean EOF, error, or panic), call
-/// `Instance::remove_write_callback` for every subscription this
-/// connection registered. Holds an `Arc<ConnectionContext>` rather than
-/// borrowing so the cleanup path is identical for every exit case
-/// without sprinkling `remove_*` calls through the connection handler.
+/// RAII cleanup: on connection drop (clean EOF, error, or panic), drop every
+/// subscription's `WriteCallback`, which unregisters and cancels its watch.
+/// Holds an `Arc<ConnectionContext>` rather than borrowing so the cleanup path
+/// is identical for every exit case.
 struct ConnectionGuard {
     ctx: Arc<ConnectionContext>,
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        let subs = self.ctx.subscribed_lock();
+        let subs = std::mem::take(&mut *self.ctx.subscribed_lock());
         if !subs.is_empty() {
             tracing::debug!(
                 conn_id = self.ctx.conn_id,
                 "Unregistering {} subscriptions on disconnect",
                 subs.len()
             );
-        }
-        for (tree_id, id) in subs.iter() {
-            self.ctx.instance.remove_write_callback(tree_id, *id);
         }
         drop(subs);
         let staging = std::mem::take(&mut *self.ctx.staging.lock().unwrap())
@@ -214,7 +212,14 @@ pub struct ServiceServer {
     socket_identity: SocketIdentity,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
+    capabilities: Capabilities,
     _lock_file: File,
+}
+
+#[derive(Clone)]
+struct Capabilities {
+    credentials: bool,
+    state_admission: Option<Arc<StateAdmission>>,
 }
 
 #[derive(Clone, Copy)]
@@ -290,8 +295,27 @@ impl ServiceServer {
             socket_identity,
             staging_idle_ttl,
             published_view_idle_ttl,
+            capabilities: Capabilities {
+                credentials: true,
+                state_admission: None,
+            },
             _lock_file: lock_file,
         })
+    }
+
+    /// Disable the installation-local credential and login-record commands.
+    /// Signer challenge/response, database Auth, and ordinary State eligibility
+    /// remain available. This is not a change to the local socket trust model.
+    pub fn without_credentials(mut self) -> Self {
+        self.capabilities.credentials = false;
+        self
+    }
+
+    /// Install a nonblocking State admission predicate. Returning false is
+    /// a typed refusal, independent of possession proof and database Auth.
+    pub fn with_state_admission(mut self, admission: Arc<StateAdmission>) -> Self {
+        self.capabilities.state_admission = Some(admission);
+        self
     }
 
     /// Get the socket path.
@@ -309,7 +333,7 @@ impl ServiceServer {
         // Diagnostic per-connection counter — purely for logging. No
         // registry-based routing needed; each connection's subscriptions
         // live as per-db callbacks on the Instance, dispatched by the
-        // existing `fire_write_callbacks` path.
+        // selected-frontier publication path.
         let next_conn_id = Arc::new(AtomicU64::new(1));
 
         // Track active per-connection tasks so shutdown actually
@@ -327,9 +351,10 @@ impl ServiceServer {
                             let instance = self.instance.clone();
                             let staging_idle_ttl = self.staging_idle_ttl;
                             let published_view_idle_ttl = self.published_view_idle_ttl;
+                            let capabilities = self.capabilities.clone();
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, staging_idle_ttl, published_view_idle_ttl, capabilities).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -602,6 +627,7 @@ async fn handle_connection(
     conn_id: ConnectionId,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
+    capabilities: Capabilities,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
@@ -611,17 +637,23 @@ async fn handle_connection(
         None => return Ok(()), // Client disconnected before handshake
     };
 
-    if handshake.protocol_version != PROTOCOL_VERSION {
+    if handshake.protocol_version != PROTOCOL_VERSION
+        || handshake.protocol_revision != PROTOCOL_REVISION
+    {
         // Send error ack and close
         let ack = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
+            protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
         };
         write_frame(&mut writer, &ack).await?;
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "Protocol version mismatch: client={}, server={}",
-                handshake.protocol_version, PROTOCOL_VERSION
+                "Protocol version mismatch: client={}.{}, server={}.{}",
+                handshake.protocol_version,
+                handshake.protocol_revision,
+                PROTOCOL_VERSION,
+                PROTOCOL_REVISION
             ),
         )));
     }
@@ -629,6 +661,7 @@ async fn handle_connection(
     // Send handshake ack
     let ack = HandshakeAck {
         protocol_version: PROTOCOL_VERSION,
+        protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
     };
     write_frame(&mut writer, &ack).await?;
 
@@ -654,12 +687,10 @@ async fn handle_connection(
     //      block if Response. Less plumbing, policy duplicated per send
     //      site.
     //
-    // Under the cursor-only `Notification::DatabaseWrite` shape (no entry
-    // bodies, just `previous_tips`/`post_tips`), drops are *recoverable*:
-    // a subscriber that misses event N still sees event N+1's `post_tips`
-    // and calls `ids_added(cursor, post_tips)` to catch up. That makes
-    // drop-oldest the right policy and considerably softens the cost of
-    // dropping at all — but the work still needs doing for prod.
+    // Snapshot watches permit latest-wins coalescing per subscription ID,
+    // preserving the ordered initial Snapshot. Bounding this shared transport
+    // must also preserve the non-droppable response lane; it is separate from
+    // the bounded core watch mailboxes.
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
     let writer_task = tokio::spawn(async move {
         while let Some(frame) = frame_rx.recv().await {
@@ -678,6 +709,7 @@ async fn handle_connection(
         staging: std::sync::Mutex::new(HashMap::new()),
         staging_idle_ttl,
         published_view_idle_ttl,
+        capabilities,
     });
     let guard = ConnectionGuard { ctx: ctx.clone() };
 
@@ -686,7 +718,20 @@ async fn handle_connection(
     let mut state = ConnectionState::PreAuth;
     let loop_result: crate::Result<()> = async {
         loop {
-            let request: IncomingRequest = match read_frame(&mut reader).await? {
+            // Keep a partially read frame across the expiry timer; restarting
+            // read_frame on a timer tick would lose its framing boundary.
+            let frame = async {
+                let read = read_frame(&mut reader);
+                tokio::pin!(read);
+                while let Some(deadline) = ctx.next_staging_expiry() {
+                    tokio::select! {
+                        frame = &mut read => return frame,
+                        _ = tokio::time::sleep_until(deadline.into()) => ctx.cleanup_expired().await,
+                    }
+                }
+                read.await
+            }.await?;
+            let request: IncomingRequest = match frame {
                 Some(req) => req,
                 None => break, // Clean EOF
             };
@@ -725,11 +770,8 @@ async fn handle_connection(
     // 4. The writer task's `recv()` returns `None`; the task exits and
     //    `writer_task.await` finishes.
     //
-    // Note: a callback dispatch in flight when step 2 runs holds its
-    // own Arc to the closure (from `fire_write_callbacks`'s snapshot).
-    // It can still send a final notification through its captured `tx`
-    // before that Arc is released; the writer task will drain that
-    // frame before exiting in step 4.
+    // Cancellation aborts callback workers. An already-running synchronous
+    // send can still finish; the writer drains it before releasing the socket.
     drop(frame_tx);
     drop(guard);
     drop(ctx);
@@ -758,6 +800,33 @@ async fn dispatch(
     }
 }
 
+async fn gate_local_login_admin(instance: &Instance, state: &ConnectionState) -> crate::Result<()> {
+    let pubkey = match state {
+        ConnectionState::Authenticated { login_pubkey, .. } => login_pubkey,
+        _ => return Err(crate::account::AccountError::InsufficientPermissions.into()),
+    };
+    gate_tree_permission(
+        instance,
+        pubkey,
+        &SigKey::from_pubkey(pubkey),
+        instance.users_db_id(),
+        Permission::Admin(0),
+        true,
+    )
+    .await
+}
+
+fn require_local_login(state: &ConnectionState, requested: &str) -> crate::Result<()> {
+    match state {
+        ConnectionState::Authenticated { login_id, .. }
+            if login_id == requested && !login_id.starts_with(SIGNER_SCOPE_PREFIX) =>
+        {
+            Ok(())
+        }
+        _ => Err(crate::account::AccountError::InsufficientPermissions.into()),
+    }
+}
+
 /// Inner dispatch that returns Result for ergonomic error handling.
 async fn dispatch_inner(
     instance: &Instance,
@@ -765,8 +834,20 @@ async fn dispatch_inner(
     ctx: &ConnectionContext,
     request: ServiceRequest,
 ) -> crate::Result<ServiceResponse> {
-    for token in ctx.cleanup_expired() {
-        let _ = instance.backend().abort_store_state(token).await;
+    ctx.cleanup_expired().await;
+    if !ctx.capabilities.credentials
+        && matches!(
+            request,
+            ServiceRequest::TrustedLoginAccount { .. }
+                | ServiceRequest::RegisterLocalAccount { .. }
+                | ServiceRequest::ListLocalAccounts
+                | ServiceRequest::LocalAccountState { .. }
+                | ServiceRequest::ExchangeLocalAccountState { .. }
+        )
+    {
+        // TrustedLoginProve completes signer proof too. Disable the hosted
+        // challenge (and bundle lookup) rather than the shared proof step.
+        return Ok(ServiceResponse::Unsupported);
     }
     match request {
         // === Pre-auth: login handshake ===
@@ -775,6 +856,19 @@ async fn dispatch_inner(
         }
         ServiceRequest::TrustedLoginProve { signature } => {
             handle_trusted_login_prove(state, &signature)
+        }
+
+        ServiceRequest::SignerChallenge { pubkey } => {
+            let challenge = generate_challenge();
+            *state = ConnectionState::AwaitingProof {
+                username: String::new(),
+                // Cache scope only, never a daemon login record. UUID login
+                // records and this prefix occupy distinct namespaces.
+                login_id: format!("{SIGNER_SCOPE_PREFIX}{}", uuid::Uuid::new_v4()),
+                challenge: challenge.clone(),
+                expected_pubkey: pubkey,
+            };
+            Ok(ServiceResponse::SignerChallenge { challenge })
         }
 
         // === Pre-auth: server identity ===
@@ -805,16 +899,81 @@ async fn dispatch_inner(
         ServiceRequest::TicketBootstrap(request) => {
             handle_ticket_bootstrap(instance, state, *request).await
         }
+        ServiceRequest::AccessRequests { root_id, identity } => {
+            let key = proven_acting_key(state, &identity)?;
+            let sync = instance.sync().ok_or(SyncError::SyncNotEnabled)?;
+            let requests = sync
+                .pending_access_requests_for(&root_id, &key, &identity)
+                .await?;
+            Ok(ServiceResponse::AccessRequests(requests))
+        }
+        ServiceRequest::FinishAccessRequest {
+            root_id,
+            request_id,
+            identity,
+            reject,
+        } => {
+            let key = proven_acting_key(state, &identity)?;
+            let sync = instance.sync().ok_or(SyncError::SyncNotEnabled)?;
+            sync.finish_access_request(&root_id, &request_id, &key, &identity, reject)
+                .await?;
+            Ok(ServiceResponse::Ok)
+        }
+        ServiceRequest::RegisterLocalAccount {
+            login_id,
+            account_info,
+        } => {
+            gate_local_login_admin(instance, state).await?;
+            if login_id.is_empty() || login_id.starts_with(SIGNER_SCOPE_PREFIX) {
+                return Err(crate::account::AccountError::InvalidLocalState.into());
+            }
+            crate::account::local_logins::register(instance, &login_id, &account_info).await?;
+            Ok(ServiceResponse::Ok)
+        }
+        ServiceRequest::ListLocalAccounts => {
+            gate_local_login_admin(instance, state).await?;
+            Ok(ServiceResponse::LocalAccounts(
+                crate::account::local_logins::list(&instance.users_db().await?).await?,
+            ))
+        }
+        ServiceRequest::LocalAccountState { login_id } => {
+            require_local_login(state, &login_id)?;
+            Ok(ServiceResponse::LocalAccountState(
+                crate::account::local_state::read_raw(instance, &login_id).await?,
+            ))
+        }
+        ServiceRequest::ExchangeLocalAccountState {
+            login_id,
+            expected,
+            value,
+        } => {
+            require_local_login(state, &login_id)?;
+            let exchanged = crate::account::local_state::exchange_raw(
+                instance,
+                &login_id,
+                expected.as_deref(),
+                &value,
+            )
+            .await?;
+            if exchanged && instance.sync().is_some() {
+                let username = match state {
+                    ConnectionState::Authenticated { username, .. } => username.clone(),
+                    _ => unreachable!(),
+                };
+                let (_, info) =
+                    lookup_account_record(&instance.users_db().await?, &username).await?;
+                crate::account::local_state::refresh_sync(instance, &login_id, &info.account_id)
+                    .await?;
+            }
+            Ok(ServiceResponse::LocalAccountStateExchanged(exchanged))
+        }
 
         // === Authenticated storage operations ===
         //
-        // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
-        // the per-tree permission gate. Every `DatabaseOp` carries its target
-        // `root_id` explicitly, so the gate is *unconditional* — there is no
-        // tree-less op to fall through it — with two exceptions handled below
-        // (`SubmitSignedEntry`, verification-gated; `SetInstanceMetadata`,
-        // gated against the server-known `_databases`, not the request root).
+        // Require possession proof, then apply the operation's authorization.
+        // Native login commands above are separate from both checks.
         ServiceRequest::AuthenticatedDb(inner) => {
+            let is_computed_state = matches!(inner.op, DatabaseOp::GetStoreState { .. });
             let (login_pubkey, keyset_snapshot, session_user_uuid) = match state {
                 ConnectionState::Authenticated {
                     login_pubkey,
@@ -826,6 +985,7 @@ async fn dispatch_inner(
                     session_keyset.clone(),
                     login_id.clone(),
                 ),
+                _ if is_computed_state => return Err(StateError::Denied.into()),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
                         AuthError::InvalidAuthConfiguration {
@@ -888,14 +1048,16 @@ async fn dispatch_inner(
                     .clone()
                     .unwrap_or_else(|| login_pubkey.clone())
             } else {
-                resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?
+                match resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot) {
+                    Err(_) if is_computed_state => return Err(StateError::Denied.into()),
+                    result => result?,
+                }
             };
 
-            // Per-tree permission gate. Unconditional for every op *except*
-            // submit (verification in the handler is its boundary) and
-            // set-metadata (gated against `_databases` below). Create-flow
-            // passthrough (false) for the rest, so a not-yet-propagated tree is
-            // waved through and database creation works.
+            // Signed submits and computed State apply their own gates. Watch
+            // cancellation drops a connection-, root- and identity-bound handle
+            // without needing an active Read grant. Private cache staging and
+            // indexed Store reads require Read, not create-flow passthrough.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -906,14 +1068,25 @@ async fn dispatch_inner(
                     true,
                 )
                 .await?;
-            } else if !is_submit {
+            } else if !is_submit
+                && !is_computed_state
+                && !matches!(op, DatabaseOp::UnsubscribeWrites { .. })
+            {
+                let require_existing = matches!(
+                    &op,
+                    DatabaseOp::BeginStoreStateStaging { .. }
+                        | DatabaseOp::StageStoreStateRecords { .. }
+                        | DatabaseOp::PublishStoreState { .. }
+                        | DatabaseOp::AbortStoreState { .. }
+                        | DatabaseOp::TryVerifiedStoreSnapshot { .. }
+                );
                 gate_tree_permission(
                     instance,
                     &acting_pubkey,
                     &identity,
                     &root_id,
                     op.required_permission(),
-                    false,
+                    require_existing,
                 )
                 .await?;
             }
@@ -929,6 +1102,20 @@ async fn dispatch_inner(
             )
             .await
         }
+    }
+}
+
+fn proven_acting_key(state: &ConnectionState, identity: &SigKey) -> crate::Result<PublicKey> {
+    match state {
+        ConnectionState::Authenticated {
+            login_pubkey,
+            session_keyset,
+            ..
+        } => resolve_acting_pubkey(identity, login_pubkey, session_keyset),
+        _ => Err(AuthError::InvalidAuthConfiguration {
+            reason: "access request management requires an authenticated signer".to_owned(),
+        }
+        .into()),
     }
 }
 
@@ -963,10 +1150,8 @@ fn resolve_acting_pubkey(
 
 /// Dispatch a Database-level op against the server's local `Database`.
 ///
-/// Additive sibling of `dispatch_backend_op`. The caller has already verified
-/// the session identity and run the unconditional per-tree permission gate on
-/// `root_id`. Because the server runs the `Database` layer here, verify-on-read
-/// and the Verified frontier are server-side **by construction**.
+/// The caller verified the session identity and applied the operation's gate,
+/// except where submit verification or computed State authorization runs here.
 async fn dispatch_database_op(
     instance: &Instance,
     ctx: &ConnectionContext,
@@ -1014,6 +1199,13 @@ async fn dispatch_database_op(
         }
         DatabaseOp::BeginStoreStateStaging { request } => {
             let request = session_store_state_request(request, login_id, &root_id)?;
+            if !instance
+                .backend()
+                .local_engine()
+                .is_some_and(|engine| engine.supports_private_cache_admission())
+            {
+                return Err(BackendError::StoreStateStorageUnsupported.into());
+            }
             let backend = instance
                 .backend()
                 .begin_store_state_staging(request.clone())
@@ -1037,18 +1229,20 @@ async fn dispatch_database_op(
             chunk_id,
             records,
         } => {
-            let digest = serde_json::to_vec(&records)?;
-            if digest.len() > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
+            let encoded = serde_json::to_vec(&records)?;
+            if encoded.len() > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
                 return Err(crate::backend::BackendError::RecordTooLarge {
-                    encoded_bytes: digest.len(),
+                    encoded_bytes: encoded.len(),
                 }
                 .into());
             }
+            let digest = blake3::hash(&encoded);
+            drop(encoded);
             let records = records
                 .into_iter()
                 .collect::<crate::backend::RecordMutations>();
             let (backend, duplicate) =
-                session_staging(ctx, login_id, &root_id, &token, chunk_id, &digest)?;
+                session_staging(ctx, login_id, &root_id, &token, chunk_id, digest)?;
             if duplicate {
                 return Ok(ServiceResponse::Ok);
             }
@@ -1065,13 +1259,8 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Ok)
         }
         DatabaseOp::PublishStoreState { token } => {
-            let staged = ctx
-                .staging
-                .lock()
-                .unwrap()
-                .remove(&token)
-                .filter(|value| value.login_id == login_id && value.database == root_id)
-                .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
+            let staged = take_staging(ctx, login_id, &root_id, &token)?
+                .ok_or(BackendError::InvalidStoreStateStagingToken)?;
             let backend_token = staged.backend;
             let view = match instance
                 .backend()
@@ -1113,17 +1302,7 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::RecordView(Some(view_token)))
         }
         DatabaseOp::AbortStoreState { token } => {
-            let staged = {
-                let mut staging = ctx.staging.lock().unwrap();
-                if staging
-                    .get(&token)
-                    .is_some_and(|value| value.login_id != login_id || value.database != root_id)
-                {
-                    return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
-                }
-                staging.remove(&token)
-            };
-            if let Some(staged) = staged {
+            if let Some(staged) = take_staging(ctx, login_id, &root_id, &token)? {
                 instance.backend().abort_store_state(staged.backend).await?;
             }
             Ok(ServiceResponse::Ok)
@@ -1230,17 +1409,19 @@ async fn dispatch_database_op(
             ))
         }
 
-        DatabaseOp::GetVerifiedTips => {
-            // The server runs the Database layer, so `snapshot()` returns the
-            // Verified frontier by construction — no client-side verify, no
-            // remote-detection heuristic.
-            let db = Database::open(instance, &root_id).await?;
+        DatabaseOp::GetSnapshot { scope } => {
+            // Verification and selected-view reads stay on the daemon.
+            // ReadScope never lets a client assert a verification status.
+            let mut db = Database::open(instance, &root_id).await?;
+            if scope == ReadScope::AllowUnverified {
+                db = db.allow_unverified();
+            }
             let snapshot = db.snapshot().await?;
             Ok(ServiceResponse::Ids(snapshot))
         }
 
         DatabaseOp::SubmitSignedEntry { entry } => {
-            let previous_tips = instance.snapshot(&root_id).await?;
+            let entry_id = entry.id();
             // The client signed this entry; the server does NOT trust its
             // claimed validity. Store it `Unverified`, then run our OWN
             // verification pass against the entry's pinned settings. A
@@ -1248,14 +1429,8 @@ async fn dispatch_database_op(
             // every default read by the frontier cut — D1 is closed by
             // construction here, not by gate-hardening a raw `Put`.
             //
-            // Only settled-state writes trigger an event: the
-            // `put_entry(.., Unverified, ..)` is a no-fire path by
-            // design (see `Instance::put_entry`), and the verification pass
-            // fires its own batched `Verified` event for any entries
-            // the pass settles. The handler just chains the two — no
-            // extra fire bookkeeping here. Note this gates the trigger
-            // only; the event's raw-frontier cursors can still bracket
-            // an unsettled tip (see `Notification` rustdoc).
+            // Opt-in watches can observe ingestion; default watches observe
+            // only promotion. Failure can move the non-Failed frontier back.
             instance
                 .put_entry(
                     &root_id,
@@ -1266,8 +1441,16 @@ async fn dispatch_database_op(
                 .await?;
             Database::open(instance, &root_id)
                 .await?
-                .verify_with_source(WriteSource::Local, Some(previous_tips))
+                .verify_with_source(WriteSource::Local)
                 .await?;
+            if instance
+                .require_local_engine()?
+                .get_verification_status(&entry_id)
+                .await?
+                != VerificationStatus::Verified
+            {
+                return Err(crate::transaction::TransactionError::EntryValidationFailed.into());
+            }
             Ok(ServiceResponse::Ok)
         }
 
@@ -1281,13 +1464,15 @@ async fn dispatch_database_op(
         }
 
         DatabaseOp::GetStoreState { store } => {
-            // Server-materialized merged state (unencrypted stores only).
-            // Encrypted stores must use GetStoreEntries instead — the
-            // ephemeral transaction here has no encryptor, and Doc
-            // deserialization would fail on ciphertext.
-            let db = Database::open(instance, &root_id).await?;
-            let value = db.get_store_state(&store).await?;
-            Ok(ServiceResponse::CrdtValue(value))
+            // The legacy response omits context; the State domain result does
+            // not. This is not the snapshot-explicit State transport.
+            let state = StateReader::from_proven_signer(instance, acting_pubkey.clone(), identity)
+                .with_admission(ctx.capabilities.state_admission.as_deref())
+                .read_current_doc(&root_id, &store)
+                .await?;
+            Ok(ServiceResponse::CrdtValue(serde_json::to_value(
+                state.value,
+            )?))
         }
 
         DatabaseOp::GetStoreEntries { store, tips, scope } => {
@@ -1309,6 +1494,12 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Ids(snapshot))
         }
 
+        DatabaseOp::TryVerifiedStoreSnapshot { store } => {
+            let db = Database::open(instance, &root_id).await?;
+            let tips = db.try_verified_store_snapshot(&store).await?;
+            Ok(tips.map_or(ServiceResponse::Ok, ServiceResponse::Ids))
+        }
+
         DatabaseOp::ComputeMergeState { store, entry_ids } => {
             let db = Database::open(instance, &root_id).await?;
             let slice = db
@@ -1328,142 +1519,57 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Ok)
         }
 
-        DatabaseOp::SubscribeWrites { tips } => {
-            // Per-tree Read gate already ran in the dispatcher.
-            //
-            // Subscription is just a per-db callback registered against the
-            // daemon's Instance. The callback's body pushes a notification
-            // frame into this connection's writer channel; the daemon's
-            // existing `fire_write_callbacks` dispatch handles fan-out by
-            // walking the per-tree callback list. No separate registry or
-            // global-publisher hook needed.
-            //
-            // Idempotent: a tree this connection has already subscribed to
-            // is a no-op (we'd otherwise register a second callback that
-            // pushes a duplicate frame on every write). Take the lock
-            // briefly to early-out, then release before any await — the
-            // std::Mutex isn't `Send` and can't cross an await point.
-            //
-            // Under the current dispatch shape the per-connection request
-            // loop is single-threaded (one frame → one dispatch → one
-            // response), so a second `SubscribeWrites` for the same tree
-            // on the same connection can only arrive *after* the first
-            // call has fully completed and recorded its subscription. The
-            // post-await Entry-API guard below is therefore **defensive
-            // against a future shape change** (per-connection parallel
-            // dispatch, or another path that takes `ctx` and registers
-            // callbacks concurrently) rather than fixing a present race.
-            // Cheap to keep — one Entry-API call plus a single
-            // `remove_write_callback` in the unreachable Occupied arm.
-            {
-                let subs = ctx.subscribed_lock();
-                if subs.contains_key(&root_id) {
+        DatabaseOp::SubscribeWrites {
+            subscription_id,
+            scope,
+        } => {
+            // Read permission and session-key possession were checked by the
+            // dispatcher. Bind a reused ID to exactly the original scope.
+            if let Some((tree, acting, view, _)) = ctx.subscribed_lock().get(&subscription_id) {
+                if tree == &root_id && acting == identity && *view == scope {
                     return Ok(ServiceResponse::Ok);
                 }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "subscription ID is already in use",
+                )
+                .into());
+            }
+            let mut db = Database::open(instance, &root_id).await?;
+            if scope == ReadScope::AllowUnverified {
+                db = db.allow_unverified();
             }
             let tx = ctx.tx.clone();
-            // Capture the initial cursor and register the callback atomically
-            // under the tree lock. The fire path (`put_entry` /
-            // `Database::verify`) holds this same lock while advancing cursors,
-            // so no write can land between the tips snapshot and the
-            // registration: the empty-`tips` cursor is exactly the daemon's
-            // frontier at the instant this subscription begins, with no
-            // lost-update gap. Safe to hold across the `snapshot` await —
-            // `Instance::snapshot` reads the raw backend (no tree lock) and,
-            // unlike the fire path, we spawn/await no user callback under the
-            // guard, so there is no reentrancy.
-            let tree_lock = instance.tree_lock(&root_id);
-            let tree_guard = tree_lock.lock().await;
-            // Initial cursor: the client's supplied `tips` if non-empty;
-            // otherwise the daemon's current tips at subscribe-time (the "I have
-            // no initial state; give me events from now" posture documented on
-            // the wire variant). The cursor advances per fire as usual.
-            let initial_tips = if tips.is_empty() {
-                // Propagate rather than defaulting: an error here would seed
-                // the daemon-side cursor at `EMPTY`, which is the "replay
-                // from the beginning" value rather than "start from now".
-                instance.snapshot(&root_id).await?
-            } else {
-                tips
-            };
-            let id = instance.register_write_callback(
-                root_id.clone(),
-                initial_tips,
-                move |event, db| {
-                    // ORDERING INVARIANT — DO NOT add an `.await` before the
-                    // `tx.send` below. Per-tree notifications are delivered in
-                    // daemon-canonical order, and that guarantee rests entirely
-                    // on this send running *synchronously*, in the closure's
-                    // pre-future prefix. `Instance::spawn_write_callbacks`
-                    // invokes this closure while the caller holds the tree's
-                    // `tree_lock` (see `put_entry` / `Database::verify`), and it
-                    // advances each subscription's cursor in the same critical
-                    // section. Because the send happens here — before any await,
-                    // still under that lock, in cursor-advance order — two
-                    // connections writing the same tree concurrently cannot
-                    // interleave their frames: writer A's send completes and A
-                    // drops the lock before writer B can acquire it and send.
-                    // The returned future is deliberately a no-op; only that
-                    // (empty) tail is spawned and drained lock-free. Moving the
-                    // send *into* the future — or awaiting anything before it —
-                    // would push it out of the locked section onto the runtime's
-                    // scheduler and let same-tree frames reorder (the bug fixed
-                    // in "preserve write-notification order under concurrent
-                    // writers"). `mpsc::UnboundedSender::send` is non-blocking
-                    // and takes `&self`, which is exactly what makes a
-                    // synchronous send here possible.
-                    //
-                    // Send failure (writer task gone) is silently dropped; the
-                    // connection is about to be torn down and the guard's Drop
-                    // will unregister us next.
-                    //
-                    // The closure only fires for settled-state writes today
-                    // (Verified). Unverified writes go through `put_entry`
-                    // without firing `fire_write_callbacks`, so no notification
-                    // is ever *triggered* by them — though the cursors shipped
-                    // here are raw frontiers and can bracket an unsettled tip.
+            let callback = db
+                .on_write(move |snapshot, db| {
                     let frame = ServerFrame::Notification(Notification::DatabaseWrite {
                         root_id: db.root_id().clone(),
-                        previous_tips: event.previous_tips().clone(),
-                        post_tips: event.post_tips().clone(),
-                        source: event.source(),
+                        subscription_id,
+                        snapshot: snapshot.clone(),
                     });
                     let _ = tx.send(frame);
-                    async move { Ok(()) }
-                },
+                    async { Ok(()) }
+                })
+                .await?;
+            // The per-connection request loop is serial. The watch's worker
+            // orders initial delivery and later frames outside the tree lock.
+            ctx.subscribed_lock().insert(
+                subscription_id,
+                (root_id, identity.clone(), scope, callback),
             );
-            // Cursor captured and callback live; release the tree lock before
-            // touching the std subscribed-lock below (never nest the two).
-            drop(tree_guard);
-            // Re-acquire the lock to record this connection's subscription.
-            // Defensive Entry-API guard: in the current shape (single-
-            // threaded per-connection dispatch) the Occupied arm is
-            // unreachable — see the comment above the early-out check.
-            // Kept so that a future shape change (parallel dispatch per
-            // connection, or another concurrent path that takes `ctx`)
-            // can't leave us with two callbacks pushing duplicate frames
-            // on every write; the loser drops its just-registered
-            // callback and the first registration stays.
-            use std::collections::hash_map::Entry as MapEntry;
-            let mut subs = ctx.subscribed_lock();
-            match subs.entry(root_id.clone()) {
-                MapEntry::Vacant(slot) => {
-                    slot.insert(id);
-                }
-                MapEntry::Occupied(_) => {
-                    drop(subs);
-                    instance.remove_write_callback(&root_id, id);
-                }
-            }
             Ok(ServiceResponse::Ok)
         }
-
-        DatabaseOp::UnsubscribeWrites => {
-            // Per-tree Read gate already ran. Idempotent: unsubscribing a
-            // tree this connection was not subscribed to is a no-op.
-            let removed = ctx.subscribed_lock().remove(&root_id);
-            if let Some(id) = removed {
-                instance.remove_write_callback(&root_id, id);
+        DatabaseOp::UnsubscribeWrites { subscription_id } => {
+            let mut subs = ctx.subscribed_lock();
+            if let Some((tree, acting, _, _)) = subs.get(&subscription_id) {
+                if tree != &root_id || acting != identity {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "subscription scope mismatch",
+                    )
+                    .into());
+                }
+                subs.remove(&subscription_id);
             }
             Ok(ServiceResponse::Ok)
         }
@@ -1556,22 +1662,45 @@ fn session_staging(
     database: &ID,
     token: &str,
     chunk_id: u64,
-    digest: &[u8],
+    digest: blake3::Hash,
 ) -> crate::Result<(StagingToken, bool)> {
     let mut staging = ctx.staging.lock().unwrap();
     let value = staging
         .get_mut(token)
-        .filter(|value| value.login_id == login_id && value.database == *database)
+        .filter(|value| {
+            !value.published && value.login_id == login_id && value.database == *database
+        })
         .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
     if let Some(existing) = value.chunks.get(&chunk_id) {
-        if existing != digest {
+        if *existing != digest {
             return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
         }
         return Ok((value.backend.clone(), true));
     }
-    value.chunks.insert(chunk_id, digest.to_vec());
+    if value.chunks.len() >= MAX_STAGING_CHUNKS {
+        return Err(BackendError::StoreStateNotRetained {
+            reason: "private cache chunk budget".into(),
+        }
+        .into());
+    }
+    value.chunks.insert(chunk_id, digest);
     value.last_used = Instant::now();
     Ok((value.backend.clone(), false))
+}
+
+fn take_staging(
+    ctx: &ConnectionContext,
+    login_id: &str,
+    database: &ID,
+    token: &str,
+) -> crate::Result<Option<SessionStaging>> {
+    let mut staging = ctx.staging.lock().unwrap();
+    if staging.get(token).is_some_and(|value| {
+        value.published || value.login_id != login_id || value.database != *database
+    }) {
+        return Err(BackendError::InvalidStoreStateStagingToken.into());
+    }
+    Ok(staging.remove(token))
 }
 
 /// Handle `ServiceRequest::TrustedLoginAccount`: look up the user's full record,
@@ -1839,11 +1968,8 @@ async fn handle_ticket_bootstrap(
 ///
 /// `require_existing = true` flips that to **fail closed**: an absent
 /// target is denied rather than waved through. Used for the
-/// `SetInstanceMetadata` admin gate (D8) — `_databases` always exists on an
-/// initialized daemon and that op is never a creation flow, so the
-/// create-flow passthrough there would only ever be a fail-open hole that
-/// lets any authenticated user rewrite the daemon's system-DB pointers if
-/// `_databases` were ever unreadable.
+/// `SetInstanceMetadata` admin gate and private cache staging; neither is
+/// part of database creation.
 ///
 /// When the gate does fire, the denial error is the same shape regardless
 /// of which sub-check failed (key not in auth_settings, mismatched hint,
@@ -1866,9 +1992,14 @@ async fn gate_tree_permission(
     required: Permission,
     require_existing: bool,
 ) -> crate::Result<()> {
+    let role = match required {
+        Permission::Read => "Read",
+        Permission::Write(_) => "Write",
+        Permission::Admin(_) => "Admin",
+    };
     let denied = || {
         crate::Error::Auth(Box::new(AuthError::PermissionDenied {
-            reason: format!("tree {tree_id}: pubkey {pubkey} not permitted for {required:?}"),
+            reason: format!("tree {tree_id}: pubkey {pubkey} not permitted for {role}"),
         }))
     };
 
@@ -1881,8 +2012,7 @@ async fn gate_tree_permission(
     }
 
     let database = Database::open(instance, tree_id).await?;
-    let settings_store = database.get_settings().await?;
-    let auth_settings = settings_store.auth_snapshot().await?;
+    let auth_settings = database.live_auth_settings().await.map_err(|_| denied())?;
 
     let resolved =
         match resolve_identity_permission(pubkey, identity, &auth_settings, Some(instance)).await {
@@ -2166,6 +2296,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_watch_v0_1_server_rejects_legacy_and_wrong_revision() {
+        let (socket, _shutdown, _task, _instance) = start_test_server().await;
+        for revision in [None, Some(0)] {
+            let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let mut handshake = serde_json::json!({"protocol_version":0});
+            if let Some(revision) = revision {
+                handshake["protocol_revision"] = revision.into();
+            }
+            write_frame(&mut stream, &handshake).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                if revision.is_some() {
+                    let ack: HandshakeAck = read_frame(&mut stream).await.unwrap().unwrap();
+                    assert_eq!(ack.protocol_revision, PROTOCOL_REVISION);
+                }
+                assert!(
+                    read_frame::<_, serde_json::Value>(&mut stream)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            })
+            .await
+            .expect("legacy connection remained open");
+        }
+    }
+
+    #[tokio::test]
     async fn test_wrong_protocol_version() {
         let (socket_path, _tx, _task, _instance) = start_test_server().await;
 
@@ -2175,6 +2332,7 @@ mod tests {
         // Send a version that remains wrong when the protocol is bumped.
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION.saturating_add(1),
+            protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
         };
         write_frame(&mut writer, &handshake).await.unwrap();
 
@@ -2290,6 +2448,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
             },
         )
         .await
@@ -2338,6 +2497,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
             },
         )
         .await

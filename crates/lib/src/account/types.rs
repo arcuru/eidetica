@@ -12,30 +12,33 @@ use crate::{
     entry::ID,
 };
 
-/// Credentials for unlocking an account's root signing key.
-///
-/// For password-protected accounts, contains the salt (for Argon2id key derivation)
-/// and the encrypted root key (AES-256-GCM). Decryption failure IS password
-/// verification — no separate password hash is needed.
-/// For passwordless accounts, contains the unencrypted root key directly.
+/// Local login anchor: an explicit Account locator/key bundle and its login key.
+/// The public key is cross-checked against the unlocked authenticated payload.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountCredentials {
-    /// Public key (available without decryption)
     pub root_key_id: PublicKey,
-
-    /// Encrypted or unencrypted root private key
-    pub root_key: KeyStorage,
-
-    /// Salt for Argon2id key derivation (None for passwordless)
-    pub password_salt: Option<String>,
+    pub bundle: KeyStorage,
 }
 
-/// Instance-local login registration stored in the `_users` database.
+impl AccountCredentials {
+    pub(crate) fn unlock(
+        &self,
+        account_id: &ID,
+        password: &str,
+    ) -> crate::Result<super::UnlockedCredentials> {
+        let unlocked = self.bundle.unlock(account_id, password)?;
+        unlocked.signer(&self.root_key_id)?;
+        Ok(unlocked)
+    }
+}
+
+/// Instance-local login registration stored outside all Entry DAGs.
 ///
 /// The Table UUID and `username` identify a login on this instance, not the
 /// Account itself. `account_id` identifies the ordinary private root database.
-/// Credentials retain their existing storage layout; this is not a portable
-/// export format or a claim of instance-local private-key isolation.
+/// Every login uses the authenticated CredentialBundle format, including empty passwords.
+/// This is not a portable export or recovery backup.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountInfo {
     /// Unique username (login identifier)
@@ -89,40 +92,42 @@ pub struct AccountPreferences {
     pub properties: HashMap<String, String>,
 }
 
-/// How an account's private key is stored
-///
-/// Encrypted keys store AES-256-GCM ciphertext of a prefixed-string-encoded `PrivateKey`.
-/// Unencrypted keys store the `PrivateKey` directly (passwordless accounts only).
+/// Installation-local storage of one authenticated encrypted credential bundle.
+/// Every password string, including empty, uses the same format and KDF.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum KeyStorage {
-    /// Key is encrypted with a password-derived key (AES-256-GCM)
-    Encrypted {
-        /// Encryption algorithm identifier
-        algorithm: String,
-        /// Encrypted prefixed-string-encoded PrivateKey
-        ciphertext: Vec<u8>,
-        /// Encryption nonce/IV (12 bytes for AES-GCM)
-        nonce: Vec<u8>,
-    },
-    /// Key is stored unencrypted (passwordless accounts only)
-    Unencrypted {
-        /// PrivateKey stored directly — serde carries the signing algorithm tag
-        key: PrivateKey,
-    },
+    Encrypted { bundle: super::CredentialBundle },
 }
 
-/// Account's private key with database mappings
-///
-/// Keys can be either encrypted (for password-protected accounts) or
-/// unencrypted (for passwordless single-account mode).
+impl KeyStorage {
+    pub(crate) fn seal(
+        account_id: &ID,
+        keys: &[PrivateKey],
+        password: &str,
+    ) -> crate::Result<Self> {
+        Ok(Self::Encrypted {
+            bundle: super::CredentialBundle::seal(account_id, keys, password)?,
+        })
+    }
+
+    pub(crate) fn unlock(
+        &self,
+        account_id: &ID,
+        password: &str,
+    ) -> crate::Result<super::UnlockedCredentials> {
+        let Self::Encrypted { bundle } = self;
+        bundle.unlock_for(account_id, password)
+    }
+}
+
+/// Public installation-local key metadata and database lookup hints.
+/// Private keys live together in the authenticated credential bundle, not here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountKey {
     /// Key identifier (the public key)
     pub key_id: PublicKey,
-
-    /// Key storage (encrypted ciphertext or plaintext PrivateKey)
-    pub storage: KeyStorage,
 
     /// Display name for this key
     pub display_name: Option<String>,
@@ -147,7 +152,7 @@ pub struct AccountKey {
 
 /// A database tracked by an account.
 ///
-/// Stored in the account's private database "databases" Table.
+/// Stored in this installation's native account-state record.
 /// Records which databases the account has added to their list, along with
 /// which key to use and sync preferences.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -258,4 +263,42 @@ pub struct DatabaseTracking {
 
     /// Additional metadata
     pub metadata: HashMap<String, String>,
+}
+
+/// Whether a locally tracked identity is ready for authenticated use.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum IdentityStatus {
+    /// The selected local key is authorized by the identity database.
+    Active,
+    /// A bootstrap request is awaiting approval or the approved state has not arrived yet.
+    Pending,
+}
+
+/// Installation-local activation and membership-request state for a named Identity.
+///
+/// The identity database remains the source of truth for membership. This record is only
+/// a local name and signing-key selection.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TrackedIdentity {
+    /// Root ID of the identity database.
+    pub root_id: ID,
+    /// Local bootstrap/access state.
+    pub status: IdentityStatus,
+    /// Locally held key selected for this identity.
+    pub key_id: PublicKey,
+    /// Original membership-request key; independent of later signer selection.
+    pub requested_key_id: PublicKey,
+    /// Permission requested when registering (initial membership for a created identity).
+    pub requested_permission: crate::auth::Permission,
+    // Enrollment settings, not the database's current sharing preference.
+    pub(crate) sync_settings: SyncSettings,
+}
+
+impl TrackedIdentity {
+    /// Preferences requested for a pending enrollment. Once active, use
+    /// [`AccountSession::tracked_database`](crate::AccountSession::tracked_database)
+    /// or the Identity's database handle to read the current preferences.
+    pub fn pending_sync_settings(&self) -> Option<&SyncSettings> {
+        (self.status == IdentityStatus::Pending).then_some(&self.sync_settings)
+    }
 }

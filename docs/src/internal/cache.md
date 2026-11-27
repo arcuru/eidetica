@@ -2,6 +2,11 @@
 
 Historical current-state reads use derived record sets in the Store-state cache.
 Immutable Store tips identify the source, and the format descriptor identifies the representation.
+These are tips of the explicit Store DAG, not main tips filtered by Store name.
+At main `A(X) -> B(X) -> C(X)` with both B.X and C.X parenting A.X,
+the source Snapshot is `{B.X, C.X}`. Both histories must be folded on a cold
+read and represented by the same multi-tip cache key on a warm read; C's main
+ancestry must not hide B's unconsumed contribution.
 
 The default opaque builder folds Store deltas in canonical historical order, serializes the Store's CRDT type, and publishes one record at the reserved opaque key.
 A cold read builds and publishes the record set; a warm read resolves the published record set and reads that record.
@@ -36,6 +41,10 @@ shared-scope request to the session user, refuses a foreign scope, and falls
 back to shared cached state on a user-scope miss. Encrypted materializations are
 client-computed and user-scoped; a warm encrypted Table point read uses point-record
 requests without scanning the generation or reconstructing history.
+Sessions with live Read access can build and publish private Derived state.
+They cannot publish into another login's scope or into Shared or Authoritative
+state. Tokens for unpublished builds remain bound to the connection, login,
+and database; published state can be resolved after reconnect.
 
 ## Retention and verification boundaries
 
@@ -44,7 +53,8 @@ canonical Snapshots, within separate database, Store, lifecycle, projection and
 trust-scope namespaces. Frontier width does not enlarge the SQL unique key.
 Old full-frontier keys are disposable cold rows, not relabelled digests.
 Verification status is not a key: the same immutable Snapshot has the same
-materialization before or after a local status transition. A cached value is
+materialization before or after a local status transition. A verification change
+can select a different Snapshot and therefore a different key. A cached value is
 never an authorization or verification proof.
 
 The defaults are **1024 live derived namespaces**, with **268435456 bytes
@@ -56,6 +66,20 @@ The owning daemon selects its policy before opening storage; clients cannot
 raise it. A zero bound disables retention. A candidate larger than the byte
 budget is not published and does not evict useful state. All derived state,
 including the current frontier, is evictable.
+
+Client-built caches also have fixed admission bounds. A login can retain up to
+128 live namespaces and 64 MiB of live key/value payload across databases, within
+the daemon's overall retention policy. A login can stage up to 8 builds and
+64 MiB of cumulative record charges; all logins together can stage up to 64
+builds and 256 MiB of charges. Each applied mutation charges its key, value,
+and 32 bytes for record overhead; replacements and delete markers do not
+refund staging capacity. A build accepts up to 4096 distinct chunks and 16 KiB
+of combined Store name, projection name and source key. Proof-only connections
+keep separate cache scopes but share one admission bucket. The storage owner
+counts in-flight builds until it actually publishes or reclaims them, including
+across reconnects. Out-of-budget uploads are optional cache refusals. Existing
+entries are neither overwritten nor evicted merely to admit more entries from
+a login at its own limit.
 
 SQL publication, sizing, admission and eviction commit in one transaction.
 A successful commit has no later fallible maintenance step. A confirmed
@@ -95,3 +119,37 @@ streaming, or a whole-SDK memory bound. Existing service frame and single-record
 limits remain; old SDKs can surface quota refusal as an error rather than
 transparently bypassing it. No deployment/support-version promise follows from
 these local storage changes.
+
+## SQLite physical storage
+
+Only Derived namespaces/builds and their records use the separately owned cache
+pool. Authoritative namespaces/builds, Entries, metadata, local accounts and
+verification remain in history. Device secrets are never cache data; by default
+they stay in history, with a separate [device signing key trial](account_credentials.md#device-signing-key-trial).
+Opaque namespace prefixes route handles to
+the correct pool; token lifecycle and destination must agree. Unknown prefix
+versions are rejected. Publication, admission, eviction and recency writes commit
+inside C, with no history witness or write-triggered invalidation.
+
+At startup SQLite validates the disposable format before history migration,
+reclaims old single-file Derived/staging rows and abandoned C builds, then applies
+cache bounds. Existing immutable Snapshot caches are retained. Offline trust reset
+clears C first, then resets H labels/frontiers together: failure can leave a cold
+cache, never a successful reset with old C state. This requires no live readers
+or writers. See [SQLite storage](../user_guide/concepts/backends.md#disposable-sqlite-cache)
+for directory/bootstrap, ownership, backup and supported offline recreation.
+
+## Separate cache engine
+
+`SplitBackend` routes Derived resolve/stage/publish/abort/read/scan/clear and
+budget/eviction to its `DerivedCacheStorage`; everything else, including
+Authoritative Store state, goes to the primary. It adds no cache logic: each
+engine's own publication atomicity, same-target adoption, admission, live-reader
+eviction and two-phase clear apply unchanged. View and token identifiers gain an
+owner prefix, so a handle is returned only to the storage that issued it, and a
+token's owner must match its target lifecycle. Unknown or mismatched owners are
+`InvalidStoreStateView` / `InvalidStoreStateStagingToken`.
+
+`SqliteCache` reuses the SQLite C format and startup path with a private empty
+in-memory H that is never exposed. Trust reset calls the cache's offline discard
+before the primary's reset, preserving cache-first ordering across engines.

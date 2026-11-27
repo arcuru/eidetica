@@ -6,6 +6,34 @@ In Eidetica, all modifications to the data stored within a `Database`'s `Store`s
 
 A `Transaction` bundles multiple Store operations (which affect individual subtrees) into a single atomic Entry that gets committed to the database.
 
+## Optional commit timestamps
+
+Automatic commit timestamps are off unless a database explicitly enables them.
+For a database you can administer, change the setting in a transaction:
+
+```rust
+# async fn enable_timestamps(database: &eidetica::Database) -> eidetica::Result<()> {
+let txn = database.new_transaction().await?;
+txn.get_settings()?.set_entry_timestamps(true).await?;
+let entry = database.get_entry(txn.commit().await?).await?;
+let _committed_at = entry.committed_at_ms();
+# Ok(())
+# }
+```
+
+The setting applies to the transaction that writes it and to transactions that inherit it.
+A transaction started from an older snapshot still uses that snapshot's settings plus any changes it stages itself.
+Setting the value to `false` stops stamping new entries; it does not erase timestamps from existing entries, and enabling it does not fill in old ones.
+
+`Entry::committed_at_ms()` returns the signing instance's clock reading in Unix milliseconds, or `None` when the time is unknown (including absent or malformed metadata).
+A daemon client signs with its own clock, and sync preserves the original timestamp.
+The value is advisory: it is not event or receipt time, clocks may disagree or go backwards, and it does not determine Entry height, merge order, or authorization.
+Peers can see the timestamp even when Store data is encrypted.
+
+For a view scoped to one Store, use `Database::try_verified_store_snapshot()` and read only the returned tips with `Database::get_entry()`.
+This uses the existing tip indexes instead of scanning the Store's history. It can return `None` if the index cannot provide verified tips, such as when verification is behind; do not fall back to a history scan just to display a time.
+Each tip read still loads a whole Entry. A tip can participate in the Store without changing its data, and clock skew means tip timestamps need not include the largest timestamp in the history.
+
 ## Why Transactions?
 
 Transactions provide several key benefits:
@@ -15,6 +43,23 @@ Transactions provide several key benefits:
 - **Change Staging**: Modifications made via `Store` handles are staged within the `Transaction` object itself, not written directly to the database until `commit()` is called.
 - **Authentication**: All transactions are automatically authenticated using the database's default signing key, ensuring data integrity and access control.
 - **History Creation**: A successful `commit()` results in the creation of a _new `Entry`_ in the `Database`, containing the staged changes and linked to the previous state (the tips the `Transaction` was based on). This is how history is built.
+
+## Snapshot and Store-Parent Selection
+
+A transaction fixes its main-parent boundary when it starts. Each Store read
+and parent discovery uses that boundary, not a later live head. Ordinary Store
+tips are the unconsumed contributions within main ancestry, even when one tip's
+Entry is a main ancestor of another: main `A(X) -> B(X) -> C(X)` with B.X and C.X
+both parenting A.X has X tips `{B.X, C.X}`. Normal authoring selects both, so its
+next X write explicitly joins them and reads retain both histories.
+
+This is a selection default, not an exact-frontier validation rule for ordinary
+Stores. Named parents must target the same Store/database, belong to main-only
+ancestry and have lower effective Store heights; empty or nonmaximal ordinary
+parents can start or extend independent branches. `_settings` writes and every
+Entry's signed `settings_tips` pin instead require the complete causal pre-write
+settings frontier. Missing proof prevents acceptance, not a guess at an empty
+frontier. See [verification](../design/verification.md#store-parent-frontiers).
 
 ## The Transaction Lifecycle
 
@@ -345,6 +390,11 @@ Subtrees with no explicit height strategy inherit from the database-level strate
 - **Explicit height** (`Some(h)`): The subtree has an independent height value
 
 When querying `Entry.subtree_height()`, the returned value reflects this inheritance transparently.
+Verification requires strict growth over actual Store-parent edges, not an exact
+`max + 1` value. Returning to inheritance includes those effective parent heights
+in the main calculation: a prior Timestamp override can cause an Incremental
+main-height jump rather than a regression. An independent Incremental override
+uses only its own Store parents. See [Height Strategy](../design/height_strategy.md).
 
 ## Read-Only Access
 
@@ -394,71 +444,56 @@ Choose `with_transaction` for the common case of writing to one or more stores a
 
 ## Write Callbacks
 
-`Database::on_write` registers a callback that fires every time entries are
-written to that database — both local commits and entries received via
-sync. Useful for "rebuild a derived view when this DB changes," "wake up a
-UI," or any other change-driven workflow.
+`Database::on_write` delivers the registering handle's latest selected Snapshot.
+The default view contains only the Verified prefix; `.allow_unverified()` watches the non-Failed frontier instead.
+Each registration receives an initial Snapshot, even on a quiet database, atomically ordered with subsequent mutations.
+Later notifications occur only when that selected frontier changes.
+
+Keep your own processing checkpoint and advance it only after processing succeeds:
 
 ```rust,no_run
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Database, Result};
+# use eidetica::{Database, Result, Snapshot};
+# use std::sync::Arc;
 # async fn example(database: &Database) -> Result<()> {
-let cb = database.on_write(|event, db| {
-    let source = event.source();
-    let prev = event.previous_tips().clone();
-    let post = event.post_tips().clone();
+let checkpoint = Arc::new(tokio::sync::Mutex::new(Snapshot::EMPTY));
+let cb = database.on_write(move |latest, db| {
+    let latest = latest.clone();
     let db = db.clone();
+    let checkpoint = checkpoint.clone();
     async move {
-        // Expand the cursor advance into the concrete set of new entry IDs.
-        // Skip this for "any write" wake-ups — the brackets alone suffice.
-        let new_ids = db.ids_added(&prev, &post).await?;
-        println!("{} entries written to {} ({source:?})", new_ids.len(), db.root_id());
+        let mut processed = checkpoint.lock().await;
+        let ids = db.ids_added(&processed, &latest).await?;
+        println!("{} candidate entries for {}", ids.len(), db.root_id());
+        // Advance only after your application's processing succeeds.
+        *processed = latest;
         Ok(())
     }
 }).await?;
-
-// Drop `cb` to unregister, or keep the callback registered for the life
-// of the Instance with `cb.detach()`.
+// Drop `cb` to cancel, or call `cb.detach()` to keep the registration
+// for the Instance's lifetime.
 # Ok(())
 # }
 ```
 
-`WriteEvent` carries cursor brackets only — `previous_tips` (the
-callback's own frontier before this fire) and `post_tips` (the
-frontier after). Callbacks that just need a "something changed"
-ping can act directly on the event; callbacks that need to
-enumerate the new entries call
-[`Database::ids_added`](https://docs.rs/eidetica/latest/eidetica/struct.Database.html#method.ids_added)
-with those brackets.
+The payload is a Snapshot only, not a previous/latest bracket or entry stream.
+`ids_added` retains its existing ancestry-diff behavior, including possible over-reporting for interior forks; watch delivery does not add an exact paginated diff API.
+For an opt-in frontier that moves backward after rejection, rebuild your selected view at the delivered Snapshot rather than treating an added-ID list as a removal stream.
+A historical Snapshot still names the same immutable ancestry after verification status changes.
 
-The returned `WriteCallback` handle controls the registration's lifetime:
-drop it to unregister, or call `.detach()` to keep the callback live until
-the `Instance` itself drops.
+### Timing and coalescing
 
-### Callback timing — local vs. connected
+Both local and service-backed watches run asynchronously to `commit().await`.
+The initial Snapshot is delivered first; slow callbacks may skip intermediate frontiers, retaining only the latest pending update per registration.
+Callbacks run sequentially within one registration, outside tree locks, including the closure's synchronous prefix.
+A slow callback does not hold up commits or another registration on the same tree.
+The callback receives a read-only Database with the registering handle's view and service acting identity; capture a keyed handle separately if you need to write.
+Errors and panics are logged. They do not acknowledge processing, retry automatically, or move your checkpoint for you.
 
-The timing contract depends on whether the `Instance` is **local** (one
-backend in this process) or **connected** (built via `Instance::connect`
-to a daemon over a Unix socket):
-
-| Aspect                        | Local `Instance`                                                                   | Connected `Instance`                                                                                                  |
-| ----------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| When does the callback fire?  | Inline with the write — completes before `commit().await` returns.                 | When the daemon's push notification arrives back over the socket. Asynchronous to `commit().await`.                   |
-| Is `previous_tips` populated? | Yes — captured pre-write under the per-tree lock.                                  | Yes — populated by the daemon's canonical pre-write tips.                                                             |
-| Who orders the callbacks?     | This process. Each tree has a serial ordering; cross-process ordering is via sync. | The daemon. Every subscriber — including the committing client — observes callbacks in the same canonical order.      |
-| Cross-client visibility?      | Only via sync.                                                                     | Built-in — another client's commit through the same daemon fires this client's callback as soon as the daemon pushes. |
-
-The asynchronous fire on a connected `Instance` is intentional. By
-deferring to the daemon's ordering, every subscriber sees writes in the
-same sequence — your own callback, another client's callback for your
-write, and a sync-peer entry that arrived between them are all interleaved
-by the daemon and pushed in that order to everyone. The trade-off is that
-`commit().await` returning no longer means _your own_ callback has run; if
-you need synchronous "callback fired before commit returned" semantics for
-your own writes, use a local `Instance`.
-
-On a connected `Instance`, the first `on_write` registration for a given
-database lazily subscribes that client to push notifications for it.
-Subsequent registrations on the same database reuse that subscription.
-Subscriptions are torn down implicitly when the client disconnects.
+Dropping the `WriteCallback` cancels local pending and in-flight work.
+`.detach()` leaves it registered until the Instance drops.
+Connected registrations each have a distinct wire ID, even for the same tree or visibility.
+The daemon orders their selected state, but independent coalescing means clients need not receive identical intermediate sequences.
+Disconnect releases every daemon registration; dropped handles send deferred cancellation for their own ID.
+Core pending watch state is bounded per registration. This does not bound the shared socket writer backlog or the number of subscriptions an application can create.

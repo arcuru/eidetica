@@ -137,11 +137,11 @@ async fn v0_unknown_notification_does_not_consume_response_or_invoke_callback() 
     let root = db.root_id().clone();
     conn.attach_instance(instance.downgrade());
     let (tx, mut rx) = mpsc::unbounded_channel();
-    instance.register_global_write_callback(move |event, _db| {
+    let id = instance.register_write_callback(db.clone(), move |snapshot, _db| {
         let tx = tx.clone();
-        let source = event.source();
+        let snapshot = snapshot.clone();
         async move {
-            tx.send(source).unwrap();
+            tx.send(snapshot).unwrap();
             Ok(())
         }
     });
@@ -166,7 +166,6 @@ async fn v0_unknown_notification_does_not_consume_response_or_invoke_callback() 
             .unwrap(),
         ServiceResponse::Ok
     ));
-    assert!(conn.inner.tree_workers.lock().unwrap().is_empty());
     assert!(
         rx.try_recv().is_err(),
         "unknown notification invoked a callback"
@@ -177,9 +176,8 @@ async fn v0_unknown_notification_does_not_consume_response_or_invoke_callback() 
         &mut peer,
         &ServerFrame::Notification(Notification::DatabaseWrite {
             root_id: root,
-            previous_tips: Snapshot::EMPTY,
-            post_tips: db.snapshot().await.unwrap(),
-            source: crate::WriteSource::Remote,
+            subscription_id: id.0,
+            snapshot: db.snapshot().await.unwrap(),
         }),
     )
     .await
@@ -195,7 +193,7 @@ async fn v0_unknown_notification_does_not_consume_response_or_invoke_callback() 
     ));
     assert_eq!(
         tokio::time::timeout(TIMEOUT, rx.recv()).await.unwrap(),
-        Some(crate::WriteSource::Remote)
+        Some(db.snapshot().await.unwrap())
     );
     assert!(rx.try_recv().is_err());
 }
@@ -280,7 +278,7 @@ async fn v0_unsupported_login_does_not_establish_a_session() {
     ] {
         let (conn, mut peer) = connect_peer().await;
         let login_conn = conn.clone();
-        let login = tokio::spawn(async move { login_conn.trusted_login("alice", None).await });
+        let login = tokio::spawn(async move { login_conn.trusted_login("alice", "").await });
         read_request(&mut peer, "alice").await;
         send_raw(&mut peer, unsupported).await;
         let result = tokio::time::timeout(TIMEOUT, login).await.unwrap().unwrap();
@@ -297,7 +295,7 @@ const LOGIN_CHALLENGE: &[u8] = b"login challenge";
 const KEY_CHALLENGE: &[u8] = b"session key challenge";
 
 fn passwordless_login_challenge(key: &PrivateKey) -> ServerFrame {
-    use crate::account::{AccountCredentials, AccountStatus};
+    use crate::account::{AccountCredentials, AccountStatus, KeyStorage};
 
     ServerFrame::Response(Box::new(ServiceResponse::TrustedLoginChallenge {
         challenge: LOGIN_CHALLENGE.to_vec(),
@@ -307,8 +305,12 @@ fn passwordless_login_challenge(key: &PrivateKey) -> ServerFrame {
             account_id: ID::from_bytes("alice-db"),
             credentials: AccountCredentials {
                 root_key_id: key.public_key(),
-                root_key: KeyStorage::Unencrypted { key: key.clone() },
-                password_salt: None,
+                bundle: KeyStorage::seal(
+                    &ID::from_bytes("alice-db"),
+                    std::slice::from_ref(key),
+                    "",
+                )
+                .unwrap(),
             },
             created_at: 1_700_000_000,
             status: AccountStatus::Active,
@@ -371,7 +373,7 @@ async fn v0_unsupported_login_proof_does_not_establish_a_session() {
         let login_conn = conn.clone();
         let login = tokio::spawn(async move {
             login_conn
-                .trusted_login("alice", None)
+                .trusted_login("alice", "")
                 .await
                 .map(|_| ServiceResponse::TrustedLoginOk)
         });
@@ -397,7 +399,7 @@ async fn v0_unsupported_key_registration_preserves_session_and_retries() {
             let (conn, mut peer) = connect_peer().await;
             let login_key = PrivateKey::generate();
             let login_conn = conn.clone();
-            let login = tokio::spawn(async move { login_conn.trusted_login("alice", None).await });
+            let login = tokio::spawn(async move { login_conn.trusted_login("alice", "").await });
             send_login_challenge_and_check_proof(&mut peer, &login_key).await;
             send_raw(&mut peer, r#"{"Response":"TrustedLoginOk"}"#).await;
             let (uuid, info, key) = tokio::time::timeout(TIMEOUT, login)
@@ -407,7 +409,7 @@ async fn v0_unsupported_key_registration_preserves_session_and_retries() {
                 .unwrap();
             assert_eq!(uuid, "uuid-alice");
             assert_eq!(info.credentials.root_key_id, login_key.public_key());
-            assert_eq!(key.public_key(), login_key.public_key());
+            assert_eq!(key.key_ids(), [login_key.public_key()]);
             let original_cache = conn.inner.registered_keys.lock().await.clone();
             assert_eq!(original_cache, HashSet::from([login_key.public_key()]));
 
@@ -508,7 +510,7 @@ async fn v0_unknown_required_login_enums_retire_connection() {
         let mut malformed = valid.clone();
         let info = &mut malformed["Response"]["TrustedLoginChallenge"]["user_info"];
         match field {
-            "KeyStorage" => info["credentials"]["root_key"]["type"] = "future-storage".into(),
+            "KeyStorage" => info["credentials"]["bundle"]["type"] = "future-storage".into(),
             "AccountStatus" => info["status"] = "FutureStatus".into(),
             _ => unreachable!(),
         }
@@ -517,7 +519,7 @@ async fn v0_unknown_required_login_enums_retire_connection() {
         let login_conn = conn.clone();
         let login = tokio::spawn(async move {
             login_conn
-                .trusted_login("alice", None)
+                .trusted_login("alice", "")
                 .await
                 .map(|_| ServiceResponse::TrustedLoginOk)
         });
@@ -529,6 +531,37 @@ async fn v0_unknown_required_login_enums_retire_connection() {
         assert_connection_failed(&conn, pending).await;
         assert!(conn.inner.session_read().is_none());
         assert!(conn.inner.registered_keys.lock().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn snapshot_watch_v0_1_client_rejects_legacy_and_wrong_revision_ack() {
+    for ack in [
+        r#"{"protocol_version":0}"#,
+        r#"{"protocol_version":0,"protocol_revision":0}"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let peer = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let handshake: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
+            assert_eq!(handshake.protocol_revision, PROTOCOL_REVISION);
+            send_raw(&mut stream, ack).await;
+            // Rejection must happen before any login/operation is sent.
+            assert!(
+                read_frame::<_, serde_json::Value>(&mut stream)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        };
+        let (result, ()) = tokio::time::timeout(TIMEOUT, async {
+            tokio::join!(RemoteConnection::connect(&path), peer)
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err(), "legacy watch peer was silently accepted");
     }
 }
 
@@ -545,6 +578,7 @@ async fn v0_client_rejects_nonzero_handshake_ack() {
             &mut stream,
             &HandshakeAck {
                 protocol_version: 1,
+                protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
             },
         )
         .await

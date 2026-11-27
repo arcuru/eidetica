@@ -59,8 +59,20 @@ async fn test_authentication_validation_revoked_key() {
         .await
         .expect("Failed to set value");
 
+    store
+        .set_literal("external.name", "literal")
+        .await
+        .expect("Failed to stage literal value");
     let result = txn.commit().await;
     assert!(result.is_err(), "Revoked key test: Operation should fail");
+    assert!(
+        tree.get_store_viewer::<DocStore>("data")
+            .await
+            .unwrap()
+            .get_literal("external.name")
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

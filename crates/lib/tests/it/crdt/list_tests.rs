@@ -241,7 +241,7 @@ fn test_list_push_different_types() {
     let idx1 = list.push("hello");
     let idx2 = list.push(42);
     let idx3 = list.push(true);
-    let idx4 = list.push(3.13); // Use non-pi value to avoid clippy warning
+    let idx4 = list.push(-7);
 
     assert_eq!(idx1, 0);
     assert_eq!(idx2, 1);
@@ -251,7 +251,7 @@ fn test_list_push_different_types() {
     assert_eq!(list.get(0).unwrap().as_text(), Some("hello"));
     assert_eq!(list.get(1).unwrap().as_int(), Some(42));
     assert_eq!(list.get(2).unwrap().as_bool(), Some(true));
-    assert_eq!(list.get(3).unwrap().as_int(), Some(3)); // float converted to int
+    assert_eq!(list.get(3).unwrap().as_int(), Some(-7));
 }
 
 #[test]

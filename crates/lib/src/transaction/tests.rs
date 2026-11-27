@@ -536,3 +536,188 @@ async fn get_store_propagates_registry_read_not_found() {
     ));
     assert!(tx.get_local_data::<Doc>(INDEX).unwrap().is_none());
 }
+
+#[tokio::test]
+async fn test_docstore_optional_preserves_decode_and_transaction_errors() {
+    let (_instance, database) = test_database().await;
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("data").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    // Doc payloads remain JSON inside DAG-CBOR Entries. Neither malformed JSON
+    // nor a well-formed but unsupported Value representation means absence.
+    for bytes in [
+        b"not JSON".as_slice(),
+        br#"{"children":{"key":{"Unknown":1}}}"#,
+    ] {
+        tx.update_subtree("data", bytes.to_vec()).await.unwrap();
+        for result in [
+            store.try_get("key").await,
+            store.try_get_path(crate::crdt::doc::path!("key")).await,
+        ] {
+            assert!(
+                matches!(result, Err(Error::Transaction(ref e)) if matches!(e.as_ref(),
+                TransactionError::StoreDeserializationFailed { store, .. } if store == "data"))
+            );
+        }
+        assert!(store.get_option("key").await.is_none());
+        assert!(
+            store
+                .get_path_option(crate::crdt::doc::path!("key"))
+                .await
+                .is_none()
+        );
+    }
+    // A malformed historical payload must also fail, not become an empty Doc.
+    tx.commit().await.unwrap();
+    let viewer = database.get_store_viewer::<DocStore>("data").await.unwrap();
+    for result in [
+        viewer.try_get("key").await,
+        viewer.try_get_path(crate::crdt::doc::path!("key")).await,
+    ] {
+        assert!(matches!(result, Err(Error::Serialize(_))), "{result:?}");
+    }
+    // Explicitly exercise an unavailable builder. commit currently clones its
+    // builder; retaining a Store handle alone does not invalidate that clone.
+    *store.txn.entry_builder.lock().unwrap() = None;
+    for result in [
+        store.try_get("key").await,
+        store.try_get_path(crate::crdt::doc::path!("key")).await,
+    ] {
+        assert!(
+            matches!(result, Err(Error::Transaction(ref e)) if matches!(e.as_ref(),
+            TransactionError::TransactionAlreadyCommitted)),
+            "{result:?}"
+        );
+    }
+    // No successful read or default write was fabricated by the failing lookups.
+    assert!(viewer.get("key").await.is_err());
+}
+
+/// A Store parent outside the transaction's main cut must fail before storage,
+/// even though the height authoring path can calculate plausible heights for it.
+#[tokio::test]
+async fn local_commit_rejects_injected_store_frontier() {
+    let (instance, database) = test_database().await;
+    let root = database.root_id().clone();
+    let mut branches = Vec::new();
+    for value in ["first", "sibling"] {
+        let tx = database
+            .new_transaction_at(&Snapshot::from([root.clone()]))
+            .await
+            .unwrap();
+        tx.get_store::<DocStore>("data")
+            .await
+            .unwrap()
+            .set("key", value)
+            .await
+            .unwrap();
+        branches.push(tx.commit().await.unwrap());
+    }
+    let backend = instance.require_local_engine().unwrap();
+    let before = backend.get_tree(&root).await.unwrap().len();
+    let tx = database
+        .new_transaction_at(&Snapshot::from([branches[0].clone()]))
+        .await
+        .unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("key", "invalid")
+        .await
+        .unwrap();
+    tx.entry_builder
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .set_subtree_parents_mut("data", vec![branches[1].clone()]);
+    assert!(
+        matches!(tx.commit().await, Err(Error::Transaction(e)) if matches!(*e, TransactionError::EntryValidationFailed))
+    );
+    assert_eq!(backend.get_tree(&root).await.unwrap().len(), before);
+}
+
+/// Local authoring and subsequent received verification share the branching
+/// contract; parent discovery is a default, not a validation restriction.
+#[tokio::test]
+async fn local_commit_preserves_independent_store_branch() {
+    let (instance, db) = test_database().await;
+    let mut ids: Vec<ID> = Vec::new();
+    for name in ["a", "b", "c"] {
+        let tx = db.new_transaction().await.unwrap();
+        tx.get_store::<DocStore>("data")
+            .await
+            .unwrap()
+            .set(name, name)
+            .await
+            .unwrap();
+        if name == "c" {
+            tx.entry_builder
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .set_subtree_parents_mut("data", vec![ids[0].clone()]);
+        }
+        ids.push(tx.commit().await.unwrap());
+    }
+    let backend = instance.require_local_engine().unwrap();
+    assert_eq!(
+        backend.get(&ids[2]).await.unwrap().parents().unwrap(),
+        vec![ids[1].clone()]
+    );
+    let expected = Snapshot::from([ids[1].clone(), ids[2].clone()]);
+    assert_eq!(
+        backend
+            .store_snapshot_at(db.root_id(), "data", &db.snapshot().await.unwrap())
+            .await
+            .unwrap(),
+        expected
+    );
+    let view = db.get_store_viewer::<DocStore>("data").await.unwrap();
+    assert_eq!(view.get("b").await.unwrap(), Value::Text("b".into()));
+    assert_eq!(view.get("c").await.unwrap(), Value::Text("c".into()));
+    instance
+        .demote_to_unverified(db.root_id(), &ids[2])
+        .await
+        .unwrap();
+    db.verify().await.unwrap();
+    assert_eq!(
+        backend.get_verification_status(&ids[2]).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    for parents in [vec![], vec![ids[0].clone(), ids[1].clone()]] {
+        let tx = db
+            .new_transaction_at(&Snapshot::from([ids[1].clone()]))
+            .await
+            .unwrap();
+        tx.get_store::<DocStore>("data")
+            .await
+            .unwrap()
+            .set("branch", "present")
+            .await
+            .unwrap();
+        tx.entry_builder
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .set_subtree_parents_mut("data", parents.clone());
+        let id = tx.commit().await.unwrap();
+        assert_eq!(
+            Snapshot::from(
+                backend
+                    .get(&id)
+                    .await
+                    .unwrap()
+                    .subtree_parents("data")
+                    .unwrap()
+            ),
+            Snapshot::from(parents)
+        );
+        assert_eq!(
+            backend.get_verification_status(&id).await.unwrap(),
+            VerificationStatus::Verified
+        );
+    }
+}

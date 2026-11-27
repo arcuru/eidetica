@@ -12,6 +12,208 @@ use eidetica::{
 use crate::helpers::test_local_instance_with_user_and_key;
 
 #[tokio::test]
+async fn test_entry_timestamps_follow_transaction_settings() -> eidetica::Result<()> {
+    use std::sync::Arc;
+
+    use eidetica::{
+        Database, FixedClock, Instance, NewAccount, auth::crypto::PrivateKey,
+        height::HeightStrategy,
+    };
+    use serde::{Deserialize, Serialize};
+
+    // The pre-timestamp reader's metadata shape, including its mandatory pin.
+    #[derive(Debug, PartialEq, Deserialize, Serialize)]
+    struct LegacyMetadata {
+        settings_tips: Snapshot,
+        entropy: Option<u64>,
+    }
+
+    let clock = Arc::new(FixedClock::new(1_000));
+    let _hold = clock.hold();
+    let (instance, _) = Instance::create_backend_with_clock(
+        crate::helpers::test_backend().await,
+        clock.clone(),
+        NewAccount::passwordless("admin"),
+    )
+    .await?;
+    let db = Database::create(&instance, PrivateKey::generate(), Doc::new()).await?;
+    let root = db.get_root().await?;
+    assert_eq!(root.committed_at_ms(), None);
+    assert!(!db.get_settings().await?.entry_timestamps_enabled().await?);
+
+    // This transaction retains the pre-enable snapshot even if it commits later.
+    let before_enable = db.new_transaction().await?;
+    before_enable
+        .get_store::<DocStore>("data")
+        .await?
+        .set("legacy", true)
+        .await?;
+
+    let enable = db.new_transaction().await?;
+    let settings = enable.get_settings()?;
+    settings.set_entry_timestamps(true).await?;
+    assert!(settings.entry_timestamps_enabled().await?);
+    let enabled = db.get_entry(enable.commit().await?).await?;
+    assert_eq!(enabled.committed_at_ms(), Some(1_000));
+    assert_eq!(enabled.height(), root.height() + 1);
+    let enabled_meta: LegacyMetadata = serde_json::from_slice(enabled.metadata().unwrap())?;
+    assert_eq!(enabled_meta.settings_tips, Snapshot::from([root.id()]));
+    assert_eq!(enabled_meta.entropy, None);
+
+    let legacy = db.get_entry(before_enable.commit().await?).await?;
+    assert_eq!(legacy.committed_at_ms(), None);
+    // No `ts` field (not even null); old metadata encodes identically.
+    assert_eq!(
+        legacy.metadata().unwrap(),
+        &serde_json::to_vec(&enabled_meta)?
+    );
+
+    let write = db.new_transaction().await?;
+    write
+        .get_store::<DocStore>("data")
+        .await?
+        .set("a", 1)
+        .await?;
+    let first = db.get_entry(write.commit().await?).await?;
+    assert_eq!(first.committed_at_ms(), Some(1_000));
+    assert_eq!(first.height(), enabled.height().max(legacy.height()) + 1);
+
+    let write = db.new_transaction().await?;
+    write
+        .get_store::<DocStore>("data")
+        .await?
+        .set("a", 2)
+        .await?;
+    let same_ms = db.get_entry(write.commit().await?).await?;
+    assert_eq!(same_ms.committed_at_ms(), Some(1_000));
+    assert_ne!(same_ms.id(), first.id());
+    assert_eq!(same_ms.height(), first.height() + 1);
+
+    clock.set(500);
+    let timestamp_height = db.new_transaction().await?;
+    timestamp_height
+        .get_settings()?
+        .set_height_strategy(HeightStrategy::Timestamp)
+        .await?;
+    let ahead = db.get_entry(timestamp_height.commit().await?).await?;
+    assert_eq!(ahead.height(), 500);
+    assert_eq!(ahead.committed_at_ms(), Some(500));
+
+    clock.set(20);
+    let write = db.new_transaction().await?;
+    write
+        .get_store::<DocStore>("data")
+        .await?
+        .set("a", 3)
+        .await?;
+    let reversed = db.get_entry(write.commit().await?).await?;
+    assert_eq!(reversed.committed_at_ms(), Some(20));
+    assert_eq!(reversed.height(), ahead.height() + 1);
+
+    let disable = db.new_transaction().await?;
+    disable.get_settings()?.set_entry_timestamps(false).await?;
+    let disabled = db.get_entry(disable.commit().await?).await?;
+    assert_eq!(disabled.committed_at_ms(), None);
+    assert_eq!(disabled.height(), reversed.height() + 1);
+    let write = db.new_transaction().await?;
+    write
+        .get_store::<DocStore>("data")
+        .await?
+        .set("a", 4)
+        .await?;
+    let off = db.get_entry(write.commit().await?).await?;
+    assert_eq!(off.committed_at_ms(), None);
+    assert!(!db.get_settings().await?.entry_timestamps_enabled().await?);
+    assert_eq!(db.snapshot().await?, Snapshot::from([off.id()]));
+
+    for entry in [root, legacy, enabled] {
+        assert_eq!(
+            db.get_entry(entry.id()).await?.canonical_bytes()?,
+            entry.canonical_bytes()?
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_verified_store_snapshot_is_scoped_and_does_not_fall_back() -> eidetica::Result<()> {
+    use eidetica::{
+        Database, Instance, NewAccount, auth::crypto::PrivateKey, backend::VerificationStatus,
+    };
+
+    let (instance, _) = Instance::create_backend(
+        crate::helpers::test_backend().await,
+        NewAccount::passwordless("admin"),
+    )
+    .await?;
+    let db = Database::create(&instance, PrivateKey::generate(), Doc::new()).await?;
+    let seed = db.new_transaction().await?;
+    seed.get_settings()?.set_entry_timestamps(true).await?;
+    seed.get_store::<DocStore>("content")
+        .await?
+        .set("seed", true)
+        .await?;
+    let seed = Snapshot::from([seed.commit().await?]);
+
+    let mut content_tips = Vec::new();
+    for (key, value) in [("left", true), ("right", false)] {
+        let branch = db.new_transaction_at(&seed).await?;
+        branch
+            .get_store::<DocStore>("content")
+            .await?
+            .set(key, value)
+            .await?;
+        content_tips.push(branch.commit().await?);
+    }
+    let expected = Snapshot::from(content_tips);
+    let housekeeping = db.new_transaction().await?;
+    housekeeping.get_settings()?.set_name("retitled").await?;
+    housekeeping
+        .get_store::<DocStore>("bookkeeping")
+        .await?
+        .set("done", true)
+        .await?;
+    let housekeeping_id = housekeeping.commit().await?;
+    assert_eq!(db.snapshot().await?, Snapshot::from([housekeeping_id]));
+    assert_eq!(
+        db.try_verified_store_snapshot("content").await?,
+        Some(expected.clone())
+    );
+    for tip in expected.tips() {
+        let entry = db.get_entry(tip).await?;
+        assert!(entry.data("content").is_ok());
+        assert!(entry.committed_at_ms().is_some());
+    }
+
+    let pending = db.new_transaction().await?;
+    pending
+        .get_store::<DocStore>("content")
+        .await?
+        .set("next", true)
+        .await?;
+    let pending_id = pending.commit().await?;
+    let engine = instance.backend().local_engine().unwrap();
+    assert_eq!(
+        db.try_verified_store_snapshot("content").await?,
+        Some(Snapshot::from([pending_id.clone()]))
+    );
+    for status in [VerificationStatus::Unverified, VerificationStatus::Failed] {
+        engine
+            .update_verification_status(&pending_id, status)
+            .await?;
+        // The raw index has the pending entry; historical reconstruction would
+        // return the prior content tips. This API must return neither.
+        assert_eq!(
+            engine.store_snapshot(db.root_id(), "content").await?,
+            Snapshot::from([pending_id.clone()])
+        );
+        assert_eq!(db.try_verified_store_snapshot("content").await?, None);
+        assert_eq!(engine.get_verification_status(&pending_id).await?, status);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_settings_tips_in_metadata() {
     let (_instance, mut user, key_id) =
         test_local_instance_with_user_and_key("test_user", Some("test_key")).await;
@@ -482,7 +684,7 @@ async fn test_remote_historical_pin_matches_main_parent_frontier() {
     let data_id = txn.commit().await.unwrap();
     let metadata = |tips: &[eidetica::entry::ID]| {
         serde_json::to_vec(&serde_json::json!({
-            "settings_tips": tips, "entropy": null
+            "settings_tips": tips, "entropy": null, "ts": {"invalid": true}
         }))
         .unwrap()
     };
@@ -512,6 +714,10 @@ async fn test_remote_historical_pin_matches_main_parent_frontier() {
         .await
         .unwrap();
     let grant = txn.commit().await.unwrap();
+    let data_frontier = engine
+        .store_snapshot_at(db.root_id(), "data", &Snapshot::from([grant.clone()]))
+        .await
+        .unwrap();
     let key = SigKey::from_pubkey(&signer.public_key());
     let signed = |parent: eidetica::entry::ID| {
         let entry = Entry::builder(root.clone())
@@ -519,6 +725,7 @@ async fn test_remote_historical_pin_matches_main_parent_frontier() {
             .set_height(3)
             .set_metadata(metadata(std::slice::from_ref(&grant)))
             .set_subtree_data("data", b"stale-key")
+            .set_subtree_parents("data", data_frontier.tips().to_vec())
             .build()
             .unwrap()
             .with_auth(|auth| auth.key = key.clone());
@@ -534,6 +741,7 @@ async fn test_remote_historical_pin_matches_main_parent_frontier() {
         .unwrap();
     let revocation = txn.commit().await.unwrap();
     let sibling_id = sibling.id();
+    assert_eq!(sibling.committed_at_ms(), None);
     engine.put(sibling).await.unwrap();
     db.verify().await.unwrap();
     assert_eq!(

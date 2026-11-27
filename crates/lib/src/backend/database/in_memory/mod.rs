@@ -26,7 +26,7 @@ use crate::{
     backend::{
         BackendImpl, DerivedCachePolicy, InstanceMetadata, InstanceSecrets, RecordMutations,
         RecordPage, RecordRange, RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest,
-        VerificationStatus, errors::BackendError,
+        VerificationStatus, errors::BackendError, private_cache,
     },
     entry::{Entry, ID},
     snapshot::Snapshot,
@@ -47,6 +47,15 @@ pub(crate) struct TreeTipsCache {
 #[serde(deny_unknown_fields)]
 pub(crate) struct VerifiedState {
     pub(crate) frontier: HashSet<ID>,
+}
+
+/// Selected non-Failed vertices and same-tree direct-child counts. Counts also
+/// cover missing parents, so child-before-parent insertion needs no history walk.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NonFailedState {
+    pub(crate) frontier: HashSet<ID>,
+    pub(crate) children: HashMap<ID, usize>,
 }
 
 /// Core data protected by a single lock.
@@ -70,10 +79,13 @@ pub(crate) struct InMemoryInner {
     /// This is suitable for development/testing only. Production systems should use
     /// proper key management with encryption at rest.
     pub(crate) instance_secrets: Option<InstanceSecrets>,
+    /// Installation-local account records, never part of an Entry tree.
+    pub(crate) local_accounts: BTreeMap<String, Vec<u8>>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
     /// Retained verified frontier per tree, maintained under this same lock.
     pub(crate) verified: HashMap<ID, VerifiedState>,
+    pub(crate) non_failed: HashMap<ID, NonFailedState>,
 }
 
 #[derive(Debug)]
@@ -195,8 +207,10 @@ impl InMemory {
                 verification_status: HashMap::new(),
                 instance_metadata: None,
                 instance_secrets: None,
+                local_accounts: BTreeMap::new(),
                 tips: HashMap::new(),
                 verified: HashMap::new(),
+                non_failed: HashMap::new(),
             }),
             store_state_point_reads: AtomicUsize::new(0),
             store_state_scan_reads: AtomicUsize::new(0),
@@ -412,8 +426,49 @@ impl Default for InMemory {
     }
 }
 
+fn check_private_staging(
+    inner: &InMemoryInner,
+    login: &str,
+    new_count: usize,
+    charge: u64,
+) -> Result<()> {
+    let (mut count, mut bytes) = (new_count, charge);
+    let (mut login_count, mut login_bytes) = (new_count, charge);
+    for ns in inner.store_state_namespaces.values().filter(|ns| !ns.ready) {
+        if let Some(scope) = ns
+            .request
+            .scope
+            .storage_key()
+            .filter(|scope| !scope.is_empty())
+        {
+            count += 1;
+            bytes += ns.size_bytes;
+            if private_cache::bucket(scope) == login {
+                login_count += 1;
+                login_bytes += ns.size_bytes;
+            }
+        }
+    }
+    private_cache::check(
+        private_cache::STAGING_TOTAL,
+        count,
+        bytes,
+        "daemon private staging budget",
+    )?;
+    private_cache::check(
+        private_cache::STAGING_PER_LOGIN,
+        login_count,
+        login_bytes,
+        "login private staging budget",
+    )
+}
+
 #[async_trait]
 impl BackendImpl for InMemory {
+    fn supports_private_cache_admission(&self) -> bool {
+        true
+    }
+
     async fn resolve_store_state(&self, request: &StoreStateRequest) -> Result<Option<RecordView>> {
         let view = {
             let inner = self.inner.read().unwrap();
@@ -453,10 +508,15 @@ impl BackendImpl for InMemory {
             }
             .into());
         }
+        let mut inner = self.inner.write().unwrap();
+        if let Some(login) = private_cache::login(&request) {
+            private_cache::check_target(&request)?;
+            check_private_staging(&inner, login, 1, 0)?;
+        }
         let target = request.clone();
         request.lifecycle = StoreStateLifecycle::Staging;
         let namespace_id = uuid::Uuid::new_v4().to_string();
-        self.inner.write().unwrap().store_state_namespaces.insert(
+        inner.store_state_namespaces.insert(
             namespace_id.clone(),
             RecordNamespace {
                 request,
@@ -481,11 +541,23 @@ impl BackendImpl for InMemory {
         let mut inner = self.inner.write().unwrap();
         let namespace = inner
             .store_state_namespaces
-            .get_mut(&token.namespace_id)
+            .get(&token.namespace_id)
             .ok_or(BackendError::InvalidStoreStateStagingToken)?;
         if namespace.ready || namespace.request.lifecycle != StoreStateLifecycle::Staging {
             return Err(BackendError::StoreStateNamespaceImmutable.into());
         }
+        let charge = if let Some(login) = private_cache::login(&token.target) {
+            let charge = private_cache::chunk_charge(&records);
+            check_private_staging(&inner, login, 0, charge)?;
+            charge
+        } else {
+            0
+        };
+        let namespace = inner
+            .store_state_namespaces
+            .get_mut(&token.namespace_id)
+            .unwrap();
+        namespace.size_bytes += charge;
         namespace.records.extend(records);
         Ok(())
     }
@@ -557,6 +629,26 @@ impl BackendImpl for InMemory {
                 reason: "disabled or oversized materialization".into(),
             }
             .into());
+        }
+        if let Some(login) = private_cache::login(&namespace.request) {
+            let (count, bytes) = inner
+                .store_state_namespaces
+                .values()
+                .filter(|ns| {
+                    ns.ready
+                        && !ns.unlinked
+                        && !ns.evicted
+                        && private_cache::login(&ns.request) == Some(login)
+                })
+                .fold((1, namespace.size_bytes), |(count, bytes), ns| {
+                    (count + 1, bytes + ns.size_bytes)
+                });
+            private_cache::check(
+                private_cache::RETAINED,
+                count,
+                bytes,
+                "private cache retention budget",
+            )?;
         }
         let namespace_id = token.namespace_id.clone();
         inner
@@ -658,6 +750,9 @@ impl BackendImpl for InMemory {
 
     async fn reset_local_verification(&self) -> Result<()> {
         let mut inner = self.inner.write().unwrap();
+        // Build before mutating labels: a malformed entry must not leave a
+        // partially published reset. All entries rejoin the non-Failed set.
+        let non_failed = storage::rebuild_all_non_failed(&inner, true)?;
         for status in inner.verification_status.values_mut() {
             *status = VerificationStatus::Unverified;
         }
@@ -665,6 +760,7 @@ impl BackendImpl for InMemory {
         // in every tree. Clearing it under the same write lock publishes the
         // reset atomically, so no reader observes a stale retained frontier.
         inner.verified.clear();
+        inner.non_failed = non_failed;
         // The ordinary clear unlinks a generation for active readers. A reset
         // instead requires exclusive offline ownership and drops all disposable
         // namespaces, including incomplete builds from a prior run.
@@ -798,6 +894,15 @@ impl BackendImpl for InMemory {
         traversal::snapshot(&mut inner, tree).map(Snapshot::new)
     }
 
+    async fn non_failed_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        let inner = self.inner.read().unwrap();
+        Ok(inner
+            .non_failed
+            .get(tree)
+            .map(|state| Snapshot::new(state.frontier.iter().cloned().collect()))
+            .unwrap_or(Snapshot::EMPTY))
+    }
+
     async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
         let inner = self.inner.read().unwrap();
         Ok(storage::verified_snapshot(&inner, tree))
@@ -832,6 +937,25 @@ impl BackendImpl for InMemory {
         let mut inner = self.inner.write().unwrap();
         traversal::store_snapshot_at(&mut inner, tree, subtree, main_snapshot.tips())
             .map(Snapshot::new)
+    }
+
+    async fn try_verified_store_snapshot(
+        &self,
+        tree: &ID,
+        store: &str,
+    ) -> Result<Option<Snapshot>> {
+        let inner = self.inner.read().unwrap();
+        let Some((raw, verified)) = inner.tips.get(tree).zip(inner.verified.get(tree)) else {
+            return Ok(None);
+        };
+        if raw.tree_tips.is_empty() || raw.tree_tips != verified.frontier {
+            return Ok(None);
+        }
+        Ok(raw
+            .subtree_tips
+            .get(store)
+            .filter(|tips| !tips.is_empty())
+            .map(|tips| Snapshot::new(tips.iter().cloned().collect())))
     }
 
     /// Retrieves the IDs of all top-level root entries stored in the database.
@@ -888,6 +1012,37 @@ impl BackendImpl for InMemory {
         self.store_history_reads.fetch_add(1, Ordering::Relaxed);
         let inner = self.inner.read().unwrap();
         storage::store_at(&inner, tree, subtree, snapshot.tips())
+    }
+
+    async fn local_account_record(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.inner.read().unwrap().local_accounts.get(name).cloned())
+    }
+
+    async fn compare_exchange_local_account_record(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool> {
+        let mut inner = self.inner.write().unwrap();
+        if inner.local_accounts.get(name).map(Vec::as_slice) != expected {
+            return Ok(false);
+        }
+        inner
+            .local_accounts
+            .insert(name.to_owned(), replacement.to_vec());
+        Ok(true)
+    }
+
+    async fn local_account_names(&self) -> Result<Vec<String>> {
+        Ok(self
+            .inner
+            .read()
+            .unwrap()
+            .local_accounts
+            .keys()
+            .cloned()
+            .collect())
     }
 
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {

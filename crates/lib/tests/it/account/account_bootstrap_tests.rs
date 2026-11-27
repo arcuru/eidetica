@@ -34,11 +34,11 @@ async fn setup_user_with_database()
     let instance = test_instance().await;
 
     // Create and login user
-    crate::helpers::create_account(&instance, "alice", None)
+    crate::helpers::create_account(&instance, "alice", "")
         .await
         .expect("Failed to create user");
     let mut user = instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Failed to login user");
 
@@ -464,22 +464,22 @@ async fn test_user_cannot_reject_after_approval() {
 async fn test_multiple_users() {
     // Create instances with 2 users
     let instance = test_instance().await;
-    crate::helpers::create_account(&instance, "alice", None)
+    crate::helpers::create_account(&instance, "alice", "")
         .await
         .expect("Failed to create alice");
     let mut alice = instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Failed to login alice");
     let alice_key = alice
         .get_default_key()
         .expect("Failed to get alice's default key");
 
-    crate::helpers::create_account(&instance, "bob", None)
+    crate::helpers::create_account(&instance, "bob", "")
         .await
         .expect("Failed to create bob");
     let mut bob = instance
-        .login_account("bob", None)
+        .login_account("bob", "")
         .await
         .expect("Failed to login bob");
     let bob_key = bob
@@ -681,11 +681,11 @@ async fn test_user_list_pending_bootstrap_requests() {
 async fn test_user_without_admin_cannot_modify() {
     // Create Alice with a database
     let instance = test_instance().await;
-    crate::helpers::create_account(&instance, "alice", None)
+    crate::helpers::create_account(&instance, "alice", "")
         .await
         .expect("Failed to create alice");
     let mut alice = instance
-        .login_account("alice", None)
+        .login_account("alice", "")
         .await
         .expect("Failed to login alice");
     let alice_key = alice
@@ -727,11 +727,11 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to add Alice's database preferences");
 
     // Create Bob and add a key for him
-    crate::helpers::create_account(&instance, "bob", None)
+    crate::helpers::create_account(&instance, "bob", "")
         .await
         .expect("Failed to create bob");
     let mut bob = instance
-        .login_account("bob", None)
+        .login_account("bob", "")
         .await
         .expect("Failed to login bob");
     let bob_key = bob

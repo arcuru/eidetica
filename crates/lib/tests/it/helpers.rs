@@ -150,10 +150,9 @@ pub async fn test_instance() -> Instance {
 ///
 /// Bootstraps a passwordless `admin` user as the initial admin — matches
 /// the historic test convention so existing `users.contains("admin")` style
-/// assertions and `login_account("admin", None)` calls keep working. Tests
+/// assertions and `login_account("admin", "")` calls keep working. Tests
 /// that need a specific bootstrap identity should use
 /// [`test_local_instance_with_user`] instead.
-#[allow(dead_code)]
 pub async fn test_local_instance() -> Instance {
     let clock = Arc::new(FixedClock::default());
     let (instance, _admin) = Instance::create_backend_with_clock(
@@ -169,14 +168,13 @@ pub async fn test_local_instance() -> Instance {
 /// Local-only counterpart of `test_instance_with_user`, for subsystem
 /// tests that need a logged-in user against a process-local instance
 /// regardless of `TEST_BACKEND`. See [`test_local_instance`].
-#[allow(dead_code)]
 pub async fn test_local_instance_with_user(username: &str) -> (Instance, AccountSession) {
     let instance = test_local_instance().await;
-    create_account(&instance, username, None)
+    create_account(&instance, username, "")
         .await
         .expect("Failed to create user");
     let user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
     (instance, user)
@@ -185,17 +183,16 @@ pub async fn test_local_instance_with_user(username: &str) -> (Instance, Account
 /// Local-only counterpart of `test_instance_with_user_and_key`, for
 /// subsystem tests that need a logged-in user against a process-local
 /// instance regardless of `TEST_BACKEND`. See [`test_local_instance`].
-#[allow(dead_code)]
 pub async fn test_local_instance_with_user_and_key(
     username: &str,
     key_display_name: Option<&str>,
 ) -> (Instance, AccountSession, PublicKey) {
     let instance = test_local_instance().await;
-    create_account(&instance, username, None)
+    create_account(&instance, username, "")
         .await
         .expect("Failed to create user");
     let mut user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
     let key_id = user
@@ -216,13 +213,10 @@ pub async fn test_local_instance_with_user_and_key(
 pub async fn create_account(
     instance: &Instance,
     username: &str,
-    password: Option<&str>,
+    password: &str,
 ) -> eidetica::Result<String> {
-    let admin = instance.login_account("admin", None).await?;
-    let new_account = match password {
-        Some(pw) => NewAccount::with_password(username, pw),
-        None => NewAccount::passwordless(username),
-    };
+    let admin = instance.login_account("admin", "").await?;
+    let new_account = NewAccount::with_password(username, password);
     admin.admin().await?.create_account(new_account).await
 }
 
@@ -230,9 +224,8 @@ pub async fn create_account(
 ///
 /// Replaces the removed `Instance::list_accounts` — listing users reads `_users`
 /// and is an admin operation reached through [`AccountSession::admin`].
-#[allow(dead_code)]
 pub async fn list_accounts(instance: &Instance) -> eidetica::Result<Vec<String>> {
-    let admin = instance.login_account("admin", None).await?;
+    let admin = instance.login_account("admin", "").await?;
     admin.admin().await?.list_accounts().await
 }
 
@@ -269,17 +262,11 @@ async fn test_remote_instance() -> Instance {
         .await
         .expect("Failed to connect to test daemon");
     instance
-        .login_account("admin", None)
+        .login_account("admin", "")
         .await
         .expect("Failed to login as bootstrapped admin");
 
     instance
-}
-
-/// Creates an Instance wrapped in Arc (common for sync tests)
-#[allow(dead_code)]
-pub async fn test_instance_arc() -> Arc<Instance> {
-    Arc::new(test_instance().await)
 }
 
 /// Creates an Instance with a passwordless user (most common test pattern)
@@ -293,11 +280,11 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, AccountSessio
         }
     }
     let instance = test_instance().await;
-    create_account(&instance, username, None)
+    create_account(&instance, username, "")
         .await
         .expect("Failed to create user");
     let user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
     (instance, user)
@@ -322,7 +309,7 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, AccountSes
     tokio::spawn(service.run(rx));
 
     // create_account is not available over the wire — create user server-side.
-    create_account(&server, username, None)
+    create_account(&server, username, "")
         .await
         .expect("Failed to create user server-side");
 
@@ -330,7 +317,7 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, AccountSes
         .await
         .expect("Failed to connect to test daemon");
     let user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
 
@@ -357,11 +344,11 @@ pub async fn test_instance_with_user_and_key(
         }
     }
     let instance = test_instance().await;
-    create_account(&instance, username, None)
+    create_account(&instance, username, "")
         .await
         .expect("Failed to create user");
     let mut user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
 
@@ -395,11 +382,11 @@ async fn test_remote_instance_with_user_and_key(
     tokio::spawn(service.run(rx));
 
     // Create user and add key server-side.
-    create_account(&server, username, None)
+    create_account(&server, username, "")
         .await
         .expect("Failed to create user server-side");
     let mut server_user = server
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user server-side");
     server_user
@@ -412,7 +399,7 @@ async fn test_remote_instance_with_user_and_key(
         .await
         .expect("Failed to connect to test daemon");
     let user = instance
-        .login_account(username, None)
+        .login_account(username, "")
         .await
         .expect("Failed to login user");
 
@@ -446,7 +433,6 @@ pub async fn setup_tree_with_user_key() -> (Instance, Database, PublicKey) {
 /// poke at backend internals (`get_verification_status`,
 /// `update_verification_status`, `all_roots`, etc.) which have no wire
 /// equivalent. See [`test_local_instance`].
-#[allow(dead_code)]
 pub async fn setup_tree_with_user_key_local() -> (Instance, Database, PublicKey) {
     let (instance, mut user, key_id) =
         test_local_instance_with_user_and_key("test_user", Some("test_key")).await;
@@ -688,4 +674,127 @@ impl LocalBackendTestExt for Arc<dyn Backend> {
     async fn clear_derived_store_state(&self) -> eidetica::Result<()> {
         eidetica::instance::backend::Backend::clear_derived_store_state(self.as_ref()).await
     }
+}
+
+// Shared Doc fixtures and assertions.
+
+/// Assert that a Doc contains the expected text values
+pub fn assert_map_contains(map: &Doc, expected: &[(&str, &str)]) {
+    for (key, expected_value) in expected {
+        match map.get(key) {
+            Some(Value::Text(actual_value)) => {
+                assert_eq!(
+                    actual_value, *expected_value,
+                    "Value mismatch for key '{key}'"
+                );
+            }
+            Some(other) => panic!("Expected text value for key '{key}', got: {other:?}"),
+            None => panic!("Key '{key}' not found in map"),
+        }
+    }
+}
+
+/// Assert that a string value matches expected content
+pub fn assert_text_value(value: &Value, expected: &str) {
+    match value {
+        Value::Text(actual) => assert_eq!(actual, expected),
+        _ => panic!("Expected text value '{expected}', got {value:?}"),
+    }
+}
+
+/// Assert that a nested value matches expected string
+pub fn assert_nested_value(map: &Doc, path: &[&str], expected: &str) {
+    let mut current = map;
+
+    let (final_key, parents) = path.split_last().expect("Path should not be empty");
+    for &key in parents {
+        match current.get(key) {
+            Some(Value::Doc(inner)) => current = inner,
+            _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
+        }
+    }
+
+    match current.get(final_key) {
+        Some(Value::Text(s)) => assert_eq!(s, expected, "Value mismatch at path {path:?}"),
+        Some(other) => panic!("Expected text value at path {path:?}, got {other:?}"),
+        None => panic!("No value found at path {path:?}"),
+    }
+}
+
+/// Assert that a path is deleted (tombstone exists)
+pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
+    let (final_key, parents) = path.split_last().expect("Path should not be empty");
+    let mut current = map;
+    for &key in parents {
+        match current.get(key) {
+            Some(Value::Doc(inner)) => current = inner,
+            _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
+        }
+    }
+    assert!(
+        current.is_tombstone(*final_key),
+        "Expected tombstone at '{path:?}'"
+    );
+}
+
+/// Create a complex nested structure for testing
+pub fn create_complex_nested_structure() -> Doc {
+    let mut root = Doc::new();
+
+    root.set("top_key", "top_value");
+
+    let mut level2 = Doc::new();
+    level2.set("level2_key1", "level2_value1");
+    level2.set("shared_key", "original_value");
+
+    let mut level3 = Doc::new();
+    level3.set("level3_key1", "level3_value1");
+    level2.set("level3", level3);
+
+    root.set("level2", level2);
+    root
+}
+
+/// Build complex merge scenario data
+pub fn build_complex_merge_data() -> (Doc, Doc) {
+    let mut map1 = Doc::new();
+    let mut level1a = Doc::new();
+    level1a.set("key1", "value1");
+    level1a.set("to_delete", "will_be_deleted");
+    level1a.set("to_update", "initial_value");
+    map1.set("level1", level1a);
+    map1.set("top_level_key", "top_value");
+
+    let mut map2 = Doc::new();
+    let mut level1b = Doc::new();
+    level1b.set("key2", "value2");
+    level1b.remove("to_delete");
+    level1b.set("to_update", "updated_value");
+    map2.set("level1", level1b);
+    map2.remove("top_level_key");
+    map2.set("new_top_key", "new_top_value");
+
+    (map1, map2)
+}
+
+/// Commit `value` under `data.key` and return the new entry ID.
+pub async fn commit_data_value(db: &Database, value: &str) -> ID {
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("key", value)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap()
+}
+
+/// Receive the next watched Snapshot, failing instead of hanging.
+pub async fn next_snapshot(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<eidetica::Snapshot>,
+) -> eidetica::Snapshot {
+    tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("watch stalled")
+        .expect("watch closed")
 }

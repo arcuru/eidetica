@@ -22,6 +22,7 @@
 //! - [`CRDT`] - Core trait defining merge semantics for conflict resolution
 
 // Core modules
+pub mod dag_cbor;
 pub mod doc;
 pub mod errors;
 pub mod lww;

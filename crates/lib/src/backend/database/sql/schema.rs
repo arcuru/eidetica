@@ -3,10 +3,11 @@
 //! This module contains the database schema used by SQL backends.
 //! The schema is designed to be portable between SQLite and Postgres.
 //!
-//! Mainline v0 migrates directly to v3 in one transaction. v2 adds cache
-//! accounting without verification repair. Version 1
-//! belonged to an unsupported prefix-tracking candidate and is refused before
-//! schema writes. Ordinary v3 opens neither backfill nor reconstruct verification history.
+//! Mainline v0 migrates directly to v5 in one transaction. v2 adds cache
+//! accounting, v3 adds empty local account storage, and v4 reconstructs only
+//! the non-Failed frontier. Version 1 was an unsupported prefix-tracking
+//! candidate and is refused before schema writes. Ordinary v5 opens do not
+//! reconstruct history.
 
 use crate::Result;
 use crate::backend::errors::BackendError;
@@ -19,9 +20,9 @@ mod tests;
 /// Internal SQL format revision counter, independent of release versions and
 /// the InMemory persistence counter. Increment for changes requiring migration,
 /// with an explicit forward path from each supported stored format.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 5;
 
-const CREATE_STORE_STATE_TABLES: &[&str] = &[
+pub(super) const CREATE_STORE_STATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
         namespace_id TEXT PRIMARY KEY NOT NULL,
         database_id TEXT NOT NULL,
@@ -119,12 +120,23 @@ pub const CREATE_TABLES: &[&str] = &[
         entry_id TEXT NOT NULL,
         PRIMARY KEY (tree_id, entry_id)
     )",
+    // Selected Unverified/Verified vertices, independent of ancestor closure.
+    "CREATE TABLE IF NOT EXISTS non_failed_tips (
+        tree_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        PRIMARY KEY (tree_id, entry_id)
+    )",
     // Instance metadata (singleton row pattern)
     // Contains device key and system database IDs.
     // Uses singleton=1 constraint to ensure only one row exists.
     "CREATE TABLE IF NOT EXISTS instance_metadata (
         singleton BIGINT PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
         data TEXT NOT NULL
+    )",
+    // Local credential and operational records are not Entry/Store data.
+    "CREATE TABLE IF NOT EXISTS local_accounts (
+        name TEXT PRIMARY KEY NOT NULL,
+        data BYTEA NOT NULL
     )",
     // Instance secrets (singleton row pattern)
     // Contains device signing key. Stored separately from metadata.
@@ -222,6 +234,20 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
         .into());
     }
 
+    if backend.is_sqlite() {
+        let (identity_tables,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'history_identity'",
+        )
+        .fetch_one(pool)
+        .await
+        .sql_context("Failed to inspect unsupported SQLite candidate layout")?;
+        if identity_tables != 0 {
+            return Err(malformed(
+                "unsupported unreleased history_identity layout; preserve history and reopen with its matching candidate binary, not a mainline migration",
+            ));
+        }
+    }
+
     validate_layout(backend, row.map(|(v,)| v)).await?;
 
     // Schema, repair, cache-column backfill, and version publication roll back
@@ -247,7 +273,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             .await
             .sql_context("Schema creation failed")?;
     }
-    if row != Some((SCHEMA_VERSION,)) {
+    if matches!(row, None | Some((0 | 2,))) {
         ensure_store_state_cache_columns(backend, &mut tx).await?;
     }
     for statement in CREATE_INDEXES {
@@ -265,7 +291,8 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             super::verified::repair_in_tx(&mut tx, &crate::entry::ID::parse(&tree)?).await?;
         }
     }
-    if matches!(row, Some((0 | 2,))) {
+    if matches!(row, Some((0 | 2 | 3 | 4,))) {
+        super::non_failed::rebuild_all_in_tx(&mut tx).await?;
         sqlx::query("UPDATE schema_version SET version = $1")
             .bind(SCHEMA_VERSION)
             .execute(&mut *tx)
@@ -329,7 +356,9 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
         ("tips", &["entry_id", "tree_id", "store_name"]),
         ("instance_metadata", &["singleton", "data"]),
         ("instance_secrets", &["singleton", "data"]),
+        ("local_accounts", &["name", "data"]),
         ("verified_tips", &["tree_id", "entry_id"]),
+        ("non_failed_tips", &["tree_id", "entry_id"]),
         (
             "store_state_namespaces",
             &[
@@ -358,6 +387,13 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
             }
             continue;
         }
+        // Earlier supported formats have no native account table. Adding it
+        // empty does not migrate or delete their legacy keys.
+        if (*table == "local_accounts" && version.is_some_and(|v| v < 4))
+            || (*table == "non_failed_tips" && version.is_some_and(|v| v < 5))
+        {
+            continue;
+        }
         if version == Some(0)
             && matches!(
                 *table,
@@ -373,7 +409,7 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
             return Err(malformed(&format!("missing columns in {table}")));
         }
         if *table == "store_state_namespaces"
-            && version == Some(SCHEMA_VERSION)
+            && version.is_some_and(|v| v >= 3)
             && ["size_bytes", "last_access_tick"]
                 .iter()
                 .any(|column| !existing.iter().any(|(name,)| name == column))
@@ -385,7 +421,7 @@ async fn validate_layout(backend: &SqlxBackend, version: Option<i64>) -> Result<
 }
 
 /// Add/backfill cache accounting once, during a supported migration. Existing
-/// durable access ticks are preserved; ordinary v3 reopen never backfills.
+/// durable access ticks are preserved; ordinary current reopen never backfills.
 async fn ensure_store_state_cache_columns(
     backend: &SqlxBackend,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,

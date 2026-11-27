@@ -52,7 +52,7 @@ async fn test_create_user() -> Result<(), Error> {
     assert!(users.contains(&"alice".to_string()), "Alice should exist");
 
     // Confirm alice can log in with her password.
-    let alice_reloaded = instance.login_account("alice", Some("password123")).await?;
+    let alice_reloaded = instance.login_account("alice", "password123").await?;
     assert_eq!(alice_reloaded.username(), "alice");
     Ok(())
 }
@@ -68,13 +68,11 @@ async fn test_login_user() -> Result<(), Error> {
     .await?;
 
     // Correct password should work.
-    let user = instance.login_account("alice", Some("password123")).await?;
+    let user = instance.login_account("alice", "password123").await?;
     assert_eq!(user.username(), "alice");
 
     // Invalid password should fail.
-    let result = instance
-        .login_account("alice", Some("wrong_password"))
-        .await;
+    let result = instance.login_account("alice", "wrong_password").await;
     assert!(result.is_err());
     Ok(())
 }
@@ -93,6 +91,65 @@ async fn test_new_database() {
     settings.set("name", "test_db");
     let database = user.create_database(settings, &key_id).await.unwrap();
     assert_eq!(database.get_name().await.unwrap(), "test_db");
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Unix sockets
+async fn test_service_commit_uses_signing_client_clock() -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::{FixedClock, service::ServiceServer};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("timestamp.sock");
+    let server_clock = Arc::new(FixedClock::new(8_000));
+    let _server_hold = server_clock.hold();
+    let (server, _) = Instance::create_backend_with_clock(
+        Box::new(InMemory::new()),
+        server_clock.clone(),
+        NewAccount::passwordless("admin"),
+    )
+    .await?;
+    let daemon = ServiceServer::bind(server.clone(), socket.clone()).await?;
+    let (shutdown, wait) = tokio::sync::watch::channel(());
+    let server_task = tokio::spawn(daemon.run(wait));
+
+    let clock = Arc::new(FixedClock::new(2_000));
+    let _hold = clock.hold();
+    let client = Instance::connect_unix_socket(socket, clock.clone()).await?;
+    let mut account = client.login_account("admin", "").await?;
+    let (db, _) = account.new_database().build().await?;
+    let tx = db.new_transaction().await?;
+    tx.get_settings()?.set_entry_timestamps(true).await?;
+    tx.get_store::<crate::store::DocStore>("content")
+        .await?
+        .set("message", "hello")
+        .await?;
+    let id = tx.commit().await?;
+    let entry = db.get_entry(&id).await?;
+    assert_eq!(entry.committed_at_ms(), Some(2_000));
+    assert_eq!(
+        server.get(&id).await?.canonical_bytes()?,
+        entry.canonical_bytes()?
+    );
+    assert_eq!(
+        server
+            .require_local_engine()?
+            .get_verification_status(&id)
+            .await?,
+        crate::backend::VerificationStatus::Verified,
+    );
+    assert_eq!(
+        db.try_verified_store_snapshot("content").await?,
+        Some(crate::Snapshot::from([id]))
+    );
+
+    drop(client);
+    let _ = shutdown.send(());
+    server_task.await.unwrap()?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -187,13 +244,13 @@ async fn test_instance_load_existing_backend() -> Result<(), Error> {
             .await?;
 
     // Verify the bob user still exists.
-    let bob = instance2.login_account("bob", None).await?;
+    let bob = instance2.login_account("bob", "").await?;
     let users = list_accounts_via(&bob).await?;
     assert_eq!(users.len(), 1, "Should have 1 user (bob)");
     assert!(users.contains(&"bob".to_string()), "Bob should exist");
 
     // Verify we can login the existing user
-    let user2 = instance2.login_account("bob", None).await?;
+    let user2 = instance2.login_account("bob", "").await?;
     assert_eq!(user2.username(), "bob");
 
     // Clean up the temporary file
@@ -264,22 +321,20 @@ async fn test_instance_load_with_password_protected_users() -> Result<(), Error>
     let instance2 = Instance::open_backend(Box::new(backend2)).await?;
 
     // Correct password should work
-    let user2 = instance2
-        .login_account("secure_alice", Some("secret123"))
-        .await?;
+    let user2 = instance2.login_account("secure_alice", "secret123").await?;
     assert_eq!(user2.username(), "secure_alice");
 
     // Wrong password should fail
     let result = instance2
-        .login_account("secure_alice", Some("wrong_password"))
+        .login_account("secure_alice", "wrong_password")
         .await;
     assert!(result.is_err(), "Login with wrong password should fail");
 
-    // No password should fail
-    let result = instance2.login_account("secure_alice", None).await;
+    // An empty password must not unlock a nonempty-password account
+    let result = instance2.login_account("secure_alice", "").await;
     assert!(
         result.is_err(),
-        "Login without password should fail for password-protected user"
+        "Empty password must not unlock a nonempty-password account"
     );
 
     // Clean up
@@ -314,10 +369,10 @@ async fn test_instance_load_multiple_users() -> Result<(), Error> {
         .await?;
 
     // Verify all users can login
-    instance1.login_account("alice", None).await?;
-    instance1.login_account("bob", Some("bobpass")).await?;
-    instance1.login_account("charlie", None).await?;
-    instance1.login_account("diana", Some("dianapass")).await?;
+    instance1.login_account("alice", "").await?;
+    instance1.login_account("bob", "bobpass").await?;
+    instance1.login_account("charlie", "").await?;
+    instance1.login_account("diana", "dianapass").await?;
 
     // Save backend
     save_in_memory_backend(&instance1, &path).await?;
@@ -327,7 +382,7 @@ async fn test_instance_load_multiple_users() -> Result<(), Error> {
     // Reload and verify all users still exist and can login
     let backend2 = load_in_memory_backend(&path).await?;
     let instance2 = Instance::open_backend(Box::new(backend2)).await?;
-    let admin2 = instance2.login_account("admin", None).await?;
+    let admin2 = instance2.login_account("admin", "").await?;
 
     let users = list_accounts_via(&admin2).await?;
     assert_eq!(
@@ -342,10 +397,10 @@ async fn test_instance_load_multiple_users() -> Result<(), Error> {
     assert!(users.contains(&"diana".to_string()));
 
     // Verify login still works for all users
-    instance2.login_account("alice", None).await?;
-    instance2.login_account("bob", Some("bobpass")).await?;
-    instance2.login_account("charlie", None).await?;
-    instance2.login_account("diana", Some("dianapass")).await?;
+    instance2.login_account("alice", "").await?;
+    instance2.login_account("bob", "bobpass").await?;
+    instance2.login_account("charlie", "").await?;
+    instance2.login_account("diana", "dianapass").await?;
 
     // Clean up
     if path.exists() {
@@ -401,7 +456,7 @@ async fn test_instance_load_user_databases_persist() -> Result<(), Error> {
     let instance2 =
         Instance::open_backend_with_clock(Box::new(backend2), Arc::new(FixedClock::default()))
             .await?;
-    let user2 = instance2.login_account("eve", None).await?;
+    let user2 = instance2.login_account("eve", "").await?;
 
     // Load databases by root_id and verify their settings
     let loaded_db1 = user2.open_database(&db1_root).await?;
@@ -458,7 +513,7 @@ async fn test_instance_load_idempotency() -> Result<(), Error> {
         );
 
         // AccountSession list should be the same (just frank).
-        let user = instance.login_account("frank", None).await?;
+        let user = instance.login_account("frank", "").await?;
         assert_eq!(user.username(), "frank");
         let users = list_accounts_via(&user).await?;
         assert_eq!(users.len(), 1, "Should have 1 user (frank)");
@@ -508,7 +563,7 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     assert_eq!(device_id1, device_id2);
 
     // Grace should still exist (existing backend).
-    let grace = instance2.login_account("grace", None).await?;
+    let grace = instance2.login_account("grace", "").await?;
     let users = list_accounts_via(&grace).await?;
     assert_eq!(users.len(), 1, "Should have 1 user (grace)");
     assert!(users.contains(&"grace".to_string()), "Grace should exist");
@@ -583,7 +638,7 @@ async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
     let instance3 =
         Instance::open_backend_with_clock(Box::new(backend3), Arc::new(FixedClock::default()))
             .await?;
-    let alice = instance3.login_account("alice", None).await?;
+    let alice = instance3.login_account("alice", "").await?;
     let users = list_accounts_via(&alice).await?;
     assert_eq!(users.len(), 1, "Should have 1 user (alice)");
     assert!(users.contains(&"alice".to_string()), "Alice should exist");
@@ -606,7 +661,7 @@ async fn test_instance_create_on_fresh_backend() -> Result<(), Error> {
     assert_eq!(bob.username(), "bob");
 
     // Bob can immediately log back in.
-    let bob_reloaded = instance.login_account("bob", None).await?;
+    let bob_reloaded = instance.login_account("bob", "").await?;
     assert_eq!(bob_reloaded.username(), "bob");
 
     Ok(())
@@ -656,7 +711,7 @@ async fn test_memory_url_snapshot_round_trip_via_flush() -> Result<(), Error> {
     );
     // The instance is still fully usable after flush — flush is a
     // checkpoint, not a shutdown.
-    let _ = instance.login_account("alice", None).await?;
+    let _ = instance.login_account("alice", "").await?;
     drop(instance);
 
     // Second run: file exists → load and yield None for the user.
@@ -666,7 +721,7 @@ async fn test_memory_url_snapshot_round_trip_via_flush() -> Result<(), Error> {
         maybe_user.is_none(),
         "load arm should not produce a fresh user"
     );
-    let alice2 = instance2.login_account("alice", None).await?;
+    let alice2 = instance2.login_account("alice", "").await?;
     assert_eq!(alice2.username(), "alice");
     drop(alice2);
 
@@ -848,7 +903,7 @@ async fn test_roundtrip_after_flush() -> Result<(), Error> {
         "device id must survive flush + reload"
     );
     // The persisted user is still there.
-    let alice = reloaded.login_account("alice", None).await?;
+    let alice = reloaded.login_account("alice", "").await?;
     assert_eq!(alice.username(), "alice");
     Ok(())
 }
@@ -899,7 +954,7 @@ async fn test_concurrent_flushes_are_serialized() -> Result<(), Error> {
     // The on-disk snapshot must still be a well-formed, fully-initialised
     // instance.
     let reloaded = Instance::connect(&url).await?;
-    let _alice = reloaded.login_account("alice", None).await?;
+    let _alice = reloaded.login_account("alice", "").await?;
     Ok(())
 }
 
@@ -937,7 +992,7 @@ async fn test_open_or_create_fresh_and_existing() -> Result<(), Error> {
     );
 
     // Login should still work for the persisted alice.
-    let alice2 = instance2.login_account("alice", None).await?;
+    let alice2 = instance2.login_account("alice", "").await?;
     assert_eq!(alice2.username(), "alice");
 
     // Clean up
@@ -963,7 +1018,7 @@ async fn test_sqlite_in_memory_url_round_trip() -> Result<(), Error> {
     assert_eq!(alice.username(), "alice");
 
     // Schema setup + a real login round-trip across pool connections.
-    let alice2 = instance.login_account("alice", None).await?;
+    let alice2 = instance.login_account("alice", "").await?;
     assert_eq!(alice2.username(), "alice");
     Ok(())
 }

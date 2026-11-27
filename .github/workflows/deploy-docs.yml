@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Nix
-        uses: ./.github/actions/setup-nix
+        uses: $/.github/actions/setup-nix
 
       - name: Build documentation
         run: nix build .#doc.site -o site

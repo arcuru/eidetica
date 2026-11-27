@@ -1,8 +1,8 @@
 //! Database management commands.
 
-use eidetica::{Instance, backend::BackendImpl};
+use eidetica::backend::BackendImpl;
 
-use crate::backend::create_backend;
+use crate::backend::{create_backend, open_instance};
 use crate::cli::{Backend, BackendConfig, DbListArgs, DbRepairArgs, DbResetArgs};
 use crate::output::{OutputFormat, print_table};
 
@@ -12,7 +12,7 @@ pub async fn list(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let backend = create_backend(&args.backend_config).await?;
-    let instance = Instance::open_backend(backend).await?;
+    let instance = open_instance(&args.backend_config, backend).await?;
 
     let all_roots = instance
         .backend()
@@ -109,7 +109,19 @@ pub async fn repair_verification(args: &DbRepairArgs) -> Result<(), Box<dyn std:
 async fn open_existing(
     config: &BackendConfig,
 ) -> Result<(Box<dyn BackendImpl>, Option<std::path::PathBuf>), Box<dyn std::error::Error>> {
-    let policy = crate::backend::cache_policy(config);
+    let policy = crate::backend::primary_policy(config)?;
+    if let Some(cache) = crate::backend::separate_cache(config)? {
+        let (primary, save_path) = open_existing_primary(config, policy).await?;
+        let backend = crate::backend::attach_cache(config, cache, primary).await?;
+        return Ok((backend, save_path));
+    }
+    open_existing_primary(config, policy).await
+}
+
+async fn open_existing_primary(
+    config: &BackendConfig,
+    policy: eidetica::backend::DerivedCachePolicy,
+) -> Result<(Box<dyn BackendImpl>, Option<std::path::PathBuf>), Box<dyn std::error::Error>> {
     match config.backend {
         Backend::Inmemory => {
             let dir = config
@@ -132,10 +144,7 @@ async fn open_existing(
                 return Err("SQLite database file does not exist".into());
             }
             Ok((
-                Box::new(
-                    eidetica::backend::database::Sqlite::open_with_cache_policy(&path, policy)
-                        .await?,
-                ),
+                Box::new(crate::backend::open_sqlite(config, &path).await?),
                 None,
             ))
         }

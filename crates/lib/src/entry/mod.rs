@@ -20,7 +20,15 @@ pub use builder::EntryBuilder;
 pub use errors::EntryError;
 pub use id::ID;
 
-use crate::{Result, auth::types::AuthInfo, constants::ROOT, store::StoreError};
+use crate::{
+    Result,
+    auth::{
+        crypto::{PrivateKey, sign_entry},
+        types::AuthInfo,
+    },
+    constants::ROOT,
+    store::StoreError,
+};
 
 use id::IdError;
 
@@ -288,11 +296,15 @@ impl Entry {
     /// keeps that honest: an `Entry` is never mutated in place, so a memoized ID can never
     /// outlive the content it was computed from.
     ///
+    /// To sign an entry, use [`Entry::sign`] rather than attaching a signature here.
+    ///
     /// ```
-    /// # use eidetica::entry::Entry;
+    /// # use eidetica::{PrivateKey, auth::types::SigKey, entry::Entry};
     /// # fn main() -> eidetica::Result<()> {
+    /// let key = PrivateKey::generate();
     /// let entry = Entry::root_builder().build()?;
-    /// let signed = entry.with_auth(|auth| auth.signature = Some("c2lnbmF0dXJl".to_string()));
+    /// let hinted = entry.with_auth(|auth| auth.key = SigKey::from_pubkey(&key.public_key()));
+    /// let signed = hinted.sign(&key)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -300,6 +312,19 @@ impl Entry {
         update(&mut self.auth);
         self.id_cache = IdCache::default();
         self
+    }
+
+    /// Sign this entry with `key` and return the signed entry.
+    ///
+    /// This is the single entrance for producing a signed entry. The signature covers the
+    /// entry's canonical signing form, which includes the key hint already present in
+    /// [`Entry::auth`], so set the hint before signing. Any existing signature is replaced.
+    ///
+    /// Like [`Entry::with_auth`], this consumes `self`: the signature is part of the entry's
+    /// content, so the returned entry has a different ID from the receiver.
+    pub fn sign(self, key: &PrivateKey) -> Result<Self> {
+        let signature = sign_entry(&self, key)?;
+        Ok(self.with_auth(|auth| auth.signature = Some(signature)))
     }
 
     /// Get the ID of the root `Entry` of the tree this entry belongs to.
@@ -352,6 +377,25 @@ impl Entry {
         self.tree.metadata.as_ref()
     }
 
+    /// The author's claimed commit time in milliseconds since the Unix epoch.
+    ///
+    /// `None` means unknown: the timestamp may be absent or malformed. Peers
+    /// can read it even when Store data is encrypted. It is signed with the
+    /// entry but is advisory, not a receipt time or a basis for ordering or
+    /// authorization. Authors' clocks can disagree or go backwards.
+    pub fn committed_at_ms(&self) -> Option<u64> {
+        #[derive(Deserialize)]
+        struct Timestamp {
+            ts: Option<u64>,
+        }
+
+        let metadata = self.metadata()?;
+        if !metadata.trim_ascii_start().starts_with(b"{") {
+            return None;
+        }
+        serde_json::from_slice::<Timestamp>(metadata).ok()?.ts
+    }
+
     /// Get the `RawData` for a specific named subtree within this entry.
     ///
     /// Returns an error if the subtree is not found or if the subtree exists but has no data (`None`).
@@ -375,7 +419,8 @@ impl Entry {
         Ok(self.tree.parents.clone())
     }
 
-    /// Get the IDs of the parent entries specific to a named subtree's history.
+    /// Get the IDs of contributions consumed in a named Store's history.
+    /// Main ancestry may observe other contributions without consuming them.
     /// The parent IDs are returned in CID order (`ID`'s `Ord`, not lexicographic string order).
     pub fn subtree_parents(&self, subtree_name: impl AsRef<str>) -> Result<Vec<ID>> {
         self.subtrees
@@ -422,22 +467,24 @@ impl Entry {
     /// This creates a copy of the entry with the signature field removed from auth,
     /// which is necessary for signature generation and verification.
     /// The returned entry has deterministic field ordering for consistent signatures.
-    pub fn canonical_for_signing(&self) -> Self {
+    pub(crate) fn canonical_for_signing(&self) -> Self {
         self.clone().with_auth(|auth| auth.signature = None)
     }
 
     /// Create canonical bytes for signing or ID generation.
     ///
     /// This method serializes the entry to DAG-CBOR with deterministic field ordering.
-    /// For signing purposes, call `canonical_for_signing()` first.
+    /// Signing uses the signature-stripped form instead; see [`Entry::sign`].
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         self.to_dagcbor()
     }
 
-    /// Create canonical bytes for signing (convenience method).
+    /// Create the canonical bytes covered by an entry signature.
     ///
-    /// This combines `canonical_for_signing()` and `canonical_bytes()` for convenience.
-    pub fn signing_bytes(&self) -> Result<Vec<u8>> {
+    /// This combines `canonical_for_signing()` and `canonical_bytes()`. It is crate-private:
+    /// sign through [`Entry::sign`] and verify through
+    /// [`verify_entry_signature`](crate::auth::crypto::verify_entry_signature).
+    pub(crate) fn signing_bytes(&self) -> Result<Vec<u8>> {
         self.canonical_for_signing().canonical_bytes()
     }
 
@@ -470,10 +517,12 @@ impl Entry {
     /// This strict enforcement prevents orphaned entries that cause sync failures.
     ///
     /// ## Subtree Parent Relationships
-    /// - For root entries: Subtrees may have empty parents (they establish the subtree roots)
-    /// - For non-root entries: Empty subtree parents require deeper validation:
-    ///   - Could be legitimate (first entry in a new subtree)
-    ///   - Could indicate broken relationships (needs DAG traversal to verify)
+    /// - Empty ordinary Store parents start an independent Store branch, even
+    ///   when main ancestry contains earlier contributions to that Store.
+    /// - Named Store parents require same-Store/database membership, main-only
+    ///   containment and strict effective-height growth during local/received validation.
+    /// - `_settings` write parents and the signed settings pin instead require
+    ///   the exact causal pre-write settings frontier.
     ///
     /// ## Multi-Layer Validation System
     /// Complex validation happens at multiple layers:
@@ -484,8 +533,8 @@ impl Entry {
     ///
     /// # Special Cases
     /// - The "_root" marker subtree has special handling and skips validation
-    /// - The "_settings" subtree follows standard validation rules
-    /// - Empty subtree parents are logged but deferred to transaction layer
+    /// - Settings authority and ancestry checks require backend evidence and
+    ///   run outside this structural validator.
     ///
     /// # Returns
     ///
@@ -520,7 +569,7 @@ impl Entry {
     }
 
     pub fn validate(&self) -> Result<()> {
-        use crate::constants::{ROOT, SETTINGS};
+        use crate::constants::ROOT;
         use crate::instance::errors::InstanceError;
 
         // CRITICAL VALIDATION: Root entries (with _root marker) cannot have parents
@@ -563,34 +612,6 @@ impl Entry {
             // Skip validation for the special "_root" marker subtree
             if subtree_name == ROOT {
                 continue;
-            }
-
-            // For non-root entries with empty subtree parents, this is only valid if:
-            // 1. The entry has no main parents (making it a legitimate subtree root), OR
-            // 2. The subtree is genuinely being established for the first time within the tree
-            //
-            // Note: We can't perform deep validation here without access to the backend,
-            // so we defer complex validation to transaction/backend layers where full
-            // DAG traversal is possible. This basic validation catches obvious structural errors.
-            if !is_root_entry && subtree_parents.is_empty() {
-                // This is a lightweight structural check - more comprehensive validation
-                // happens in transaction/backend layers with full DAG access
-                tracing::debug!(
-                    entry_id = %self.id(),
-                    subtree = subtree_name,
-                    "Entry has empty subtree parents - will be validated in transaction layer"
-                );
-            }
-
-            // Special validation for the critical "_settings" subtree
-            // Note: Settings subtree follows the same rules as other subtrees - empty parents
-            // are valid for the first entry in the subtree. Comprehensive validation happens
-            // in transaction/backend layers with full DAG access.
-            if subtree_name == SETTINGS && !is_root_entry && subtree_parents.is_empty() {
-                tracing::debug!(
-                    entry_id = %self.id(),
-                    "Settings subtree has empty parents - will be validated in transaction layer"
-                );
             }
 
             // Validate that subtree parents are not empty strings and have valid format

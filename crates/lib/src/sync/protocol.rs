@@ -126,6 +126,13 @@ pub struct SyncRequestAuth {
     pub nonce: Vec<u8>,
     /// Signature over [`SyncRequestAuth::signing_bytes`].
     pub signature: Vec<u8>,
+    /// Membership proofs use a separate domain and bind the requested permission.
+    #[serde(default, skip_serializing_if = "is_false")]
+    membership: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl SyncRequestAuth {
@@ -137,9 +144,36 @@ impl SyncRequestAuth {
         tips: &Snapshot,
         timestamp_ms: u64,
     ) -> Self {
+        Self::sign_access(
+            signing_key,
+            server_pubkey,
+            tree_id,
+            tips,
+            timestamp_ms,
+            None,
+        )
+    }
+
+    /// `membership` binds explicit membership and its requested permission.
+    /// `None` preserves the existing ordinary sync proof format.
+    pub(crate) fn sign_access(
+        signing_key: &PrivateKey,
+        server_pubkey: &PublicKey,
+        tree_id: &ID,
+        tips: &Snapshot,
+        timestamp_ms: u64,
+        membership: Option<Permission>,
+    ) -> Self {
         let nonce = generate_challenge();
         let signature = create_challenge_response(
-            Self::signing_bytes(server_pubkey, tree_id, tips, timestamp_ms, &nonce),
+            Self::signing_bytes(
+                server_pubkey,
+                tree_id,
+                tips,
+                timestamp_ms,
+                &nonce,
+                membership,
+            ),
             signing_key,
         );
         Self {
@@ -147,6 +181,7 @@ impl SyncRequestAuth {
             timestamp_ms,
             nonce,
             signature,
+            membership: membership.is_some(),
         }
     }
 
@@ -160,11 +195,41 @@ impl SyncRequestAuth {
         tree_id: &ID,
         tips: &Snapshot,
     ) -> Result<(), AuthError> {
+        self.verify_access(server_pubkey, tree_id, tips, None)
+    }
+
+    pub(crate) fn verify_access(
+        &self,
+        server_pubkey: &PublicKey,
+        tree_id: &ID,
+        tips: &Snapshot,
+        requested_permission: Option<Permission>,
+    ) -> Result<(), AuthError> {
+        let membership = if self.membership {
+            Some(
+                requested_permission.ok_or_else(|| AuthError::InvalidAuthConfiguration {
+                    reason: "membership proof requires a requested permission".into(),
+                })?,
+            )
+        } else {
+            None
+        };
         verify_challenge_response(
-            Self::signing_bytes(server_pubkey, tree_id, tips, self.timestamp_ms, &self.nonce),
+            Self::signing_bytes(
+                server_pubkey,
+                tree_id,
+                tips,
+                self.timestamp_ms,
+                &self.nonce,
+                membership,
+            ),
             &self.signature,
             &self.key,
         )
+    }
+
+    pub(crate) fn requires_direct_key(&self) -> bool {
+        self.membership
     }
 
     /// The exact bytes covered by the signature.
@@ -177,6 +242,7 @@ impl SyncRequestAuth {
         tips: &Snapshot,
         timestamp_ms: u64,
         nonce: &[u8],
+        membership: Option<Permission>,
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
         let mut push = |field: &[u8]| {
@@ -184,7 +250,23 @@ impl SyncRequestAuth {
             bytes.extend_from_slice(field);
         };
 
-        push(SYNC_REQUEST_DOMAIN);
+        match membership {
+            None => push(SYNC_REQUEST_DOMAIN),
+            Some(permission) => {
+                push(b"eidetica/sync/key-membership/v1");
+                match permission {
+                    Permission::Read => push(b"read"),
+                    Permission::Write(priority) => {
+                        push(b"write");
+                        push(&priority.to_be_bytes());
+                    }
+                    Permission::Admin(priority) => {
+                        push(b"admin");
+                        push(&priority.to_be_bytes());
+                    }
+                }
+            }
+        }
         push(server_pubkey.to_string().as_bytes());
         push(tree_id.to_string().as_bytes());
         push(&(tips.len() as u64).to_be_bytes());
@@ -200,6 +282,49 @@ impl SyncRequestAuth {
 /// Domain separator, so a sync signature can never be mistaken for a signature
 /// over an entry or a handshake challenge.
 const SYNC_REQUEST_DOMAIN: &[u8] = b"eidetica/sync/tree-request/v1";
+
+#[cfg(test)]
+mod request_auth_tests {
+    use super::*;
+
+    #[test]
+    fn membership_proof_binds_mode_and_permission() {
+        let key = PrivateKey::generate();
+        let peer = PrivateKey::generate().public_key();
+        let root = ID::from_bytes("identity");
+        let tips = Snapshot::EMPTY;
+        let permission = Permission::Write(5);
+        let proof = SyncRequestAuth::sign_access(&key, &peer, &root, &tips, 100, Some(permission));
+        let wire = serde_json::to_value(&proof).unwrap();
+        let decoded: SyncRequestAuth = serde_json::from_value(wire).unwrap();
+        assert!(decoded.requires_direct_key());
+        assert!(
+            decoded
+                .verify_access(&peer, &root, &tips, Some(permission))
+                .is_ok()
+        );
+        assert!(
+            decoded
+                .verify_access(&peer, &root, &tips, Some(Permission::Write(6)))
+                .is_err()
+        );
+        assert!(decoded.verify(&peer, &root, &tips).is_err());
+
+        // Legacy readers see the ordinary proof fields only. A membership
+        // proof must not pass ordinary verification on that projection.
+        let mut ordinary_projection = decoded;
+        ordinary_projection.membership = false;
+        assert!(ordinary_projection.verify(&peer, &root, &tips).is_err());
+        let ordinary = SyncRequestAuth::sign(&key, &peer, &root, &tips, 100);
+        assert!(
+            serde_json::to_value(&ordinary)
+                .unwrap()
+                .get("membership")
+                .is_none()
+        );
+        assert!(ordinary.verify(&peer, &root, &tips).is_ok());
+    }
+}
 
 /// Bootstrap response containing complete tree state
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

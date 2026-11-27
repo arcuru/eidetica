@@ -13,14 +13,18 @@ use async_trait::async_trait;
 /// A document-oriented Store providing ergonomic access to Doc CRDT data.
 ///
 /// DocStore wraps the [`Doc`](crate::crdt::Doc) CRDT to provide path-based access to nested
-/// document structures. It supports string values and deletions via tombstones.
+/// document structures and literal-key access to individual map entries.
+/// It supports typed values and deletions via tombstones.
 ///
 /// # API Overview
 ///
 /// - **Basic operations**: [`get`](Self::get), [`set`](Self::set), [`delete`](Self::delete),
 ///   [`get_all`](Self::get_all), [`contains_key`](Self::contains_key)
+/// - **Literal keys**: [`get_literal`](Self::get_literal), [`set_literal`](Self::set_literal),
+///   [`delete_literal`](Self::delete_literal) preserve a single key verbatim
 /// - **Path operations**: [`get_path`](Self::get_path), [`set_path`](Self::set_path),
 ///   [`contains_path`](Self::contains_path)
+/// - **Fallible optional reads**: [`try_get`](Self::try_get), [`try_get_path`](Self::try_get_path)
 /// - **Path mutation**: [`modify_path`](Self::modify_path),
 ///   [`get_or_insert_path`](Self::get_or_insert_path),
 ///   [`modify_or_insert_path`](Self::modify_or_insert_path)
@@ -56,6 +60,50 @@ impl Store for DocStore {
 }
 
 impl DocStore {
+    /// Gets one literal top-level key, without parsing dots or normalizing text.
+    ///
+    /// Reads the merged transaction view, including staged tombstones. Returns
+    /// `StoreError::KeyNotFound` for a missing or deleted key, and propagates
+    /// backend and decoding errors. Existing [`get`](Self::get) remains path-based.
+    pub async fn get_literal(&self, key: impl AsRef<str>) -> Result<Value> {
+        let key = key.as_ref();
+        self.get_all()
+            .await?
+            .get_literal(key)
+            .cloned()
+            .ok_or_else(|| {
+                StoreError::KeyNotFound {
+                    store: self.name.clone(),
+                    key: key.to_owned(),
+                }
+                .into()
+            })
+    }
+
+    /// Stages one literal top-level key through the normal transaction machinery.
+    ///
+    /// Accepts empty, dotted and Unicode keys verbatim. The existing Doc encoding,
+    /// merge rules and commit/authentication checks are unchanged; this does not
+    /// persist anything until [`Transaction::commit`] is called.
+    pub async fn set_literal(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
+        let mut data = self.local_data()?.unwrap_or_default();
+        data.set_literal(key, value);
+        self.txn.update_subtree(&self.name, data.encode()?).await
+    }
+
+    /// Stages deletion of one literal top-level key via a tombstone.
+    ///
+    /// Returns `false` without staging a change when the key is already missing
+    /// or deleted. A dotted key never deletes the corresponding nested path.
+    pub async fn delete_literal(&self, key: impl AsRef<str>) -> Result<bool> {
+        let key = key.as_ref();
+        if self.get_all().await?.get_literal(key).is_none() {
+            return Ok(false);
+        }
+        self.set_literal(key, Value::Deleted).await?;
+        Ok(true)
+    }
+
     /// Gets a value associated with a key from the Store.
     ///
     /// This method prioritizes returning data staged within the current `Transaction`.
@@ -99,10 +147,27 @@ impl DocStore {
         }
     }
 
+    /// Gets an optional value without hiding read failures.
+    ///
+    /// Reads the historical state and merges staged changes, as in
+    /// [`get_all`](Self::get_all), then looks up the dotted key/path.
+    /// Returns `Ok(None)` only when the requested value is missing or deleted
+    /// in that merged document, including deletion of an ancestor.
+    /// Backend errors (including missing historical Entries), authentication,
+    /// decoding and transaction errors propagate unchanged, even if a value
+    /// is staged locally.
+    ///
+    /// Prefer this method to [`get_option`](Self::get_option) when absence permits
+    /// a fallback but an unreadable Store must not be treated as empty.
+    pub async fn try_get(&self, key: impl AsRef<str>) -> Result<Option<Value>> {
+        Ok(self.get_all().await?.get(key.as_ref()).cloned())
+    }
+
     /// Gets a value associated with a key from the Store (HashMap-like API).
     ///
     /// This method returns an Option for compatibility with std::HashMap.
-    /// Returns `None` if the key is not found or is deleted.
+    /// Returns `None` for **any** error, including missing/deleted keys and read failures.
+    /// Use [`try_get`](Self::try_get) to preserve errors.
     ///
     /// # Arguments
     /// * `key` - The key to retrieve the value for.
@@ -307,10 +372,21 @@ impl DocStore {
         }
     }
 
+    /// Gets an optional path value without hiding read failures.
+    ///
+    /// Like [`try_get`](Self::try_get), but accepts a [`Path`]. Missing or deleted
+    /// values yield `Ok(None)`; backend, authentication, decoding and transaction
+    /// errors propagate unchanged. Staged changes are merged with history before
+    /// lookup, including tombstones and replacement of ancestor containers.
+    pub async fn try_get_path(&self, path: impl AsRef<Path>) -> Result<Option<Value>> {
+        self.try_get(path.as_ref().as_str()).await
+    }
+
     /// Gets a value by path using dot notation (HashMap-like API).
     ///
     /// # Returns
-    /// An `Option<Value>` containing the value if found, or `None` if not found.
+    /// An `Option<Value>` containing the value if found, or `None` for any error.
+    /// Use [`try_get_path`](Self::try_get_path) to preserve errors.
     pub async fn get_path_option(&self, path: impl AsRef<Path>) -> Option<Value> {
         self.get_path(path).await.ok()
     }
@@ -1053,8 +1129,9 @@ pub trait DocStoreInit<'u> {
     /// Register a DocStore prepopulated with the contents of `doc`.
     ///
     /// Each top-level key in `doc` is written into the DocStore via
-    /// [`DocStore::set`]. The caller picks the storage layout — flat fields,
-    /// a single `set_json("data", ...)` blob, nested values, whatever the
+    /// [`DocStore::set_literal`], preserving dots and empty keys. The caller picks
+    /// the storage layout — flat fields, a single `set_json("data", ...)` blob,
+    /// nested values, whatever the
     /// downstream use case wants — by how they build the Doc before passing
     /// it in.
     fn initialize_doc(
@@ -1075,7 +1152,7 @@ impl<'u> DocStoreInit<'u> for crate::account::DatabaseBuilder<'u> {
     ) -> crate::account::DatabaseBuilder<'u> {
         self.initialize_store::<DocStore, _, _>(name, move |s| async move {
             for (key, value) in doc.iter() {
-                s.set(key.clone(), value.clone()).await?;
+                s.set_literal(key.clone(), value.clone()).await?;
             }
             Ok(())
         })

@@ -6,11 +6,25 @@ keeping two kinds of state separate:
 
 1. Database settings are replicated database-owned state, accessed through
    `Database::get_settings()`.
-2. `SyncSettings` are this caller's signed, durable private preferences.
+2. `SyncSettings` are this caller's durable installation-local preferences; they are not signed Account Entries.
 
 Plain `Database` handles remain valid for ordinary reads and transactions, but
 cannot manage a user's private sharing preference. Their sharing methods return
 an explicit missing-capability error.
+
+## Creation Failures
+
+Database genesis and the caller's local setup are separate steps.
+If genesis succeeds but session-key registration, tracking, key installation, or sync setup fails, creation returns `Error::DatabaseCreation { root_id, source }`.
+This applies to the direct `Database` constructors, `AccountSession` creation methods, and `DatabaseBuilder::build`.
+Use `error.created_database_id()` to obtain the exact committed root and inspect `source` for the underlying failure.
+Keep that ID and the caller-held credentials for explicit repair; retrying creation can produce a second database.
+
+The ID alone grants no access and does not mean setup finished.
+Reopen that root through an authorized signer, for example `AccountSigner::open_database`, using the original database key.
+Local tracking and activation are separate choices, not automatic consequences of reopening.
+Pre-genesis failures return their original error with no created ID.
+A transport failure during the commit itself may leave its outcome unknown; this API does not provide exactly-once creation or recover a lost commit acknowledgement.
 
 ## Share a Database
 
@@ -40,7 +54,7 @@ println!("share {}", database.ticket().await?);
 # }
 ```
 
-A successful call acknowledges durable signed preference state. It does not say
+A successful call acknowledges durable native preference state. It does not say
 that the daemon has reconciled its internal configuration or is advertising an
 address. If the connection fails while committing, the write may have reached
 the owner. Safely retry it or read `sync_settings()`.
@@ -60,6 +74,32 @@ reachability.
 
 A ticket is a locator with address hints, not an access grant. The receiver
 still needs database authorization or the bootstrap and approval flow.
+
+## Inspect a Tracking Preference
+
+Use `AccountSession::tracked_database(&database_id).await` to inspect one
+tracking row without opening or tracking the target database. `Ok(Some(row))`
+contains this account's preferences, including `row.sync_settings.sync_enabled`;
+`Ok(None)` means the row is absent. Authorization, storage read and decoding
+failures remain errors, not an absent row or a disabled preference.
+
+This read uses native installation-local login state in embedded and service
+mode, or session-local state for caller-held credentials. It decodes the local
+record, never a replicated tracking Table or Store-state cache. It does not
+change keys or settings or grant access to the target database. Connected reads
+require the exact authenticated login scope; failures use the existing service
+error representation.
+
+```rust
+# use eidetica::{AccountSession, ID};
+async fn local_sync_preference(
+    session: &AccountSession,
+    database_id: &ID,
+) -> eidetica::Result<Option<bool>> {
+    Ok(session.tracked_database(database_id).await?
+        .map(|row| row.sync_settings.sync_enabled))
+}
+```
 
 ## Stop Sharing
 

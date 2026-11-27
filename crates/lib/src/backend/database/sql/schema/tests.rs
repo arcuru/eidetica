@@ -107,6 +107,9 @@ impl TestDatabase {
             release_failed_postgres_claim(backend.pool.take(), _connection.into_inner()).await;
             return;
         }
+        if let Some(pool) = backend.derived_pool.take() {
+            pool.close().await;
+        }
         backend.pool.take().unwrap().close().await;
     }
 
@@ -120,6 +123,22 @@ impl TestDatabase {
                 .unwrap();
         }
         self.pool.close().await;
+    }
+
+    async fn cache_pool(&self) -> AnyPool {
+        #[cfg(feature = "sqlite")]
+        if self.url.starts_with("sqlite:") {
+            use std::str::FromStr;
+            let options = sqlx::sqlite::SqliteConnectOptions::from_str(&self.url).unwrap();
+            let mut path = options.get_filename().as_os_str().to_owned();
+            path.push(".cache");
+            return AnyPoolOptions::new()
+                .max_connections(1)
+                .connect(&super::super::sqlite_path_url(std::path::Path::new(&path)).unwrap())
+                .await
+                .unwrap();
+        }
+        self.pool.clone()
     }
 
     async fn marker(&self, version: Option<i64>) {
@@ -540,7 +559,7 @@ async fn mainline_migration_repairs_statuses_and_retains_only_tips() {
 }
 
 /// Real v0 data survives migration and reopen; only the inconsistent child label
-/// changes. Both derived and authoritative Store state retain their original keys.
+/// changes. PostgreSQL retains both lifecycles; SQLite v4 discards Derived state only.
 #[tokio::test]
 async fn mainline_migration_preserves_data_metadata_and_store_state() {
     let Some(db) = TestDatabase::new().await else {
@@ -656,6 +675,14 @@ async fn mainline_migration_preserves_data_metadata_and_store_state() {
         .find(|row| row.0 == child.id().to_string())
         .unwrap()
         .3 = crate::backend::VerificationStatus::Unverified.as_db_int();
+    if db.url.starts_with("sqlite:") {
+        expected
+            .namespaces
+            .retain(|row| row.3 == StoreStateLifecycle::Authoritative.as_db_int());
+        expected
+            .records
+            .retain(|row| row.0 == "authoritative-mainline");
+    }
     for _ in 0..2 {
         let backend = db.open().await.unwrap();
         assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
@@ -663,19 +690,32 @@ async fn mainline_migration_preserves_data_metadata_and_store_state() {
             backend.verified_snapshot(&root.id()).await.unwrap().tips(),
             &[root.id()]
         );
-        let view = backend
-            .resolve_store_state(&request)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(view.namespace_id, "warm-mainline");
-        assert_eq!(
-            backend
-                .store_state_record_get(&view, b"value")
+        let view = backend.resolve_store_state(&request).await.unwrap();
+        if db.url.starts_with("sqlite:") {
+            assert!(view.is_none(), "SQLite migration starts Derived state cold");
+            let mut authority = request.clone();
+            authority.lifecycle = StoreStateLifecycle::Authoritative;
+            let view = backend
+                .resolve_store_state(&authority)
                 .await
-                .unwrap(),
-            Some(b"unchanged mainline materialization".to_vec())
-        );
+                .unwrap()
+                .unwrap();
+            assert_eq!(view.namespace_id, "authoritative-mainline");
+            assert_eq!(
+                backend.store_state_record_get(&view, b"key").await.unwrap(),
+                Some(b"authoritative mainline record".to_vec())
+            );
+        } else {
+            let view = view.unwrap();
+            assert_eq!(view.namespace_id, "warm-mainline");
+            assert_eq!(
+                backend
+                    .store_state_record_get(&view, b"value")
+                    .await
+                    .unwrap(),
+                Some(b"unchanged mainline materialization".to_vec())
+            );
+        }
         assert_eq!(db.content().await, expected);
         db.close_backend(backend).await;
     }
@@ -885,6 +925,12 @@ async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
     // Exclusive startup reclaims old derived reader generations, never authority.
     before.namespaces.retain(|row| row.0 != "unlinked-parent");
     before.records.retain(|row| row.0 != "unlinked-parent");
+    if db.url.starts_with("sqlite:") {
+        before
+            .namespaces
+            .retain(|row| row.3 == StoreStateLifecycle::Authoritative.as_db_int());
+        before.records.retain(|row| row.0 == "authority-parent");
+    }
     let tips: Vec<(String, String)> =
         sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2")
             .fetch_all(&db.pool)
@@ -922,7 +968,10 @@ async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
         );
         let sizes: Vec<(String, i64, i64)> = sqlx::query_as("SELECT namespace_id, size_bytes, last_access_tick FROM store_state_namespaces ORDER BY 1")
             .fetch_all(&db.pool).await.unwrap();
-        assert_eq!(sizes.len(), 2);
+        assert_eq!(
+            sizes.len(),
+            if db.url.starts_with("sqlite:") { 1 } else { 2 }
+        );
         for (_, size, tick) in sizes {
             assert_eq!(size, 1 + 12, "backfill includes key and value bytes");
             assert_eq!(
@@ -930,16 +979,17 @@ async fn parent_v2_cache_upgrade_preserves_state_without_verification_repair() {
                 "legacy recency starts cold; reads do not persist each hit"
             );
         }
-        let view = backend
-            .resolve_store_state(&request)
-            .await
-            .unwrap()
-            .expect("old-key record remains warm");
-        assert_eq!(view.namespace_id, "warm-parent");
-        assert_eq!(
-            backend.store_state_record_get(&view, b"v").await.unwrap(),
-            Some(b"parent bytes".to_vec())
-        );
+        let view = backend.resolve_store_state(&request).await.unwrap();
+        if db.url.starts_with("sqlite:") {
+            assert!(view.is_none(), "SQLite v4 migration discards Derived rows");
+        } else {
+            let view = view.expect("PostgreSQL old-key record remains warm");
+            assert_eq!(view.namespace_id, "warm-parent");
+            assert_eq!(
+                backend.store_state_record_get(&view, b"v").await.unwrap(),
+                Some(b"parent bytes".to_vec())
+            );
+        }
         // New Snapshot keys miss normally; the upgrade did not delete old data.
         let mut new_request = request.clone();
         new_request.source_key =
@@ -1001,7 +1051,7 @@ async fn parent_v2_cache_backfill_failure_rolls_back_columns_and_data() {
 }
 
 #[tokio::test]
-async fn v2_existing_accounting_preserves_ticks_and_v3_never_backfills() {
+async fn v2_existing_accounting_preserves_ticks_and_current_never_backfills() {
     let Some(db) = TestDatabase::new().await else {
         return;
     };
@@ -1020,17 +1070,27 @@ async fn v2_existing_accounting_preserves_ticks_and_v3_never_backfills() {
     for _ in 0..2 {
         let backend = db.open().await.unwrap();
         assert_eq!(db.versions().await, vec![(SCHEMA_VERSION,)]);
-        assert_eq!(backend.cache_recency.lock().unwrap().now(), 9000);
+        assert_eq!(
+            backend.cache_recency.lock().unwrap().now(),
+            if backend.is_sqlite() { 0 } else { 9000 }
+        );
         let ticks: Vec<(i64,)> =
             sqlx::query_as("SELECT last_access_tick FROM store_state_namespaces")
                 .fetch_all(&db.pool)
                 .await
                 .unwrap();
-        assert_eq!(ticks, vec![(9000,), (9000,)]);
+        assert_eq!(
+            ticks,
+            if backend.is_sqlite() {
+                vec![(9000,)]
+            } else {
+                vec![(9000,), (9000,)]
+            }
+        );
         db.close_backend(backend).await;
     }
     // A valid empty cached namespace makes the old recurring size=0 backfill
-    // observable. Ordinary v3 open may not issue that UPDATE at all.
+    // observable. Ordinary current open may not issue that UPDATE at all.
     let backend = db.open().await.unwrap();
     let mut empty = request;
     empty.store = "empty".into();
@@ -1043,11 +1103,11 @@ async fn v2_existing_accounting_preserves_ticks_and_v3_never_backfills() {
         "SELECT last_access_tick FROM store_state_namespaces WHERE namespace_id = $1",
     )
     .bind(&view.namespace_id)
-    .fetch_one(&db.pool)
+    .fetch_one(backend.cache_pool())
     .await
     .unwrap();
     assert!(
-        tick > 9000,
+        tick > if backend.is_sqlite() { 0 } else { 9000 },
         "reopen clock must advance beyond persisted hits"
     );
     db.close_backend(backend).await;
@@ -1116,13 +1176,13 @@ async fn startup_reclaims_abandoned_generations_and_enforces_lowered_budget() {
     let rows: Vec<(String, i64, i64)> = sqlx::query_as(
         "SELECT store_name, status, size_bytes FROM store_state_namespaces WHERE lifecycle = 0",
     )
-    .fetch_all(&db.pool)
+    .fetch_all(backend.cache_pool())
     .await
     .unwrap();
     assert_eq!(rows, vec![("hot".into(), 1, 2)]);
     let (staging,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM store_state_namespaces WHERE lifecycle = 2")
-            .fetch_one(&db.pool)
+            .fetch_one(backend.cache_pool())
             .await
             .unwrap();
     assert_eq!(staging, 0);
@@ -1150,7 +1210,7 @@ async fn startup_reclaims_abandoned_generations_and_enforces_lowered_budget() {
         .unwrap();
     let (derived,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM store_state_namespaces WHERE lifecycle = 0")
-            .fetch_one(&db.pool)
+            .fetch_one(backend.cache_pool())
             .await
             .unwrap();
     assert_eq!(derived, 0);
@@ -1164,14 +1224,17 @@ async fn startup_trim_failure_refuses_open_instead_of_exposing_over_budget() {
     let Some(db) = TestDatabase::new().await else {
         return;
     };
-    parent_v2_fixture(&db).await;
+    let request = parent_v2_fixture(&db).await;
     let backend = db.open().await.unwrap();
+    let token = backend.begin_store_state_staging(request).await.unwrap();
+    backend.publish_store_state(token).await.unwrap();
     db.close_backend(backend).await;
+    let cache = db.cache_pool().await;
     if db.url.starts_with("sqlite:") {
-        db.pool.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'startup trim failure'); END").await.unwrap();
+        cache.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces BEGIN SELECT RAISE(ABORT, 'startup trim failure'); END").await.unwrap();
     } else {
-        db.pool.execute("CREATE FUNCTION fail_trim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'startup trim failure'; END $$").await.unwrap();
-        db.pool.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_trim()").await.unwrap();
+        cache.execute("CREATE FUNCTION fail_trim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'startup trim failure'; END $$").await.unwrap();
+        cache.execute("CREATE TRIGGER fail_trim BEFORE UPDATE OF status ON store_state_namespaces FOR EACH ROW EXECUTE FUNCTION fail_trim()").await.unwrap();
     }
     let before = db.content().await;
     let error = match db
@@ -1190,6 +1253,9 @@ async fn startup_trim_failure_refuses_open_instead_of_exposing_over_budget() {
         "{error}"
     );
     assert_eq!(db.content().await, before);
+    if db.url.starts_with("sqlite:") {
+        cache.close().await;
+    }
     db.cleanup().await;
 }
 
@@ -1259,5 +1325,316 @@ async fn malformed_negative_cache_counters_refuse_open() {
         "{error}"
     );
     assert_eq!(db.content().await, before);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn local_accounts_upgrade_adds_empty_storage_without_rewriting_v3_data() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    db.populate(&backend).await;
+    db.close_backend(backend).await;
+    // Synthetic previous mainline layout. This is not a migration of live keys.
+    db.pool.execute("DROP TABLE local_accounts").await.unwrap();
+    db.pool
+        .execute("UPDATE schema_version SET version = 3")
+        .await
+        .unwrap();
+    // A v3 open must not redo the earlier cache-accounting backfill.
+    db.pool
+        .execute("UPDATE store_state_namespaces SET size_bytes = 0")
+        .await
+        .unwrap();
+    let before = db.content().await;
+    let reopened = db.open().await.unwrap();
+    let counters: Vec<(i64,)> = sqlx::query_as("SELECT size_bytes FROM store_state_namespaces")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        counters,
+        [(0,)],
+        "v3-to-v4 must not backfill old cache accounting"
+    );
+    assert_eq!(db.versions().await, [(SCHEMA_VERSION,)]);
+    assert_eq!(db.content().await, before);
+    assert!(reopened.local_account_names().await.unwrap().is_empty());
+    assert!(
+        reopened
+            .compare_exchange_local_account_record("app", None, b"encrypted")
+            .await
+            .unwrap()
+    );
+    db.close_backend(reopened).await;
+    let reopened = db.open().await.unwrap();
+    assert_eq!(
+        reopened.local_account_record("app").await.unwrap().unwrap(),
+        b"encrypted"
+    );
+    assert_eq!(db.content().await, before);
+    db.close_backend(reopened).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn local_accounts_v4_missing_native_table_is_not_recreated_as_empty() {
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    backend
+        .compare_exchange_local_account_record("app", None, b"encrypted")
+        .await
+        .unwrap();
+    db.close_backend(backend).await;
+    db.pool.execute("DROP TABLE local_accounts").await.unwrap();
+    let before = db.catalog().await;
+    let error = match db.open().await {
+        Ok(_) => panic!("missing credential storage was silently recreated"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("missing columns in local_accounts"),
+        "{error}"
+    );
+    assert_eq!(db.catalog().await, before);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn non_failed_v4_migration_and_current_reopen_preserve_accounts_and_trust() {
+    use crate::{backend::VerificationStatus, snapshot::Snapshot};
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    // Reconstruct the mainline v4 layout from its literal v2 predecessor
+    // plus the two cache columns and native account table. Never derive it from CREATE_TABLES under test.
+    let request = parent_v2_fixture(&db).await;
+    let tree = request.database;
+    db.pool
+        .execute(
+            "ALTER TABLE store_state_namespaces ADD COLUMN size_bytes BIGINT NOT NULL DEFAULT 0",
+        )
+        .await
+        .unwrap();
+    db.pool.execute("ALTER TABLE store_state_namespaces ADD COLUMN last_access_tick BIGINT NOT NULL DEFAULT 0").await.unwrap();
+    db.pool
+        .execute(
+            "CREATE TABLE local_accounts (name TEXT PRIMARY KEY NOT NULL, data BYTEA NOT NULL)",
+        )
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO local_accounts (name, data) VALUES ('app', $1)")
+        .bind(b"encrypted".as_slice())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.pool
+        .execute("UPDATE schema_version SET version = 4")
+        .await
+        .unwrap();
+    let pending: (String,) =
+        sqlx::query_as("SELECT id FROM entries WHERE verification_status = $1")
+            .bind(VerificationStatus::Unverified.as_db_int())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let pending = crate::entry::ID::parse(&pending.0).unwrap();
+    // Match a mainline reopen: remove disposable retired rows, and on SQLite
+    // leave only authority in the history file (Derived state lives separately).
+    let mut before = db.content().await;
+    before.namespaces.retain(|row| row.0 != "unlinked-parent");
+    before.records.retain(|row| row.0 != "unlinked-parent");
+    if db.url.starts_with("sqlite:") {
+        before.namespaces.retain(|row| row.0 == "authority-parent");
+        before.records.retain(|row| row.0 == "authority-parent");
+    }
+    let verified_before: Vec<(String, String)> =
+        sqlx::query_as("SELECT tree_id, entry_id FROM verified_tips ORDER BY 1, 2")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    let backend = db.open().await.unwrap();
+    assert_eq!(db.versions().await, [(5,)]);
+    assert_eq!(
+        backend.local_account_record("app").await.unwrap().unwrap(),
+        b"encrypted"
+    );
+    assert_eq!(
+        backend.verified_snapshot(&tree).await.unwrap(),
+        Snapshot::from([crate::entry::ID::parse(&verified_before[0].1).unwrap()])
+    );
+    assert_eq!(
+        backend.non_failed_snapshot(&tree).await.unwrap(),
+        Snapshot::from([pending.clone()])
+    );
+    assert_eq!(
+        db.content().await,
+        before,
+        "migration preserves history, trust and authority"
+    );
+    let (size,): (i64,) = sqlx::query_as(
+        "SELECT size_bytes FROM store_state_namespaces WHERE namespace_id = 'authority-parent'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(size, 0, "v4 migration must not repeat cache backfill");
+    db.close_backend(backend).await;
+    // Ordinary current open trusts the persisted frontier, never reconstructs.
+    db.pool
+        .execute("DELETE FROM non_failed_tips")
+        .await
+        .unwrap();
+    let backend = db.open().await.unwrap();
+    assert!(backend.non_failed_snapshot(&tree).await.unwrap().is_empty());
+    backend.repair_verification(&tree).await.unwrap();
+    assert_eq!(
+        backend.non_failed_snapshot(&tree).await.unwrap(),
+        Snapshot::from([pending])
+    );
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn non_failed_tip_failure_rolls_back_put_and_rejection() {
+    use crate::{backend::VerificationStatus, snapshot::Snapshot};
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    let root = Entry::root_builder().build().unwrap();
+    let tree = root.id();
+    backend.put(root).await.unwrap();
+    let child = Entry::builder(tree.clone())
+        .add_parent(tree.clone())
+        .build()
+        .unwrap();
+    if backend.is_sqlite() {
+        db.pool.execute("CREATE TRIGGER fail_non_failed_tip BEFORE INSERT ON non_failed_tips BEGIN SELECT RAISE(ABORT, 'injected tip failure'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE FUNCTION fail_non_failed_tip() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected tip failure'; END $$").await.unwrap();
+        db.pool.execute("CREATE TRIGGER fail_non_failed_tip BEFORE INSERT ON non_failed_tips FOR EACH ROW EXECUTE FUNCTION fail_non_failed_tip()").await.unwrap();
+    }
+    assert!(backend.put(child.clone()).await.is_err());
+    assert!(backend.get(&child.id()).await.is_err());
+    assert_eq!(
+        backend.non_failed_snapshot(&tree).await.unwrap(),
+        Snapshot::from([tree.clone()])
+    );
+    if backend.is_sqlite() {
+        db.pool
+            .execute("DROP TRIGGER fail_non_failed_tip")
+            .await
+            .unwrap();
+    } else {
+        db.pool
+            .execute("DROP TRIGGER fail_non_failed_tip ON non_failed_tips")
+            .await
+            .unwrap();
+    }
+    backend.put(child.clone()).await.unwrap();
+    if backend.is_sqlite() {
+        db.pool.execute("CREATE TRIGGER fail_non_failed_tip BEFORE INSERT ON non_failed_tips BEGIN SELECT RAISE(ABORT, 'injected tip failure'); END").await.unwrap();
+    } else {
+        db.pool.execute("CREATE TRIGGER fail_non_failed_tip BEFORE INSERT ON non_failed_tips FOR EACH ROW EXECUTE FUNCTION fail_non_failed_tip()").await.unwrap();
+    }
+    assert!(
+        backend
+            .update_verification_status(&child.id(), VerificationStatus::Failed)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        backend.get_verification_status(&child.id()).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+    assert_eq!(
+        backend.non_failed_snapshot(&tree).await.unwrap(),
+        Snapshot::from([child.id()])
+    );
+    assert_eq!(
+        backend.snapshot(&tree).await.unwrap(),
+        Snapshot::from([child.id()])
+    );
+    db.close_backend(backend).await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn non_failed_hot_path_uses_retained_and_direct_edge_indexes() {
+    use crate::backend::VerificationStatus;
+    let Some(db) = TestDatabase::new().await else {
+        return;
+    };
+    let backend = db.open().await.unwrap();
+    let root = Entry::root_builder().build().unwrap();
+    let tree = root.id();
+    backend.put(root).await.unwrap();
+    // Query-planner-only same-tree rows: a point update must not scan the
+    // tree's history, even when its tree_id index is no longer selective.
+    sqlx::query(
+        "WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n < 4096)
+        INSERT INTO entries (id, tree_id, entry_cbor) SELECT 'other-' || n, $2, $1 FROM numbers",
+    )
+    .bind(Vec::<u8>::new())
+    .bind(tree.to_string())
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.pool.execute("INSERT INTO tree_parents (child_id, parent_id) SELECT id, id FROM entries WHERE id LIKE 'other-%'").await.unwrap();
+    db.pool.execute("ANALYZE").await.unwrap();
+    let query = if backend.is_sqlite() {
+        format!(
+            "EXPLAIN QUERY PLAN {}",
+            super::super::non_failed::INSERT_IF_TIP
+        )
+    } else {
+        format!(
+            "EXPLAIN (ANALYZE, COSTS OFF) {}",
+            super::super::non_failed::INSERT_IF_TIP
+        )
+    };
+    // SAFETY: only a fixed EXPLAIN prefix and the production constant are joined.
+    let plan = if backend.is_sqlite() {
+        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(tree.to_string())
+            .bind(tree.to_string())
+            .bind(VerificationStatus::Failed.as_db_int())
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        rows.into_iter()
+            .map(|(_, _, _, detail)| detail)
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(tree.to_string())
+            .bind(tree.to_string())
+            .bind(VerificationStatus::Failed.as_db_int())
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        rows.into_iter()
+            .map(|(detail,)| detail)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        !plan.contains("Seq Scan") && !plan.contains("SCAN "),
+        "unexpected full scan:\n{plan}"
+    );
+    assert!(
+        plan.contains("idx_tree_parents_parent"),
+        "direct children must use the reverse-edge index:\n{plan}"
+    );
+    eprintln!("non-Failed mutation query plan:\n{plan}");
+    db.close_backend(backend).await;
     db.cleanup().await;
 }

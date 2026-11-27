@@ -494,7 +494,7 @@ fn test_serde_json_round_trip_map() {
     original_map.set("name", "Alice");
     original_map.set("age", 30);
     original_map.set("active", true);
-    original_map.set("score", 95.5); // Will be converted to int
+    original_map.set("score", 95);
 
     let mut nested_map = Doc::new();
     nested_map.set("city", "NYC");
@@ -995,4 +995,57 @@ fn test_serde_json_round_trip_with_tombstones() {
     assert!(deserialized_map.get("remove").is_none()); // Tombstone hidden from get()
     assert!(!deserialized_map.contains_key("remove")); // Tombstone hidden from contains_key()
     assert_eq!(deserialized_map.len(), 1); // Only counts non-tombstones
+}
+
+#[test]
+fn test_doc_literal_keys_are_distinct_from_paths() {
+    let keys = [
+        "",
+        ".",
+        "..",
+        "a.b",
+        ".a",
+        "a.",
+        "é",
+        "e\u{301}",
+        "日本.語",
+        "_v",
+        "children",
+    ];
+    let mut doc = Doc::new();
+    for (i, key) in keys.iter().enumerate() {
+        assert_eq!(doc.set_literal(*key, i as i64), None);
+    }
+    doc.set("a.b", "nested");
+    assert_eq!(doc.get_as::<&str>("a.b"), Some("nested"));
+    assert_eq!(doc.len(), keys.len() + 1);
+    for (i, key) in keys.iter().enumerate() {
+        assert_eq!(doc.get_literal(key), Some(&Value::Int(i as i64)));
+    }
+    assert_eq!(doc.set_literal("a.b", 42), Some(Value::Int(3)));
+    assert_eq!(doc.remove_literal("a.b"), Some(Value::Int(42)));
+    assert!(doc.is_tombstone_literal("a.b"));
+    assert_eq!(doc.get_literal("a.b"), None);
+    assert_eq!(doc.get_as::<&str>("a.b"), Some("nested"));
+    assert!(!doc.is_tombstone("a.b"));
+    assert_eq!(doc.remove_literal("a.b"), None);
+    assert_eq!(doc.remove_literal("missing.key"), None);
+    assert!(doc.is_tombstone_literal("missing.key"));
+    assert_eq!(doc.set_literal("a.b", "again"), None);
+
+    let mut delta = Doc::new();
+    for key in keys {
+        delta.remove_literal(key);
+    }
+    let merged = doc.merge(&delta).unwrap();
+    for key in keys {
+        assert!(merged.is_tombstone_literal(key));
+        assert_eq!(merged.get_literal(key), None);
+    }
+    assert_eq!(merged.get_as::<&str>("a.b"), Some("nested"));
+
+    // The existing collection constructor retains its path interpretation.
+    let collected: Doc = [("a.b".to_owned(), Value::Int(7))].into_iter().collect();
+    assert_eq!(collected.get_literal("a.b"), None);
+    assert_eq!(collected.get_as::<i64>("a.b"), Some(7));
 }

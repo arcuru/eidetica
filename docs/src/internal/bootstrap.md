@@ -142,6 +142,18 @@ conflicting authority or delegated-history recovery.
 
 Requests are retained indefinitely for audit trail.
 
+## Identity membership
+
+Initial and Pending `register_identity` calls send an explicit membership request through the same signed ticket bootstrap path (empty tips, including on a requester with a replicated public root). They require an active direct key grant at least as strong as the requested permission, both on the peer and after the supplied history verifies locally. Ordinary join still recognizes global or delegated authority. The membership proof uses its own signature domain and binds permission including priority; ordinary proofs keep their existing bytes. A peer that does not understand the membership proof cannot validate it as an ordinary request. The lifecycle still distinguishes ordinary access and membership when deduplicating or storing a rejection.
+
+A matching retry for a locally Active Identity does not use ticket bootstrap. The original enrollment tuple identifies the request, but local tracking uses the currently selected owned key after checking its verified direct membership. This repairs the key mapping without changing existing database preferences. If the database tracking row is missing, it is initialized with the saved enrollment settings.
+
+Connected requests use `TicketBootstrap`, and the daemon runs the exchange; the client only supplies its possession proof. `AccessRequests` lists pending requests for one target after checking Admin with a proven session key. `FinishAccessRequest` takes that target and an exact request ID, requires the same Admin gate, verifies the already-signed grant for approval, and records only the decision. Rejection adds no grant. The target grant itself is a normal client-signed settings transaction; neither daemon operation signs on behalf of a user or needs their private key. The same AccountSession calls use local Sync when embedded.
+
+Decision bookkeeping does not promise automatic resume. Retry with the original tuple after reconnect or restart. A pending request can complete if a sufficient independently signed grant exists, even before the decision record is finalized, as with ordinary bootstrap. A rejected request still rejects retries; an independent grant is not revoked by rejection. The new membership operations require supporting readers. Do not assume rollback to an older request manager preserves the distinction in stored `_sync` records; there is no live migration or reader rollout here.
+
+Behavior tests: [`service_ticket_join.rs`](https://github.com/arcuru/eidetica/blob/main/crates/lib/tests/it/service_ticket_join.rs) runs the real ticket/HTTP peer flow with embedded clients and two Unix-connected clients, including a fresh key on an already-replicated public Identity. [`identity_tests.rs`](https://github.com/arcuru/eidetica/blob/main/crates/lib/tests/it/account/identity_tests.rs) covers actual signers, exact delegation roots, and local selection.
+
 See `crates/lib/src/sync/bootstrap.rs`,
 `crates/lib/src/sync/bootstrap_request_manager.rs`, and
 `crates/lib/src/sync/handler.rs` for implementation.

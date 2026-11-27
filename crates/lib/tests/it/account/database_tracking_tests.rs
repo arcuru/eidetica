@@ -1,12 +1,13 @@
 //! Tests for AccountSession database tracking functionality
 
 use eidetica::{
-    Database, Result,
+    Database, Error, ID, Instance, NewAccount, Result,
     account::types::SyncSettings,
     auth::{
         crypto::generate_keypair,
         types::{AuthKey, Permission},
     },
+    backend::database::InMemory,
     crdt::Doc,
 };
 
@@ -20,8 +21,8 @@ async fn test_track_database() -> Result<()> {
     let instance = setup_instance().await;
 
     // Create a user
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let user_key = user.get_default_key()?;
 
     // Create a database with global Write permission
@@ -56,8 +57,8 @@ async fn test_track_database() -> Result<()> {
 async fn test_track_database_no_sigkey_error() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let user_key = user.get_default_key()?;
 
     // Create a database without global permissions (user has no access)
@@ -83,8 +84,8 @@ async fn test_track_database_no_sigkey_error() -> Result<()> {
 async fn test_list_databases() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let user_key = user.get_default_key()?;
 
     // Initially should be empty
@@ -118,8 +119,8 @@ async fn test_list_databases() -> Result<()> {
 async fn test_get_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let user_key = user.get_default_key()?;
 
     // Create database
@@ -158,8 +159,8 @@ async fn test_get_tracked_database() -> Result<()> {
 async fn test_update_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let user_key = user.get_default_key()?;
 
     // Create database
@@ -200,8 +201,8 @@ async fn test_update_tracked_database() -> Result<()> {
 async fn test_untrack_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let user_key = user.get_default_key()?;
 
     // Create database
@@ -237,8 +238,8 @@ async fn test_untrack_database() -> Result<()> {
 async fn test_load_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let user_key = user.get_default_key()?;
 
     // Create database with global permission
@@ -270,8 +271,8 @@ async fn test_load_tracked_database() -> Result<()> {
 async fn test_update_tracked_valid_key_change() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let key1 = user.get_default_key()?;
 
     // Add a second key to the user
@@ -316,8 +317,8 @@ async fn test_update_tracked_valid_key_change() -> Result<()> {
 async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let user_key = user.get_default_key()?;
 
     // Create database with global permission
@@ -352,8 +353,8 @@ async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
 async fn test_update_tracked_no_access_fails() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let key1 = user.get_default_key()?;
 
     // Add a second key
@@ -398,8 +399,8 @@ async fn test_update_tracked_no_access_fails() -> Result<()> {
 async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let key1 = user.get_default_key()?;
 
     // Add a second key
@@ -452,8 +453,8 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
 async fn test_is_sync_enabled_returns_false_for_untracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let user = login_account(&instance, "test_user", "").await;
     let (signing_key, _) = generate_keypair();
     let database = Database::create(&instance, signing_key, Doc::new()).await?;
 
@@ -466,8 +467,8 @@ async fn test_is_sync_enabled_returns_false_for_untracked_database() -> Result<(
 #[tokio::test]
 async fn split_access_bookkeeping_preserves_intervening_tracked_row() -> Result<()> {
     let instance = setup_instance().await;
-    crate::helpers::create_account(&instance, "test_user", None).await?;
-    let mut user = login_account(&instance, "test_user", None).await;
+    crate::helpers::create_account(&instance, "test_user", "").await?;
+    let mut user = login_account(&instance, "test_user", "").await;
     let key = user.get_default_key()?;
     let other_key = user.add_private_key(Some("other")).await?;
     let db = user.create_database(Doc::new(), &key).await?;
@@ -521,6 +522,138 @@ async fn split_access_bookkeeping_preserves_intervening_tracked_row() -> Result<
             .current_permission()
             .await?,
         Permission::Write(5)
+    );
+    Ok(())
+}
+
+/// The checked lookup never substitutes an absent row for invalid data.
+#[tokio::test]
+async fn test_checked_tracking_lookup_preserves_absence_and_decode_failure() -> Result<()> {
+    // Raw native-record fault injection needs an embedded backend. The service
+    // suite independently checks the connected lookup and scope boundary.
+    let instance = crate::helpers::test_local_instance().await;
+    crate::helpers::create_account(&instance, "reader", "").await?;
+    let mut user = login_account(&instance, "reader", "").await;
+    let key = user.get_default_key()?;
+    let missing = ID::from_bytes("not-tracked");
+    let before = user.account().database().snapshot().await?;
+    assert_eq!(user.tracked_database(&missing).await?, None);
+    assert_eq!(user.find_key(&missing)?, None);
+    assert_eq!(user.account().database().snapshot().await?, before);
+
+    let db = user.create_database(Doc::new(), &key).await?;
+    for settings in [
+        SyncSettings::disabled(),
+        SyncSettings::on_commit().with_interval(37),
+    ] {
+        user.track_database(db.root_id(), &key, settings.clone())
+            .await?;
+        let before = user.account().database().snapshot().await?;
+        let mapping = user.key_mapping(&key, db.root_id())?;
+        let row = user.tracked_database(db.root_id()).await?.unwrap();
+        assert_eq!(row.database_id, *db.root_id());
+        assert_eq!(row.key_id, key);
+        assert_eq!(row.sync_settings, settings);
+        assert_eq!(user.key_mapping(&key, db.root_id())?, mapping);
+        assert_eq!(user.account().database().snapshot().await?, before);
+    }
+
+    // Native state is one typed record, not independently decoded Table rows.
+    // Corrupt storage must remain an error for both present and absent IDs.
+    let native = instance.backend().local_engine().unwrap();
+    let name = format!("account-state:{}", user.login_id());
+    let original = native.local_account_record(&name).await?.unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&original)?;
+    state["databases"][db.root_id().to_string()] = serde_json::json!("not a tracked row");
+    let malformed = serde_json::to_vec(&state)?;
+    assert!(
+        native
+            .compare_exchange_local_account_record(&name, Some(&original), &malformed)
+            .await?
+    );
+    let before = user.account().database().snapshot().await?;
+    for id in [db.root_id(), &missing] {
+        assert!(matches!(user.tracked_database(id).await,
+            Err(Error::Account(e)) if matches!(e.as_ref(), eidetica::account::AccountError::InvalidLocalState)));
+    }
+    assert!(user.databases().await.is_err());
+    assert_eq!(user.account().database().snapshot().await?, before);
+    assert_eq!(
+        native.local_account_record(&name).await?,
+        Some(malformed.clone())
+    );
+
+    assert!(
+        native
+            .compare_exchange_local_account_record(&name, Some(&malformed), &original)
+            .await?
+    );
+    user.untrack_database(db.root_id()).await?;
+    assert_eq!(user.tracked_database(db.root_id()).await?, None);
+    assert_eq!(user.account().database().snapshot().await?, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_checked_tracking_lookup_uses_native_state_without_replicated_reads() -> Result<()> {
+    // Embedded instrumentation is independent of wire timing.
+    let (instance, mut user) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewAccount::passwordless("reader"),
+    )
+    .await?;
+    let key = user.get_default_key()?;
+    let selected = user.create_database(Doc::new(), &key).await?;
+    let missing = ID::from_bytes("not-tracked");
+    let engine = instance.backend().local_engine().unwrap();
+    let memory = engine.as_any().downcast_ref::<InMemory>().unwrap();
+    for total in [1, 8, 32] {
+        while user.databases().await?.len() < total {
+            user.create_database(Doc::new(), &key).await?;
+        }
+        // The native record is the positive control: tracking exists without
+        // materializing or enumerating replicated Store state.
+        let name = format!("account-state:{}", user.login_id());
+        let bytes = engine.local_account_record(&name).await?.unwrap();
+        let state: serde_json::Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(state["databases"].as_object().unwrap().len(), total);
+        let before = memory.store_state_read_counts();
+        let history = memory.store_history_read_count();
+        let snapshot = user.account().database().snapshot().await?;
+        assert!(user.tracked_database(selected.root_id()).await?.is_some());
+        assert_eq!(user.tracked_database(&missing).await?, None);
+        assert_eq!(user.account().database().snapshot().await?, snapshot);
+        let after = memory.store_state_read_counts();
+        let reads = (after.0 - before.0, after.1 - before.1);
+        assert_eq!(
+            reads,
+            (0, 0),
+            "native lookup must not read replicated records"
+        );
+        assert_eq!(memory.store_history_read_count(), history);
+        println!(
+            "checked tracking: tracked={total}, point_reads={}, scan_pages={}",
+            reads.0, reads.1
+        );
+    }
+    let before = memory.store_state_read_counts();
+    assert_eq!(user.databases().await?.len(), 32);
+    assert_eq!(memory.store_state_read_counts(), before);
+    let name = format!("account-state:{}", user.login_id());
+    let bytes = engine.local_account_record(&name).await?.unwrap();
+    assert!(
+        engine
+            .compare_exchange_local_account_record(&name, Some(&bytes), b"invalid native state")
+            .await?
+    );
+    assert!(
+        user.tracked_database(selected.root_id()).await.is_err(),
+        "positive control: lookup reaches native storage"
+    );
+    assert!(
+        engine
+            .compare_exchange_local_account_record(&name, Some(b"invalid native state"), &bytes)
+            .await?
     );
     Ok(())
 }

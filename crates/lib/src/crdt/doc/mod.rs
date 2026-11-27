@@ -206,6 +206,56 @@ impl Doc {
             .count()
     }
 
+    /// Gets one literal top-level key, without interpreting dots as path separators.
+    ///
+    /// Empty strings, dots and Unicode are preserved exactly; no escaping or
+    /// normalization is performed. Missing keys and tombstones return `None`.
+    /// Existing [`get`](Self::get) and other path APIs are unchanged.
+    pub fn get_literal(&self, key: impl AsRef<str>) -> Option<&Value> {
+        match self.children.get(key.as_ref()) {
+            Some(Value::Deleted) => None,
+            value => value,
+        }
+    }
+
+    /// Sets one literal top-level key, returning the previous non-deleted value.
+    ///
+    /// This uses the existing map representation, not a new key encoding.
+    /// Construct literal-key documents by calling this on [`Doc::new`] or
+    /// [`Doc::atomic`]; collecting into a `Doc` still interprets keys as paths.
+    ///
+    /// ```
+    /// # use eidetica::crdt::{Doc, doc::Value};
+    /// let mut doc = Doc::new();
+    /// doc.set_literal("plugin.name", "literal");
+    /// doc.set("plugin.name", "nested");
+    /// assert_eq!(doc.get_literal("plugin.name"), Some(&Value::from("literal")));
+    /// assert_eq!(doc.get("plugin.name"), Some(&Value::from("nested")));
+    /// ```
+    pub fn set_literal(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<Value>,
+    ) -> Option<Value> {
+        match self.children.insert(key.into(), value.into()) {
+            Some(Value::Deleted) => None,
+            value => value,
+        }
+    }
+
+    /// Removes one literal top-level key, returning the previous non-deleted value.
+    ///
+    /// Always writes a tombstone, including for a missing key, just like
+    /// [`remove`](Self::remove). A dotted key does not delete a nested path.
+    pub fn remove_literal(&mut self, key: impl Into<String>) -> Option<Value> {
+        self.set_literal(key, Value::Deleted)
+    }
+
+    /// Returns true if one literal top-level key holds a tombstone.
+    pub fn is_tombstone_literal(&self, key: impl AsRef<str>) -> bool {
+        matches!(self.children.get(key.as_ref()), Some(Value::Deleted))
+    }
+
     /// Returns true if the document contains the given key.
     pub fn contains_key(&self, key: impl AsRef<Path>) -> bool {
         self.get(key).is_some()
