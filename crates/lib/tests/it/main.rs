@@ -111,6 +111,7 @@ mod database;
 mod entry;
 mod helpers;
 mod instance;
+mod lease;
 #[cfg(all(unix, feature = "service"))]
 mod service;
 #[cfg(all(unix, feature = "service"))]
