@@ -24,7 +24,8 @@ use tokio::net::{
 };
 #[cfg(test)]
 use tokio::sync::mpsc;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, oneshot, watch};
+use uuid::Uuid;
 
 use crate::account::types::AccountInfo;
 use crate::auth::crypto::PrivateKey;
@@ -35,6 +36,7 @@ use crate::backend::{
 };
 use crate::entry::{Entry, ID};
 use crate::instance::{CallbackId, WeakInstance};
+use crate::lease::{LeaseAcquireResponse, LeaseKey, LeaseStatus};
 use crate::service::error::service_error_to_eidetica_error;
 #[cfg(test)]
 use crate::service::protocol::ServerFrame;
@@ -134,6 +136,65 @@ struct RemoteSubscription {
     idle_since: Option<std::time::Instant>,
 }
 
+struct PendingRequest {
+    response: oneshot::Sender<ServiceResponse>,
+    // A cancelled acquisition must not leave an unobservable grant behind.
+    abandoned_grant: Option<Arc<PendingLeaseAcquire>>,
+}
+
+// The request future and its pending FIFO slot each own this token. If the
+// caller cancels either before OR after response delivery, the last token drop
+// releases the grant. A received response disarms it in the caller's same poll.
+struct PendingLeaseAcquire {
+    connection: Weak<RemoteConnectionInner>,
+    key: LeaseKey,
+    identity: SigKey,
+    grant: std::sync::Mutex<Option<Uuid>>,
+    accepted: AtomicBool,
+}
+
+impl Drop for PendingLeaseAcquire {
+    fn drop(&mut self) {
+        if self.accepted.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(grant_id) = *self.grant.lock().unwrap_or_else(|p| p.into_inner()) else {
+            return;
+        };
+        if let Some(inner) = self.connection.upgrade() {
+            RemoteConnection {
+                inner,
+                _live: None,
+                signer: None,
+            }
+            .lease_cleanup(
+                self.key.clone(),
+                self.identity.clone(),
+                None,
+                Some(grant_id),
+            );
+        }
+    }
+}
+
+struct RemoteLeaseWatch {
+    key: LeaseKey,
+    tx: watch::Sender<Option<LeaseStatus>>,
+}
+
+fn reconcile_lease_status(tx: &watch::Sender<Option<LeaseStatus>>, status: LeaseStatus) {
+    tx.send_if_modified(|current| {
+        if current
+            .as_ref()
+            .is_some_and(|old| old.generation >= status.generation)
+        {
+            return false;
+        }
+        *current = Some(status);
+        true
+    });
+}
+
 /// Internal state for a remote connection, wrapped in Arc for Clone.
 struct RemoteConnectionInner {
     /// An owned duplicate of the socket, used only for synchronous shutdown.
@@ -150,7 +211,7 @@ struct RemoteConnectionInner {
     /// `ServerFrame::Response` so request and response order line up. The
     /// VecDeque is guarded by a plain `std::sync::Mutex` — never held
     /// across an await — so it can't deadlock with the writer lock.
-    pending: std::sync::Mutex<VecDeque<oneshot::Sender<ServiceResponse>>>,
+    pending: std::sync::Mutex<VecDeque<PendingRequest>>,
     /// Set once by [`RemoteConnection::attach_instance`] right after
     /// `Instance::connect` has finished building the Instance. The reader
     /// task reads (cheap clone of the inner `Weak`) on each
@@ -200,6 +261,8 @@ struct RemoteConnectionInner {
     /// and after enqueueing, so a racing slot either joins the drain or fails
     /// the closed check instead of waiting for a response.
     closed: AtomicBool,
+    lease_loss: watch::Sender<bool>,
+    lease_watches: std::sync::Mutex<HashMap<Uuid, RemoteLeaseWatch>>,
     /// Reader task cancellation, used when the connection is retired.
     reader_abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
 }
@@ -222,9 +285,7 @@ impl RemoteConnectionInner {
     }
 
     /// Acquire the pending-queue lock, tolerating poisoning.
-    fn pending_lock(
-        &self,
-    ) -> std::sync::MutexGuard<'_, VecDeque<oneshot::Sender<ServiceResponse>>> {
+    fn pending_lock(&self) -> std::sync::MutexGuard<'_, VecDeque<PendingRequest>> {
         self.pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -250,6 +311,11 @@ impl RemoteConnectionInner {
         // Already-disconnected sockets may report NotConnected. The fence and
         // waiter cleanup still apply on every call, including repeated retirement.
         let _ = self.shutdown_socket.shutdown(std::net::Shutdown::Both);
+        self.lease_loss.send_replace(true);
+        self.lease_watches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         self.pending_lock().clear();
         let subscriptions =
             std::mem::take(&mut *self.subscriptions.lock().unwrap_or_else(|p| p.into_inner()));
@@ -393,6 +459,8 @@ impl RemoteConnection {
             authentication: Mutex::new(()),
             subscriptions: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            lease_loss: watch::channel(false).0,
+            lease_watches: std::sync::Mutex::new(HashMap::new()),
             reader_abort: std::sync::Mutex::new(None),
         });
 
@@ -484,6 +552,22 @@ impl RemoteConnection {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(connection_aborted());
         }
+        let abandoned_grant = match &req {
+            ServiceRequest::AuthenticatedDb(request) => match &request.op {
+                DatabaseOp::TryAcquireLease { name } => Some(Arc::new(PendingLeaseAcquire {
+                    connection: Arc::downgrade(&self.inner),
+                    key: LeaseKey {
+                        root: request.root_id.clone(),
+                        name: name.clone(),
+                    },
+                    identity: request.identity.clone(),
+                    grant: std::sync::Mutex::new(None),
+                    accepted: AtomicBool::new(false),
+                })),
+                _ => None,
+            },
+            _ => None,
+        };
         let (tx, rx) = oneshot::channel::<ServiceResponse>();
         {
             let mut writer = self.inner.writer.lock().await;
@@ -501,7 +585,10 @@ impl RemoteConnection {
                 writer: &mut writer,
                 complete: false,
             };
-            self.inner.pending_lock().push_back(tx);
+            self.inner.pending_lock().push_back(PendingRequest {
+                response: tx,
+                abandoned_grant: abandoned_grant.clone(),
+            });
             // Reader teardown publishes closed before draining pending. The
             // slot must exist before this last check or it can miss the drain.
             if self.inner.closed.load(Ordering::Acquire) {
@@ -510,7 +597,11 @@ impl RemoteConnection {
             write_frame(frame.writer.as_mut().ok_or_else(connection_aborted)?, &req).await?;
             frame.complete = true;
         }
-        rx.await.map_err(|_| connection_aborted())
+        let response = rx.await.map_err(|_| connection_aborted())?;
+        if let Some(acquisition) = &abandoned_grant {
+            acquisition.accepted.store(true, Ordering::Release);
+        }
+        Ok(response)
     }
 
     /// Send a request and convert error responses to `crate::Error`.
@@ -548,6 +639,189 @@ impl RemoteConnection {
             },
         )))
         .await
+    }
+
+    pub(crate) fn lease_loss_receiver(&self) -> watch::Receiver<bool> {
+        self.inner.lease_loss.subscribe()
+    }
+
+    pub(crate) async fn lease_status(
+        &self,
+        key: &LeaseKey,
+        identity: SigKey,
+    ) -> crate::Result<LeaseStatus> {
+        match self
+            .db_request(
+                key.root.clone(),
+                identity,
+                DatabaseOp::LeaseStatus {
+                    name: key.name.clone(),
+                },
+            )
+            .await?
+        {
+            ServiceResponse::LeaseStatus(status) => Ok(status),
+            other => Err(unexpected_response("LeaseStatus", &other)),
+        }
+    }
+
+    pub(crate) async fn lease_acquire(
+        &self,
+        key: &LeaseKey,
+        identity: SigKey,
+    ) -> crate::Result<LeaseAcquireResponse> {
+        match self
+            .db_request(
+                key.root.clone(),
+                identity,
+                DatabaseOp::TryAcquireLease {
+                    name: key.name.clone(),
+                },
+            )
+            .await?
+        {
+            ServiceResponse::LeaseAcquired(result) => Ok(result),
+            other => Err(unexpected_response("LeaseAcquired", &other)),
+        }
+    }
+
+    pub(crate) async fn lease_release(
+        &self,
+        key: &LeaseKey,
+        identity: SigKey,
+        grant_id: Uuid,
+    ) -> crate::Result<()> {
+        // Cleanup proves the current session, not a database identity that a
+        // relogin may have removed from the keyset. The grant is connection-owned.
+        let identity = self.session_identity().unwrap_or(identity);
+        Self::expect_ok(
+            self.db_request(
+                key.root.clone(),
+                identity,
+                DatabaseOp::ReleaseLease {
+                    name: key.name.clone(),
+                    grant_id,
+                },
+            )
+            .await?,
+        )
+    }
+
+    pub(crate) async fn lease_watch(
+        &self,
+        key: &LeaseKey,
+        identity: SigKey,
+        id: Uuid,
+        tx: watch::Sender<Option<LeaseStatus>>,
+    ) -> crate::Result<()> {
+        self.inner
+            .lease_watches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                id,
+                RemoteLeaseWatch {
+                    key: key.clone(),
+                    tx,
+                },
+            );
+        let response = self
+            .db_request(
+                key.root.clone(),
+                identity,
+                DatabaseOp::WatchLease {
+                    name: key.name.clone(),
+                    watch_id: id,
+                },
+            )
+            .await?;
+        let ServiceResponse::LeaseStatus(status) = response else {
+            return Err(unexpected_response("LeaseStatus", &response));
+        };
+        let watches = self
+            .inner
+            .lease_watches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(watcher) = watches.get(&id) else {
+            return Err(connection_aborted());
+        };
+        // A newer notification can arrive before this response. Never overwrite it.
+        reconcile_lease_status(&watcher.tx, status);
+        Ok(())
+    }
+
+    pub(crate) fn lease_cleanup_on_drop(
+        &self,
+        key: LeaseKey,
+        identity: SigKey,
+        watch_id: Option<Uuid>,
+        grant_id: Option<Uuid>,
+    ) -> Box<dyn Fn() + Send + Sync> {
+        let weak = Arc::downgrade(&self.inner);
+        Box::new(move || {
+            if let Some(inner) = weak.upgrade() {
+                RemoteConnection {
+                    inner,
+                    _live: None,
+                    signer: None,
+                }
+                .lease_cleanup(key.clone(), identity.clone(), watch_id, grant_id);
+            }
+        })
+    }
+
+    /// Local removal is synchronous; wire cleanup is bounded and best-effort.
+    /// Internal handles do not keep the user connection alive.
+    pub(crate) fn lease_cleanup(
+        &self,
+        key: LeaseKey,
+        identity: SigKey,
+        watch_id: Option<Uuid>,
+        grant_id: Option<Uuid>,
+    ) {
+        if let Some(id) = watch_id {
+            self.inner
+                .lease_watches
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&id);
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let conn = Self {
+            inner: self.inner.clone(),
+            _live: None,
+            signer: None,
+        };
+        runtime.spawn(async move {
+            let op = if let Some(id) = watch_id {
+                DatabaseOp::UnwatchLease {
+                    name: key.name,
+                    watch_id: id,
+                }
+            } else if let Some(id) = grant_id {
+                DatabaseOp::ReleaseLease {
+                    name: key.name,
+                    grant_id: id,
+                }
+            } else {
+                return;
+            };
+            let identity = conn.session_identity().unwrap_or(identity);
+            if tokio::time::timeout(
+                UNSUBSCRIBE_RTT_TIMEOUT,
+                conn.db_request(key.root, identity, op),
+            )
+            .await
+            .is_err()
+            {
+                // A wedged cleanup cannot leave an orphan watch/grant on a live
+                // connection indefinitely; teardown runs server-side cleanup.
+                conn.inner.mark_dead();
+            }
+        });
     }
 
     /// Prove a caller-owned signer, with no daemon credential-store dependency.
@@ -1447,10 +1721,16 @@ async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionI
             IncomingServerFrame::Response(resp) => {
                 let next = inner.pending_lock().pop_front();
                 match next {
-                    Some(tx) => {
-                        // Receiver dropped → the caller has already given
-                        // up. Not an error worth logging.
-                        let _ = tx.send(*resp);
+                    Some(pending) => {
+                        if let ServiceResponse::LeaseAcquired(LeaseAcquireResponse::Granted {
+                            grant_id,
+                        }) = &*resp
+                            && let Some(acquisition) = &pending.abandoned_grant
+                        {
+                            *acquisition.grant.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(*grant_id);
+                        }
+                        let _ = pending.response.send(*resp);
                     }
                     None => {
                         tracing::warn!(
@@ -1477,6 +1757,25 @@ async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionI
 /// The socket reader only offers a Snapshot to its exact mailbox; it never
 /// invokes or awaits user work. No per-tree transport dispatch queue is needed.
 fn route_notification(inner: &Arc<RemoteConnectionInner>, notification: Notification) {
+    if let Notification::LeaseChanged {
+        root_id,
+        name,
+        watch_id,
+        status,
+    } = &notification
+    {
+        let watches = inner
+            .lease_watches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(watcher) = watches.get(watch_id)
+            && watcher.key.root == *root_id
+            && watcher.key.name == *name
+        {
+            reconcile_lease_status(&watcher.tx, status.clone());
+        }
+        return;
+    }
     let instance = inner
         .weak_instance
         .lock()
@@ -1492,6 +1791,9 @@ fn route_notification(inner: &Arc<RemoteConnectionInner>, notification: Notifica
                 subscription_id,
                 snapshot,
             } => instance.deliver_snapshot(&root_id, CallbackId(subscription_id), snapshot),
+            Notification::LeaseChanged { .. } => {
+                unreachable!("lease notifications are routed inline")
+            }
         }
     }
 }
@@ -1605,10 +1907,15 @@ mod tests {
     /// spawned and no wire traffic is sent; the peer end is returned so the
     /// caller keeps the socket open for the duration of the test.
     pub(super) fn test_conn() -> (RemoteConnection, tokio::net::UnixStream) {
+        let (conn, _reader, peer) = test_conn_with_reader();
+        (conn, peer)
+    }
+
+    fn test_conn_with_reader() -> (RemoteConnection, OwnedReadHalf, tokio::net::UnixStream) {
         let (client_side, peer) = tokio::net::UnixStream::pair().unwrap();
         let shutdown_socket = client_side.into_std().unwrap();
         let client_side = UnixStream::from_std(shutdown_socket.try_clone().unwrap()).unwrap();
-        let (_reader, writer) = client_side.into_split();
+        let (reader, writer) = client_side.into_split();
         let inner = Arc::new(RemoteConnectionInner {
             shutdown_socket,
             writer: Mutex::new(Some(writer)),
@@ -1619,6 +1926,8 @@ mod tests {
             authentication: Mutex::new(()),
             subscriptions: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            lease_loss: watch::channel(false).0,
+            lease_watches: std::sync::Mutex::new(HashMap::new()),
             reader_abort: std::sync::Mutex::new(None),
         });
         (
@@ -1627,8 +1936,229 @@ mod tests {
                 _live: None,
                 signer: None,
             },
+            reader,
             peer,
         )
+    }
+    #[tokio::test]
+    async fn test_lease_notifications_reconcile_before_initial_response_and_drop() {
+        let (conn, mut peer) = test_conn();
+        let key = LeaseKey {
+            root: ID::from_bytes("db"),
+            name: "runtime".into(),
+        };
+        let id = Uuid::new_v4();
+        let (tx, mut rx) = watch::channel(None);
+        let pending_conn = conn.clone();
+        let pending_key = key.clone();
+        let watch_task = tokio::spawn(async move {
+            pending_conn
+                .lease_watch(&pending_key, SigKey::default(), id, tx)
+                .await
+        });
+        let _: ServiceRequest = read_frame(&mut peer).await.unwrap().unwrap();
+        let newer = LeaseStatus {
+            holder: Some(crate::lease::LeaseOwner::Connection(Uuid::new_v4())),
+            generation: 2,
+        };
+        route_notification(
+            &conn.inner,
+            Notification::LeaseChanged {
+                root_id: key.root.clone(),
+                name: key.name.clone(),
+                watch_id: id,
+                status: newer.clone(),
+            },
+        );
+        conn.inner
+            .pending_lock()
+            .pop_front()
+            .unwrap()
+            .response
+            .send(ServiceResponse::LeaseStatus(LeaseStatus {
+                holder: None,
+                generation: 0,
+            }))
+            .unwrap();
+        watch_task.await.unwrap().unwrap();
+        assert_eq!(*rx.borrow_and_update(), Some(newer.clone()));
+        route_notification(
+            &conn.inner,
+            Notification::LeaseChanged {
+                root_id: key.root.clone(),
+                name: key.name.clone(),
+                watch_id: id,
+                status: LeaseStatus {
+                    holder: None,
+                    generation: 1,
+                },
+            },
+        );
+        assert!(!rx.has_changed().unwrap());
+        assert_eq!(*rx.borrow(), Some(newer));
+        let cleanup = conn.lease_cleanup_on_drop(key, SigKey::default(), Some(id), None);
+        let (_, pubkey) = crate::auth::crypto::generate_keypair();
+        *conn.inner.session.write().unwrap() = Some(SessionState {
+            session_pubkey: pubkey.clone(),
+        });
+        cleanup();
+        assert!(conn.inner.lease_watches.lock().unwrap().is_empty());
+        let request: ServiceRequest = read_frame(&mut peer).await.unwrap().unwrap();
+        assert!(
+            matches!(request, ServiceRequest::AuthenticatedDb(req) if req.identity == SigKey::from_pubkey(&pubkey) && matches!(req.op, DatabaseOp::UnwatchLease { watch_id, .. } if watch_id == id))
+        );
+        conn.inner
+            .pending_lock()
+            .pop_front()
+            .unwrap()
+            .response
+            .send(ServiceResponse::Ok)
+            .unwrap();
+        assert!(rx.changed().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_lease_cancelled_acquisition_releases_owner_only_grant() {
+        let (conn, reader, mut peer) = test_conn_with_reader();
+        let reader_task = tokio::spawn(run_reader_task(reader, conn.inner.clone()));
+        *conn.inner.reader_abort.lock().unwrap() = Some(reader_task.abort_handle());
+        let key = LeaseKey {
+            root: ID::from_bytes("db"),
+            name: "runtime".into(),
+        };
+        let request_conn = conn.clone();
+        let request_key = key.clone();
+        let acquisition = tokio::spawn(async move {
+            request_conn
+                .lease_acquire(&request_key, SigKey::default())
+                .await
+        });
+        let _: ServiceRequest = read_frame(&mut peer).await.unwrap().unwrap();
+        acquisition.abort();
+        assert!(acquisition.await.unwrap_err().is_cancelled());
+        let grant = Uuid::new_v4();
+        write_frame(
+            &mut peer,
+            &ServerFrame::Response(Box::new(ServiceResponse::LeaseAcquired(
+                LeaseAcquireResponse::Granted { grant_id: grant },
+            ))),
+        )
+        .await
+        .unwrap();
+        let request: ServiceRequest =
+            tokio::time::timeout(std::time::Duration::from_secs(2), read_frame(&mut peer))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        assert!(
+            matches!(request, ServiceRequest::AuthenticatedDb(req) if req.root_id == key.root && matches!(req.op, DatabaseOp::ReleaseLease { ref name, grant_id } if *name == key.name && grant_id == grant))
+        );
+        write_frame(
+            &mut peer,
+            &ServerFrame::Response(Box::new(ServiceResponse::Ok)),
+        )
+        .await
+        .unwrap();
+        conn.inner.mark_dead();
+        let _ = reader_task.await;
+    }
+
+    #[tokio::test]
+    async fn test_lease_cancelled_frame_closes_socket_with_live_handles() {
+        use tokio::io::AsyncReadExt;
+
+        let (conn, mut peer) = test_conn();
+        let mut loss = conn.lease_loss_receiver();
+        // Cancellation runs while request() still holds the writer lock.
+        let mut writer = conn.inner.writer.lock().await;
+        drop(FrameWriteGuard {
+            inner: &conn.inner,
+            writer: &mut writer,
+            complete: false,
+        });
+        loss.changed().await.unwrap();
+        assert!(*loss.borrow());
+        let mut byte = [0];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(1), peer.read(&mut byte))
+            .await
+            .expect("the daemon must see EOF even while client handles remain alive")
+            .unwrap();
+        assert_eq!(read, 0);
+    }
+
+    #[tokio::test]
+    async fn test_lease_connection_loss_drops_watch_senders_and_signals_guards() {
+        let (conn, _peer) = test_conn();
+        let mut loss = conn.lease_loss_receiver();
+        let (tx, mut rx) = watch::channel(None);
+        conn.inner.lease_watches.lock().unwrap().insert(
+            Uuid::new_v4(),
+            RemoteLeaseWatch {
+                key: LeaseKey {
+                    root: ID::from_bytes("db"),
+                    name: "runtime".into(),
+                },
+                tx,
+            },
+        );
+        conn.inner.mark_dead();
+        loss.changed().await.unwrap();
+        assert!(*loss.borrow());
+        assert!(rx.changed().await.is_err());
+        assert!(conn.inner.lease_watches.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn test_lease_cancelled_after_response_delivery_releases_grant() {
+        let (conn, mut peer) = test_conn();
+        let key = LeaseKey {
+            root: ID::from_bytes("db"),
+            name: "runtime".into(),
+        };
+        let request_conn = conn.clone();
+        let request_key = key.clone();
+        let acquisition = tokio::spawn(async move {
+            request_conn
+                .lease_acquire(&request_key, SigKey::default())
+                .await
+        });
+        let _: ServiceRequest = read_frame(&mut peer).await.unwrap().unwrap();
+        let pending = conn.inner.pending_lock().pop_front().unwrap();
+        let grant = Uuid::new_v4();
+        // Deliver without yielding to the acquisition task, then cancel it.
+        // This is the window a send-error-only cleanup cannot cover.
+        *pending
+            .abandoned_grant
+            .as_ref()
+            .unwrap()
+            .grant
+            .lock()
+            .unwrap() = Some(grant);
+        pending
+            .response
+            .send(ServiceResponse::LeaseAcquired(
+                LeaseAcquireResponse::Granted { grant_id: grant },
+            ))
+            .unwrap();
+        drop(pending.abandoned_grant);
+        acquisition.abort();
+        assert!(acquisition.await.unwrap_err().is_cancelled());
+        let request: ServiceRequest =
+            tokio::time::timeout(std::time::Duration::from_secs(2), read_frame(&mut peer))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        assert!(
+            matches!(request, ServiceRequest::AuthenticatedDb(req) if matches!(req.op, DatabaseOp::ReleaseLease { grant_id, .. } if grant_id == grant))
+        );
+        conn.inner
+            .pending_lock()
+            .pop_front()
+            .unwrap()
+            .response
+            .send(ServiceResponse::Ok)
+            .unwrap();
     }
 }
 

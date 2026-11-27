@@ -2444,6 +2444,8 @@ async fn remote_snapshot_at_preserves_missing_boundary_error() {
     assert!(error.is_not_found(), "{error}");
 }
 
+mod leases;
+
 mod historical_signatures;
 
 #[tokio::test]

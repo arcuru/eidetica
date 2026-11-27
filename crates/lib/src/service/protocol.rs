@@ -40,10 +40,12 @@ use crate::auth::crypto::PublicKey;
 use crate::auth::types::{Permission, SigKey};
 use crate::backend::{InstanceMetadata, RecordPage, RecordRange, StoreStateRequest};
 use crate::entry::{Entry, ID};
+use crate::lease::{LeaseAcquireResponse, LeaseStatus};
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 pub use crate::state::ReadScope;
 use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
+use uuid::Uuid;
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
 /// without notice between releases. The required revision below makes this
@@ -232,19 +234,42 @@ pub enum DatabaseOp {
     /// Current Read permission is not required.
     UnsubscribeWrites { subscription_id: u64 },
 
+    /// Live advisory lease observation. Gate Read; root must already exist.
+    LeaseStatus { name: String },
+    /// Register and return initial state atomically. Gate Read.
+    WatchLease { name: String, watch_id: Uuid },
+    /// Unregister this connection's watch, including after permission revocation.
+    UnwatchLease { name: String, watch_id: Uuid },
+    /// Nonblocking atomic acquisition. Gate Write; root must already exist.
+    TryAcquireLease { name: String },
+    /// Release an active grant owned by this same connection. Possession-gated,
+    /// not permission-gated, so an owner can release after revocation.
+    ReleaseLease { name: String, grant_id: Uuid },
+
     /// Return a point-in-time locator for the request's `root_id`.
     /// Gate Read.
     CreateTicket,
 }
 
 impl DatabaseOp {
+    pub(crate) fn lease_name(&self) -> Option<&str> {
+        match self {
+            Self::LeaseStatus { name }
+            | Self::WatchLease { name, .. }
+            | Self::UnwatchLease { name, .. }
+            | Self::TryAcquireLease { name }
+            | Self::ReleaseLease { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
     /// Minimum role for the standard tree permission gate.
     ///
     /// Private Derived staging needs Read, not authority to mutate the
     /// database. Operations with special dispatcher gates return advisory roles.
     pub fn required_permission(&self) -> Permission {
         match self {
-            DatabaseOp::SubmitSignedEntry { .. } => Permission::Write(0),
+            DatabaseOp::TryAcquireLease { .. } | DatabaseOp::SubmitSignedEntry { .. } => Permission::Write(0),
             // Gated against `_databases`, not the request's `root_id`; the
             // dispatcher special-cases this so the value here is advisory.
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
@@ -267,6 +292,11 @@ impl DatabaseOp {
             | DatabaseOp::StoreStateRecordGet { .. }
             | DatabaseOp::StoreStateRecordScan { .. }
             | DatabaseOp::SubscribeWrites { .. }
+            | DatabaseOp::LeaseStatus { .. }
+            | DatabaseOp::WatchLease { .. }
+            // Cleanup uses same-connection possession instead of this value.
+            | DatabaseOp::UnwatchLease { .. }
+            | DatabaseOp::ReleaseLease { .. }
             | DatabaseOp::CreateTicket => Permission::Read,
         }
     }
@@ -449,6 +479,13 @@ pub enum ServiceRequest {
 /// gated against current authorization. This does not grant sync any opt-in view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Notification {
+    /// Coalescible observation for one keyed watch. Never an ownership grant.
+    LeaseChanged {
+        root_id: ID,
+        name: String,
+        watch_id: Uuid,
+        status: LeaseStatus,
+    },
     DatabaseWrite {
         root_id: ID,
         subscription_id: u64,
@@ -479,6 +516,10 @@ pub enum ServerFrame {
 /// Response from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceResponse {
+    /// Live advisory observation / initial watch state.
+    LeaseStatus(LeaseStatus),
+    /// Owner-only grant or observed contention.
+    LeaseAcquired(LeaseAcquireResponse),
     /// Single entry
     Entry(Entry),
     /// Multiple entries
@@ -584,6 +625,11 @@ const REQUEST_VARIANTS: &[&str] = &[
     "AuthenticatedDb",
 ];
 const DATABASE_OP_VARIANTS: &[&str] = &[
+    "LeaseStatus",
+    "TryAcquireLease",
+    "ReleaseLease",
+    "WatchLease",
+    "UnwatchLease",
     "ResolveStoreState",
     "BeginStoreStateStaging",
     "StageStoreStateRecords",
@@ -607,6 +653,8 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "CreateTicket",
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
+    "LeaseStatus",
+    "LeaseAcquired",
     "LocalAccounts",
     "LocalAccountState",
     "LocalAccountStateExchanged",
@@ -739,7 +787,10 @@ impl<'de> Deserialize<'de> for IncomingServerFrame {
                     Ok(Self::Response(Box::new(response)))
                 }
                 Envelope::Notification(raw) => {
-                    let notification = if variant_name(&raw)? == "DatabaseWrite" {
+                    let notification = if matches!(
+                        variant_name(&raw)?.as_str(),
+                        "DatabaseWrite" | "LeaseChanged"
+                    ) {
                         Some(serde_json::from_str(raw.get())?)
                     } else {
                         None

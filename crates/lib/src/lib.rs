@@ -27,6 +27,7 @@ pub mod database;
 pub mod entry;
 pub mod height;
 pub mod instance;
+pub mod lease;
 #[cfg(all(unix, feature = "service"))]
 pub mod service;
 pub mod snapshot;

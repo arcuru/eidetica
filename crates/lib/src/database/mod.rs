@@ -875,6 +875,19 @@ impl Database {
         }
     }
 
+    /// A named advisory lease in this Instance's in-memory registry.
+    ///
+    /// Works embedded or connected. Separate Instances/daemons do not
+    /// coordinate; neither this lease nor its guard fences ordinary writes or
+    /// external effects. Names are opaque, up to 256 UTF-8 bytes.
+    pub fn lease(&self, name: impl Into<String>) -> crate::lease::Lease {
+        crate::lease::Lease::new(self, name.into())
+    }
+
+    pub(crate) fn weak_instance(&self) -> WeakInstance {
+        self.instance.clone()
+    }
+
     /// Get the ID of the root entry
     pub fn root_id(&self) -> &ID {
         &self.root

@@ -238,7 +238,7 @@ Operations deliberately **not** exposed over the wire — `update_verification_s
 
 `update_verification_status` is off-wire **by design, not just for tidiness**: verification is a local trust decision. If a client could set it over the socket, a client (or anything that reached the socket) could assert "this entry is `Verified`" without the server having validated it — exactly the caller-asserted-status hole the storage API was hardened to close. So the daemon's Instance owns verification: it stores everything `Unverified` and runs `Database::verify()` itself. The frontier/`allow_unverified` distinction is applied by the daemon-side `Database`, and each handle explicitly selects its read scope without changing the daemon's verification decisions.
 
-`DatabaseOp::required_permission()` reports roles: Write for `SubmitSignedEntry` (advisory; the server verifies the signed Entry instead), Admin for `SetInstanceMetadata` (gated against `_databases` instead of `root_id`), and Read for every other variant (advisory for `UnsubscribeWrites`, which checks subscription ownership instead). The tree gate checks capability classes, not permission priority. The match is exhaustive, so a new operation cannot inherit Read by falling through.
+`DatabaseOp::required_permission()` reports roles: Write for `TryAcquireLease` and `SubmitSignedEntry` (advisory for signed submits; the server verifies the signed Entry instead), Admin for `SetInstanceMetadata` (gated against `_databases` instead of `root_id`), and Read for every other variant (advisory for unsubscribe and lease cleanup operations, which check ownership instead). The tree gate checks capability classes, not permission priority. The match is exhaustive, so a new operation cannot inherit Read by falling through.
 
 Published views and private builds use opaque random tokens stored only in the connection context. Every use rechecks the authenticated user, the database, and the connection. Disconnect, explicit abort, and bounded idle expiry delete unpublished private builds. The unchanged 64 MiB frame cap is enforced per request and response, so multi-record state is paged or chunked and a single record that cannot fit is refused with `RecordTooLarge`.
 
@@ -566,3 +566,43 @@ This is a **fully trusted local-client** v1. Filesystem access to the socket gra
 - **Sync delegation**: as above.
 - **Notification backpressure**: the per-connection writer channel is `mpsc::unbounded_channel`; a stalled client reader buffers notifications in memory. The transport follow-up must coalesce latest-wins per subscription while preserving initial delivery and non-droppable responses.
 - **Derived-key caching**: cache the Argon2id-derived encryption key in an OS secret store with a TTL, evolving the daemon into an ssh-agent-like key agent to eliminate repeated password prompts for CLI tools.
+
+## Lease coordination
+
+Leases extend service v0.1 without changing its handshake. A v0.1 daemon without leases returns `Unsupported` for the lease operation; other calls on that connection remain usable.
+
+`Instance` owns one in-memory registry keyed by `(database root, opaque name)`.
+A synchronous registry mutex serializes acquire, release, status and watch
+registration; it is never held across an await.
+This registry is separate from CRDT storage and per-tree write locks.
+
+`DatabaseOp::{LeaseStatus, WatchLease, TryAcquireLease}` use the authenticated
+wrapper and session-keyset identity resolution.
+Unlike creation flows, their permission gate requires an existing root.
+Status/watch require Read; acquisition requires Write.
+`ReleaseLease` checks the same connection's active random grant ID instead of
+current database permission.
+`UnwatchLease` likewise checks a connection-owned watch, so revocation cannot
+strand cleanup.
+The client uses the connection's current session identity for cleanup; logging
+in again does not change the owner or strand a grant bound to the previous login.
+`ConnectionGuard` removes that connection's watches and releases its grants on every exit.
+Connection owners are random IDs, not usernames or counters shared by separate servers.
+
+Watch registration queues its initial `Notification::LeaseChanged` and returns
+status under the same registry lock.
+The client registers its keyed watch before sending the request, then reconciles
+initial response and notifications by generation, keeping the newer observation.
+Lease notifications update coalescing watch channels directly in the reader;
+user callbacks do not block that reader.
+Dropped watches remove local routing synchronously and send bounded best-effort
+wire cleanup; a timed-out cleanup shuts down the socket even if client handles
+remain alive, so the daemon can run its disconnect cleanup.
+Cancelled acquisitions retain a cleanup token until their response is consumed,
+so an abandoned grant is released even if its response had already been delivered.
+
+There is no server-side blocking acquisition.
+`Lease::wait_acquire` subscribes, tries and retries after changes on the client.
+Guard loss follows connection death without automatic reconnect or reacquisition.
+Embedded use runs the same registry with one implicit owner and weak Instance handles.
+No lease entries, TTLs, renewal, durable fencing or write rejection are implemented.

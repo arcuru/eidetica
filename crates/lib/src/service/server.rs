@@ -28,6 +28,7 @@ use crate::backend::{
 use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::{WriteCallback, WriteSource};
+use crate::lease::{LeaseKey, LeaseOwner, invalid_grant, validate_name};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, HandshakeAck, IncomingRequest, MergeState, Notification,
@@ -36,6 +37,7 @@ use crate::service::protocol::{
 };
 use crate::state::{StateAdmission, StateError, StateReader};
 use crate::sync::{SyncError, protocol::SyncTreeRequest};
+use uuid::Uuid;
 
 /// Connection identifier. Monotonic per server-run; reused only after
 /// `AtomicU64` wraps (effectively never on a real daemon). Purely
@@ -64,6 +66,7 @@ struct SessionStaging {
 /// one handle-scoped callback; dropping the connection releases every handle.
 struct ConnectionContext {
     conn_id: ConnectionId,
+    lease_owner: LeaseOwner,
     tx: mpsc::UnboundedSender<ServerFrame>,
     instance: Instance,
     subscribed: std::sync::Mutex<HashMap<u64, (ID, SigKey, ReadScope, WriteCallback)>>,
@@ -133,6 +136,10 @@ impl Drop for ConnectionGuard {
             );
         }
         drop(subs);
+        self.ctx
+            .instance
+            .lease_registry()
+            .disconnect(self.ctx.lease_owner);
         let staging = std::mem::take(&mut *self.ctx.staging.lock().unwrap())
             .into_values()
             .filter(|value| !value.published)
@@ -703,6 +710,7 @@ async fn handle_connection(
 
     let ctx = Arc::new(ConnectionContext {
         conn_id,
+        lease_owner: LeaseOwner::Connection(Uuid::new_v4()),
         tx: frame_tx.clone(),
         instance: instance.clone(),
         subscribed: std::sync::Mutex::new(HashMap::new()),
@@ -1003,6 +1011,14 @@ async fn dispatch_inner(
                 identity,
                 op,
             } = *inner;
+            if let Some(name) = op.lease_name() {
+                validate_name(name)?;
+            }
+            let is_lease = op.lease_name().is_some();
+            let lease_cleanup = matches!(
+                op,
+                DatabaseOp::ReleaseLease { .. } | DatabaseOp::UnwatchLease { .. }
+            );
 
             // Submit is verification-gated, not session-gated.
             //
@@ -1070,16 +1086,18 @@ async fn dispatch_inner(
                 .await?;
             } else if !is_submit
                 && !is_computed_state
+                && !lease_cleanup
                 && !matches!(op, DatabaseOp::UnsubscribeWrites { .. })
             {
-                let require_existing = matches!(
-                    &op,
-                    DatabaseOp::BeginStoreStateStaging { .. }
-                        | DatabaseOp::StageStoreStateRecords { .. }
-                        | DatabaseOp::PublishStoreState { .. }
-                        | DatabaseOp::AbortStoreState { .. }
-                        | DatabaseOp::TryVerifiedStoreSnapshot { .. }
-                );
+                let require_existing = is_lease
+                    || matches!(
+                        &op,
+                        DatabaseOp::BeginStoreStateStaging { .. }
+                            | DatabaseOp::StageStoreStateRecords { .. }
+                            | DatabaseOp::PublishStoreState { .. }
+                            | DatabaseOp::AbortStoreState { .. }
+                            | DatabaseOp::TryVerifiedStoreSnapshot { .. }
+                    );
                 gate_tree_permission(
                     instance,
                     &acting_pubkey,
@@ -1162,6 +1180,70 @@ async fn dispatch_database_op(
     op: DatabaseOp,
 ) -> crate::Result<ServiceResponse> {
     match op {
+        DatabaseOp::LeaseStatus { name } => Ok(ServiceResponse::LeaseStatus(
+            instance.lease_registry().status(&LeaseKey {
+                root: root_id,
+                name,
+            }),
+        )),
+        DatabaseOp::TryAcquireLease { name } => {
+            let (response, _) = instance.lease_registry().acquire(
+                &LeaseKey {
+                    root: root_id,
+                    name,
+                },
+                ctx.lease_owner,
+            );
+            Ok(ServiceResponse::LeaseAcquired(response))
+        }
+        DatabaseOp::ReleaseLease { name, grant_id } => {
+            if !instance.lease_registry().release(
+                &LeaseKey {
+                    root: root_id,
+                    name,
+                },
+                ctx.lease_owner,
+                grant_id,
+            ) {
+                return Err(invalid_grant());
+            }
+            Ok(ServiceResponse::Ok)
+        }
+        DatabaseOp::WatchLease { name, watch_id } => {
+            let key = LeaseKey {
+                root: root_id,
+                name,
+            };
+            let event_key = key.clone();
+            let tx = ctx.tx.clone();
+            let status = instance.lease_registry().watch(
+                &key,
+                ctx.lease_owner,
+                watch_id,
+                Arc::new(move |status| {
+                    let _ = tx.send(ServerFrame::Notification(Notification::LeaseChanged {
+                        root_id: event_key.root.clone(),
+                        name: event_key.name.clone(),
+                        watch_id,
+                        status,
+                    }));
+                }),
+            );
+            Ok(ServiceResponse::LeaseStatus(status))
+        }
+        DatabaseOp::UnwatchLease { name, watch_id } => {
+            if !instance.lease_registry().unwatch(
+                &LeaseKey {
+                    root: root_id,
+                    name,
+                },
+                ctx.lease_owner,
+                watch_id,
+            ) {
+                return Err(invalid_grant());
+            }
+            Ok(ServiceResponse::Ok)
+        }
         DatabaseOp::ResolveStoreState { request } => {
             let request = session_store_state_request(request, login_id, &root_id)?;
             let view = match instance.backend().resolve_store_state(&request).await? {
