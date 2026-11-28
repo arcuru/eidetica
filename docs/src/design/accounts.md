@@ -46,7 +46,7 @@ Use one setup writer per alias. Genesis, login registration and reference public
 
 Each downstream database has its own Auth. Direct grants target a key; another installation key on the same app Account does not inherit them. A database can instead delegate to the app Account, with explicit bounds that apply to the entire path through that Account. A later member needs a current enough verified snapshot to prove its grant; a reference cannot substitute for acquisition and verification of that proof. Use a separate stronger owner path on a downstream database if the app delegation would clamp the owner's authority. Existing causal revocation and public-floor semantics still apply.
 
-Another installation uses its own key, an approved grant on the **same** app Account and local registration of that existing root. The registration API consumes an already authorized direct key; it does not create a new root, obtain approval, request Identity membership or configure background authority. Ticket-based enrollment and any separately needed Identity memberships are distinct steps. See the [setup guide](../user_guide/linked_accounts.md).
+Another installation uses its own key, an approved grant on the **same** app Account and local registration of that existing root. The registration API consumes an already authorized direct key; it does not create a new root, obtain approval, request Identity membership or configure background authority. The [second-installation walkthrough](../user_guide/linked_accounts.md#reuse-the-root-on-another-installation) composes ordinary ticket bootstrap with that registration and separately enrolls only the Identity it needs.
 
 ### Independent personas
 
@@ -69,7 +69,7 @@ No historical key deletion, compatibility import, live migration or deployment o
 Old histories can still contain credentials and must not be advertised as scrubbed.
 Trusted Unix-socket clients still unlock and sign in-process; the optional dashboard is the documented daemon-process exception.
 See [local record formats and lifetimes](../internal/account_credentials.md).
-The linked-account tests transfer public Auth/Entry history between isolated instances and register distinct keys. They demonstrate shared-root login, not ticket enrollment.
+The linked-account tests join one Account by ticket from two isolated instances with distinct local keys, then reopen the joined root through ordinary login. They explicitly fetch public Identity history and test that it grants neither membership nor automatic activation.
 
 ## Application-owned root references
 
@@ -145,7 +145,7 @@ No generic peer catalog is defined; key mappings and activation preferences are 
 AccountSession sharing and database-access requests continue using ordinary Auth and the existing bootstrap flow.
 `AccountSession::join()` joins a database from a ticket and returns it opened, using embedded sync or daemon networking while the signing key stays client-owned.
 Pending approval requires an explicit retry and writes no new Account mappings or preferences; rejection is terminal for that request.
-This is basic database join, not joining an existing Account on a second instance or enrolling a daemon device.
+The same basic operation can acquire the existing Account's history and verify the new key's authority. It does not switch logins: the installation then separately registers its key for the existing root and opens that login. Request decision bookkeeping is independent of the signed Auth grant and currently requires a direct target Admin. No daemon device is enrolled.
 Held/unreadable recovery, automatic delegated-history acquisition, and restart-safe completion remain outside this API; see [current recovery limits](../user_guide/bootstrap.md#current-recovery-limits).
 Successful network transfer is distinct from local key-mapping/tracking persistence.
 If local bookkeeping fails after a grant, the error remains visible and retries use the existing flow; changing names does not implement a new join engine.

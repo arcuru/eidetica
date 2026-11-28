@@ -1,6 +1,6 @@
 use eidetica::{
     Account, AccountSession, Database, Entry, Error, ID, Instance, NewAccount, Result,
-    account::{AccountError, AccountSigner, KeyStorage, SyncSettings},
+    account::{AccountError, AccountSigner, IdentityRegistration, KeyStorage, SyncSettings},
     auth::{
         AuthKey, AuthSettings, Permission,
         crypto::{PrivateKey, PublicKey, verify_entry_signature},
@@ -8,13 +8,15 @@ use eidetica::{
             DelegatedTreeRef, DelegationStep, KeyHint, PermissionBounds, SigKey, TreeReference,
         },
     },
-    backend::VerificationStatus,
+    backend::{VerificationStatus, database::InMemory},
     crdt::Doc,
     database::DatabaseKey,
     store::DocStore,
+    sync::{DatabaseTicket, SyncError, transports::http::HttpTransport},
 };
 
 use crate::helpers::{LocalBackendTestExt, test_local_instance};
+use crate::sync::helpers::start_sync_server;
 
 fn grant(permission: Permission) -> AuthKey {
     AuthKey::active(None, permission)
@@ -91,6 +93,141 @@ fn entry_mentions(entry: &Entry, text: &str) -> bool {
                 .data(store)
                 .is_ok_and(|data| contains(data, text.as_bytes()))
         })
+}
+
+async fn join_with_sync_disabled(
+    session: &mut AccountSession,
+    ticket: &DatabaseTicket,
+    key: &PublicKey,
+    permission: Permission,
+) -> Result<Database> {
+    // Keep the large debug-build bootstrap future off the test thread's stack.
+    Box::pin(session.join(ticket, key, permission, SyncSettings::disabled(), None)).await
+}
+
+fn pending_id(error: Error) -> String {
+    match error {
+        Error::Sync(error) => match *error {
+            SyncError::BootstrapPending { request_id, .. } => request_id,
+            other => panic!("expected pending approval, got {other:?}"),
+        },
+        other => panic!("expected pending approval, got {other:?}"),
+    }
+}
+
+async fn exercise_account_requests(
+    app: &AccountSession,
+    app_db: &Database,
+    low_key: &PublicKey,
+    second_admin: &mut AccountSession,
+    account_ticket: &DatabaseTicket,
+) -> Result<PublicKey> {
+    let app_key = app.get_default_key()?;
+    let app_id = app.account().id();
+    let second_id = second_admin
+        .add_private_key(Some("this installation"))
+        .await?;
+    assert_ne!(second_id, app_key);
+    let read_pending =
+        join_with_sync_disabled(second_admin, account_ticket, &second_id, Permission::Read)
+            .await
+            .expect_err("the ticket alone must not grant Read");
+    let read_request_id = pending_id(read_pending);
+    assert!(second_admin.tracked_database(app_id).await?.is_none());
+    assert!(second_admin.key_mapping(&second_id, app_id)?.is_none());
+    let pending = app.pending_access_requests(app_id, &app_key).await?;
+    let [(request_id, request)] = pending.as_slice() else {
+        panic!("expected one Account request");
+    };
+    assert_eq!(request_id, &read_request_id);
+    assert_eq!(request.requesting_pubkey, second_id);
+    assert_eq!(request.requested_permission, Permission::Read);
+    assert!(
+        app.complete_access_request(app_id, request_id, &app_key)
+            .await
+            .is_err()
+    );
+    assert!(
+        app_db
+            .get_settings()
+            .await?
+            .auth_snapshot()
+            .await?
+            .get_key_by_pubkey(&second_id)
+            .is_err()
+    );
+    let tx = app_db.new_transaction().await?;
+    tx.get_settings()?
+        .set_auth_key(&second_id, grant(Permission::Read))
+        .await?;
+    verify_entry_signature(&app_db.get_entry(tx.commit().await?).await?, &app_key)?;
+    app.complete_access_request(app_id, request_id, &app_key)
+        .await?;
+    let read_account =
+        join_with_sync_disabled(second_admin, account_ticket, &second_id, Permission::Read).await?;
+    assert_eq!(read_account.root_id(), app_id);
+    assert_eq!(read_account.current_permission().await?, Permission::Read);
+    assert_eq!(read_account.get_name().await?, "notes");
+    assert!(write(&read_account, "reader cannot write").await.is_err());
+
+    let denied = Permission::Admin(0);
+    let denied_id = pending_id(
+        join_with_sync_disabled(second_admin, account_ticket, &second_id, denied)
+            .await
+            .expect_err("a Read grant does not satisfy Admin"),
+    );
+    app.reject_access_request(app_id, &denied_id, &app_key)
+        .await?;
+    for _ in 0..2 {
+        let result =
+            join_with_sync_disabled(second_admin, account_ticket, &second_id, denied).await;
+        assert!(matches!(result, Err(Error::Sync(e)) if matches!(e.as_ref(),
+            SyncError::BootstrapRejected { request_id, .. } if request_id == &denied_id)));
+    }
+    assert_eq!(read_account.current_permission().await?, Permission::Read);
+
+    let permission = Permission::Write(30);
+    let write_pending = pending_id(
+        join_with_sync_disabled(second_admin, account_ticket, &second_id, permission)
+            .await
+            .expect_err("a replicated Account with only Read still needs approval"),
+    );
+    let retried_pending = pending_id(
+        join_with_sync_disabled(second_admin, account_ticket, &second_id, permission)
+            .await
+            .expect_err("retry must not grant permissions"),
+    );
+    assert_eq!(retried_pending, write_pending);
+    let pending = app.pending_access_requests(app_id, &app_key).await?;
+    let [(write_id, request)] = pending.as_slice() else {
+        panic!("retry must not duplicate pending requests");
+    };
+    assert_eq!(write_id, &write_pending);
+    assert_eq!(request.requesting_pubkey, second_id);
+    assert_eq!(request.requested_permission, permission);
+    assert!(app.pending_access_requests(app_id, low_key).await.is_err());
+    assert!(
+        app.reject_access_request(app_id, write_id, low_key)
+            .await
+            .is_err()
+    );
+    let tx = app_db.new_transaction().await?;
+    tx.get_settings()?
+        .set_auth_key(&second_id, grant(permission))
+        .await?;
+    tx.commit().await?;
+    app.complete_access_request(app_id, write_id, &app_key)
+        .await?;
+    let joined =
+        join_with_sync_disabled(second_admin, account_ticket, &second_id, permission).await?;
+    assert_eq!(joined.current_permission().await?, permission);
+    let joined_snapshot = joined.snapshot().await?;
+    let retry =
+        join_with_sync_disabled(second_admin, account_ticket, &second_id, permission).await?;
+    assert_eq!(retry.snapshot().await?, joined_snapshot);
+    assert!(!retry.is_shared().await?);
+    assert!(app.open_database(app_id).await?.is_shared().await?);
+    Ok(second_id)
 }
 
 async fn exercise_owned_app(
@@ -219,7 +356,7 @@ async fn exercise_owned_app(
     let owner_app = owner.open_database(&app_id).await?;
     assert_eq!(owner_app.auth_identity(), Some(&owner_path));
     // Ordinary Admin is useful, but cannot lower the stronger owner grant.
-    let low_key = PrivateKey::generate().public_key();
+    let low_key = app.add_private_key(Some("data writer")).await?;
     let tx = app_db.new_transaction().await?;
     tx.get_settings()?
         .set_auth_key(&low_key, grant(Permission::Write(20)))
@@ -256,6 +393,9 @@ async fn exercise_owned_app(
     // exact target path and prove it, rather than try the reference as Auth.
     let tips = app_db.snapshot().await?.into_tips();
     let mut delegated_auth = AuthSettings::new();
+    // Socket clients need a readable target to discover a delegation path.
+    // Only the configured delegation permits writing.
+    delegated_auth.set_global_permission(grant(Permission::Read));
     delegated_auth.add_delegated_tree(DelegatedTreeRef {
         tree: TreeReference {
             root: app_id.clone(),
@@ -291,9 +431,12 @@ async fn exercise_owned_app(
         app.open_reference("notes", "direct").await.is_err(),
         "reference installed a mapping"
     );
+    let public_view = app_actor
+        .open_database(&app_client, delegated.root_id())
+        .await?;
+    assert_eq!(public_view.current_permission().await?, Permission::Read);
     assert!(
-        app_actor
-            .open_database(&app_client, delegated.root_id())
+        write(&public_view, "the public floor is not Write")
             .await
             .is_err()
     );
@@ -312,30 +455,45 @@ async fn exercise_owned_app(
     verify_entry_signature(&write(&app_db, "still direct").await?, &app_key)?;
     assert_eq!(app_db.auth_identity(), Some(app_actor.identity()));
 
-    // Device enrollment belongs to the ticket workflow. This fixture preloads
-    // only independently verified Entries, then uses a locally generated key
-    // and the real existing-root registration path on the other installation.
-    let second_key = PrivateKey::generate();
-    let second_id = second_key.public_key();
-    let tx = owner_app.new_transaction().await?;
-    tx.get_settings()?
-        .set_auth_key(&second_id, grant(Permission::Admin(20)))
+    let team = app.create_identity("team", &app_key).await?;
+    app.set_reference("identities", "owner", owner.root_id())
         .await?;
-    verify_entry_signature(&owner_app.get_entry(tx.commit().await?).await?, &owner_key)?;
-    for root in [
-        owner.root_id(),
-        &app_id,
-        direct.root_id(),
-        delegated.root_id(),
-    ] {
-        transfer_verified(first_host, second_host, root).await?;
-    }
+    Box::pin(first_host.enable_sync()).await?;
+    Box::pin(second_host.enable_sync()).await?;
+    let first_sync = first_host.sync().unwrap();
+    start_sync_server(&first_sync).await;
+    let second_sync = second_host.sync().unwrap();
+    second_sync
+        .register_transport("http", HttpTransport::builder())
+        .await?;
+    owner.database().share().await?;
+    team.database().share().await?;
+    let team_ticket = team.ticket().await?;
+    // Explicitly fetch public proof for the Account's delegated genesis, and
+    // public data for the separate Identity we will later use. Neither is membership.
+    Box::pin(second_sync.sync_with_ticket(&owner.ticket().await?)).await?;
+    Box::pin(second_sync.sync_with_ticket(&team_ticket)).await?;
+    assert!(!second_host.has_database(&app_id).await);
+
+    app.track_database(&app_id, &app_key, SyncSettings::enabled())
+        .await?;
+    let account_ticket = app.open_database(&app_id).await?.ticket().await?;
     let second_admin_client = connect(second_host, second_url).await?;
-    let second_admin = second_admin_client.login_account("admin", "").await?;
+    let mut second_admin = second_admin_client.login_account("admin", "").await?;
+    let second_id = Box::pin(exercise_account_requests(
+        &app,
+        &app_db,
+        &low_key,
+        &mut second_admin,
+        &account_ticket,
+    ))
+    .await?;
+    let second_key = second_admin.get_signing_key(&second_id)?;
+    let permission = Permission::Write(30);
+
+    let admin = second_admin.admin().await?;
     assert!(
-        second_admin
-            .admin()
-            .await?
+        admin
             .register_account_login(
                 &app_id,
                 PrivateKey::generate(),
@@ -344,9 +502,7 @@ async fn exercise_owned_app(
             .await
             .is_err()
     );
-    second_admin
-        .admin()
-        .await?
+    admin
         .register_account_login(
             &app_id,
             second_key,
@@ -358,20 +514,124 @@ async fn exercise_owned_app(
         .login_account("second-notes", "second password")
         .await?;
     assert_eq!(second.account().id(), &app_id);
+    second.logout()?;
+    let second_client = connect(second_host, second_url).await?;
+    assert!(
+        second_client
+            .login_account("second-notes", "wrong")
+            .await
+            .is_err()
+    );
+    let mut second = second_client
+        .login_account("second-notes", "second password")
+        .await?;
+    assert_eq!(second.account().id(), &app_id);
     assert_eq!(second.list_keys()?, std::slice::from_ref(&second_id));
     assert_eq!(
         second.reference("notes", "direct").await?,
         Some(direct.root_id().clone())
     );
     let second_actor = second.acting_as(&second_id, None)?;
-    assert!(
-        second_actor
-            .open_database(&second_client, direct.root_id())
-            .await
-            .is_err(),
-        "app Account grant leaked to direct target"
-    );
     let second_app = second_actor.open_database(&second_client, &app_id).await?;
+    verify_entry_signature(
+        &write(&second_app, "returning installation").await?,
+        &second_id,
+    )?;
+    let tx = second_app.new_transaction().await?;
+    tx.get_settings()?
+        .set_auth_key(&low_key, grant(Permission::Read))
+        .await?;
+    assert!(
+        tx.commit().await.is_err(),
+        "Write must not change Account Auth"
+    );
+
+    // Discovery of a public Identity and Read of its replicated history are not membership.
+    assert_eq!(
+        second.identity_id("team").await?.as_ref(),
+        Some(team.root_id())
+    );
+    assert!(second.get_identity("team").await?.is_none());
+    let public = second_actor
+        .open_database(&second_client, team.root_id())
+        .await?;
+    assert_eq!(public.current_permission().await?, Permission::Read);
+    assert!(
+        public
+            .get_settings()
+            .await?
+            .auth_snapshot()
+            .await?
+            .get_key_by_pubkey(&second_id)
+            .is_err()
+    );
+    let membership = Permission::Write(5);
+    assert!(matches!(
+        Box::pin(second.register_identity(
+            "team",
+            &team_ticket,
+            &second_id,
+            membership,
+            SyncSettings::disabled()
+        ))
+        .await?,
+        IdentityRegistration::Pending
+    ));
+    assert!(second.activate_identity("team").await.is_err());
+    let pending = app
+        .pending_access_requests(team.root_id(), &app_key)
+        .await?;
+    let [(membership_id, request)] = pending.as_slice() else {
+        panic!("expected one separate Identity request");
+    };
+    assert_eq!(request.requesting_pubkey, second_id);
+    assert_eq!(request.requested_permission, membership);
+    assert!(request.require_direct_key);
+    team.add_key(&second_id, grant(membership)).await?;
+    app.complete_access_request(team.root_id(), membership_id, &app_key)
+        .await?;
+    let IdentityRegistration::Active(member) = Box::pin(second.register_identity(
+        "team",
+        &team_ticket,
+        &second_id,
+        membership,
+        SyncSettings::disabled(),
+    ))
+    .await?
+    else {
+        panic!("approved Identity did not activate")
+    };
+    assert_eq!(member.root_id(), team.root_id());
+    assert_eq!(member.database().current_permission().await?, membership);
+    verify_entry_signature(
+        &write(member.database(), "separate membership").await?,
+        &second_id,
+    )?;
+    assert!(team.database().is_shared().await?);
+    assert!(!member.database().is_shared().await?);
+    assert!(second.tracked_identity("owner").await?.is_none());
+    assert!(second.tracked_database(owner.root_id()).await?.is_none());
+
+    // Each data root is shared explicitly. Only the one with an appropriate
+    // pre-existing delegation accepts the new Account member without a target grant.
+    app.track_database(direct.root_id(), &app_key, SyncSettings::enabled())
+        .await?;
+    let direct_ticket = app.open_database(direct.root_id()).await?.ticket().await?;
+    pending_id(
+        join_with_sync_disabled(&mut second, &direct_ticket, &second_id, permission)
+            .await
+            .expect_err("the Account reference and grant do not extend to a direct-key target"),
+    );
+    assert!(second.tracked_database(direct.root_id()).await?.is_none());
+    app.track_database(delegated.root_id(), &app_key, SyncSettings::enabled())
+        .await?;
+    let delegated_ticket = app
+        .open_database(delegated.root_id())
+        .await?
+        .ticket()
+        .await?;
+    let before = delegated.get_settings().await?.auth_snapshot().await?;
+    join_with_sync_disabled(&mut second, &delegated_ticket, &second_id, Permission::Read).await?;
     let second_path = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: app_id.clone(),
@@ -386,7 +646,36 @@ async fn exercise_owned_app(
     let entry = write(&second_target, "second installation").await?;
     assert_eq!(entry.auth().key, second_path);
     verify_entry_signature(&entry, &second_id)?;
+    assert_eq!(
+        second_target
+            .get_settings()
+            .await?
+            .auth_snapshot()
+            .await?
+            .as_doc(),
+        before.as_doc()
+    );
+    assert!(
+        app.pending_access_requests(delegated.root_id(), &app_key)
+            .await
+            .is_err(),
+        "this bookkeeping API requires a direct Admin, not a delegated one"
+    );
     assert!(app.get_signing_key(&second_id).is_err());
+    let second_engine = second_host.backend().local_engine().unwrap();
+    let second_private = second.get_signing_key(&second_id)?.to_prefixed_string();
+    for root in [&app_id, team.root_id()] {
+        let entries = second_engine.get_tree(root).await?;
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry_mentions(entry, &second_id.to_string()))
+        );
+        for entry in entries {
+            assert!(!entry_mentions(&entry, &second_private));
+            assert!(!entry_mentions(&entry, "second password"));
+        }
+    }
 
     let engine = first_host.backend().local_engine().unwrap();
     let history = engine.get_tree(&app_id).await?;
@@ -427,21 +716,53 @@ async fn exercise_owned_app(
     Ok(())
 }
 
-#[tokio::test]
-async fn test_owned_app_embedded() -> Result<()> {
-    let first = test_local_instance().await;
-    let second = test_local_instance().await;
-    exercise_owned_app(&first, &second, None, None).await
+// Network proofs from connected clients use the system clock.
+async fn installation() -> Result<Instance> {
+    let (instance, _) =
+        Instance::create_backend(Box::new(InMemory::new()), NewAccount::passwordless("admin"))
+            .await?;
+    Ok(instance)
+}
+
+fn run_two_installations<F: std::future::Future<Output = Result<()>> + 'static>(
+    case: fn() -> F,
+) -> Result<()> {
+    // This composed test polls large, unoptimized setup and sync futures.
+    // Give only this test thread more stack, not the whole suite.
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(case())
+        })?
+        .join()
+        .expect("two-installation test thread panicked")
+}
+
+#[test]
+fn test_owned_app_embedded() -> Result<()> {
+    run_two_installations(|| async {
+        let first = installation().await?;
+        let second = installation().await?;
+        exercise_owned_app(&first, &second, None, None).await
+    })
 }
 
 #[cfg(all(unix, feature = "service"))]
-#[tokio::test]
-async fn test_owned_app_service() -> Result<()> {
+#[test]
+fn test_owned_app_service() -> Result<()> {
+    run_two_installations(exercise_owned_app_service)
+}
+
+#[cfg(all(unix, feature = "service"))]
+async fn exercise_owned_app_service() -> Result<()> {
     use eidetica::service::ServiceServer;
     use std::os::unix::fs::PermissionsExt;
 
-    let first = test_local_instance().await;
-    let second = test_local_instance().await;
+    let first = installation().await?;
+    let second = installation().await?;
     let dir = tempfile::tempdir()?;
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
     let path_a = dir.path().join("first.sock");

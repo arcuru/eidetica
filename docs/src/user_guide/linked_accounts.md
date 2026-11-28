@@ -96,7 +96,69 @@ Choosing a new acting handle does not change older handles. If the selected path
 
 ## Reuse the root on another installation
 
-Do not run `provision_owned_app` again. Use the same Account root, generate a fresh key on the new installation, and have an authorized owner approve it through ordinary Auth. After the Account and any required proof history are present and the new key has an active direct grant, that Instance's administrator can call `register_account_login(root, key, NewAccount::with_password(...))`. This only wraps the supplied key for local login; it does not fetch the Account or approve an access request. Use existing [tickets and approval](bootstrap.md) for access and [separate membership](identity_guide.md#join-an-existing-identity-from-another-installation) for any Identity you actually need. No personal bundle or other installation's app key is copied.
+Reopen the **same Account root** on the new installation. Do not run `provision_owned_app` again or copy a private key or login bundle. The following is a manual Rust API flow; the CLI does not combine these steps into a second-device login command.
+
+### 1. Share the existing root
+
+Enable sync on both installations and accept connections on the sharing peer, using a reachable [transport](synchronization_guide.md). With a session and a key already authorized on the Account, call `track_database(root, &key, SyncSettings::enabled())`, `open_database(root)`, and then `ticket()` on the opened database. Send the ticket and confirm the expected root over your onboarding channel. A ticket locates a database and peer; it is not an invitation that grants Auth.
+
+If the Account history uses delegation (including genesis of an owned app Account), the joining installation needs the verified proof history, too. Provide those histories separately before retrying the Account transfer. In the example tests, the sharing installation shares its public owner Identity with `identity.database().share()` and `identity.ticket()`. The receiving installation's sync host fetches it with `Sync::sync_with_ticket`. This obtains public proof data without installing a member key. A connected client does not have its own `Sync`; for this public prefetch, use the owning sync host. Do not import a private organizer's chain to stand in for an independent persona's proof.
+
+### 2. Request and approve Account access
+
+On the new installation, log in with its existing local administrator account. Generate a fresh key there with `add_private_key(Some("notes on this installation"))`. This keeps the key available locally for retries without depending on the Account being joined. Use the same key and an explicit permission in `join`; `SyncSettings::disabled()` still allows this foreground transfer.
+
+```rust,no_run
+use eidetica::{AccountSession, Database, Result, account::SyncSettings,
+    auth::{Permission, crypto::PublicKey}, sync::DatabaseTicket};
+
+async fn join_notes(
+    local: &mut AccountSession, ticket: &DatabaseTicket, key: &PublicKey,
+) -> Result<Database> {
+    local.join(ticket, key, Permission::Write(30), SyncSettings::disabled(), None).await
+}
+```
+
+`BootstrapPending` means wait for a decision, not that the new key has access. Retrying the same root, key and permission while pending identifies the same request. On the sharing installation, a **direct Admin of the target Account** uses `pending_access_requests(root, &admin_key)`. Check the root, public key and requested permission, and verify the requester's identity independently. The key proof establishes possession, not who is holding it.
+
+To approve, use a database handle bound to that Admin. In a normal settings transaction, call `set_auth_key(&request.requesting_pubkey, AuthKey::active(None, approved_permission))` and commit. Then call `complete_access_request(root, &request_id, &admin_key)`. Finalization checks existing Auth; it does not add a key. It refuses approval if the actual grant does not satisfy the request. To offer weaker access, decide on that scope explicitly and have the requester use that permission instead. To deny the request, call `reject_access_request` **without** adding the grant. `BootstrapRejected` is terminal for that request; don't loop or create a replacement Account. A key that can only read or write the Account cannot list or decide its requests. A delegated-only Admin may be able to sign a valid Auth update, but these session request-listing and decision methods take a direct Admin key.
+
+Repeat `join_notes` after approval. Check that the returned root matches the ticket and that `current_permission()` meets the request. Read permits reading, not writes. Write permits data operations, not Auth changes. An Admin's grant is still subject to the existing priority rules. If the grant committed but recording the decision failed, inspect both before retrying; don't blindly reapply the grant. Missing proof history, a held replica the key cannot read, or a lost connection is not a successful join. See the [current recovery limits](bootstrap.md#current-recovery-limits).
+
+### 3. Register and reopen the local login
+
+`join` tracks access under the session that requested it. It does not turn that session into the joined Account's login. With the new installation's administrator, wrap the same locally held key for the now-accessible root and open the new login separately:
+
+```rust,no_run
+use eidetica::{AccountSession, Instance, NewAccount, Result, ID, auth::crypto::PublicKey};
+
+async fn register_notes(
+    local_admin: &AccountSession, separate_client: &Instance, root: &ID,
+    key: &PublicKey, password: &str,
+) -> Result<AccountSession> {
+    local_admin.admin().await?.register_account_login(
+        root, local_admin.get_signing_key(key)?,
+        NewAccount::with_password("notes-here", password),
+    ).await?;
+    let notes = separate_client.login_account("notes-here", password).await?;
+    assert_eq!(notes.account().id(), root);
+    Ok(notes)
+}
+```
+
+For embedded use, `separate_client` can be the same Instance. For connected use, open a separate connection to the **same local daemon** with `Instance::connect`. The administrator registers an encrypted, installation-local bundle; unlock and signing happen on the client. Later, use `login_account` again with the local name and password. `register_account_login` requires an existing active direct key grant, as well as Instance administration. It will not fetch the Account, approve the key, or overwrite an existing login. After an uncertain registration result, check whether the intended login already unlocks the expected root with the expected key before repeating it. If the key already has sufficient delegated authority and you don't need a registered login, use [a caller-held signer](account_credentials.md) with its actual delegation instead of adding a redundant direct grant.
+
+### 4. Select only the Identities and data you need
+
+Use `identity_id(name)` to read an Account reference and compare it with the Identity ticket. Even if the public history is present, `get_identity(name)` does not make the key a member. Follow [Identity membership](identity_guide.md#join-an-existing-identity-from-another-installation) for each needed Identity: call `register_identity` on the **new Account login**, have an Admin of that Identity approve the separate request, and retry registration until it returns `Active(identity)`. Use `identity.database()` to sign an ordinary write, or `identity.open_database(target)` where the target delegates to it. An unrelated or independent persona is not auto-enrolled. Choose sync preferences separately; activation does not enroll the daemon's device key for ongoing private sync.
+
+Fetch each application database explicitly. A target with only a direct grant for the first installation's key requires its own grant for the new key. A target that already delegates suitable permissions to this Account can accept the new member with verified Account proof, without editing the target's Auth. The tests fetch a target with public Read, then open it with the [explicit delegation](#data-roots-need-their-own-auth) to sign a write. Public Read is only the acquisition route; it does not confer Write. For private targets, arrange authorized acquisition and proof separately. This flow does not discover delegated access automatically on connected clients.
+
+The embedded and Unix-connected versions of this flow both run in [`linked_accounts_tests.rs`](https://github.com/arcuru/eidetica/blob/main/crates/lib/tests/it/account/linked_accounts_tests.rs). To run them against two temporary installations from the repository:
+
+```bash
+nix develop -c nix run .#test-inmemory -- -E 'test(test_owned_app_embedded) | test(test_owned_app_service)'
+```
 
 ## Handle partial setup without creating duplicates
 
