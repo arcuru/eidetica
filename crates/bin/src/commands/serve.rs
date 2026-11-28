@@ -221,7 +221,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Build only the existing web surface; never mount the trusted service RPC here.
-/// The daemon disables the legacy HTTP sync endpoint: peer sync still runs on Iroh.
+/// HTTP peer sync is mounted only for serve mode or an explicitly shared daemon bind.
 pub(super) fn web_router(instance: Instance, include_http_sync: bool) -> Router {
     let sync_handler: Arc<dyn SyncHandler> = Arc::new(SyncHandlerImpl::new(
         instance.clone(),
@@ -971,10 +971,13 @@ async fn handle_sync_request(
 ) -> axum::Json<SyncResponse> {
     let context = RequestContext {
         remote_address: Some(Address {
-            transport_type: "http".to_string(),
+            transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
             address: addr.to_string(),
         }),
-        peer_pubkey: None,
+        peer_pubkey: match &request {
+            SyncRequest::SyncTree(request) => request.peer_pubkey.clone(),
+            _ => None,
+        },
     };
 
     let response = state.sync_handler.handle_request(&request, &context).await;

@@ -700,13 +700,13 @@ async fn test_sync_between_peers() -> Result<()> {
 ### 🚀 Sync Features
 
 - **Declarative sync API**: Register intent, let background engine handle sync
-- **Automatic peer registration**: Incoming connections register automatically
+- **Automatic peer registration**: Does not apply to inbound HTTP
 - **Status tracking**: Monitor sync progress with `SyncHandle`
 - **Zero-state joining**: Join rooms/databases without any local setup
 - **Automatic protocol detection**: Bootstrap vs incremental sync handled automatically
 - **Database discovery**: Find available databases on peers
 - **Bidirectional sync**: Both devices can share and receive databases
-- **Tree/peer relationship tracking**: Automatic relationship management
+- **Tree/peer relationship tracking**: Inbound HTTP pulls do not configure future pushes
 
 ### 🔧 Troubleshooting Checklist
 

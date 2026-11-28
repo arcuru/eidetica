@@ -1,31 +1,44 @@
-//! Auto-sync relay: a write propagates along a chain of background links.
-//!
-//! Auto-sync is wired as a chain — `auto_sync(0,1)` and `auto_sync(1,2)` with no
-//! direct `0<->2` link. A write at peer 0 reaches peer 2 only by peer 1 relaying
-//! it: peer 1 receives the entry and, because a remotely-synced entry fires the
-//! local write callback, re-queues it on to peer 2. `flush` is the barrier.
+//! Convergence across a chain of configured links, without a direct push from
+//! the origin to the final peer.
 
 use eidetica::Cluster;
 
 use super::helpers::{cluster_get, cluster_put, cluster_shared_database};
 
-/// A peer-0 write reaches peer 2 transitively through peer 1, with no direct
-/// 0<->2 sync link.
+/// The intermediate peer serves a verified write it received by auto-sync.
 #[tokio::test]
-async fn test_auto_sync_relay_chain() {
+async fn test_sync_converges_across_configured_chain() {
     let mut net = Cluster::builder().peers(3).build().await.unwrap();
     let (room, dbs) = cluster_shared_database(&mut net, "relay").await.unwrap();
 
-    // Chain topology: 0<->1 and 1<->2 auto-sync, but NOT 0<->2.
+    // Discard the final peer's outbound bootstrap relationship to the origin.
+    let origin = net.peer(0).instance().id();
+    let final_peer = net.peer(2).instance().id();
+    net.peer(2)
+        .sync()
+        .remove_tree_sync(&origin, &room)
+        .await
+        .unwrap();
     net.auto_sync(0, 1, &room).await.unwrap();
     net.auto_sync(1, 2, &room).await.unwrap();
+    assert!(
+        !net.peer(0)
+            .sync()
+            .is_tree_synced_with_peer(&final_peer, &room)
+            .await
+            .unwrap(),
+        "bootstrap must not have installed a shortcut from the origin"
+    );
 
     // Write at the head of the chain.
     cluster_put(&dbs[0], "relay", "payload").await.unwrap();
 
-    // Push along the chain: 0 -> 1, then 1 (having received it) -> 2.
     net.flush(0).await.unwrap();
-    net.flush(1).await.unwrap();
+    assert_eq!(cluster_get(&dbs[1], "relay").await.unwrap(), "payload");
+
+    // The write hook queues local commits only. Catch up from the next hop
+    // with the usual sync exchange, not another flush of the empty queue.
+    net.exchange(2, 1, &room).await.unwrap();
 
     // Peer 2 received the write despite never syncing directly with peer 0.
     assert_eq!(

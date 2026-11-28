@@ -22,6 +22,7 @@ use super::{
         PROTOCOL_VERSION, RequestContext, SyncRequest, SyncRequestAuth, SyncResponse,
         SyncTreeRequest,
     },
+    transports::http::HttpTransport,
 };
 use crate::{
     Database, Entry, Error, Instance, Result, Snapshot, WeakInstance,
@@ -311,6 +312,15 @@ enum BootstrapRequestOutcome {
     Pending(String),
     Rejected(String),
     Approved,
+}
+
+/// HTTP has no verified inbound device identity or return route. Even a
+/// successful, signed tree pull says nothing about where to push future writes.
+fn allows_incoming_route_updates(context: &RequestContext) -> bool {
+    !context
+        .remote_address
+        .as_ref()
+        .is_some_and(|addr| addr.transport_type == HttpTransport::TRANSPORT_TYPE)
 }
 
 #[async_trait]
@@ -695,15 +705,13 @@ impl SyncHandlerImpl {
             // Get available trees for discovery
             let available_trees = self.get_available_trees().await;
 
-            // Register the peer and add their addresses to our peer list
-            match self.register_incoming_peer(&request.public_key, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address).await {
-                Ok(()) => {
-                    debug!(peer_pubkey = %request.public_key, "Successfully registered incoming peer");
-                }
-                Err(e) => {
-                    // Log the error but don't fail the handshake - peer registration is best-effort
-                    warn!(peer_pubkey = %request.public_key, error = %e, "Failed to register incoming peer");
-                }
+            // Do not let an incoming HTTP handshake change even an existing
+            // peer's addresses: those addresses can carry pushes for other trees.
+            if allows_incoming_route_updates(context)
+                && let Err(e) = self.register_incoming_peer(&request.public_key, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address).await
+            {
+                // Log the error but don't fail the handshake - peer registration is best-effort
+                warn!(peer_pubkey = %request.public_key, error = %e, "Failed to register incoming peer");
             }
 
             info!(
@@ -767,9 +775,9 @@ impl SyncHandlerImpl {
             } else {
                 self.handle_incremental_sync(request).await
             };
-            // A handshake or Pending request establishes no serving authority.
-            // Bind routing only after the read/possession/lifecycle checks pass.
-            if matches!(response, SyncResponse::Bootstrap(_) | SyncResponse::Incremental(_))
+            // Preserve existing non-HTTP tracking after successful pulls only.
+            if allows_incoming_route_updates(context)
+                && matches!(response, SyncResponse::Bootstrap(_) | SyncResponse::Incremental(_))
                 && let Some(peer_pubkey) = &context.peer_pubkey
                 && let Err(e) = self.track_tree_sync_relationship(&request.tree_id, peer_pubkey).await
             {
