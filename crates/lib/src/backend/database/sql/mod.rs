@@ -1327,6 +1327,55 @@ impl BackendImpl for SqlxBackend {
         storage::get(self, id).await
     }
 
+    async fn get_bounded(&self, id: &ID, max_bytes: usize) -> Result<(Entry, usize)> {
+        // Discard an oversized BLOB in SQL before copying it over the driver.
+        let row: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
+            "SELECT CASE WHEN length(entry_cbor) <= $2 THEN entry_cbor END
+             FROM entries WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .bind(i64::try_from(max_bytes).unwrap_or(i64::MAX))
+        .fetch_optional(self.pool())
+        .await
+        .sql_context("Failed to read bounded entry")?;
+        let (bytes,) = row.ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?;
+        let bytes = bytes.ok_or(crate::state::StateError::Limit)?;
+        let entry =
+            serde_ipld_dagcbor::from_slice(&bytes).map_err(|e| BackendError::SqlxError {
+                reason: format!("CBOR deserialization failed: {e}"),
+                source: None,
+            })?;
+        Ok((entry, bytes.len()))
+    }
+
+    async fn verified_snapshot_bounded(&self, tree: &ID, max_tips: usize) -> Result<Snapshot> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT entry_id FROM verified_tips WHERE tree_id = $1 LIMIT $2")
+                .bind(tree.to_string())
+                .bind(i64::try_from(max_tips.saturating_add(1)).unwrap_or(i64::MAX))
+                .fetch_all(self.pool())
+                .await
+                .sql_context("Failed to read bounded verified frontier")?;
+        if rows.len() > max_tips {
+            return Err(crate::state::StateError::Limit.into());
+        }
+        Ok(Snapshot::new(
+            rows.into_iter()
+                .map(|(id,)| ID::parse(&id))
+                .collect::<Result<_>>()?,
+        ))
+    }
+
+    async fn indexed_store_tips_at(
+        &self,
+        tree: &ID,
+        store: &str,
+        at: &Snapshot,
+        max_tips: usize,
+    ) -> Result<Option<Snapshot>> {
+        traversal::indexed_store_tips_at(self, tree, store, at, max_tips).await
+    }
+
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
         storage::get_verification_status(self, id).await
     }

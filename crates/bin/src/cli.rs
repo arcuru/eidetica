@@ -168,6 +168,10 @@ pub struct DaemonArgs {
     #[arg(short, long, env = "EIDETICA_SOCKET", global = true)]
     pub socket: Option<PathBuf>,
 
+    /// Optional read-only v1 gRPC endpoint on a distinct Unix socket.
+    #[arg(long)]
+    pub read_v1_socket: Option<PathBuf>,
+
     #[command(flatten)]
     pub backend_config: BackendConfig,
 }

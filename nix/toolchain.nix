@@ -52,9 +52,10 @@
       # Exclude .config/ (linter/tool configs) so config-only changes
       # don't invalidate all cargo artifacts
       src = lib.cleanSourceWith {
-        src = craneLib.cleanCargoSource ../.;
+        src = ../.;
         filter = path: type:
-          !(type == "directory" && builtins.baseNameOf path == ".config");
+          !(type == "directory" && builtins.baseNameOf path == ".config")
+          && (craneLib.filterCargoSources path type || lib.hasSuffix ".proto" path);
       };
       strictDeps = true;
       nativeBuildInputs =
@@ -168,9 +169,10 @@
   baseArgsNightly =
     {
       src = lib.cleanSourceWith {
-        src = craneLibNightly.cleanCargoSource ../.;
+        src = ../.;
         filter = path: type:
-          !(type == "directory" && builtins.baseNameOf path == ".config");
+          !(type == "directory" && builtins.baseNameOf path == ".config")
+          && (craneLib.filterCargoSources path type || lib.hasSuffix ".proto" path);
       };
       strictDeps = true;
       nativeBuildInputs =

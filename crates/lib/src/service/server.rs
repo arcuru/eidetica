@@ -207,12 +207,16 @@ enum ConnectionState {
 /// service-layer cache.
 pub struct ServiceServer {
     instance: Instance,
-    socket_path: PathBuf,
-    listener: UnixListener,
-    socket_identity: SocketIdentity,
+    socket: BoundSocket,
     staging_idle_ttl: Duration,
     published_view_idle_ttl: Duration,
     capabilities: Capabilities,
+}
+
+pub(super) struct BoundSocket {
+    pub(super) path: PathBuf,
+    pub(super) listener: UnixListener,
+    identity: SocketIdentity,
     _lock_file: File,
 }
 
@@ -274,32 +278,15 @@ impl ServiceServer {
         staging_idle_ttl: Duration,
         published_view_idle_ttl: Duration,
     ) -> crate::Result<Self> {
-        let socket_path = absolute_socket_path(socket_path)?;
-        prepare_parent(&socket_path).await?;
-        let lock_file = acquire_endpoint_lock(&socket_path)?;
-        recover_stale_socket(&socket_path).await?;
-
-        let listener = UnixListener::bind(&socket_path)?;
-        let socket_identity = match prepare_bound_socket(&socket_path) {
-            Ok(identity) => identity,
-            Err(error) => {
-                remove_socket_if_owned(&socket_path, None);
-                return Err(error);
-            }
-        };
-
         Ok(Self {
             instance,
-            socket_path,
-            listener,
-            socket_identity,
+            socket: BoundSocket::bind(socket_path).await?,
             staging_idle_ttl,
             published_view_idle_ttl,
             capabilities: Capabilities {
                 credentials: true,
                 state_admission: None,
             },
-            _lock_file: lock_file,
         })
     }
 
@@ -320,7 +307,7 @@ impl ServiceServer {
 
     /// Get the socket path.
     pub fn socket_path(&self) -> &Path {
-        &self.socket_path
+        &self.socket.path
     }
 
     /// Accept client connections until the shutdown signal is received.
@@ -328,7 +315,7 @@ impl ServiceServer {
     /// # Arguments
     /// * `shutdown` - A watch receiver; the server stops when the sender is dropped.
     pub async fn run(self, mut shutdown: watch::Receiver<()>) -> crate::Result<()> {
-        tracing::info!("Service server listening on {}", self.socket_path.display());
+        tracing::info!("Service server listening on {}", self.socket.path.display());
 
         // Diagnostic per-connection counter — purely for logging. No
         // registry-based routing needed; each connection's subscriptions
@@ -345,7 +332,7 @@ impl ServiceServer {
 
         let result = loop {
             tokio::select! {
-                accept_result = self.listener.accept() => {
+                accept_result = self.socket.listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
@@ -596,9 +583,32 @@ fn remove_socket_if_owned(socket_path: &Path, identity: Option<SocketIdentity>) 
     }
 }
 
-impl Drop for ServiceServer {
+impl BoundSocket {
+    pub(super) async fn bind(path: PathBuf) -> crate::Result<Self> {
+        let path = absolute_socket_path(path)?;
+        prepare_parent(&path).await?;
+        let lock_file = acquire_endpoint_lock(&path)?;
+        recover_stale_socket(&path).await?;
+        let listener = UnixListener::bind(&path)?;
+        let identity = match prepare_bound_socket(&path) {
+            Ok(identity) => identity,
+            Err(error) => {
+                remove_socket_if_owned(&path, None);
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            path,
+            listener,
+            identity,
+            _lock_file: lock_file,
+        })
+    }
+}
+
+impl Drop for BoundSocket {
     fn drop(&mut self) {
-        remove_socket_if_owned(&self.socket_path, Some(self.socket_identity));
+        remove_socket_if_owned(&self.path, Some(self.identity));
     }
 }
 

@@ -1,0 +1,107 @@
+syntax = "proto3";
+package eidetica.service.v1;
+
+// Local UDS read adapter. No credential release or server-side signing.
+service Reads {
+  rpc GetCapabilities(CapabilityRequest) returns (Capabilities);
+  // Client: Query, then signature over the RPC-local Challenge, then half-close.
+  // Server: Challenge, then Start and Data, then End and clean OK trailers.
+  // A typed failure can End the stream without Start or after provisional Data.
+  rpc Read(stream ReadInput) returns (stream ReadFrame);
+}
+
+message CapabilityRequest {}
+message Capabilities {
+  uint32 revision = 1;
+  bytes producer = 2; // Opaque 16-byte serving incarnation; scoped to the UDS peer.
+  uint32 chunk_bytes = 3;
+  uint32 object_bytes = 4;
+  uint32 history_entries = 5;
+  uint64 history_bytes = 6; // Max sum of CAR section bodies.
+}
+
+message ReadInput {
+  oneof frame {
+    Query query = 1;
+    bytes signature = 2; // 64 raw Ed25519 signature bytes.
+  }
+}
+
+// IDs are nonempty canonical base32lower DAG-CBOR CIDv1 strings.
+// Snapshot is a root cut; tip sets normalize to sorted (CID tuple) unique IDs.
+message Snapshot { repeated string tips = 1; }
+message Capture {}
+message State {
+  Snapshot at = 1;
+  string store = 2;
+  string projection = 3; // "eidetica/doc:v0": the native Doc codec (JSON bytes).
+}
+message History {
+  Snapshot at = 1; // Full database ancestry, all branches at a Verified cut.
+}
+
+message Query {
+  uint32 revision = 1;
+  string database = 2;
+  string public_key = 3; // ed25519:<standard padded base64>.
+  SignerIdentity identity = 4;
+  repeated string require = 5; // Baseline supports no required extensions.
+  oneof operation {
+    Capture capture = 6;
+    State state = 7;
+    History history = 8;
+  }
+}
+
+message SignerIdentity {
+  oneof hint {
+    string key = 1; // Must equal public_key.
+    string name = 2;
+    bool global = 3; // Must be true and delegation must be empty.
+  }
+  // Ordered delegation path. Auth uses current or committed pointers as
+  // applicable; caller-selected authority tips are not an input.
+  repeated string delegation = 4;
+}
+
+message Challenge {
+  bytes producer = 1;
+  bytes nonce = 2; // 32 random bytes, valid on this RPC only.
+}
+message Context {
+  bytes producer = 1;
+  // The authorized operation. Capture returns a concrete Verified root cut.
+  string database = 2;
+  Snapshot at = 3;
+  Format format = 4;
+  string store = 5;      // Only for DOC.
+  string projection = 6; // Only for DOC, daemon-built (not client-verified).
+}
+enum Format {
+  FORMAT_UNSPECIFIED = 0;
+  SNAPSHOT = 1;
+  DOC = 2;
+  CAR_V1 = 3;
+}
+message ReadFrame {
+  oneof frame {
+    Challenge challenge = 1;
+    Context start = 2;
+    bytes data = 3; // Provisional Doc bytes or a segment of CARv1, unaligned.
+    End end = 4;
+  }
+}
+message End {
+  Outcome outcome = 1;
+  Context context = 2; // Required and identical to Start for COMPLETE only.
+}
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  COMPLETE = 1;
+  REFUSED = 2;
+  DENIED = 3;
+  INVALID_BOUNDARY = 4;
+  UNAVAILABLE_HISTORY = 5;
+  UNSUPPORTED = 6;
+  LIMIT = 7;
+}

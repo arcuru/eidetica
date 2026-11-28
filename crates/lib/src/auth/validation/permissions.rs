@@ -15,6 +15,7 @@ use crate::{
         validation::delegation::DelegationResolver,
     },
     crdt::{CRDT, Codec, Doc, doc::Value},
+    state::work::ReadWork,
 };
 
 /// Resolve live access for a pubkey + identity against current accepted auth settings.
@@ -40,18 +41,28 @@ pub async fn resolve_identity_permission(
     auth_settings: &AuthSettings,
     instance: Option<&crate::Instance>,
 ) -> Result<Permission> {
-    resolve_permission(pubkey, identity, auth_settings, instance, false).await
+    resolve_permission(pubkey, identity, auth_settings, instance, false, None).await
 }
 
-/// Resolve Read authority as recorded at a validated database cut. Delegated
-/// authority follows the committed pointers in those settings, not caller tips.
-pub(crate) async fn resolve_snapshot_identity_permission(
+/// Resolve State Read at the selected authority point. Historical reads follow
+/// the committed pointers, not caller tips; live reads use retained authority.
+pub(crate) async fn resolve_state_identity_permission(
     pubkey: &PublicKey,
     identity: &SigKey,
     auth_settings: &AuthSettings,
     instance: &crate::Instance,
+    use_committed_pointers: bool,
+    work: Option<&ReadWork>,
 ) -> Result<Permission> {
-    resolve_permission(pubkey, identity, auth_settings, Some(instance), true).await
+    resolve_permission(
+        pubkey,
+        identity,
+        auth_settings,
+        Some(instance),
+        use_committed_pointers,
+        work,
+    )
+    .await
 }
 
 async fn resolve_permission(
@@ -60,6 +71,7 @@ async fn resolve_permission(
     auth_settings: &AuthSettings,
     instance: Option<&crate::Instance>,
     use_committed_pointers: bool,
+    work: Option<&ReadWork>,
 ) -> Result<Permission> {
     match identity {
         SigKey::Direct { hint } if hint.is_global() => {
@@ -124,7 +136,18 @@ async fn resolve_permission(
                 operation: "live delegated access".to_string(),
             })?;
             let mut resolver = DelegationResolver::new();
-            let resolution = if use_committed_pointers {
+            let resolution = if let Some(work) = work {
+                resolver
+                    .resolve_bounded_delegation_path(
+                        path,
+                        hint,
+                        auth_settings,
+                        instance,
+                        use_committed_pointers,
+                        work,
+                    )
+                    .await
+            } else if use_committed_pointers {
                 resolver
                     .resolve_committed_delegation_path(path, hint, auth_settings, instance)
                     .await
@@ -134,6 +157,14 @@ async fn resolve_permission(
                     .await
             };
             let resolved_auths = resolution.map_err(|e| {
+                if matches!(
+                    e,
+                    Error::State(
+                        crate::state::StateError::Limit | crate::state::StateError::Refused
+                    )
+                ) {
+                    return e;
+                }
                 Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
                     reason: format!("Delegation resolution failed: {e}"),
                 }))

@@ -513,6 +513,32 @@ pub trait BackendImpl: Send + Sync + Any {
     /// Returns an owned copy to support concurrent access with internal synchronization.
     async fn get(&self, id: &ID) -> Result<Entry>;
 
+    /// Read one Entry and its encoded length, refusing before copying or
+    /// decoding a payload larger than `max_bytes`. There is no safe default
+    /// using `get`, which can allocate the entire Entry before returning.
+    async fn get_bounded(&self, _id: &ID, _max_bytes: usize) -> Result<(Entry, usize)> {
+        Err(crate::state::StateError::Refused.into())
+    }
+
+    /// Read the retained ancestor-closed frontier, refusing before returning
+    /// more than `max_tips`. Implementations must not reconstruct history.
+    async fn verified_snapshot_bounded(&self, _tree: &ID, _max_tips: usize) -> Result<Snapshot> {
+        Err(crate::state::StateError::Refused.into())
+    }
+
+    /// Optional bounded indexed lookup for a specific root cut. Only return
+    /// Store tips if the indexed raw and retained Verified root frontiers both
+    /// match `at` in one backend view. `None` requests an ancestry walk.
+    async fn indexed_store_tips_at(
+        &self,
+        _tree: &ID,
+        _store: &str,
+        _at: &Snapshot,
+        _max_tips: usize,
+    ) -> Result<Option<Snapshot>> {
+        Ok(None)
+    }
+
     /// Gets the verification status of an entry.
     ///
     /// # Arguments

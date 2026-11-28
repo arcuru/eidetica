@@ -378,6 +378,26 @@ impl BackendImpl for SplitBackend {
         self.primary.get(id).await
     }
 
+    async fn get_bounded(&self, id: &ID, max_bytes: usize) -> Result<(Entry, usize)> {
+        self.primary.get_bounded(id, max_bytes).await
+    }
+
+    async fn verified_snapshot_bounded(&self, tree: &ID, max_tips: usize) -> Result<Snapshot> {
+        self.primary.verified_snapshot_bounded(tree, max_tips).await
+    }
+
+    async fn indexed_store_tips_at(
+        &self,
+        tree: &ID,
+        store: &str,
+        at: &Snapshot,
+        max_tips: usize,
+    ) -> Result<Option<Snapshot>> {
+        self.primary
+            .indexed_store_tips_at(tree, store, at, max_tips)
+            .await
+    }
+
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
         self.primary.get_verification_status(id).await
     }

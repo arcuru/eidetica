@@ -13,6 +13,8 @@ use crate::{
         types::{DelegationStep, KeyHint, PermissionBounds, ResolvedAuth},
     },
     backend::{BackendError, BackendImpl, Reachability},
+    constants::SETTINGS,
+    state::{StateError, auth_from_doc, work::ReadWork},
 };
 
 /// Maximum number of steps in a single delegation path.
@@ -60,6 +62,7 @@ enum AuthorityState<'a> {
     ClaimedSnapshot(Option<&'a mut DerivedFloors>),
     CommittedPointers,
     CurrentAccepted,
+    Bounded { work: &'a ReadWork, committed: bool },
 }
 
 /// Delegation resolver for handling complex delegation paths
@@ -148,6 +151,25 @@ impl DelegationResolver {
             auth_settings,
             instance,
             AuthorityState::CommittedPointers,
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_bounded_delegation_path(
+        &mut self,
+        steps: &[DelegationStep],
+        final_hint: &KeyHint,
+        auth_settings: &AuthSettings,
+        instance: &Instance,
+        committed: bool,
+        work: &ReadWork,
+    ) -> Result<Vec<ResolvedAuth>> {
+        self.resolve_delegation_path_inner(
+            steps,
+            final_hint,
+            auth_settings,
+            instance,
+            AuthorityState::Bounded { work, committed },
         )
         .await
     }
@@ -242,6 +264,13 @@ impl DelegationResolver {
                 AuthorityState::CurrentAccepted => {
                     current_backend.verified_snapshot(&root_id).await?
                 }
+                AuthorityState::Bounded {
+                    committed: true, ..
+                } => floor.clone(),
+                AuthorityState::Bounded {
+                    work,
+                    committed: false,
+                } => work.verified(&*current_backend, &root_id).await?,
             };
             if snapshot.len() > MAX_DELEGATION_TIPS {
                 return Err(AuthError::DelegationTipsTooMany {
@@ -271,150 +300,171 @@ impl DelegationResolver {
                 }
                 .into());
             }
-            let directly_referenced = Snapshot::from(
-                std::iter::once(root_id.clone())
-                    .chain(snapshot.iter().cloned())
-                    .chain(floor.iter().cloned())
-                    .collect::<Vec<_>>(),
-            );
-            match missing_delegation_entries(
-                current_backend.as_ref(),
-                &root_id,
-                &directly_referenced,
-            )
-            .await
-            {
-                Ok(missing) if !missing.is_empty() => {
-                    return Err(AuthError::DelegatedTreeUnsynced {
-                        tree_id: root_id.clone(),
-                        missing,
-                    }
-                    .into());
+            if let AuthorityState::Bounded { work, committed } = authority {
+                if floor.len() > MAX_DELEGATION_TIPS {
+                    return Err(StateError::Limit.into());
                 }
-                Ok(_) => {}
-                Err(Error::Backend(error))
-                    if matches!(*error, BackendError::EntryNotInTree { .. }) =>
-                {
-                    return Err(AuthError::InvalidDelegationTips {
-                        tree_id: root_id.clone(),
-                        claimed_tips: snapshot.tips().to_vec(),
-                    }
-                    .into());
-                }
-                Err(error) => return Err(error),
-            }
-            match current_backend
-                .check_targets_reachable_from(&root_id, &snapshot, &floor)
+                // Retained Verified tips already certify a complete same-tree
+                // prefix. In live mode the floor must be in that prefix; for
+                // a pinned hop the floor itself selects the immutable cut.
+                let frontier = if committed {
+                    work.verified(&*current_backend, &root_id).await?
+                } else {
+                    snapshot.clone()
+                };
+                work.require_reachable(&*current_backend, &root_id, &frontier, floor.tips())
+                    .await?;
+                current_auth_settings = auth_from_doc(
+                    &work
+                        .fold(&*current_backend, &root_id, &snapshot, SETTINGS, true)
+                        .await?,
+                );
+            } else {
+                let directly_referenced = Snapshot::from(
+                    std::iter::once(root_id.clone())
+                        .chain(snapshot.iter().cloned())
+                        .chain(floor.iter().cloned())
+                        .collect::<Vec<_>>(),
+                );
+                match missing_delegation_entries(
+                    current_backend.as_ref(),
+                    &root_id,
+                    &directly_referenced,
+                )
                 .await
-            {
-                Err(Error::Backend(error))
-                    if matches!(*error, BackendError::EntryNotInTree { .. }) =>
                 {
-                    return Err(AuthError::InvalidDelegationTips {
-                        tree_id: root_id.clone(),
-                        claimed_tips: snapshot.tips().to_vec(),
+                    Ok(missing) if !missing.is_empty() => {
+                        return Err(AuthError::DelegatedTreeUnsynced {
+                            tree_id: root_id.clone(),
+                            missing,
+                        }
+                        .into());
                     }
-                    .into());
-                }
-                Err(error) => return Err(error),
-                Ok(Reachability::Reachable) => {}
-                Ok(Reachability::Unreachable) => {
-                    return Err(AuthError::InvalidDelegationTips {
-                        tree_id: root_id.clone(),
-                        claimed_tips: snapshot.tips().to_vec(),
-                    }
-                    .into());
-                }
-                Ok(Reachability::Indeterminate { missing }) => {
-                    return Err(AuthError::DelegatedTreeUnsynced {
-                        tree_id: root_id.clone(),
-                        missing,
-                    }
-                    .into());
-                }
-            }
-
-            // Inherited floor: the claimed snapshot must ancestry-cover every
-            // snapshot of this same delegated tree that the entry's ancestors
-            // pinned, joined across all parents. Equality is allowed (an old
-            // branch may keep using an old snapshot); regression is not, so a
-            // snapshot cannot be resurrected below a still-active inherited
-            // floor. Keyed by tree root, so it is unaffected by which key
-            // signs or by intervening direct-key / other-tree signatures. The
-            // committed pointer above is checked first, so the claimed tips are
-            // already known to be members of this tree.
-            if let AuthorityState::ClaimedSnapshot(Some(floors)) = &mut authority {
-                let targets = floors.floor_for(&root_id);
-                if !targets.is_empty() {
-                    match current_backend
-                        .check_targets_reachable_from(&root_id, &snapshot, &targets)
-                        .await
+                    Ok(_) => {}
+                    Err(Error::Backend(error))
+                        if matches!(*error, BackendError::EntryNotInTree { .. }) =>
                     {
-                        Err(Error::Backend(error))
-                            if matches!(*error, BackendError::EntryNotInTree { .. }) =>
-                        {
-                            return Err(AuthError::InvalidDelegationTips {
-                                tree_id: root_id.clone(),
-                                claimed_tips: snapshot.tips().to_vec(),
-                            }
-                            .into());
-                        }
-                        Err(error) => return Err(error),
-                        Ok(Reachability::Reachable) => {}
-                        Ok(Reachability::Unreachable) => {
-                            return Err(AuthError::DelegationSnapshotRegressed {
-                                tree_id: Box::new(root_id.clone()),
-                                claimed_tips: snapshot.tips().to_vec(),
-                            }
-                            .into());
-                        }
-                        Ok(Reachability::Indeterminate { missing }) => {
-                            return Err(AuthError::DelegatedTreeUnsynced {
-                                tree_id: root_id.clone(),
-                                missing,
-                            }
-                            .into());
-                        }
-                    }
-                }
-            }
-
-            DerivedFloors::proof_on(current_backend.as_ref(), &root_id, &snapshot).await?;
-            // Each parent tree's configured pointer needs a complete locally
-            // verified proof, including the middle steps of a nested path.
-            if floor != snapshot {
-                DerivedFloors::proof_on(current_backend.as_ref(), &root_id, &floor).await?;
-            }
-
-            // Materialize the same immutable boundary proved above.
-            // Non-NotFound backend failures remain operational errors.
-            current_auth_settings = match current_backend
-                .get_tree_from_tips(&root_id, &snapshot)
-                .await
-            {
-                Ok(entries) => {
-                    if !entries.iter().any(|entry| entry.id() == root_id) {
                         return Err(AuthError::InvalidDelegationTips {
                             tree_id: root_id.clone(),
                             claimed_tips: snapshot.tips().to_vec(),
                         }
                         .into());
                     }
-                    crate::database::fold_settings_entries(&entries)?
+                    Err(error) => return Err(error),
                 }
-                Err(e) if e.is_not_found() => {
-                    let missing = e
-                        .entry_id()
-                        .cloned()
-                        .map_or_else(|| snapshot.tips().to_vec(), |id| vec![id]);
-                    return Err(AuthError::DelegatedTreeUnsynced {
-                        tree_id: root_id.clone(),
-                        missing,
+                match current_backend
+                    .check_targets_reachable_from(&root_id, &snapshot, &floor)
+                    .await
+                {
+                    Err(Error::Backend(error))
+                        if matches!(*error, BackendError::EntryNotInTree { .. }) =>
+                    {
+                        return Err(AuthError::InvalidDelegationTips {
+                            tree_id: root_id.clone(),
+                            claimed_tips: snapshot.tips().to_vec(),
+                        }
+                        .into());
                     }
-                    .into());
+                    Err(error) => return Err(error),
+                    Ok(Reachability::Reachable) => {}
+                    Ok(Reachability::Unreachable) => {
+                        return Err(AuthError::InvalidDelegationTips {
+                            tree_id: root_id.clone(),
+                            claimed_tips: snapshot.tips().to_vec(),
+                        }
+                        .into());
+                    }
+                    Ok(Reachability::Indeterminate { missing }) => {
+                        return Err(AuthError::DelegatedTreeUnsynced {
+                            tree_id: root_id.clone(),
+                            missing,
+                        }
+                        .into());
+                    }
                 }
-                Err(e) => return Err(e),
-            };
+
+                // Inherited floor: the claimed snapshot must ancestry-cover every
+                // snapshot of this same delegated tree that the entry's ancestors
+                // pinned, joined across all parents. Equality is allowed (an old
+                // branch may keep using an old snapshot); regression is not, so a
+                // snapshot cannot be resurrected below a still-active inherited
+                // floor. Keyed by tree root, so it is unaffected by which key
+                // signs or by intervening direct-key / other-tree signatures. The
+                // committed pointer above is checked first, so the claimed tips are
+                // already known to be members of this tree.
+                if let AuthorityState::ClaimedSnapshot(Some(floors)) = &mut authority {
+                    let targets = floors.floor_for(&root_id);
+                    if !targets.is_empty() {
+                        match current_backend
+                            .check_targets_reachable_from(&root_id, &snapshot, &targets)
+                            .await
+                        {
+                            Err(Error::Backend(error))
+                                if matches!(*error, BackendError::EntryNotInTree { .. }) =>
+                            {
+                                return Err(AuthError::InvalidDelegationTips {
+                                    tree_id: root_id.clone(),
+                                    claimed_tips: snapshot.tips().to_vec(),
+                                }
+                                .into());
+                            }
+                            Err(error) => return Err(error),
+                            Ok(Reachability::Reachable) => {}
+                            Ok(Reachability::Unreachable) => {
+                                return Err(AuthError::DelegationSnapshotRegressed {
+                                    tree_id: Box::new(root_id.clone()),
+                                    claimed_tips: snapshot.tips().to_vec(),
+                                }
+                                .into());
+                            }
+                            Ok(Reachability::Indeterminate { missing }) => {
+                                return Err(AuthError::DelegatedTreeUnsynced {
+                                    tree_id: root_id.clone(),
+                                    missing,
+                                }
+                                .into());
+                            }
+                        }
+                    }
+                }
+
+                DerivedFloors::proof_on(current_backend.as_ref(), &root_id, &snapshot).await?;
+                // Each parent tree's configured pointer needs a complete locally
+                // verified proof, including the middle steps of a nested path.
+                if floor != snapshot {
+                    DerivedFloors::proof_on(current_backend.as_ref(), &root_id, &floor).await?;
+                }
+
+                // Materialize the same immutable boundary proved above.
+                // Non-NotFound backend failures remain operational errors.
+                current_auth_settings = match current_backend
+                    .get_tree_from_tips(&root_id, &snapshot)
+                    .await
+                {
+                    Ok(entries) => {
+                        if !entries.iter().any(|entry| entry.id() == root_id) {
+                            return Err(AuthError::InvalidDelegationTips {
+                                tree_id: root_id.clone(),
+                                claimed_tips: snapshot.tips().to_vec(),
+                            }
+                            .into());
+                        }
+                        crate::database::fold_settings_entries(&entries)?
+                    }
+                    Err(e) if e.is_not_found() => {
+                        let missing = e
+                            .entry_id()
+                            .cloned()
+                            .map_or_else(|| snapshot.tips().to_vec(), |id| vec![id]);
+                        return Err(AuthError::DelegatedTreeUnsynced {
+                            tree_id: root_id.clone(),
+                            missing,
+                        }
+                        .into());
+                    }
+                    Err(e) => return Err(e),
+                };
+            }
 
             // Accumulate permission bounds
             cumulative_bounds = Some(match cumulative_bounds {

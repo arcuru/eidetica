@@ -116,6 +116,8 @@ mod service;
 #[cfg(all(unix, feature = "service"))]
 mod service_daemon_sync;
 #[cfg(all(unix, feature = "service"))]
+mod service_read_v1;
+#[cfg(all(unix, feature = "service"))]
 mod service_ticket_join;
 mod state;
 mod store;

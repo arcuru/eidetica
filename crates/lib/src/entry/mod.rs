@@ -183,11 +183,11 @@ where
 /// mutation: content changes go through [`Entry::with_auth`], which consumes the entry and
 /// returns a new one with a fresh cache.
 #[derive(Clone, Default)]
-struct IdCache(OnceLock<ID>);
+struct IdCache(OnceLock<(ID, usize)>);
 
 impl IdCache {
-    /// Return the cached ID, computing and storing it on first use.
-    fn get_or_init(&self, compute: impl FnOnce() -> ID) -> &ID {
+    /// Return the cached ID and encoded length, computing both on first use.
+    fn get_or_init(&self, compute: impl FnOnce() -> (ID, usize)) -> &(ID, usize) {
         self.0.get_or_init(compute)
     }
 }
@@ -276,11 +276,19 @@ impl Entry {
     /// carries a fixed-size digest buffer, so comparison-heavy callers — sorting a slice of
     /// entries, scanning one for a match — avoid a copy per access by borrowing instead.
     pub fn id_ref(&self) -> &ID {
+        &self.identity_and_size().0
+    }
+
+    pub(crate) fn canonical_len(&self) -> usize {
+        self.identity_and_size().1
+    }
+
+    fn identity_and_size(&self) -> &(ID, usize) {
         self.id_cache.get_or_init(|| {
             let bytes = self
                 .to_dagcbor()
                 .expect("Failed to serialize entry to DAG-CBOR for ID");
-            ID::from_dagcbor_bytes(bytes)
+            (ID::from_dagcbor_bytes(&bytes), bytes.len())
         })
     }
 

@@ -12,7 +12,7 @@ description.workspace = true
 [features]
 default = ["full"]
 full = ["y-crdt", "sqlite", "postgres", "service"]
-service = []
+service = ["dep:async-stream", "dep:prost", "dep:tokio-stream", "dep:tonic", "dep:tonic-prost", "dep:unsigned-varint", "dep:protox", "dep:tonic-prost-build"]
 y-crdt = ["dep:yrs"]
 sqlite = ["dep:sqlx"]
 postgres = ["dep:sqlx"]
@@ -73,6 +73,16 @@ normal = ["time", "postcard", "postcard-derive", "z32", "instability"]
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs", "process"] }
+async-stream = { version = "0.3", optional = true }
+prost = { version = "0.14", optional = true }
+tokio-stream = { version = "0.1", features = ["net"], optional = true }
+tonic = { version = "0.14", optional = true }
+tonic-prost = { version = "0.14", optional = true }
+unsigned-varint = { version = "0.8", optional = true }
+
+[build-dependencies]
+protox = { version = "0.10", optional = true }
+tonic-prost-build = { version = "0.14", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
