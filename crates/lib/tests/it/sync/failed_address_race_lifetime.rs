@@ -119,10 +119,12 @@ async fn failed_address_attempts_release_allocations_after_timeout() {
         .expect("register HTTP transport");
 
     let peers: Vec<_> = (0..PEERS).map(|_| PublicKey::random()).collect();
-    for (peer, addresses) in peers
-        .iter()
-        .zip(black_holes.addresses.chunks_exact(ADDRESSES_PER_PEER))
-    {
+    let (address_groups, remainder) = black_holes.addresses.as_chunks::<ADDRESSES_PER_PEER>();
+    assert!(
+        remainder.is_empty(),
+        "each peer must receive the configured number of addresses"
+    );
+    for (peer, addresses) in peers.iter().zip(address_groups) {
         sync.register_peer(peer, Some("unreachable peer"))
             .await
             .expect("register peer");
@@ -132,15 +134,6 @@ async fn failed_address_attempts_release_allocations_after_timeout() {
                 .expect("record black-hole address");
         }
     }
-    assert_eq!(
-        black_holes
-            .addresses
-            .chunks_exact(ADDRESSES_PER_PEER)
-            .remainder()
-            .len(),
-        0,
-        "each peer must receive the configured number of addresses"
-    );
 
     let tree = ID::from_bytes("missing tree");
     let baseline = crate::live_allocations();
