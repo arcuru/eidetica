@@ -119,6 +119,17 @@ sequenceDiagram
 4. **Authenticated request loop**: every storage operation travels inside `ServiceRequest::AuthenticatedDb`. The server handles requests in connection order. `RemoteConnection` serializes frame writes, not response waits; its background reader associates responses with pending callers in FIFO order and dispatches notifications separately.
 5. **Termination**: client closes its write half (EOF); the server detects EOF and cleans up.
 
+### Observe host sync registration
+
+On an authenticated Unix connection, `RemoteConnection::observe_host_sync` sends an `AuthenticatedDb` request with the exact database `root_id`, the acting `identity`, and `op: "ObserveHostSync"`. The session key must have an explicit, active Admin grant on `_users`. The acting identity must be proven on that connection and have current Read on the requested root. Neither a matching database name nor Admin on the target alone is sufficient.
+
+`HostSyncObservation` echoes `root_id` and reports `daemon_id` (the serving device's public key) and `observed_at_ms` (the daemon's Unix time at the start of the read). It reports two separate facts from one accepted sync snapshot:
+
+- `registration` is `Registered` with the combined enable, sync-on-commit, and interval settings; `Unregistered` means there is no registration for the root; `Unknown` means it could not be determined.
+- `mapped_peers` contains the public keys mapped to that root. `[]` means no mapped peers; `null` means the mapping could not be determined. A registered root can have no peers.
+
+If the daemon has no sync engine or newer persisted sync entries are still unverified, both facts are unknown. An incomplete registration or peer record makes the affected fact unknown without discarding the other one. No peer addresses, account preferences or application properties are returned. This is a read of persisted host state, not an atomic read with the caller's preferences or evidence of a connection or replication.
+
 ### Explicit connection retirement
 
 `RemoteConnection::retire(&self)` exposes the same connection-local teardown used

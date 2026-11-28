@@ -43,7 +43,7 @@ use crate::entry::{Entry, ID};
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 pub use crate::state::ReadScope;
-use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
+use crate::sync::{Address, DatabaseTicket, HostSyncObservation, protocol::SyncRequestAuth};
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
 /// without notice between releases. The required revision below makes this
@@ -235,6 +235,10 @@ pub enum DatabaseOp {
     /// Return a point-in-time locator for the request's `root_id`.
     /// Gate Read.
     CreateTicket,
+
+    /// Observe the host's sync registration and mapped peers for `root_id`.
+    /// Requires instance-admin authority and current Read on the exact root.
+    ObserveHostSync,
 }
 
 impl DatabaseOp {
@@ -267,7 +271,8 @@ impl DatabaseOp {
             | DatabaseOp::StoreStateRecordGet { .. }
             | DatabaseOp::StoreStateRecordScan { .. }
             | DatabaseOp::SubscribeWrites { .. }
-            | DatabaseOp::CreateTicket => Permission::Read,
+            | DatabaseOp::CreateTicket
+            | DatabaseOp::ObserveHostSync => Permission::Read,
         }
     }
 }
@@ -512,6 +517,8 @@ pub enum ServiceResponse {
     Error(ServiceError),
     /// Point-in-time locator for one authorized database.
     DatabaseTicket(crate::sync::DatabaseTicket),
+    /// Filtered point-in-time host sync state for the requested database root.
+    HostSyncObservation(HostSyncObservation),
     /// Challenge bytes returned in response to `TrustedLoginAccount`, plus the
     /// user's full record so the client can derive the password→key, decrypt
     /// the root signing key locally, sign the challenge in a single
@@ -605,6 +612,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "SubscribeWrites",
     "UnsubscribeWrites",
     "CreateTicket",
+    "ObserveHostSync",
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
     "LocalAccounts",
@@ -627,6 +635,7 @@ const RESPONSE_VARIANTS: &[&str] = &[
     "InstanceMetadata",
     "Error",
     "DatabaseTicket",
+    "HostSyncObservation",
     "TrustedLoginChallenge",
     "TrustedLoginOk",
     "SessionKeyChallenge",

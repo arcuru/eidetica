@@ -32,6 +32,7 @@ use tokio::sync::watch;
 use crate::helpers::LocalBackendTestExt;
 
 mod compatibility;
+mod host_sync_observation;
 mod notifications;
 mod private_cache;
 mod retirement;

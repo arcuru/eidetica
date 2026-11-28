@@ -780,6 +780,32 @@ impl RemoteConnection {
         }
     }
 
+    /// Read the daemon's persisted sync registration and mapped peer IDs for one root.
+    ///
+    /// The authenticated session key must be an instance admin, and `identity`
+    /// must have current Read on `root_id`. This does not query replication progress.
+    pub async fn observe_host_sync(
+        &self,
+        root_id: &ID,
+        identity: SigKey,
+    ) -> crate::Result<crate::sync::HostSyncObservation> {
+        let response = self
+            .db_request(root_id.clone(), identity, DatabaseOp::ObserveHostSync)
+            .await?;
+        match response {
+            ServiceResponse::HostSyncObservation(observation)
+                if &observation.root_id == root_id =>
+            {
+                Ok(observation)
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "expected host sync observation for the requested root",
+            )
+            .into()),
+        }
+    }
+
     /// Join a database from `ticket` through the daemon's sync engine.
     ///
     /// The daemon picks the route and sends the request; `signing_key` stays

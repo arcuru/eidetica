@@ -123,6 +123,8 @@ mod bootstrap_request_manager;
 mod dial_testing;
 #[cfg(test)]
 mod join_transfer_tests;
+#[cfg(all(unix, feature = "service"))]
+mod observation;
 mod operation;
 #[cfg(test)]
 mod operation_tests;
@@ -141,6 +143,8 @@ pub use bootstrap_request_manager::{BootstrapRequest, RequestStatus};
 #[cfg(any(test, feature = "testing"))]
 pub use dial_testing::{DialAttempt, dial_attempts, reset_dial_attempts};
 pub use error::{SyncError, TimeoutPhase};
+#[cfg(all(unix, feature = "service"))]
+pub use observation::{HostSyncObservation, HostSyncRegistration};
 use peer_state::PeerStates;
 pub use peer_types::{Address, ConnectionState, PeerId, PeerInfo, PeerStatus};
 use queue::SyncQueue;

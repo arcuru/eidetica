@@ -35,7 +35,7 @@ use crate::service::protocol::{
     TicketBootstrapOutcome, TicketBootstrapRequest, read_frame, write_frame,
 };
 use crate::state::{StateAdmission, StateError, StateReader};
-use crate::sync::{SyncError, protocol::SyncTreeRequest};
+use crate::sync::{HostSyncObservation, SyncError, protocol::SyncTreeRequest};
 
 /// Connection identifier. Monotonic per server-run; reused only after
 /// `AtomicU64` wraps (effectively never on a real daemon). Purely
@@ -1004,6 +1004,10 @@ async fn dispatch_inner(
                 op,
             } = *inner;
 
+            if matches!(op, DatabaseOp::ObserveHostSync) {
+                require_explicit_instance_admin(instance, &login_pubkey).await?;
+            }
+
             // Submit is verification-gated, not session-gated.
             //
             // Reads are session-gated (confidentiality boundary); submits
@@ -1079,6 +1083,7 @@ async fn dispatch_inner(
                         | DatabaseOp::PublishStoreState { .. }
                         | DatabaseOp::AbortStoreState { .. }
                         | DatabaseOp::TryVerifiedStoreSnapshot { .. }
+                        | DatabaseOp::ObserveHostSync
                 );
                 gate_tree_permission(
                     instance,
@@ -1116,6 +1121,29 @@ fn proven_acting_key(state: &ConnectionState, identity: &SigKey) -> crate::Resul
             reason: "access request management requires an authenticated signer".to_owned(),
         }
         .into()),
+    }
+}
+
+async fn require_explicit_instance_admin(
+    instance: &Instance,
+    key: &PublicKey,
+) -> crate::Result<()> {
+    let denied = || AuthError::PermissionDenied {
+        reason: "host sync observation requires an explicit instance-admin grant".into(),
+    };
+    // Use the same system database as the native instance-admin capability,
+    // but require a named grant, not the general per-tree wildcard fallback.
+    let users = Database::open(instance, instance.users_db_id())
+        .await
+        .map_err(|_| denied())?;
+    let auth = users.live_auth_settings().await.map_err(|_| denied())?;
+    if auth
+        .get_key_by_pubkey(key)
+        .is_ok_and(|grant| grant.is_active() && grant.permissions().can_admin())
+    {
+        Ok(())
+    } else {
+        Err(denied().into())
     }
 }
 
@@ -1576,6 +1604,9 @@ async fn dispatch_database_op(
 
         DatabaseOp::CreateTicket => Ok(ServiceResponse::DatabaseTicket(
             crate::account::ticket_locator(instance, &root_id).await?,
+        )),
+        DatabaseOp::ObserveHostSync => Ok(ServiceResponse::HostSyncObservation(
+            HostSyncObservation::read(instance, root_id).await,
         )),
     }
 }
