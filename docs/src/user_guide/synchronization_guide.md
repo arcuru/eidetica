@@ -307,6 +307,7 @@ Once configured, the sync system handles:
 The reconciliation interval applies to a database and each active peer it shares, not to every peer on the instance.
 The target defaults to 300 seconds and is clamped to 5–3,600 seconds before applying ±25% jitter.
 When one database wakes a peer, the round also covers that peer's other eligible databases.
+A database with no tracking settings, or with sync disabled by every local user, is excluded even when it shares that peer.
 Backoff and shared capacity can delay a round; the interval is not a delivery deadline.
 
 ## Troubleshooting

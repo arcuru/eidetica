@@ -112,7 +112,7 @@ impl LocalPeer {
 #[tokio::test(start_paused = true)]
 async fn automatic_rounds_use_current_scope_without_waking_unrelated_peers() -> Result<()> {
     use crate::{
-        sync::operation_tests::Trace,
+        sync::operation_tests::{Trace, operation_id},
         testing::{SimLoopback, SimNetwork, TestTransport},
     };
 
@@ -127,13 +127,14 @@ async fn automatic_rounds_use_current_scope_without_waking_unrelated_peers() -> 
     let (a_id, b_id) = (a.instance.id(), b.instance.id());
     let fast = a.shared_tree().await?;
     let shared = a.shared_tree().await?;
+    let disabled = a.shared_tree().await?;
     let absent = a.shared_tree().await?;
     let unrelated = b.shared_tree().await?;
     recipient
         .follow_at(
             &a_id,
             transport.serve(&a.sync).await?,
-            &[&fast, &shared, &absent],
+            &[&fast, &shared, &disabled, &absent],
         )
         .await?;
     recipient
@@ -142,7 +143,7 @@ async fn automatic_rounds_use_current_scope_without_waking_unrelated_peers() -> 
     recipient
         .set_local_settings(fast.root_id(), &SyncSettings::enabled().with_interval(5))
         .await?;
-    for db in [&shared, &unrelated] {
+    for db in [&shared, &disabled, &unrelated] {
         recipient
             .set_local_settings(db.root_id(), &SyncSettings::enabled().with_interval(3600))
             .await?;
@@ -153,13 +154,19 @@ async fn automatic_rounds_use_current_scope_without_waking_unrelated_peers() -> 
     recipient.sync.stop_server().await?;
 
     tokio::time::sleep(Duration::from_secs(70)).await;
-    for db in [&fast, &shared, &unrelated] {
+    for db in [&fast, &shared, &disabled, &unrelated] {
         assert!(
             recipient.instance.has_entry(db.root_id()).await,
             "startup is the positive control for every enabled route"
         );
     }
     assert!(!recipient.instance.has_entry(absent.root_id()).await);
+    recipient
+        .set_local_settings(
+            disabled.root_id(),
+            &SyncSettings::disabled().with_interval(10),
+        )
+        .await?;
 
     trace.clear();
     tokio::time::sleep(Duration::from_secs(60)).await;
@@ -183,12 +190,33 @@ async fn automatic_rounds_use_current_scope_without_waking_unrelated_peers() -> 
         0,
         "the fast database must not dial the unrelated peer"
     );
-    assert_eq!(requests(&fast), fast_rounds);
     assert_eq!(
-        requests(&shared),
-        fast_rounds,
-        "the shared slow database belongs to the same round"
+        requests(&disabled),
+        0,
+        "a disabled database must not ride along with an enabled one"
     );
+    // Ignore a round straddling either edge of the observation window.
+    let mut coalesced = 0;
+    for round in events.lines().filter(|line| {
+        line.contains("Starting peer synchronization") && line.contains(&a_id.to_string())
+    }) {
+        let id = operation_id(round);
+        let round: Vec<_> = events
+            .lines()
+            .filter(|line| line.contains("operation_id=") && operation_id(line) == id)
+            .collect();
+        if round.iter().any(|line| line.contains("Sync route outcome")) {
+            let round = round.join("\n");
+            assert_eq!(pull_count(&round, &fast), 1);
+            assert_eq!(
+                pull_count(&round, &shared),
+                1,
+                "the slow database belongs to the same round"
+            );
+            coalesced += 1;
+        }
+    }
+    assert!(coalesced >= 8);
     assert_eq!(
         requests(&absent),
         0,
@@ -207,6 +235,20 @@ async fn automatic_rounds_use_current_scope_without_waking_unrelated_peers() -> 
         pull_count(&events, &shared),
         0,
         "registration revoked before the next round"
+    );
+
+    // Lengthening the remaining enabled interval may leave one pending fast
+    // deadline. After it completes, the disabled 10s database must not wake A.
+    recipient
+        .set_local_settings(fast.root_id(), &SyncSettings::enabled().with_interval(3600))
+        .await?;
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    trace.clear();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(
+        pull_count(&trace.output(), &fast),
+        0,
+        "the disabled database cannot drive the peer's cadence"
     );
     Ok(())
 }

@@ -120,6 +120,9 @@ The engine keeps one monotonic due-time per registered peer/database pair and
 waits on the earliest eligible peer deadline. A round selects a route once,
 then attempts each eligible database shared with that peer using the existing
 v0 per-database request. Only successful database exchanges advance due-times.
+Automatic rounds include only databases whose combined local settings enable
+sync. Opted-out databases neither schedule a round nor join another database's
+round. Eligibility is checked again at admission against current local state.
 The registration matrix selects candidates; it does not confer authority.
 Live read checks still run when the peer serves each request.
 

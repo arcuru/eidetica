@@ -105,5 +105,8 @@ fn configured_interval(settings: &Doc, tree: &ID) -> Result<Option<u64>> {
         serde_json::from_str(&String::try_from(value)?).map_err(|error| {
             SyncError::SerializationError(format!("Failed to parse combined settings: {error}"))
         })?;
+    if !settings.sync_enabled {
+        return Ok(None);
+    }
     Ok(Some(settings.interval_seconds.unwrap_or(DEFAULT_INTERVAL)))
 }
