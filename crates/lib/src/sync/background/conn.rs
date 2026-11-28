@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::{debug, info, trace};
 
-use super::BackgroundSync;
+use super::RoundContext;
 use crate::sync::{
     error::SyncError,
     peer_manager::PeerManager,
@@ -162,7 +162,7 @@ pub(super) async fn run_handshake(ctx: HandshakeCtx, address: Address) -> Result
     }
 }
 
-impl BackgroundSync {
+impl RoundContext {
     /// Handle bootstrap response by storing root and all entries
     pub(super) async fn handle_bootstrap_response(
         &self,

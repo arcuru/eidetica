@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+- Scheduled automatic reconciliation per database instead of using the shortest interval for every peer. The default remains five minutes; the scheduler clamps configured intervals before applying jitter and backs off unreachable peers.
+
 ## [0.2.0] - 2025-11-07
 
 Initial proof-of-concept release. Very experimental but is minimally viable to start using.

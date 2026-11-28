@@ -267,7 +267,7 @@ Configure per-database sync behavior:
 # let key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &key).await?;
 # let db_id = db.root_id().clone();
-// Track this database with sync on every commit + periodic sync every 60s
+// Track this database with sync on commit and a 60s reconciliation target
 user.track_database(
     db_id,
     &user.get_default_key()?,
@@ -301,10 +301,13 @@ See [Bootstrap Guide](bootstrap.md) for approval workflows.
 
 Once configured, the sync system handles:
 
-- **Immediate sync** on commit (if `sync_on_commit: true`)
-- **Periodic sync** at configured intervals
-- **Retry** with exponential backoff for failed sends
-- **Bidirectional transfer** in each sync operation
+- **Sync on commit** queues updates when `sync_on_commit` is enabled, with retries for failed sends.
+- **Automatic reconciliation** compares tips and pulls missing history from registered peers, even without new writes or reconnects. The receiver's pull repairs a missed final broadcast; the sender does not replay individual sends.
+
+The reconciliation interval applies to a database and each active peer it shares, not to every peer on the instance.
+The target defaults to 300 seconds and is clamped to 5–3,600 seconds before applying ±25% jitter.
+When one database wakes a peer, the round also covers that peer's other eligible databases.
+Backoff and shared capacity can delay a round; the interval is not a delivery deadline.
 
 ## Troubleshooting
 

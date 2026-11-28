@@ -49,11 +49,9 @@ sync.accept_connections().await?;
 let sync = db.sync().unwrap();
 sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 
-// Background thread configuration and behavior:
-// - Command processing (immediate response to commits)
-// - Periodic sync operations (5 minute intervals)
-// - Retry queue processing (30 second intervals)
-// - Connection health checks (60 second intervals)
+// The background engine drains the write queue and retries failed sends.
+// It also reconciles tracked databases with their registered peers on a
+// per-database schedule (five-minute default before jitter).
 
 // All sync operations are automatic - no manual queue management needed
 println!("BackgroundSync configured with automatic operation timers");
@@ -546,10 +544,9 @@ db.sync()?.accept_connections().await?;
 let addr = Address::iroh(peer_node_id)?;
 let peer = db.sync()?.connect_to_peer(&addr).await?;
 
-// Sync happens automatically:
-// - Immediate on commit
-// - Retry with exponential backoff
-// - Periodic sync every 5 minutes
+// For databases tracked for sync and registered with this peer:
+// - Sync on commit if configured, with retries for failed sends
+// - Periodic reconciliation at each database's target interval
 ```
 
 ### Multi-Database Setup
