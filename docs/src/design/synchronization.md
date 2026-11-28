@@ -62,7 +62,7 @@ The sync system builds on Merkle DAG and CRDT principles:
 
 ### 2. BackgroundSync Engine with Command Pattern
 
-**Decision:** Single background thread with command-channel communication
+**Decision:** One background engine with a command channel and bounded peer-round tasks
 
 **Rationale:**
 
@@ -87,7 +87,6 @@ The sync system uses a thin frontend that sends commands to a background thread:
 - ✅ Clear ownership model (transport in background, data in sync database)
 - ✅ Works in both async and sync contexts
 - ✅ Graceful startup/shutdown handling
-- ❌ All sync operations serialized through single thread
 
 ### 3. Internal Write Hook and Verified Checkpoints
 
@@ -104,14 +103,40 @@ frontier delta; concurrent hooks serialize checkpoint selection and advancement.
 A checkpoint advances only after the IDs have been queued, not when an
 application callback runs and not as an acknowledgment from the peer.
 
-The queue and these checkpoints are volatile. Periodic sync and explicit pulls
-compare Verified frontiers to recover missed queueing or process restarts.
+The queue and these checkpoints are volatile. Automatic reconciliation and
+explicit pulls compare Verified frontiers to recover lost updates or restart
+gaps. In v0 the automatic transfer is a pull: the receiver must run its own
+round against a reachable source to recover a lost final broadcast.
 Bootstrap and incremental responses serve only locally Verified entries.
 Explicit sends and retries recheck the complete payload batch before transport
 submission; an unheld, Unverified or Failed entry refuses the batch.
 
 Incoming entries remain Unverified until the receiver validates them locally.
 Peer authentication and a successful transfer never confer local trust.
+
+#### Automatic reconciliation
+
+The engine keeps one monotonic due-time per registered peer/database pair and
+waits on the earliest eligible peer deadline. A round selects a route once,
+then attempts each eligible database shared with that peer using the existing
+v0 per-database request. Only successful database exchanges advance due-times.
+Automatic rounds include only databases whose combined local settings enable
+sync. Opted-out databases neither schedule a round nor join another database's
+round. Eligibility is checked again at admission against current local state.
+The registration matrix selects candidates; it does not confer authority.
+Live read checks still run when the peer serves each request.
+
+The target interval is per database, defaults to 300 seconds and is clamped to
+5–3,600 seconds before ±25% jitter. Startup spreads the first due-times across
+60 seconds. The schedule is not persisted. There is no catch-up burst for
+missed ticks and no new reconnect trigger.
+
+Only one automatic round per peer can run at a time, with at least one second
+between completion and the next start. The engine serves oldest eligible work
+first, with 16 concurrent rounds and a burst of up to 32 starts refilling at one
+per second. Route failure or a transport failure that ends the tree walk backs
+off that peer exponentially, capped at 3,600 seconds before jitter. An
+unreachable peer is not evicted. These limits do not change manual sync.
 
 ### 4. Connection Architecture: Outbound vs Inbound Separation
 

@@ -30,8 +30,11 @@ The internal write hook owns a checkpoint per peer and database, independently
 of application notifications. The first queueing includes the Verified ancestry;
 later queueing walks from the current Verified frontier to the last queued one.
 An unchanged frontier queues nothing. These checkpoints mean queued, not
-acknowledged, and are volatile like the queue. Periodic DAG comparison recovers
-restart gaps without relying on an application's last processed Snapshot.
+acknowledged, and are volatile like the queue. The receiver's automatic v0
+pull compares tips even when no more writes arrive; it can repair a lost final
+broadcast without replaying that send. The
+[automatic reconciliation schedule](../design/synchronization.md#automatic-reconciliation)
+keeps due-times, backoff, and budget diagnostics in memory, not in the sync DAG.
 
 Explicit sends and queued/retried batches recheck local verification before
 submitting entry payloads to the transport. A non-Verified or unheld entry refuses

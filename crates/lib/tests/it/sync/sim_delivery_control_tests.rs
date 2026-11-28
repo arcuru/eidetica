@@ -9,14 +9,70 @@
 //!
 //! [`assert_all_present`]: eidetica::Cluster::assert_all_present
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use eidetica::{
     Cluster,
+    account::SyncSettings,
     testing::{SimLoopback, SimNetwork},
 };
 
 use super::helpers::{cluster_get, cluster_put, cluster_shared_database};
+
+#[tokio::test(start_paused = true)]
+async fn test_quiet_peers_reconcile_after_lost_final_broadcast() -> eidetica::Result<()> {
+    let fabric = SimNetwork::new();
+    let mut net = Cluster::builder()
+        .transport(Arc::new(SimLoopback::new(fabric.clone())))
+        .build()
+        .await?;
+    let (room, dbs) = cluster_shared_database(&mut net, "quiet-recovery").await?;
+    net.auto_sync(0, 1, &room).await?;
+    let key = net.peer(1).key_id().clone();
+    net.peer_mut(1)
+        .account_session_mut()
+        .track_database(&room, &key, SyncSettings::on_commit().with_interval(0))
+        .await?;
+    net.flush_all().await?;
+
+    // Wait through enrollment and prove the receiver has an established route
+    // and issued at least one automatic pull before the final write.
+    tokio::time::sleep(Duration::from_secs(70)).await;
+    let source = net.peer(0).instance().id();
+    assert!(
+        net.peer(1)
+            .sync()
+            .get_sync_status(&room, &source)
+            .await?
+            .last_sync
+            .is_some()
+    );
+    let before = net.snapshot(1, &room).await?;
+
+    fabric.set_manual_delivery(true);
+    cluster_put(&dbs[0], "final", "recover this").await?;
+    net.flush(0).await?;
+    assert_eq!(
+        fabric.drop_all(),
+        1,
+        "the sender got an Ack for the lost push"
+    );
+    assert_eq!(
+        net.snapshot(1, &room).await?,
+        before,
+        "the receiver missed the write"
+    );
+
+    // No writes, retries, reconnects or explicit exchange after the loss.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert_eq!(cluster_get(&dbs[1], "final").await?, "recover this");
+    assert!(net.converged(&[0, 1], &room).await?);
+    assert!(
+        fabric.pending().is_empty(),
+        "recovery did not replay a push"
+    );
+    Ok(())
+}
 
 /// Peer 0 makes two causally-ordered writes that fan out to peers 1 and 2 over
 /// auto-sync. Every push is captured and then delivered in reverse send order,

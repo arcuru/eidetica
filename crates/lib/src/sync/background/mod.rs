@@ -1,14 +1,16 @@
 //! Background sync engine implementation.
 //!
 //! This module provides the BackgroundSync struct that handles all sync operations
-//! in a single background thread, removing circular dependency issues and providing
-//! automatic retry, periodic sync, and reconnection handling.
+//! from a background task, with retry and bounded automatic reconciliation.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, future::pending, sync::Arc, time::Duration};
+
+use rand::{SeedableRng, rngs::StdRng};
 
 use tokio::{
     sync::{mpsc, oneshot},
-    time::interval,
+    task::JoinSet,
+    time::{Instant, MissedTickBehavior, interval, sleep_until},
 };
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
@@ -18,7 +20,7 @@ use super::{
     operation::SyncOperation,
     peer_manager::PeerManager,
     peer_state::PeerStates,
-    peer_types::{Address, PeerId, PeerStatus},
+    peer_types::{Address, PeerId},
     protocol::{SyncRequest, SyncRequestAuth, SyncResponse, SyncTreeRequest},
     queue::SyncQueue,
     transport_manager::TransportManager,
@@ -28,10 +30,13 @@ use crate::{
     Database, Error, Instance, Result, WeakInstance,
     auth::crypto::PublicKey,
     entry::{Entry, ID},
-    store::DocStore,
 };
 
 pub(crate) mod conn;
+mod periodic;
+mod schedule;
+
+use schedule::{SETTINGS_CHECK, Schedule};
 
 #[cfg(test)]
 mod periodic_tests;
@@ -169,22 +174,39 @@ struct RetryEntry {
 
 /// Background sync engine that owns all sync state and handles operations
 pub struct BackgroundSync {
-    // Core components - owns everything
-    pub(super) transport_manager: TransportManager,
-    instance: WeakInstance,
-    pub(super) sync_tree_id: ID,
-
-    // Queue for entries pending synchronization (shared with Sync frontend)
+    round: RoundContext,
     queue: Arc<SyncQueue>,
-
-    // Per-peer liveness state (shared with Sync frontend, written only here)
-    peer_state: Arc<PeerStates>,
 
     // Retry queue for failed sends
     retry_queue: Vec<RetryEntry>,
 
     // Communication
     command_rx: mpsc::Receiver<SyncCommand>,
+}
+
+/// Owned handles for a round to run without holding the command loop. Each
+/// round uses the transports selected from the engine's registry at admission.
+#[derive(Clone)]
+struct RoundContext {
+    transport_manager: TransportManager,
+    instance: WeakInstance,
+    sync_tree_id: ID,
+    peer_state: Arc<PeerStates>,
+}
+
+/// The walk can return Ok even on all-tree failure: callers of manual sync
+/// retain that behavior, while the automatic scheduler uses these facts.
+#[derive(Default)]
+struct RoundReport {
+    trees: Vec<TreeReport>,
+    reached_peer: bool,
+    network_failure: bool,
+}
+
+struct TreeReport {
+    tree: ID,
+    attempted_ms: Option<u64>,
+    success_ms: Option<u64>,
 }
 
 /// How many peers may be synced at once, and so how many outbound connections a
@@ -213,11 +235,13 @@ impl BackgroundSync {
         let (tx, rx) = mpsc::channel(100);
 
         let background = Self {
-            transport_manager: TransportManager::new(),
-            instance: instance.downgrade(),
-            sync_tree_id,
+            round: RoundContext {
+                transport_manager: TransportManager::new(),
+                instance: instance.downgrade(),
+                sync_tree_id,
+                peer_state,
+            },
             queue,
-            peer_state,
             retry_queue: Vec::new(),
             command_rx: rx,
         };
@@ -227,7 +251,9 @@ impl BackgroundSync {
         tokio::spawn(background.run());
         tx
     }
+}
 
+impl RoundContext {
     /// Upgrade the weak instance reference to a strong reference.
     pub(super) fn instance(&self) -> Result<Instance> {
         self.instance
@@ -271,126 +297,98 @@ impl BackgroundSync {
             .await?
             .with_key(signing_key))
     }
+}
 
-    /// Get the minimum sync interval from all tracked databases
-    /// Returns None if no databases are tracked or no intervals are set
-    async fn get_min_sync_interval(&self) -> Option<u64> {
-        let sync_tree = match self.get_sync_tree().await {
-            Ok(tree) => tree,
-            Err(_) => return None,
-        };
-
-        let txn = match sync_tree.new_transaction().await {
-            Ok(txn) => txn,
-            Err(_) => return None,
-        };
-
-        let user_mgr = super::account_sync_manager::AccountSyncManager::new(&txn);
-
-        // Get all tracked database IDs from the DATABASE_USERS_SUBTREE
-        let database_users = match txn
-            .get_store::<DocStore>(super::account_sync_manager::DATABASE_USERS_SUBTREE)
-            .await
-        {
-            Ok(store) => store,
-            Err(_) => return None,
-        };
-
-        let all_dbs = match database_users.get_all().await {
-            Ok(doc) => doc,
-            Err(_) => return None,
-        };
-
-        // Find the minimum interval across all databases
-        let mut min_interval: Option<u64> = None;
-        for db_id_str in all_dbs.keys() {
-            if let Ok(db_id) = ID::parse(db_id_str)
-                && let Ok(Some(settings)) = user_mgr.get_combined_settings(&db_id).await
-                && let Some(interval) = settings.interval_seconds
-            {
-                min_interval = Some(match min_interval {
-                    Some(current_min) => current_min.min(interval),
-                    None => interval,
-                });
-            }
-        }
-
-        min_interval
-    }
-
-    /// Main event loop that handles all sync operations
+impl BackgroundSync {
+    /// Main event loop that handles all sync operations.
     async fn run(mut self) {
         async move {
             info!("Starting background sync engine");
+            let mut schedule = Schedule::new(Instant::now(), StdRng::from_entropy());
+            self.round.refresh_schedule(&mut schedule).await;
+            let mut rounds = JoinSet::new();
+            let mut running = HashMap::new();
 
-            // Get initial sync interval from settings (default to 300 seconds if none set)
-            let mut current_interval_secs = self.get_min_sync_interval().await.unwrap_or(300);
-            info!("Initial periodic sync interval: {} seconds", current_interval_secs);
+            let mut queue_check = interval(Duration::from_secs(5)); // Batches local writes
+            let mut retry_check = interval(Duration::from_secs(30));
+            let mut settings_check = interval(SETTINGS_CHECK);
+            settings_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-            // Set up timers
-            let mut periodic_sync = interval(Duration::from_secs(current_interval_secs));
-            let mut queue_check = interval(Duration::from_secs(5)); // 5 seconds - batches local writes
-            let mut retry_check = interval(Duration::from_secs(30)); // 30 seconds
-            let mut connection_check = interval(Duration::from_secs(60)); // 1 minute
-            let mut settings_check = interval(Duration::from_secs(60)); // Check for settings changes every minute
-
-            // Skip initial tick to avoid immediate execution
-            periodic_sync.tick().await;
+            // Skip the initial ticks; policy was already read at startup.
             queue_check.tick().await;
             retry_check.tick().await;
-            connection_check.tick().await;
             settings_check.tick().await;
 
             loop {
+                let wake = if self.round.transport_manager.is_empty() {
+                    None
+                } else {
+                    schedule.wake_at(Instant::now(), rounds.len() == MAX_CONCURRENT_PEER_SYNCS)
+                };
                 tokio::select! {
-                    // Handle commands from frontend
-                    Some(cmd) = self.command_rx.recv() => {
+                    cmd = self.command_rx.recv() => {
+                        let Some(cmd) = cmd else { break };
                         if let Err(e) = self.handle_command(cmd).await {
-                            // Log errors but continue running - background sync should be resilient
                             tracing::error!("Background sync command error: {e}");
                         }
                     }
-
-                    // Drain sync queue (batched entries)
                     _ = queue_check.tick() => {
                         self.process_queue().await;
                     }
-
-                    // Periodic sync with all peers
-                    _ = periodic_sync.tick() => {
-                        self.periodic_sync_all_peers().await;
-                    }
-
-                    // Process retry queue
                     _ = retry_check.tick() => {
                         self.process_retry_queue().await;
                     }
-
-                    // Check and reconnect disconnected peers
-                    _ = connection_check.tick() => {
-                        self.check_peer_connections().await;
-                    }
-
-                    // Check if sync interval settings have changed
                     _ = settings_check.tick() => {
-                        if let Some(new_interval) = self.get_min_sync_interval().await
-                            && new_interval != current_interval_secs {
-                                info!("Sync interval changed from {} to {} seconds", current_interval_secs, new_interval);
-                                current_interval_secs = new_interval;
-                                // Recreate the periodic sync timer with new interval
-                                periodic_sync = interval(Duration::from_secs(new_interval));
-                                periodic_sync.tick().await; // Skip initial tick
-                            }
+                        self.round.refresh_schedule(&mut schedule).await;
                     }
-
-                    // Channel closed, shutdown
-                    else => {
-                        // Normal shutdown when channel closes
-                        info!("Background sync engine shutting down");
-                        break;
+                    _ = async {
+                        match wake {
+                            Some(at) => sleep_until(at).await,
+                            None => pending().await,
+                        }
+                    } => {
+                        let Some(peer) = schedule.due_peer(Instant::now()).cloned() else { continue };
+                        let (addresses, periods) = match self.round.periodic_plan(&peer).await {
+                            Ok(plan) => plan,
+                            Err(error) => {
+                                warn!(%peer, %error, "Could not revalidate automatic sync scope");
+                                schedule.defer_refresh(&peer, Instant::now());
+                                continue;
+                            }
+                        };
+                        let trees = periods.keys().cloned().collect();
+                        let now = Instant::now();
+                        schedule.update_peer(&peer, periods, now);
+                        if schedule.due_peer(now) == Some(&peer) {
+                            schedule.start(&peer, now);
+                            let ctx = self.round.clone();
+                            let target = peer.clone();
+                            let task = rounds.spawn(async move {
+                                let mut report = RoundReport::default();
+                                if let Err(error) = ctx.reconcile(&target, Some((addresses, trees)), &mut report).await {
+                                    warn!(peer = %target, %error, "Automatic sync round failed");
+                                }
+                                (Instant::now(), report)
+                            }.in_current_span());
+                            running.insert(task.id(), peer);
+                        }
+                    }
+                    Some(result) = rounds.join_next_with_id(), if !rounds.is_empty() => {
+                        let (id, finished, report) = match result {
+                            Ok((id, (finished, report))) => (id, finished, report),
+                            Err(error) => {
+                                tracing::error!(%error, "Automatic sync round task failed");
+                                (error.id(), Instant::now(), RoundReport::default())
+                            }
+                        };
+                        let peer = running.remove(&id).expect("admitted peer round");
+                        schedule.finish(&peer, finished, report);
                     }
                 }
             }
+            // No rounds may outlive engine shutdown (including their address races).
+            rounds.shutdown().await;
+            info!("Background sync engine shutting down");
         }
         .instrument(info_span!("background_sync"))
         .await
@@ -401,13 +399,17 @@ impl BackgroundSync {
         match command {
             SyncCommand::SendEntries { peer, entries } => {
                 if let Err(e) = self.send_to_peer(&peer, entries.clone()).await {
-                    let now_ms = self.instance().map(|i| i.clock().now_millis()).unwrap_or(0);
+                    let now_ms = self
+                        .round
+                        .instance()
+                        .map(|i| i.clock().now_millis())
+                        .unwrap_or(0);
                     self.add_to_retry_queue(peer, entries, e, now_ms);
                 }
             }
 
             SyncCommand::SyncWithPeer { peer } => {
-                if let Err(e) = self.sync_with_peer(&peer).await {
+                if let Err(e) = self.round.sync_with_peer(&peer).await {
                     // Log sync failure but don't crash the background engine
                     tracing::error!("Failed to sync with peer {peer}: {e}");
                 }
@@ -419,12 +421,14 @@ impl BackgroundSync {
                 response,
             } => {
                 // Stop server on existing transport if running
-                if let Some(old) = self.transport_manager.get_mut(&name)
+                if let Some(old) = self.round.transport_manager.get_mut(&name)
                     && old.is_server_running()
                 {
                     let _ = old.stop_server().await;
                 }
-                self.transport_manager.add(&name, Arc::from(transport));
+                self.round
+                    .transport_manager
+                    .add(&name, Arc::from(transport));
                 tracing::debug!("Added transport: {}", name);
                 let _ = response.send(Ok(()));
             }
@@ -440,12 +444,12 @@ impl BackgroundSync {
             }
 
             SyncCommand::GetServerAddress { name, response } => {
-                let result = self.transport_manager.get_server_address(&name);
+                let result = self.round.transport_manager.get_server_address(&name);
                 let _ = response.send(result);
             }
 
             SyncCommand::GetAllServerAddresses { response } => {
-                let addresses = self.transport_manager.get_all_server_addresses();
+                let addresses = self.round.transport_manager.get_all_server_addresses();
                 let _ = response.send(Ok(addresses));
             }
 
@@ -460,7 +464,7 @@ impl BackgroundSync {
                 // reached, which is precisely the peer most likely not to be
                 // there. Awaiting it inline hands the whole engine to a
                 // stranger for a full connect deadline.
-                match self.handshake_ctx(&address) {
+                match self.round.handshake_ctx(&address) {
                     Ok(ctx) => {
                         let attempt = conn::DialAttempt::shared(cancel);
                         #[cfg(any(test, feature = "testing"))]
@@ -515,9 +519,9 @@ impl BackgroundSync {
                 //
                 // The transport handle is owned, so the task borrows nothing
                 // from the engine and the loop is free immediately.
-                match self.transport_manager.handle_for_address(&address) {
+                match self.round.transport_manager.handle_for_address(&address) {
                     Some(transport) => {
-                        let instance = self.instance.clone();
+                        let instance = self.round.instance.clone();
                         tokio::spawn(
                             async move {
                                 debug!(address = ?address, "Sending sync request");
@@ -570,7 +574,9 @@ impl BackgroundSync {
         }
         Ok(())
     }
+}
 
+impl RoundContext {
     /// Race bounded registration handshakes and return the first usable route
     /// **to `expected`**.
     ///
@@ -615,14 +621,14 @@ impl BackgroundSync {
         }
 
         let (tx, mut rx) = mpsc::channel(tasks.len());
-        let mut attempts = Vec::with_capacity(tasks.len());
+        let mut attempts = JoinSet::new();
 
         for (transport, addr) in tasks {
             let tx = tx.clone();
             let mut ctx = self.handshake_ctx(&addr)?;
             ctx.transport = Arc::clone(&transport);
             let addr_info = addr.clone();
-            attempts.push(tokio::spawn(
+            attempts.spawn(
                 async move {
                     let result = tokio::time::timeout(
                         ADDRESS_ATTEMPT_TIMEOUT,
@@ -648,7 +654,7 @@ impl BackgroundSync {
                     let _ = tx.send((result, attempt_timed_out)).await;
                 }
                 .in_current_span(),
-            ));
+            );
         }
         drop(tx);
 
@@ -662,12 +668,7 @@ impl BackgroundSync {
                     // finished task is a no-op. Awaiting the handles returns
                     // once each loser's connection and buffers are actually
                     // dropped, so teardown is complete when the route is.
-                    for attempt in &attempts {
-                        attempt.abort();
-                    }
-                    for attempt in attempts {
-                        let _ = attempt.await;
-                    }
+                    attempts.shutdown().await;
                     operation.selected(&addr);
                     debug!(address = ?addr, "Selected sync route");
                     return Ok((transport, addr));
@@ -697,7 +698,9 @@ impl BackgroundSync {
 
         Err(last_err.expect("at least one task was spawned"))
     }
+}
 
+impl BackgroundSync {
     /// Send specific entries to a peer without duplicate filtering.
     ///
     /// This method performs direct entry transmission and is used by:
@@ -721,7 +724,7 @@ impl BackgroundSync {
         let result = async {
             // Get peer addresses from sync tree (extract and drop transaction before await)
             let addresses = {
-                let sync_tree = self.get_sync_tree().await?;
+                let sync_tree = self.round.get_sync_tree().await?;
                 let txn = sync_tree.new_transaction().await?;
                 let peer_info = PeerManager::new(&txn)
                     .get_peer_info(peer.public_key())
@@ -732,10 +735,11 @@ impl BackgroundSync {
             }; // Transaction is dropped here
 
             let (transport, address) = self
+                .round
                 .select_route(&addresses, peer.public_key(), &mut operation)
                 .await?;
             super::utils::require_verified_entries(
-                self.instance()?.require_local_engine()?.as_ref(),
+                self.round.instance()?.require_local_engine()?.as_ref(),
                 &entries,
             )
             .await?;
@@ -784,7 +788,7 @@ impl BackgroundSync {
             return 0;
         }
 
-        let instance = match self.instance() {
+        let instance = match self.round.instance() {
             Ok(i) => i,
             Err(e) => {
                 tracing::warn!("Failed to get instance for queue processing: {e}");
@@ -821,7 +825,11 @@ impl BackgroundSync {
 
     /// Process retry queue with exponential backoff
     async fn process_retry_queue(&mut self) {
-        let now_ms = self.instance().map(|i| i.clock().now_millis()).unwrap_or(0);
+        let now_ms = self
+            .round
+            .instance()
+            .map(|i| i.clock().now_millis())
+            .unwrap_or(0);
         let mut still_failed = Vec::new();
 
         // Take the retry queue to avoid borrowing issues
@@ -862,7 +870,11 @@ impl BackgroundSync {
     /// Returns the number of entries that still failed after retry.
     async fn flush_retry_queue(&mut self) -> usize {
         let mut still_failed = Vec::new();
-        let now_ms = self.instance().map(|i| i.clock().now_millis()).unwrap_or(0);
+        let now_ms = self
+            .round
+            .instance()
+            .map(|i| i.clock().now_millis())
+            .unwrap_or(0);
 
         // Take the retry queue to process
         let retry_queue = std::mem::take(&mut self.retry_queue);
@@ -891,144 +903,96 @@ impl BackgroundSync {
         self.retry_queue = still_failed;
         failed_count
     }
+}
 
-    /// Perform periodic sync with all active peers
-    async fn periodic_sync_all_peers(&self) {
-        // Periodic sync triggered
-
-        // Get all peers from sync tree
-        let peers = match self.get_sync_tree().await {
-            Ok(sync_tree) => match sync_tree.new_transaction().await {
-                Ok(txn) => match PeerManager::new(&txn).list_peers().await {
-                    Ok(peers) => {
-                        // Extract peer list and drop the operation before awaiting
-                        peers
-                    }
-                    Err(_) => {
-                        // Skip sync if we can't list peers
-                        return;
-                    }
-                },
-                Err(_) => {
-                    // Skip sync if we can't create transaction
-                    return;
-                }
-            },
-            Err(_) => {
-                // Skip sync if we can't get sync tree
-                return;
-            }
-        };
-
-        // Sync peers concurrently (the transaction is dropped, so no Send
-        // issues). A round is I/O-bound and dominated by peers that are down:
-        // done serially, one unreachable peer delays every peer behind it by a
-        // full connect timeout, so the round degrades with the number of dead
-        // peers rather than with the work there is to do. Concurrently, a round
-        // costs about as long as its slowest peer.
-        //
-        // Bounded so a large peer set can't open an unbounded number of
-        // connections at once. These futures are polled on this task rather
-        // than spawned, so they need no `Send`/`'static` bounds.
-        use futures_util::stream::StreamExt;
-        futures_util::stream::iter(
-            peers
-                .into_iter()
-                .filter(|p| p.status == PeerStatus::Active)
-                .map(|peer_info| async move {
-                    if let Err(e) = self.sync_with_peer(&peer_info.id).await {
-                        // Log individual peer sync failure but continue with others
-                        tracing::error!("Periodic sync failed with {}: {e}", peer_info.id);
-                    }
-                }),
-        )
-        .buffer_unordered(MAX_CONCURRENT_PEER_SYNCS)
-        .collect::<()>()
-        .await;
+impl RoundContext {
+    /// Explicit engine command: preserve the unfiltered registered-tree walk.
+    async fn registered_plan(&self, peer: &PeerId) -> Result<(Vec<Address>, Vec<ID>)> {
+        let sync_tree = self.get_sync_tree().await?;
+        let txn = sync_tree.new_transaction().await?;
+        let manager = PeerManager::new(&txn);
+        let info = manager
+            .get_peer_info(peer.public_key())
+            .await?
+            .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
+        let trees = manager.get_peer_trees(peer.public_key()).await?;
+        Ok((info.addresses, trees))
     }
 
-    /// Sync with a specific peer (bidirectional)
+    async fn sync_with_peer(&self, peer: &PeerId) -> Result<()> {
+        self.reconcile(peer, None, &mut RoundReport::default())
+            .await
+    }
+
     #[tracing::instrument(skip_all, fields(peer = %peer_id))]
-    async fn sync_with_peer(&self, peer_id: &PeerId) -> Result<()> {
+    async fn reconcile(
+        &self,
+        peer_id: &PeerId,
+        plan: Option<(Vec<Address>, Vec<ID>)>,
+        report: &mut RoundReport,
+    ) -> Result<()> {
         let mut operation = SyncOperation::new("sync_peer");
         let span = operation.span();
         let result = async {
             info!(peer = %peer_id, "Starting peer synchronization");
-
-            // Get peer addresses and tree list from sync tree (extract and
-            // drop transaction before any network I/O).
-            let (addresses, sync_trees) = {
-                let sync_tree = self.get_sync_tree().await?;
-                let txn = sync_tree.new_transaction().await?;
-                let peer_manager = PeerManager::new(&txn);
-
-                let peer_info = peer_manager
-                    .get_peer_info(peer_id.public_key())
-                    .await?
-                    .ok_or_else(|| SyncError::PeerNotFound(peer_id.to_string()))?;
-
-                let addresses = peer_info.addresses.clone();
-
-                // Find all trees that sync with this peer from sync tree
-                let sync_trees = peer_manager.get_peer_trees(peer_id.public_key()).await?;
-
-                (addresses, sync_trees)
-            }; // Transaction is dropped here
-
+            let (addresses, sync_trees) = match plan {
+                Some(plan) => plan,
+                None => self.registered_plan(peer_id).await?,
+            };
             if sync_trees.is_empty() {
                 debug!(peer = %peer_id, "No trees configured for sync with peer");
-                return Ok(()); // No trees to sync
+                return Ok(());
             }
 
-            // Race bounded handshakes to select one route. Other successful
-            // handshakes may finish registration, but only the selected route
-            // continues into the tree exchange.
-            let (_transport, address) = self
+            let address = match self
                 .select_route(&addresses, peer_id.public_key(), &mut operation)
-                .await?;
-
+                .await
+            {
+                Ok((_, address)) => address,
+                Err(error) => {
+                    report.network_failure = true;
+                    return Err(error);
+                }
+            };
             info!(peer = %peer_id, tree_count = sync_trees.len(), "Synchronizing trees with peer");
 
             let tree_count = sync_trees.len();
             let mut synced_any = false;
-            for (index, tree_id) in sync_trees.iter().enumerate() {
-                let result = self.sync_tree_with_peer(peer_id, tree_id, &address).await;
+            for (index, tree) in sync_trees.into_iter().enumerate() {
+                let attempted_ms = self.instance().ok().map(|i| i.clock().now_millis());
+                let result = self.sync_tree_with_peer(peer_id, &tree, &address).await;
                 operation.tree_result(&result);
-                let Err(e) = result else {
+                let success_ms = if result.is_ok() {
                     synced_any = true;
-                    continue;
+                    self.instance().ok().map(|i| i.clock().now_millis())
+                } else {
+                    None
                 };
-
-                tracing::error!("Failed to sync tree {tree_id} with peer {peer_id}: {e}");
-
-                // A failure that is about the peer rather than about this tree
-                // ends the walk. Every remaining tree would fail the same way,
-                // each paying a full deadline to establish what this one just
-                // established, so a peer that is down costs one round trip
-                // rather than one per tree registered against it.
-                //
-                // Any other failure is about this tree alone: the peer answered,
-                // so the trees behind it are still worth attempting. Keeping
-                // that distinction is what lets the walk stop early without a
-                // single broken tree stalling every tree behind it.
-                if e.is_network_error() {
-                    debug!(
-                        peer = %peer_id,
-                        skipped = tree_count - index - 1,
-                        "Peer stopped answering; ending the tree walk"
-                    );
-                    break;
+                report.trees.push(TreeReport {
+                    tree: tree.clone(),
+                    attempted_ms,
+                    success_ms,
+                });
+                if let Err(error) = result {
+                    tracing::error!("Failed to sync tree {tree} with peer {peer_id}: {error}");
+                    if error.is_network_error() {
+                        // Do not pay another transport deadline for every tree.
+                        report.network_failure = true;
+                        debug!(peer = %peer_id, skipped = tree_count - index - 1,
+                            "Peer stopped answering; ending the tree walk");
+                        break;
+                    }
                 }
+                // A completed exchange or a tree-specific rejection is not a
+                // consecutive network failure. A later interruption can still
+                // back off the walk, starting a new failure streak.
+                report.reached_peer = true;
             }
 
-            // A round that moved at least one tree is the peer answering, which
-            // is the fact `SyncStatus.last_sync` reports. A round in which every
-            // tree failed is not, even though the walk itself returns `Ok`.
             if synced_any && let Ok(instance) = self.instance() {
                 self.peer_state
                     .record_success(peer_id, instance.clock().now_millis());
             }
-
             info!(peer = %peer_id, "Completed peer synchronization");
             Ok(())
         }
@@ -1038,31 +1002,9 @@ impl BackgroundSync {
         result
     }
 
-    /// Sync a specific tree with a peer using smart duplicate prevention.
-    ///
-    /// This method implements Eidetica's core synchronization algorithm based on
-    /// Merkle-CRDT tip comparison. It eliminates duplicate sends by understanding
-    /// the semantic state of both peers' trees.
-    ///
-    /// # Algorithm
-    ///
-    /// 1. **Tip Exchange**: Get local tips and request peer's tips
-    /// 2. **Gap Analysis**: Compare tips to identify missing entries on both sides
-    /// 3. **Smart Transfer**: Only send/receive entries that are genuinely missing
-    /// 4. **DAG Completion**: Include all necessary ancestor entries
-    ///
-    /// # Benefits
-    ///
-    /// - **No duplicates**: Tips comparison guarantees no redundant network transfers
-    /// - **Complete data**: DAG traversal ensures all dependencies are satisfied
-    /// - **Bidirectional**: Both peers sync simultaneously for efficiency
-    /// - **Self-correcting**: Any missed entries are caught in subsequent syncs
-    ///
-    /// # Performance
-    ///
-    /// - **O(tip_count)** network requests for discovery
-    /// - **O(missing_entries)** data transfer (optimal)
-    /// - **Stateless**: No persistent tracking of individual sends needed
+    /// Send our verified tips and pull the missing history. In v0 the reply
+    /// transfers entries only to the requester: a quiet receiver has to run
+    /// its own reconciliation, not wait for the sender to compare tips.
     async fn sync_tree_with_peer(
         &self,
         peer_id: &PeerId,
@@ -1135,31 +1077,32 @@ impl BackgroundSync {
         .instrument(info_span!("sync_tree", peer = %peer_id, tree = %tree_id))
         .await
     }
+}
 
-    /// Check peer connections and attempt reconnection
-    async fn check_peer_connections(&mut self) {
-        // For now, this is a placeholder
-        // In the future, we could implement connection health checks
-        // and automatic reconnection logic here
-    }
-
+impl BackgroundSync {
     /// Start the sync server on specified or all transports
     async fn start_server(&mut self, name: Option<&str>) -> Result<()> {
         // Create a sync handler with instance access and sync tree ID
         let handler = Arc::new(SyncHandlerImpl::new(
-            self.instance()?,
-            self.sync_tree_id.clone(),
+            self.round.instance()?,
+            self.round.sync_tree_id.clone(),
         ));
 
         match name {
             Some(name) => {
                 // Start server on specific transport
-                self.transport_manager.start_server(name, handler).await?;
+                self.round
+                    .transport_manager
+                    .start_server(name, handler)
+                    .await?;
                 tracing::info!("Sync server started for transport {name}");
             }
             None => {
                 // Start servers on all transports
-                self.transport_manager.start_all_servers(handler).await?;
+                self.round
+                    .transport_manager
+                    .start_all_servers(handler)
+                    .await?;
                 tracing::info!("Sync servers started for all transports");
             }
         }
@@ -1171,11 +1114,11 @@ impl BackgroundSync {
     async fn stop_server(&mut self, name: Option<&str>) -> Result<()> {
         match name {
             Some(name) => {
-                self.transport_manager.stop_server(name).await?;
+                self.round.transport_manager.stop_server(name).await?;
                 tracing::info!("Sync server stopped for transport {name}");
             }
             None => {
-                self.transport_manager.stop_all_servers().await?;
+                self.round.transport_manager.stop_all_servers().await?;
                 tracing::info!("All sync servers stopped");
             }
         }

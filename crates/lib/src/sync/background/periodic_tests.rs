@@ -1,6 +1,5 @@
-//! Exercise the private periodic round against local engines and real HTTP
-//! transports. No event loops or write callbacks run, so only an explicit
-//! periodic round can move data or update liveness.
+//! Exercise the background round against local engines and real transports,
+//! and the automatic event loop against a controllable in-process transport.
 
 use super::*;
 use crate::{
@@ -9,6 +8,7 @@ use crate::{
     auth::{AuthKey, Permission},
     backend::database::InMemory,
     crdt::Doc,
+    store::DocStore,
     sync::{Sync, transports::http::HttpTransport},
 };
 
@@ -27,15 +27,17 @@ impl LocalPeer {
         let sync = Sync::new(instance.clone()).await?;
         let (_, command_rx) = mpsc::channel(1);
         let mut engine = BackgroundSync {
-            transport_manager: TransportManager::new(),
-            instance: instance.downgrade(),
-            sync_tree_id: sync.sync_tree_root_id().clone(),
+            round: RoundContext {
+                transport_manager: TransportManager::new(),
+                instance: instance.downgrade(),
+                sync_tree_id: sync.sync_tree_root_id().clone(),
+                peer_state: Arc::clone(&sync.peer_state),
+            },
             queue: Arc::clone(&sync.queue),
-            peer_state: Arc::clone(&sync.peer_state),
             retry_queue: Vec::new(),
             command_rx,
         };
-        engine.transport_manager.add(
+        engine.round.transport_manager.add(
             "http",
             Arc::new(HttpTransport::builder().bind("127.0.0.1:0").build_sync()?),
         );
@@ -64,20 +66,199 @@ impl LocalPeer {
         Ok(database)
     }
 
-    async fn follow(&self, source: &Self, trees: &[&Database]) -> Result<()> {
-        let peer = source.instance.id();
-        self.sync.register_peer(&peer, None).await?;
-        self.sync
-            .add_peer_address(
-                &peer,
-                Address::http(source.engine.transport_manager.get_server_address("http")?),
-            )
+    async fn set_local_settings(&self, tree: &ID, settings: &SyncSettings) -> Result<()> {
+        use crate::sync::account_sync_manager::AccountSyncManager;
+
+        let txn = self
+            .engine
+            .round
+            .get_sync_tree()
+            .await?
+            .new_transaction()
             .await?;
+        AccountSyncManager::new(&txn)
+            .set_combined_settings(tree, settings)
+            .await?;
+        txn.commit().await?;
+        Ok(())
+    }
+
+    async fn follow(&self, source: &Self, trees: &[&Database]) -> Result<()> {
+        let address = Address::http(
+            source
+                .engine
+                .round
+                .transport_manager
+                .get_server_address("http")?,
+        );
+        self.follow_at(&source.instance.id(), address, trees).await
+    }
+
+    async fn follow_at(
+        &self,
+        peer: &PublicKey,
+        address: Address,
+        trees: &[&Database],
+    ) -> Result<()> {
+        self.sync.register_peer(peer, None).await?;
+        self.sync.add_peer_address(peer, address).await?;
         for tree in trees {
-            self.sync.add_tree_sync(&peer, tree.root_id()).await?;
+            self.sync.add_tree_sync(peer, tree.root_id()).await?;
         }
         Ok(())
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn automatic_rounds_use_current_scope_without_waking_unrelated_peers() -> Result<()> {
+    use crate::{
+        sync::operation_tests::{Trace, operation_id},
+        testing::{SimLoopback, SimNetwork, TestTransport},
+    };
+
+    let trace = Trace::default();
+    let _capture = trace.capture();
+    let transport = SimLoopback::new(SimNetwork::new());
+    let (a, b, recipient) = (
+        LocalPeer::new().await?,
+        LocalPeer::new().await?,
+        LocalPeer::new().await?,
+    );
+    let (a_id, b_id) = (a.instance.id(), b.instance.id());
+    let fast = a.shared_tree().await?;
+    let shared = a.shared_tree().await?;
+    let disabled = a.shared_tree().await?;
+    let absent = a.shared_tree().await?;
+    let unrelated = b.shared_tree().await?;
+    recipient
+        .follow_at(
+            &a_id,
+            transport.serve(&a.sync).await?,
+            &[&fast, &shared, &disabled, &absent],
+        )
+        .await?;
+    recipient
+        .follow_at(&b_id, transport.serve(&b.sync).await?, &[&unrelated])
+        .await?;
+    recipient
+        .set_local_settings(fast.root_id(), &SyncSettings::enabled().with_interval(5))
+        .await?;
+    for db in [&shared, &disabled, &unrelated] {
+        recipient
+            .set_local_settings(db.root_id(), &SyncSettings::enabled().with_interval(3600))
+            .await?;
+    }
+    transport.serve(&recipient.sync).await?;
+    // Only the recipient initiates tree exchange; no remote pulls can restore
+    // the relationship removed below. Stopping the server leaves outbound on.
+    recipient.sync.stop_server().await?;
+
+    tokio::time::sleep(Duration::from_secs(70)).await;
+    for db in [&fast, &shared, &disabled, &unrelated] {
+        assert!(
+            recipient.instance.has_entry(db.root_id()).await,
+            "startup is the positive control for every enabled route"
+        );
+    }
+    assert!(!recipient.instance.has_entry(absent.root_id()).await);
+    recipient
+        .set_local_settings(
+            disabled.root_id(),
+            &SyncSettings::disabled().with_interval(10),
+        )
+        .await?;
+
+    trace.clear();
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    let events = trace.output();
+    let peer_rounds = |id: &PublicKey| {
+        events
+            .lines()
+            .filter(|line| {
+                line.contains("Starting peer synchronization") && line.contains(&id.to_string())
+            })
+            .count()
+    };
+    let requests = |db: &Database| pull_count(&events, db);
+    let fast_rounds = peer_rounds(&a_id);
+    assert!(
+        (9..=16).contains(&fast_rounds),
+        "observed {fast_rounds} rounds to the short-interval peer"
+    );
+    assert_eq!(
+        peer_rounds(&b_id),
+        0,
+        "the fast database must not dial the unrelated peer"
+    );
+    assert_eq!(
+        requests(&disabled),
+        0,
+        "a disabled database must not ride along with an enabled one"
+    );
+    // Ignore a round straddling either edge of the observation window.
+    let mut coalesced = 0;
+    for round in events.lines().filter(|line| {
+        line.contains("Starting peer synchronization") && line.contains(&a_id.to_string())
+    }) {
+        let id = operation_id(round);
+        let round: Vec<_> = events
+            .lines()
+            .filter(|line| line.contains("operation_id=") && operation_id(line) == id)
+            .collect();
+        if round.iter().any(|line| line.contains("Sync route outcome")) {
+            let round = round.join("\n");
+            assert_eq!(pull_count(&round, &fast), 1);
+            assert_eq!(
+                pull_count(&round, &shared),
+                1,
+                "the slow database belongs to the same round"
+            );
+            coalesced += 1;
+        }
+    }
+    assert!(coalesced >= 8);
+    assert_eq!(
+        requests(&absent),
+        0,
+        "no combined settings is not an opt-in"
+    );
+
+    recipient
+        .sync
+        .remove_tree_sync(&a_id, shared.root_id())
+        .await?;
+    trace.clear();
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    let events = trace.output();
+    assert!(pull_count(&events, &fast) > 0);
+    assert_eq!(
+        pull_count(&events, &shared),
+        0,
+        "registration revoked before the next round"
+    );
+
+    // Lengthening the remaining enabled interval may leave one pending fast
+    // deadline. After it completes, the disabled 10s database must not wake A.
+    recipient
+        .set_local_settings(fast.root_id(), &SyncSettings::enabled().with_interval(3600))
+        .await?;
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    trace.clear();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(
+        pull_count(&trace.output(), &fast),
+        0,
+        "the disabled database cannot drive the peer's cadence"
+    );
+    Ok(())
+}
+
+fn pull_count(events: &str, db: &Database) -> usize {
+    let id = db.root_id().to_string();
+    events
+        .lines()
+        .filter(|line| line.contains("Sending sync tree request") && line.contains(&id))
+        .count()
 }
 
 async fn write(database: &Database, message: &str) -> Result<ID> {
@@ -90,7 +271,7 @@ async fn write(database: &Database, message: &str) -> Result<ID> {
 }
 
 #[tokio::test]
-async fn periodic_round_walks_registered_trees_and_stamps_liveness() -> Result<()> {
+async fn explicit_engine_round_walks_registered_trees_and_stamps_liveness() -> Result<()> {
     let mut source = LocalPeer::new().await?;
     let recipient = LocalPeer::new().await?;
     let trees = [source.shared_tree().await?, source.shared_tree().await?];
@@ -110,7 +291,11 @@ async fn periodic_round_walks_registered_trees_and_stamps_liveness() -> Result<(
         );
     }
 
-    recipient.engine.periodic_sync_all_peers().await;
+    recipient
+        .engine
+        .round
+        .sync_with_peer(&PeerId::from(&peer))
+        .await?;
     for tree in &trees {
         assert!(
             recipient.instance.has_entry(tree.root_id()).await,
@@ -135,7 +320,11 @@ async fn periodic_round_walks_registered_trees_and_stamps_liveness() -> Result<(
     for entry in &entries {
         assert!(!recipient.instance.has_entry(entry).await);
     }
-    recipient.engine.periodic_sync_all_peers().await;
+    recipient
+        .engine
+        .round
+        .sync_with_peer(&PeerId::from(&peer))
+        .await?;
     for entry in &entries {
         assert!(
             recipient.instance.has_entry(entry).await,
@@ -147,7 +336,7 @@ async fn periodic_round_walks_registered_trees_and_stamps_liveness() -> Result<(
 }
 
 #[tokio::test]
-async fn periodic_round_does_not_stamp_a_dead_peer_or_skip_a_healthy_peer() -> Result<()> {
+async fn automatic_round_distinguishes_route_failure_from_success() -> Result<()> {
     let mut dead = LocalPeer::new().await?;
     let mut healthy = LocalPeer::new().await?;
     let recipient = LocalPeer::new().await?;
@@ -159,11 +348,41 @@ async fn periodic_round_does_not_stamp_a_dead_peer_or_skip_a_healthy_peer() -> R
     healthy.engine.start_server(None).await?;
     recipient.follow(&dead, &[&dead_tree]).await?;
     recipient.follow(&healthy, &[&healthy_tree]).await?;
+    for tree in [&dead_tree, &healthy_tree] {
+        recipient
+            .set_local_settings(tree.root_id(), &SyncSettings::enabled())
+            .await?;
+    }
     dead.engine.stop_server(None).await?;
 
     assert!(!recipient.instance.has_entry(&dead_entry).await);
     assert!(!recipient.instance.has_entry(&healthy_entry).await);
-    recipient.engine.periodic_sync_all_peers().await;
+    let engine = &recipient.engine.round;
+    let run = |peer: PeerId| async move {
+        let mut report = RoundReport::default();
+        let plan = engine.periodic_plan(&peer).await?;
+        assert_eq!(plan.1.len(), 1);
+        let (addresses, periods) = plan;
+        let result = engine
+            .reconcile(
+                &peer,
+                Some((addresses, periods.into_keys().collect())),
+                &mut report,
+            )
+            .await;
+        Ok::<_, Error>((result, report))
+    };
+    let (dead_round, healthy_round) = tokio::join!(
+        run(PeerId::from(dead.instance.id())),
+        run(PeerId::from(healthy.instance.id()))
+    );
+    let (result, dead_report) = dead_round?;
+    assert!(result.is_err());
+    assert!(dead_report.network_failure);
+    let (result, healthy_report) = healthy_round?;
+    result?;
+    assert!(healthy_report.reached_peer);
+    assert!(!healthy_report.network_failure);
 
     assert!(!recipient.instance.has_entry(&dead_entry).await);
     assert_eq!(
@@ -214,6 +433,7 @@ async fn background_round_correlates_routes_and_reports_partial_tree_outcome() -
 
     recipient
         .engine
+        .round
         .sync_with_peer(&PeerId::from(peer.clone()))
         .await?;
     let output = trace.output();
@@ -251,7 +471,11 @@ async fn background_round_correlates_routes_and_reports_partial_tree_outcome() -
         .remove_tree_sync(&peer, tree.root_id())
         .await?;
     trace.clear();
-    recipient.engine.sync_with_peer(&PeerId::from(peer)).await?;
+    recipient
+        .engine
+        .round
+        .sync_with_peer(&PeerId::from(peer))
+        .await?;
     let output = trace.output();
     assert_fields(
         summary(&output),
@@ -320,7 +544,7 @@ fn withheld(tree: &ID, tag: &[u8]) -> Entry {
 }
 
 #[tokio::test]
-async fn verified_sync_periodic_round_advertises_and_transfers_only_verified_state() -> Result<()> {
+async fn verified_sync_round_advertises_and_transfers_only_verified_state() -> Result<()> {
     use crate::backend::VerificationStatus;
     let mut source = LocalPeer::new().await?;
     let recipient = LocalPeer::new().await?;
@@ -336,6 +560,7 @@ async fn verified_sync_periodic_round_advertises_and_transfers_only_verified_sta
     let tips = Arc::new(std::sync::Mutex::new(Vec::new()));
     source
         .engine
+        .round
         .transport_manager
         .start_server(
             "http",
@@ -353,14 +578,22 @@ async fn verified_sync_periodic_round_advertises_and_transfers_only_verified_sta
     let recipient_engine = recipient.instance.require_local_engine()?;
     let local_pending = withheld(tree.root_id(), b"recipient pending");
     recipient_engine.put(local_pending.clone()).await?;
-    recipient.engine.periodic_sync_all_peers().await;
+    recipient
+        .engine
+        .round
+        .sync_with_peer(&PeerId::from(source.instance.id()))
+        .await?;
     assert_eq!(*tips.lock().unwrap(), vec![crate::Snapshot::EMPTY]);
     assert!(recipient.instance.has_entry(tree.root_id()).await);
     assert!(!recipient.instance.has_entry(&unverified.id()).await);
     assert!(!recipient.instance.has_entry(&failed.id()).await);
     let before = recipient_engine.verified_snapshot(tree.root_id()).await?;
     let next = write(&tree, "next Verified update").await?;
-    recipient.engine.periodic_sync_all_peers().await;
+    recipient
+        .engine
+        .round
+        .sync_with_peer(&PeerId::from(source.instance.id()))
+        .await?;
     assert_eq!(*tips.lock().unwrap(), vec![crate::Snapshot::EMPTY, before]);
     assert!(recipient.instance.has_entry(&next).await);
     assert!(!source.instance.has_entry(&local_pending.id()).await);

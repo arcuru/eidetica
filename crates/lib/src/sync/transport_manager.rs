@@ -29,6 +29,7 @@ use crate::{
 /// Transports are stored by name (e.g., "http-local", "p2p-staging"), allowing
 /// multiple instances of the same transport type with different configurations.
 /// Each named instance has its own persisted state in the sync database.
+#[derive(Clone)]
 #[allow(dead_code)]
 pub struct TransportManager {
     transports: HashMap<String, Arc<dyn SyncTransport>>,

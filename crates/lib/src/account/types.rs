@@ -193,8 +193,9 @@ pub struct SyncSettings {
     /// Whether to sync after every commit
     pub sync_on_commit: bool,
 
-    /// Sync interval in seconds (for periodic sync).
-    /// `None` uses the background sync default interval.
+    /// Target interval in seconds for automatic reconciliation of this
+    /// database. `None` uses 300 seconds. The scheduler clamps the value to
+    /// 5–3,600 seconds before applying jitter; this is not a delivery deadline.
     pub interval_seconds: Option<u64>,
 
     /// Additional sync configuration
@@ -235,7 +236,8 @@ impl SyncSettings {
         }
     }
 
-    /// Set periodic sync interval in seconds.
+    /// Set the target automatic reconciliation interval in seconds.
+    /// The stored value is unchanged; the scheduler clamps it on use.
     pub fn with_interval(mut self, seconds: u64) -> Self {
         self.interval_seconds = Some(seconds);
         self
