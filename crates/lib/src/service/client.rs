@@ -24,7 +24,7 @@ use tokio::net::{
 };
 #[cfg(test)]
 use tokio::sync::mpsc;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, Notify, oneshot};
 
 use crate::account::types::AccountInfo;
 use crate::auth::crypto::PrivateKey;
@@ -200,6 +200,7 @@ struct RemoteConnectionInner {
     /// and after enqueueing, so a racing slot either joins the drain or fails
     /// the closed check instead of waiting for a response.
     closed: AtomicBool,
+    disconnected: Notify,
     /// Reader task cancellation, used when the connection is retired.
     reader_abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
 }
@@ -247,6 +248,7 @@ impl RemoteConnectionInner {
     /// 5. Abort the reader, including when a sweep retires the connection.
     fn mark_dead(&self) {
         self.closed.store(true, Ordering::Release);
+        self.disconnected.notify_waiters();
         // Already-disconnected sockets may report NotConnected. The fence and
         // waiter cleanup still apply on every call, including repeated retirement.
         let _ = self.shutdown_socket.shutdown(std::net::Shutdown::Both);
@@ -350,14 +352,27 @@ impl RemoteConnection {
     /// the attached `Instance`'s callback registry (after
     /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
-        let stream = UnixStream::connect(path.as_ref()).await?;
+        Self::connect_version(path.as_ref(), PROTOCOL_VERSION).await
+    }
+
+    pub(super) async fn connect_version(path: &Path, protocol_version: u32) -> crate::Result<Self> {
+        let stream = UnixStream::connect(path).await?;
+        if protocol_version == super::dashboard::PROTOCOL_VERSION
+            && stream.peer_cred()?.uid() != unsafe { libc::geteuid() }
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "dashboard endpoint must have the caller's UID",
+            )
+            .into());
+        }
         let shutdown_socket = stream.into_std()?;
         let stream = UnixStream::from_std(shutdown_socket.try_clone()?)?;
         let (mut reader, mut writer) = stream.into_split();
 
         // Send handshake
         let handshake = Handshake {
-            protocol_version: PROTOCOL_VERSION,
+            protocol_version,
             protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
         };
         write_frame(&mut writer, &handshake).await?;
@@ -370,7 +385,7 @@ impl RemoteConnection {
             ))
         })?;
 
-        if ack.protocol_version != PROTOCOL_VERSION || ack.protocol_revision != PROTOCOL_REVISION {
+        if ack.protocol_version != protocol_version || ack.protocol_revision != PROTOCOL_REVISION {
             return Err(crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -393,6 +408,7 @@ impl RemoteConnection {
             authentication: Mutex::new(()),
             subscriptions: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            disconnected: Notify::new(),
             reader_abort: std::sync::Mutex::new(None),
         });
 
@@ -450,6 +466,18 @@ impl RemoteConnection {
     /// Databases and clones remain attached to this retired connection.
     pub fn retire(&self) {
         self.inner.mark_dead();
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
+    }
+
+    pub(super) async fn disconnected(&self) {
+        // `notified` observes notify_waiters from creation, even before its first poll.
+        let notified = self.inner.disconnected.notified();
+        if !self.is_closed() {
+            notified.await;
+        }
     }
 
     /// Attach an `Instance` to this connection so the reader task can
@@ -1629,6 +1657,7 @@ mod tests {
             authentication: Mutex::new(()),
             subscriptions: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            disconnected: Notify::new(),
             reader_abort: std::sync::Mutex::new(None),
         });
         (

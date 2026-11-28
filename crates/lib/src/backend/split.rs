@@ -461,6 +461,10 @@ impl BackendImpl for SplitBackend {
         self.primary.as_any()
     }
 
+    async fn verified_entry_summary(&self, tree: &ID, limit: usize) -> Result<(usize, Vec<ID>)> {
+        self.primary.verified_entry_summary(tree, limit).await
+    }
+
     async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
         self.primary.get_tree(tree).await
     }

@@ -309,6 +309,7 @@
           {
             default = mkApp "${mainPkgs.eidetica-bin}/bin/eidetica" "Run the Eidetica binary";
             eidetica = mkApp "${mainPkgs.eidetica-bin}/bin/eidetica" "Run the Eidetica database";
+            eidetica-dashboard = mkApp "${mainPkgs.eidetica-bin}/bin/eidetica-dashboard" "Run the Eidetica web dashboard";
             fix = mkApp "${lintPkgs.runners.fix}/bin/eidetica-fix" "Run auto-fixes and format code";
             bench = mkApp "${benchPkgs.runners.default}/bin/bench-runner" "Run benchmarks interactively";
             coverage = mkApp "${coveragePkgs.runners.default}/bin/coverage-runner" "Run coverage interactively";

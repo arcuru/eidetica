@@ -338,6 +338,8 @@ pub enum TicketBootstrapOutcome {
 /// branches symmetric.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceRequest {
+    /// Typed operations accepted only on the dedicated dashboard endpoint.
+    Dashboard(Box<super::dashboard::Request>),
     // === Pre-auth: trusted login handshake ===
     /// Step 1 of the trusted login flow. Client names a user; server responds
     /// with a `TrustedLoginChallenge` carrying random bytes the client must
@@ -479,6 +481,8 @@ pub enum ServerFrame {
 /// Response from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceResponse {
+    /// Dashboard-only response.
+    Dashboard(Box<super::dashboard::Reply>),
     /// Single entry
     Entry(Entry),
     /// Multiple entries
@@ -567,6 +571,7 @@ pub enum ServiceResponse {
 // step with the wire enums above. Recognized payloads go through their original
 // serde decoders; a malformed known message must never become Unsupported.
 const REQUEST_VARIANTS: &[&str] = &[
+    "Dashboard",
     "RegisterLocalAccount",
     "ListLocalAccounts",
     "LocalAccountState",
@@ -607,6 +612,7 @@ const DATABASE_OP_VARIANTS: &[&str] = &[
     "CreateTicket",
 ];
 const RESPONSE_VARIANTS: &[&str] = &[
+    "Dashboard",
     "LocalAccounts",
     "LocalAccountState",
     "LocalAccountStateExchanged",

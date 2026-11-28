@@ -1,11 +1,6 @@
 use clap::Parser;
 
-mod backend;
-mod cli;
-mod commands;
-mod output;
-mod session;
-mod templates;
+use eidetica_bin::{cli, commands, output};
 
 use cli::{Cli, Commands, DaemonCommand, DbCommands};
 use output::OutputFormat;

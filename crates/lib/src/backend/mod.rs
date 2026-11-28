@@ -809,6 +809,17 @@ pub trait BackendImpl: Send + Sync + Any {
     /// sorted topologically, or an error.
     async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>>;
 
+    /// Count locally Verified Entries and return the first `limit` IDs in
+    /// height/ID order. Both results describe the same storage observation.
+    /// This is a local metadata projection; there is no general remote read.
+    async fn verified_entry_summary(&self, _tree: &ID, _limit: usize) -> Result<(usize, Vec<ID>)> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "backend has no Verified Entry projection",
+        )
+        .into())
+    }
+
     /// Retrieves all entries belonging to a specific store within a tree, sorted topologically.
     ///
     /// Similar to `get_tree`, but limited to entries that are part of the specified store.

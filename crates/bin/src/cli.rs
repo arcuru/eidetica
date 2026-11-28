@@ -155,6 +155,10 @@ pub struct DaemonArgs {
     #[arg(long, env = "EIDETICA_DASHBOARD", default_value_t = false)]
     pub dashboard: bool,
 
+    /// Enable a separate owner-only Unix endpoint for eidetica-dashboard.
+    #[arg(long)]
+    pub dashboard_socket: Option<PathBuf>,
+
     /// Dashboard bind address; only used with --dashboard.
     #[arg(long, env = "EIDETICA_DASHBOARD_HOST", default_value = "127.0.0.1")]
     pub dashboard_host: String,

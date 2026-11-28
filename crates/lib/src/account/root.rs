@@ -72,7 +72,10 @@ impl Account {
 
     /// Find the reference namespaces registered on this Account, without opening their targets.
     pub async fn reference_namespaces(&self) -> Result<Vec<String>> {
-        let tx = self.reference_read_transaction().await?;
+        Self::reference_namespaces_at(&self.reference_read_transaction().await?).await
+    }
+
+    pub(crate) async fn reference_namespaces_at(tx: &Transaction) -> Result<Vec<String>> {
         Ok(tx
             .get_index()
             .await?
@@ -86,9 +89,15 @@ impl Account {
     /// List named references in this namespace without opening any target.
     /// A row without an ID has a malformed reference value.
     pub async fn references(&self, namespace: &str) -> Result<Vec<(String, Option<ID>)>> {
-        let tx = self.reference_read_transaction().await?;
+        Self::references_at(&self.reference_read_transaction().await?, namespace).await
+    }
+
+    pub(crate) async fn references_at(
+        tx: &Transaction,
+        namespace: &str,
+    ) -> Result<Vec<(String, Option<ID>)>> {
         let store = Self::reference_store(namespace);
-        let references = DocStore::load(&tx, store.clone()).await?.get_all().await?;
+        let references = DocStore::load(tx, store.clone()).await?.get_all().await?;
         Ok(references
             .iter()
             .map(|(name, value)| {
@@ -104,12 +113,19 @@ impl Account {
     /// Read one named reference after checking current Account Auth.
     /// A reference grants no access to the target. Malformed data is an error, not absence.
     pub async fn reference(&self, namespace: &str, name: &str) -> Result<Option<ID>> {
+        Self::reference_at(&self.reference_read_transaction().await?, namespace, name).await
+    }
+
+    pub(crate) async fn reference_at(
+        tx: &Transaction,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<ID>> {
         let store = Self::reference_store(namespace);
         Self::validate_reference_name(&store, name)?;
-        let tx = self.reference_read_transaction().await?;
         // Typed Table projection omits non-text values. Read raw data so
         // corruption cannot look like an absent or stale projected reference.
-        let references = DocStore::load(&tx, store.clone()).await?;
+        let references = DocStore::load(tx, store.clone()).await?;
         match references.get_string(name).await {
             Ok(value) => serde_json::from_str(&value).map(Some).map_err(|e| {
                 StoreError::DeserializationFailed {
@@ -128,7 +144,7 @@ impl Account {
         }
     }
 
-    async fn reference_read_transaction(&self) -> Result<Transaction> {
+    pub(crate) async fn reference_read_transaction(&self) -> Result<Transaction> {
         let tx = self.database.new_transaction().await?;
         // The service already checks every read against the handle's exact
         // identity. Delegation proofs are resolved on the server, not by a

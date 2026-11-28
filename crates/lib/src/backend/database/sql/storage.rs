@@ -1028,6 +1028,40 @@ pub async fn all_roots(backend: &SqlxBackend) -> Result<Vec<ID>> {
     rows.into_iter().map(|(id,)| ID::parse(&id)).collect()
 }
 
+pub async fn verified_entry_summary(
+    backend: &SqlxBackend,
+    tree: &ID,
+    limit: usize,
+) -> Result<(usize, Vec<ID>)> {
+    // One statement for a consistent count and sample across both SQL
+    // engines, including the zero-row and count-only cases.
+    let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT total.n, sample.id
+           FROM (SELECT COUNT(*) AS n FROM entries WHERE tree_id = $1 AND verification_status = $2) total
+           LEFT JOIN (SELECT id, height FROM entries WHERE tree_id = $1 AND verification_status = $2
+                      ORDER BY height, id LIMIT $3) sample ON 1 = 1
+          ORDER BY sample.height, sample.id",
+    )
+    .bind(tree.to_string())
+    .bind(VerificationStatus::Verified.as_db_int())
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_all(backend.pool()).await.sql_context("Failed to read verified Entry summary")?;
+    let total = rows
+        .first()
+        .ok_or_else(|| std::io::Error::other("missing Verified Entry count"))?
+        .0;
+    let count = usize::try_from(total).map_err(|e| BackendError::SqlxError {
+        reason: format!("invalid verified Entry count: {e}"),
+        source: None,
+    })?;
+    let ids = rows
+        .into_iter()
+        .filter_map(|(_, id)| id)
+        .map(|id| ID::parse(&id))
+        .collect::<Result<_>>()?;
+    Ok((count, ids))
+}
+
 /// Get all entries in a tree, sorted by height.
 pub async fn get_tree(backend: &SqlxBackend, tree: &ID) -> Result<Vec<Entry>> {
     let pool = backend.pool();

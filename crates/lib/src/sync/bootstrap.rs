@@ -513,34 +513,7 @@ impl Sync {
             let target_guard = instance.tree_lock(database.root_id()).lock_owned().await;
             let snapshot = Snapshot::from(database.verified_frontier().await?);
             let tx = database.new_transaction_at(&snapshot).await?;
-            let settings = tx.get_settings()?;
-            let auth = settings.auth_snapshot().await?;
-            let key_path = format!("auth.keys.{}", request.requesting_pubkey);
-            // Missing current authority is not proof it was never granted.
-            // Reuse signed history; uncertain/reduced/removed authority needs a
-            // fresh explicit settings decision, not replay of this Pending row.
-            let mut seen_authority = auth.get_key_by_pubkey(&request.requesting_pubkey).is_ok();
-            for entry in instance
-                .backend()
-                .store_at(database.root_id(), SETTINGS, &snapshot)
-                .await?
-            {
-                let delta: Doc = serde_json::from_slice(entry.data(SETTINGS)?)?;
-                if delta.get(&key_path).is_some()
-                    || delta.is_tombstone(&key_path)
-                    || delta.get("auth.global").is_some()
-                    || delta.is_tombstone("auth.global")
-                    || delta.get("auth.delegations").is_some()
-                    || delta.is_tombstone("auth.delegations")
-                {
-                    seen_authority = true;
-                    break;
-                }
-            }
-            if seen_authority || snapshot != instance.backend().snapshot(database.root_id()).await?
-            {
-                return Err(SyncError::PermissionDenied("approval retry cannot restore reduced, revoked, removed or uncertain authority; explicitly grant access before finalizing".to_string()).into());
-            }
+            require_new_grant(&instance, &database, &snapshot, &request).await?;
             // Key creation must obey the same permission/priority ceiling as
             // ordinary Auth management. Recheck under the target tree lock so
             // a concurrent downgrade cannot turn an old Admin check into a grant.
@@ -553,7 +526,7 @@ impl Sync {
                 }
                 .into());
             }
-            settings
+            tx.get_settings()?
                 .set_auth_key(
                     &request.requesting_pubkey,
                     AuthKey::active(
@@ -689,6 +662,41 @@ impl Sync {
     }
 }
 
+async fn require_new_grant(
+    instance: &crate::Instance,
+    database: &Database,
+    snapshot: &Snapshot,
+    request: &BootstrapRequest,
+) -> Result<()> {
+    let auth = database.auth_settings_at(snapshot).await?;
+    let key_path = format!("auth.keys.{}", request.requesting_pubkey);
+    // Missing current authority is not proof it was never granted.
+    // Reuse signed history; uncertain/reduced/removed authority needs a
+    // fresh explicit settings decision, not replay of this Pending row.
+    let mut seen_authority = auth.get_key_by_pubkey(&request.requesting_pubkey).is_ok();
+    for entry in instance
+        .backend()
+        .store_at(database.root_id(), SETTINGS, snapshot)
+        .await?
+    {
+        let delta: Doc = serde_json::from_slice(entry.data(SETTINGS)?)?;
+        if delta.get(&key_path).is_some()
+            || delta.is_tombstone(&key_path)
+            || delta.get("auth.global").is_some()
+            || delta.is_tombstone("auth.global")
+            || delta.get("auth.delegations").is_some()
+            || delta.is_tombstone("auth.delegations")
+        {
+            seen_authority = true;
+            break;
+        }
+    }
+    if seen_authority || *snapshot != instance.backend().snapshot(database.root_id()).await? {
+        return Err(SyncError::PermissionDenied("approval retry cannot restore reduced, revoked, removed or uncertain authority; explicitly grant access before finalizing".to_string()).into());
+    }
+    Ok(())
+}
+
 /// Shared explicit-key versus ordinary access decision. Global Read never counts
 /// as direct membership; ordinary joins retain their existing authority discovery.
 pub(crate) async fn request_satisfied(
@@ -708,6 +716,192 @@ pub(crate) async fn request_satisfied(
     Ok(auth
         .get_key_by_pubkey(key)
         .is_ok_and(|grant| grant.is_active() && grant.permissions() >= permission))
+}
+
+#[cfg(all(unix, feature = "service"))]
+pub(crate) struct PreparedAccessGrant {
+    root: ID,
+    request_id: String,
+    observed_request: BootstrapRequest,
+    target: Snapshot,
+    key: PublicKey,
+    identity: crate::auth::SigKey,
+    pub(crate) draft: crate::transaction::PreparedEntry,
+}
+
+#[cfg(all(unix, feature = "service"))]
+impl Sync {
+    /// Stage exactly the native grant for a Pending row (or return None if
+    /// no grant is needed). Never hold a tree lock across the IPC round trip.
+    pub(crate) async fn prepare_access_grant(
+        &self,
+        root: &ID,
+        request_id: &str,
+        key: &PublicKey,
+        identity: &crate::auth::SigKey,
+    ) -> Result<Option<PreparedAccessGrant>> {
+        let instance = self.instance()?;
+        self.require_request_admin(root, key, identity).await?;
+        let sync_tx = self.sync_tree.new_transaction().await?;
+        let observed_request = BootstrapRequestManager::new(&sync_tx)
+            .get_request(request_id)
+            .await?
+            .filter(|row| &row.tree_id == root && matches!(row.status, RequestStatus::Pending))
+            .ok_or_else(|| SyncError::RequestNotFound(request_id.to_owned()))?;
+        if request_satisfied(
+            &instance,
+            root,
+            &observed_request.requesting_pubkey,
+            &observed_request.requested_permission,
+            observed_request.require_direct_key,
+        )
+        .await?
+        {
+            return Ok(None);
+        }
+        let db = Database::open(&instance, root).await?;
+        let target = db.snapshot().await?;
+        grant_permission(
+            &instance,
+            &db,
+            &target,
+            key,
+            identity,
+            observed_request.requested_permission,
+        )
+        .await?;
+        require_new_grant(&instance, &db, &target, &observed_request).await?;
+        let txn = db.new_transaction_at(&target).await?;
+        txn.get_settings()?
+            .set_auth_key(
+                &observed_request.requesting_pubkey,
+                AuthKey::active(
+                    Some(&observed_request.requesting_key_name),
+                    observed_request.requested_permission,
+                ),
+            )
+            .await?;
+        let draft = txn.prepare_entry(identity).await?;
+        Ok(Some(PreparedAccessGrant {
+            root: root.clone(),
+            request_id: request_id.to_owned(),
+            observed_request,
+            target,
+            key: key.clone(),
+            identity: identity.clone(),
+            draft,
+        }))
+    }
+
+    /// Write only the prepared grant at the exact observed frontier and for
+    /// the exact still-pending row. Signature and Auth validation are native.
+    pub(crate) async fn commit_access_grant(
+        &self,
+        prepared: PreparedAccessGrant,
+        signed: crate::Entry,
+        key: &PublicKey,
+        identity: &crate::auth::SigKey,
+    ) -> Result<()> {
+        let instance = self.instance()?;
+        if &prepared.key != key || &prepared.identity != identity {
+            return Err(grant_changed());
+        }
+        let root = &prepared.root;
+        let db = Database::open(&instance, root).await?;
+        self.sync_tree.snapshot().await?;
+        let sync_guard = instance
+            .tree_lock(self.sync_tree.root_id())
+            .lock_owned()
+            .await;
+        let tx = self
+            .sync_tree
+            .new_transaction_at(&Snapshot::from(self.sync_tree.verified_frontier().await?))
+            .await?;
+        let queue = BootstrapRequestManager::new(&tx);
+        if queue.get_request(&prepared.request_id).await?.as_ref()
+            != Some(&prepared.observed_request)
+        {
+            return Err(grant_changed());
+        }
+        let target_guard = instance.tree_lock(root).lock_owned().await;
+        let snapshot = Snapshot::from(db.verified_frontier().await?);
+        if snapshot != prepared.target {
+            return Err(grant_changed());
+        }
+        grant_permission(
+            &instance,
+            &db,
+            &snapshot,
+            key,
+            identity,
+            prepared.observed_request.requested_permission,
+        )
+        .await?;
+        require_new_grant(&instance, &db, &snapshot, &prepared.observed_request).await?;
+        prepared.draft.validate_signed(&instance, &signed).await?;
+        // Do not use generic historical-entry ingestion for a live action.
+        instance
+            .put_entry_under_tree_lock(
+                target_guard,
+                root,
+                crate::backend::VerificationStatus::Verified,
+                signed,
+                crate::instance::WriteSource::Local,
+            )
+            .await?;
+        if !request_satisfied(
+            &instance,
+            root,
+            &prepared.observed_request.requesting_pubkey,
+            &prepared.observed_request.requested_permission,
+            prepared.observed_request.require_direct_key,
+        )
+        .await?
+        {
+            return Err(grant_changed());
+        }
+        queue
+            .update_status(
+                &prepared.request_id,
+                RequestStatus::Approved {
+                    approved_by: identity.display_id(),
+                    approval_time: instance.clock().now_rfc3339(),
+                },
+            )
+            .await?;
+        tx.commit_under_tree_lock(sync_guard).await?;
+        Ok(())
+    }
+}
+
+#[cfg(all(unix, feature = "service"))]
+fn grant_changed() -> crate::Error {
+    SyncError::PermissionDenied(
+        "access request or current authority changed; refresh before retrying".to_owned(),
+    )
+    .into()
+}
+
+#[cfg(all(unix, feature = "service"))]
+async fn grant_permission(
+    instance: &crate::Instance,
+    db: &Database,
+    snapshot: &Snapshot,
+    key: &PublicKey,
+    identity: &crate::auth::SigKey,
+    requested: Permission,
+) -> Result<()> {
+    let permission = crate::auth::validation::permissions::resolve_identity_permission(
+        key,
+        identity,
+        &db.auth_settings_at(snapshot).await?,
+        Some(instance),
+    )
+    .await?;
+    if !permission.can_admin() || permission < requested {
+        return Err(grant_changed());
+    }
+    Ok(())
 }
 
 impl Sync {

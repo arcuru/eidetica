@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod account_tests;
-mod accounts;
+pub(crate) mod accounts;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
@@ -13,7 +13,6 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
-use serde::Deserialize;
 use tokio::signal::unix::{SignalKind, signal};
 use tower_cookies::{Cookie, CookieManagerLayer, Cookies, cookie::SameSite};
 use tracing_subscriber::EnvFilter;
@@ -35,6 +34,9 @@ use eidetica::{
 
 use crate::backend::{create_backend, open_instance};
 use crate::cli::ServeArgs;
+use crate::forms::{
+    self, AccessDecisionForm, DatabaseQuery, LoginForm, SyncPreferencesForm, TrackDatabaseForm,
+};
 use crate::session::SessionStore;
 use crate::templates::DatabaseInfo;
 
@@ -49,38 +51,6 @@ struct AppState {
     instance: Arc<Instance>,
     sync_handler: Arc<dyn SyncHandler>,
     sessions: SessionStore,
-}
-
-/// Login form data
-#[derive(Deserialize)]
-struct LoginForm {
-    username: String,
-    #[serde(default)]
-    password: String,
-}
-
-/// Track database form data (bootstrap request)
-#[derive(Deserialize)]
-struct TrackDatabaseForm {
-    ticket: String,
-    permission: String,
-}
-
-/// A decision never accepts a replacement requester, permission or priority.
-#[derive(Deserialize)]
-struct AccessDecisionForm {
-    database_id: String,
-    request_id: String,
-    decision: String,
-}
-
-/// Existing per-account preferences only; never accepts an account or key selector.
-#[derive(Deserialize)]
-struct SyncPreferencesForm {
-    id: String,
-    enabled: bool,
-    sync_on_commit: bool,
-    interval_seconds: String,
 }
 
 /// Run the Eidetica server
@@ -266,7 +236,7 @@ fn dashboard_router(state: AppState, include_http_sync: bool) -> Router {
 // All browser form writes (including login) require an Origin matching the
 // request's own Host. The sync endpoint is not cookie-authenticated and is
 // deliberately excluded.
-fn form_origin(headers: &HeaderMap) -> Result<(), StatusCode> {
+pub(crate) fn form_origin(headers: &HeaderMap) -> Result<(), StatusCode> {
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|h| h.to_str().ok())
@@ -406,7 +376,7 @@ async fn handle_register_page(State(state): State<AppState>, cookies: Cookies) -
 }
 
 /// Handler for POST /register - Registration is disabled
-async fn handle_register_submit(headers: HeaderMap) -> Response {
+pub(crate) async fn handle_register_submit(headers: HeaderMap) -> Response {
     if let Err(code) = form_origin(&headers) {
         return code.into_response();
     }
@@ -450,12 +420,6 @@ async fn handle_dashboard(State(state): State<AppState>, cookies: Cookies) -> Re
 
     let html = crate::templates::dashboard_page(&user, databases, list_error.as_deref());
     Html(html).into_response()
-}
-
-/// Query parameters for database detail
-#[derive(Deserialize)]
-struct DatabaseQuery {
-    id: String,
 }
 
 /// Handler for GET /dashboard/database?id=... - Show database details
@@ -672,16 +636,9 @@ async fn handle_sync_preferences(
         Ok(id) => id,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid database ID").into_response(),
     };
-    // Blank means the existing background default, not a new explicit interval.
-    let interval = if form.interval_seconds.is_empty() {
-        None
-    } else {
-        match form.interval_seconds.parse::<u64>() {
-            Ok(seconds) if seconds > 0 && std::time::Instant::now()
-                .checked_add(Duration::from_secs(seconds)).is_some() => Some(seconds),
-            _ => return (StatusCode::BAD_REQUEST,
-                "Interval must be a positive, timer-representable number of seconds, or blank for default").into_response(),
-        }
+    let interval = match forms::interval(&form.interval_seconds) {
+        Ok(interval) => interval,
+        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
     };
 
     // Serialize preference edits within this browser session. Other sessions
@@ -739,17 +696,12 @@ async fn handle_track_database(
         }
     };
 
-    let permission = match form.permission.as_str() {
-        "read" => Permission::Read,
-        "write" => Permission::Write(10),
-        "admin" => Permission::Admin(0),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid permission: {}", form.permission),
-            )
-                .into_response();
-        }
+    let Some(permission) = forms::requested_permission(&form.permission) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid permission: {}", form.permission),
+        )
+            .into_response();
     };
 
     let sync = match state.instance.sync() {
@@ -927,40 +879,7 @@ async fn handle_health_endpoint(State(state): State<AppState>) -> axum::Json<Hea
 
 /// Handler for GET /stats - Statistics page
 async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {
-    let mut html = String::from(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Eidetica Server Statistics</title>
-    <style>
-        body { font-family: monospace; max-width: 800px; margin: 40px auto; padding: 0 20px; }
-        h1 { border-bottom: 2px solid #333; padding-bottom: 10px; }
-        h2 { margin-top: 30px; border-bottom: 1px solid #666; padding-bottom: 5px; }
-        .stat { margin: 10px 0; }
-        .label { font-weight: bold; display: inline-block; width: 200px; }
-        .value { color: #0066cc; }
-        table { border-collapse: collapse; width: 100%; margin: 15px 0; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
-        th { background-color: #f0f0f0; }
-    </style>
-</head>
-<body>
-    <h1>Eidetica Server Statistics</h1>
-"#,
-    );
-
-    html.push_str("<h2>Instance Overview</h2>\n");
-
-    let session_count = state.sessions.session_count().await;
-    html.push_str(&format!(
-        r#"<div class="stat"><span class="label">Active Sessions:</span> <span class="value">{session_count}</span></div>"#
-    ));
-
-    html.push_str("<p><em>Database details available on authenticated dashboard.</em></p>\n");
-
-    html.push_str("</body>\n</html>");
-    Html(html)
+    crate::templates::stats_page(state.sessions.session_count().await)
 }
 
 /// Handler for POST /api/v0 - Eidetica sync endpoint

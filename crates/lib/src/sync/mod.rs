@@ -118,6 +118,8 @@ pub mod utils;
 mod account;
 mod account_sync_manager;
 mod bootstrap;
+#[cfg(all(unix, feature = "service"))]
+pub(crate) use bootstrap::PreparedAccessGrant;
 mod bootstrap_request_manager;
 #[cfg(any(test, feature = "testing"))]
 mod dial_testing;

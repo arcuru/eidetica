@@ -60,6 +60,11 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = args.socket.clone().unwrap_or_else(default_socket_path);
     let server = ServiceServer::bind(instance.clone(), &socket_path).await?;
 
+    let dashboard_socket = match &args.dashboard_socket {
+        Some(path) => Some(ServiceServer::bind_dashboard(instance.clone(), path).await?),
+        None => None,
+    };
+
     // Reserve the address before announcing readiness; no second backend is opened.
     // A bind failure drops the socket owner.
     let web_listener = if args.dashboard {
@@ -134,11 +139,27 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     tokio::pin!(web_server);
 
+    let mut dashboard_shutdown = shutdown_tx.subscribe();
+    let dashboard_server = async move {
+        if let Some(server) = dashboard_socket {
+            println!(
+                "Dashboard socket listening on {}",
+                server.socket_path().display()
+            );
+            server.run(dashboard_shutdown).await
+        } else {
+            let _ = dashboard_shutdown.changed().await;
+            Ok(())
+        }
+    };
+    tokio::pin!(dashboard_server);
+
     let mut sigterm = signal(SignalKind::terminate()).expect("failed to set up SIGTERM handler");
     let mut sigint = signal(SignalKind::interrupt()).expect("failed to set up SIGINT handler");
 
     let stopped = tokio::select! {
         result = &mut server => Some(("service", result.map_err(|e| e.to_string()))),
+        result = &mut dashboard_server => Some(("dashboard socket", result.map_err(|e| e.to_string()))),
         result = &mut web_server => Some(("dashboard", result.map_err(|e| e.to_string()))),
         _ = sigterm.recv() => None,
         _ = sigint.recv() => None,
@@ -147,7 +168,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Bound both graceful drains. A cancelled server drops its listener; the
     // service owner removes only the socket identity it bound.
     let drain = std::time::Duration::from_secs(10);
-    let (service_result, web_result) = tokio::join!(
+    let (service_result, dashboard_result, web_result) = tokio::join!(
         async {
             if stopped.as_ref().is_some_and(|(name, _)| *name == "service") {
                 Ok(())
@@ -155,6 +176,19 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
                 tokio::time::timeout(drain, &mut server)
                     .await
                     .map_err(|_| "service shutdown timed out".to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()))
+            }
+        },
+        async {
+            if stopped
+                .as_ref()
+                .is_some_and(|(name, _)| *name == "dashboard socket")
+            {
+                Ok(())
+            } else {
+                tokio::time::timeout(drain, &mut dashboard_server)
+                    .await
+                    .map_err(|_| "dashboard socket shutdown timed out".to_string())
                     .and_then(|r| r.map_err(|e| e.to_string()))
             }
         },
@@ -187,6 +221,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     let sync_stop = sync.stop_server().await;
     service_result?;
+    dashboard_result?;
     web_result?;
     if let Some((name, result)) = stopped {
         result.map_err(|e| format!("{name} listener failed: {e}"))?;
@@ -290,6 +325,7 @@ mod tests {
             sync_tickets: Vec::new(),
             socket: Some(socket.to_path_buf()),
             dashboard: false,
+            dashboard_socket: None,
             dashboard_host: "127.0.0.1".into(),
             dashboard_port: 5942,
             backend_config: BackendConfig {

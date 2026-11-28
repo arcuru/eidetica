@@ -1,54 +1,34 @@
 //! Read-only navigation anchored to the signed-in Account's named references.
 
-use std::{fmt::Write, io::Cursor};
+use std::fmt::Write;
 
 use axum::{extract::RawQuery, http::header};
-use eidetica::{
-    Database, Result, Snapshot,
-    account::{Account, IdentityStatus},
-    store::{Registered, Table},
+use eidetica::service::dashboard::browser::{
+    self, Content, Link, Location, MAX_DEPTH, MAX_QUERY, Page, Preview, ROW_LIMIT, Selection,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use url::form_urlencoded;
 
 use super::{
-    AccountSession, AppState, Cookies, Html, ID, IntoResponse, PublicKey, Redirect, Response,
-    SESSION_COOKIE, State, StatusCode,
+    AppState, Cookies, Html, ID, IntoResponse, Redirect, Response, SESSION_COOKIE, State,
+    StatusCode,
 };
 use crate::templates::{COMMON_STYLES, html_escape as escape};
 
 const ROUTE: &str = "/dashboard/accounts";
 const UNAVAILABLE: &str = "Target inaccessible or unavailable.";
-// A URL can be replayed or edited. Bound the number of authorized hops it can request.
-const MAX_DEPTH: usize = 12;
-const MAX_QUERY: usize = 16 * 1024;
-const ROW_LIMIT: usize = 10;
-const VALUE_BYTES: usize = 2048;
-
-#[derive(Serialize, Deserialize)]
-struct Selection {
-    name: String,
-    root: ID,
-    key: PublicKey,
+trait BrowserLocation: Sized {
+    fn parse(query: &str) -> Option<Self>;
+    fn url(
+        &self,
+        path: &[Link],
+        namespace: Option<&str>,
+        data: Option<&Link>,
+        store: Option<&str>,
+    ) -> String;
+    fn back(&self) -> String;
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct Link {
-    name: String,
-    root: ID,
-}
-
-#[derive(Default)]
-struct Location {
-    identity: Option<Selection>,
-    path: Vec<Link>,
-    namespace: Option<String>,
-    data: Option<Link>,
-    store: Option<String>,
-}
-
-impl Location {
+impl BrowserLocation for Location {
     fn parse(query: &str) -> Option<Self> {
         if query.len() > MAX_QUERY {
             return None;
@@ -75,15 +55,7 @@ impl Location {
                 _ => return None,
             }
         }
-        if (!location.path.is_empty() && location.identity.is_none())
-            || (location.path.is_empty() && location.namespace.is_some())
-            || (location.data.is_some()
-                && !location.namespace.as_deref().is_some_and(data_namespace))
-            || (location.store.is_some() && location.data.is_none())
-        {
-            return None;
-        }
-        Some(location)
+        location.valid().then_some(location)
     }
 
     fn url(
@@ -140,10 +112,6 @@ impl Location {
     }
 }
 
-fn data_namespace(namespace: &str) -> bool {
-    !matches!(namespace, "accounts" | "identities")
-}
-
 pub(super) async fn browse(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -156,11 +124,23 @@ pub(super) async fn browse(
         return Redirect::to("/login").into_response();
     };
     let user = user.read().await;
-    let location = Location::parse(query.as_deref().unwrap_or_default());
-    let content = match &location {
-        Some(location) => content(&state, &user, location).await,
+    let location = parse_location(query.as_deref());
+    let page = match &location {
+        Some(location) => browser::embedded(&state.instance, &user, location).await,
         None => None,
     };
+    render(user.username(), location, page)
+}
+
+pub(crate) fn parse_location(query: Option<&str>) -> Option<Location> {
+    Location::parse(query.unwrap_or_default())
+}
+
+pub(crate) fn render(username: &str, location: Option<Location>, page: Option<Page>) -> Response {
+    let content = location
+        .as_ref()
+        .zip(page)
+        .map(|(loc, page)| content(loc, page));
     let (status, content) = match content {
         Some(content) => (StatusCode::OK, content),
         None => (
@@ -179,7 +159,7 @@ pub(super) async fn browse(
         <body><main class="container"><h1>Linked Accounts</h1>
         <p><a href="/dashboard">Dashboard</a> · <a href="{ROUTE}">Account list</a>{back}</p>
         <p><strong>Signed in as:</strong> {}</p>{content}</main></body></html>"#,
-        escape(user.username()),
+        escape(username),
     );
     (
         status,
@@ -192,133 +172,74 @@ pub(super) async fn browse(
         .into_response()
 }
 
-async fn content(state: &AppState, user: &AccountSession, location: &Location) -> Option<String> {
-    let identity = match &location.identity {
-        Some(selection) => {
-            // Pure lookup; neither install a key nor update the session's selected member.
-            let identity = user.get_identity(&selection.name).await.ok()??;
-            if identity.root_id() != &selection.root || identity.key_id() != &selection.key {
-                return None;
-            }
-            Some(identity)
-        }
-        None => None,
-    };
-    let mut html = match &identity {
+fn content(location: &Location, page: Page) -> String {
+    let mut html = match &location.identity {
         Some(identity) => format!(
             "<p><strong>Acting Identity:</strong> {} <code>{}</code><br>Member key: <code>{}</code></p>",
-            escape(identity.name()),
-            identity.root_id(),
-            identity.key_id(),
+            escape(&identity.name),
+            identity.root,
+            identity.key,
         ),
         None => "<p><strong>Acting Identity:</strong> none selected</p>".to_owned(),
-    };
-
-    let mut opened: Option<Account> = None;
-    let mut seen = vec![user.account().id()];
-    for link in &location.path {
-        let parent = opened.as_ref().unwrap_or_else(|| user.account());
-        // Resolve only the selected edge. Re-check its expected root before opening it.
-        if seen.contains(&&link.root)
-            || !matches_reference(parent, "accounts", link).await
-            || !browsable_root(state, &link.root).await
-        {
-            return None;
-        }
-        opened = Some(identity.as_ref()?.open_account(&link.root).await.ok()?);
-        seen.push(&link.root);
-    }
-    let account = opened.as_ref().unwrap_or_else(|| user.account());
-    let viewed = if opened.is_some() {
-        account.get_name().await.ok()?
-    } else {
-        "Your Account".to_owned()
     };
     let _ = write!(
         html,
         "<p><strong>Viewed Account:</strong> {} <code>{}</code></p>",
-        escape(&viewed),
-        account.id()
+        escape(&page.viewed_name),
+        page.viewed_root
     );
-
-    if let Some(link) = &location.data {
-        let identity = identity.as_ref()?;
-        let namespace = location.namespace.as_deref()?;
-        if seen.contains(&&link.root)
-            || !matches_reference(account, namespace, link).await
-            || !browsable_root(state, &link.root).await
-            || identity.root_id() == &link.root
-        {
-            return None;
+    match page.content {
+        Content::Preview(preview) => {
+            html.push_str(&data_preview(preview, location));
         }
-        let database = identity.open_database(&link.root).await.ok()?;
-        html.push_str(
-            &data_preview(&database, location, namespace, link)
-                .await
-                .ok()??,
-        );
-        return Some(html);
-    }
-
-    if location.identity.is_none() {
-        html.push_str(&identity_form(user).await);
-    }
-    html.push_str(
-        "<h2>Account references</h2><p>A reference names a target. It does not grant access.</p>",
-    );
-    html.push_str(&references(account, "accounts", location, false).await);
-
-    if opened.is_some() {
-        html.push_str("<h2>Data references</h2>");
-        match account.reference_namespaces().await {
-            Ok(namespaces) => {
-                let mut namespaces: Vec<_> = namespaces
-                    .into_iter()
-                    .filter(|name| data_namespace(name))
-                    .collect();
-                namespaces.sort();
-                if namespaces.is_empty() {
-                    html.push_str("<p>No data references.</p>");
-                } else {
-                    let selected = location.namespace.as_deref().unwrap_or(&namespaces[0]);
-                    if !namespaces.iter().any(|ns| ns == selected) {
-                        return None;
+        Content::References {
+            identities,
+            accounts,
+            data,
+        } => {
+            if let Some(identities) = identities {
+                html.push_str(&identity_form(identities));
+            }
+            html.push_str("<h2>Account references</h2><p>A reference names a target. It does not grant access.</p>");
+            html.push_str(&references(accounts, "accounts", location, false));
+            if let Some(data) = data {
+                html.push_str("<h2>Data references</h2>");
+                match data {
+                    Ok(data) => {
+                        if let Some((selected, rows)) = data.selected {
+                            html.push_str("<ul aria-label=\"Data reference namespaces\">");
+                            for namespace in &data.namespaces {
+                                let _ = write!(
+                                    html,
+                                    r#"<li><a href="{}">{}</a></li>"#,
+                                    escape(&location.url(
+                                        &location.path,
+                                        Some(namespace),
+                                        None,
+                                        None
+                                    )),
+                                    escape(namespace)
+                                );
+                            }
+                            let _ = write!(html, "</ul><h3>{}</h3>", escape(&selected));
+                            html.push_str(&references(rows, &selected, location, true));
+                        } else {
+                            html.push_str("<p>No data references.</p>");
+                        }
                     }
-                    html.push_str("<ul aria-label=\"Data reference namespaces\">");
-                    for namespace in &namespaces {
-                        let _ = write!(
-                            html,
-                            r#"<li><a href="{}">{}</a></li>"#,
-                            escape(&location.url(&location.path, Some(namespace), None, None)),
-                            escape(namespace)
-                        );
-                    }
-                    let _ = write!(html, "</ul><h3>{}</h3>", escape(selected));
-                    html.push_str(&references(account, selected, location, true).await);
+                    Err(()) => html.push_str("<p>Data references unavailable.</p>"),
                 }
             }
-            Err(_) => html.push_str("<p>Data references unavailable.</p>"),
         }
     }
-    Some(html)
+    html
 }
 
-async fn matches_reference(account: &Account, namespace: &str, link: &Link) -> bool {
-    matches!(account.reference(namespace, &link.name).await, Ok(Some(root)) if root == link.root)
-}
-
-async fn browsable_root(state: &AppState, root: &ID) -> bool {
-    // Instance administration does not make its internal stores part of this browser.
-    matches!(state.instance.backend().get_instance_metadata().await, Ok(Some(meta))
-        if &meta.users_db != root && &meta.databases_db != root && meta.sync_db.as_ref() != Some(root))
-}
-
-async fn identity_form(user: &AccountSession) -> String {
-    let Ok(mut identities) = user.identities().await else {
+fn identity_form(identities: Result<Vec<Selection>, ()>) -> String {
+    let Ok(mut identities) = identities else {
         return "<p>Acting Identity choices unavailable.</p>".to_owned();
     };
-    identities.retain(|(_, tracked)| tracked.status == IdentityStatus::Active);
-    identities.sort_by(|(a, _), (b, _)| a.cmp(b));
+    identities.sort_by(|a, b| a.name.cmp(&b.name));
     if identities.is_empty() {
         return "<p>No locally active Identity is available for browsing.</p>".to_owned();
     }
@@ -328,12 +249,7 @@ async fn identity_form(user: &AccountSession) -> String {
         <select id="identity" name="identity" required>
         <option value="" selected disabled>Select an Identity</option>"#
     );
-    for (name, tracked) in identities {
-        let selection = Selection {
-            name,
-            root: tracked.root_id,
-            key: tracked.key_id,
-        };
+    for selection in identities {
         let value = serde_json::to_string(&selection).expect("serializable Identity selection");
         let _ = write!(
             html,
@@ -347,8 +263,13 @@ async fn identity_form(user: &AccountSession) -> String {
     html
 }
 
-async fn references(account: &Account, namespace: &str, location: &Location, data: bool) -> String {
-    let Ok(mut references) = account.references(namespace).await else {
+fn references(
+    rows: Result<Vec<(String, Option<ID>)>, ()>,
+    namespace: &str,
+    location: &Location,
+    data: bool,
+) -> String {
+    let Ok(mut references) = rows else {
         return "<p>References unavailable.</p>".to_owned();
     };
     if references.is_empty() {
@@ -396,104 +317,52 @@ async fn references(account: &Account, namespace: &str, location: &Location, dat
     html
 }
 
-async fn data_preview(
-    database: &Database,
-    location: &Location,
-    namespace: &str,
-    link: &Link,
-) -> Result<Option<String>> {
-    let tx = database.new_transaction().await?;
-    database.current_permission().await?;
-    let settings = tx.get_settings()?.get_all().await?;
-    // Legacy personal Accounts stored credentials in ordinary Tables. Check the
-    // root's original kind too: editing current settings cannot opt these in.
-    let genesis = Snapshot::from(vec![database.root_id().clone()]);
-    let original = database
-        .new_transaction_at(&genesis)
-        .await?
-        .get_settings()?
-        .get_all()
-        .await?;
-    if [&settings, &original].into_iter().any(|settings| {
-        matches!(
-            settings.get_as::<&str>("type"),
-            Some("system" | "user" | "sync_settings")
-        )
-    }) {
-        return Ok(None);
-    }
-    let name = settings.get_as::<&str>("name").unwrap_or(&link.name);
+fn data_preview(preview: Preview, location: &Location) -> String {
     let mut html = format!(
         "<h2>Data: {}</h2><p>Database <code>{}</code></p>",
-        escape(name),
-        database.root_id()
+        escape(&preview.name),
+        preview.root
     );
-    let index = tx.get_index().await?;
-    let mut stores: Vec<_> = index
-        .list()
-        .await?
-        .into_iter()
-        .filter(|name| !name.starts_with('_') && !name.starts_with("refs:"))
-        .collect();
-    stores.sort();
-    let selected = match location.store.as_ref() {
-        Some(store) if stores.contains(store) => Some(store),
-        Some(_) => return Ok(None),
-        None => stores.first(),
-    };
     html.push_str("<p>Preview supports unencrypted Table stores only. Choose a store:</p><ul>");
-    for store in &stores {
+    for store in &preview.stores {
         let _ = write!(
             html,
             r#"<li><a href="{}">{}</a></li>"#,
-            escape(&location.url(&location.path, Some(namespace), Some(link), Some(store))),
+            escape(&location.url(
+                &location.path,
+                location.namespace.as_deref(),
+                location.data.as_ref(),
+                Some(store)
+            )),
             escape(store)
         );
     }
     html.push_str("</ul>");
-    let Some(store) = selected else {
+    let Some(store) = preview.selected else {
         html.push_str("<p>No application stores available for preview.</p>");
-        return Ok(Some(html));
+        return html;
     };
-    let _ = write!(html, "<h3>{}</h3>", escape(store));
-    if !Table::<Value>::supports_type_id(&index.get_entry(store).await?.type_id) {
+    let _ = write!(html, "<h3>{}</h3>", escape(&store));
+    let Some(rows) = preview.rows else {
         html.push_str("<p>This store type does not have a preview.</p>");
-        return Ok(Some(html));
-    }
-    let page = tx
-        .get_store::<Table<Value>>(store)
-        .await?
-        .scan_page(None, ROW_LIMIT)
-        .await?;
-    if page.rows.is_empty() {
+        return html;
+    };
+    if rows.is_empty() {
         html.push_str("<p>This Table is empty.</p>");
     } else {
         html.push_str("<table><thead><tr><th scope=\"col\">Key</th><th scope=\"col\">Value</th></tr></thead><tbody>");
-        for (key, value) in page.rows {
-            let mut buf = [0; VALUE_BYTES];
-            let mut output = Cursor::new(buf.as_mut_slice());
-            let rendered = if serde_json::to_writer(&mut output, &value).is_ok() {
-                let length = output.position() as usize;
-                str::from_utf8(&buf[..length]).expect("JSON is UTF-8")
-            } else {
-                "[Value too large to preview]"
-            };
-            let key = if key.len() <= VALUE_BYTES {
-                &key
-            } else {
-                "[Key too large to preview]"
-            };
+        for (key, value) in rows {
             let _ = write!(
                 html,
                 "<tr><td><code>{}</code></td><td><code>{}</code></td></tr>",
-                escape(key),
-                escape(rendered)
+                escape(&key),
+                escape(&value)
             );
         }
         html.push_str("</tbody></table>");
-        if page.next.is_some() {
+        if preview.more {
             let _ = write!(html, "<p>Showing the first {ROW_LIMIT} rows only.</p>");
         }
     }
-    Ok(Some(html))
+    html
 }

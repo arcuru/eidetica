@@ -473,6 +473,13 @@ in {
         wait "$DAEMON_PID"
         DAEMON_PID=""
 
+        EIDETICA_TEST_DAEMON=${eidetica-bin}/bin/eidetica \
+          EIDETICA_TEST_DASHBOARD=${eidetica-bin}/bin/eidetica-dashboard \
+          cargo-nextest nextest run \
+            --archive-file ${testPkgs.archive}/archive.tar.zst \
+            --workspace-remap "$TMPDIR/src" --show-progress=none \
+            -E 'test(=standalone_packaged_login_browsing_and_restarts)'
+
         echo "Service integration test passed"
         mkdir -p $out
         echo "passed" > $out/result

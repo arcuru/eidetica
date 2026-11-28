@@ -8,7 +8,9 @@ The service module (`crate::service`) enables running Eidetica as a local daemon
 graph LR
     C1[Client Process 1] -->|Unix Socket| S[Service Server]
     C2[Client Process 2] -->|Unix Socket| S
-    D[Web dashboard] -->|web routes only| I[Instance]
+    D[Combined dashboard] -->|web routes only| I[Instance]
+    G[Standalone dashboard] -->|Private dashboard socket| W[Restricted profile]
+    W --> I
     S --> I[Instance]
     I --> B[Backend: SQLite/InMemory]
 ```
@@ -25,6 +27,35 @@ The server wraps a full `Instance` (not just a backend) so it can handle both st
 | `service::client`   | `RemoteConnection` — the `RemoteBackend` transport + `trusted_login`                              |
 
 Historical Store state is served through the shared Store-state record substrate rather than a service-layer cache module; every request is bound to the authenticated session (see [Store state](#store-state)).
+
+### Standalone dashboard profile
+
+`--dashboard-socket` binds a separate owner-only Unix endpoint on the same
+Instance. Both ends check the peer UID. Its required handshake identifies the
+profile before login; the ordinary service listener will not accept dashboard
+operations and the dashboard will not fall back to it. The profile uses the
+same framing and possession-proof primitives, but it has no generic storage,
+credential administration, signed Entry ingestion or Store-state RPC. Pre-auth
+allows liveness and the native challenge/proof exchange; like the ordinary
+trusted socket, it returns the encrypted login anchor to a local caller.
+
+A login binds that connection to one native login ID, Account root and proven
+root key. Additional proofs are accepted only for that record's keys. The GUI
+unlocks the bundle locally and cannot switch the connection's actor. The daemon
+checks the active login and current tracking or Identity mapping at use time,
+then checks the exact key's Auth on each target. Browse requests start from the
+login's Account and follow named references; they are not arbitrary root or
+Store reads. Tracked summaries use a backend count and bounded ID projection,
+not raw Entry payloads.
+
+Access-request decisions are scoped to a mapped current Admin and the exact
+request. When a new grant is needed, the daemon prepares one unsigned Auth
+Entry. The GUI signs it using the mapped key. Submission consumes a short-lived
+preparation and rechecks the pending request, target frontier, current Auth,
+exact draft and signature. The grant and queue update are separate commits;
+reconnect and inspect both after an uncertain result. Ticket operations use the
+native signed bootstrap flow, with route and tracking bookkeeping constrained
+to the login that prepared it.
 
 ### Snapshot-bound State
 
@@ -55,7 +86,7 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 
 Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF (before any length-prefix byte) and an `UnexpectedEof` I/O error when the stream ends mid-prefix or mid-payload.
 
-The unstable service protocol is v0.1: handshakes and acknowledgments require `protocol_version: 0` and `protocol_revision: 1`.
+The unstable general service protocol is v0.1: handshakes and acknowledgments require `protocol_version: 0` and `protocol_revision: 1`.
 Both values must match before any operation is sent.
 Legacy v0 peers without a revision and peers with another revision are rejected; upgrade clients and daemon together.
 There is no capability negotiation, downgrade, or legacy watch fallback.

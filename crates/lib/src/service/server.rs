@@ -29,6 +29,10 @@ use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::{WriteCallback, WriteSource};
 use crate::service::error::ServiceError;
+
+#[path = "dashboard/server.rs"]
+mod dashboard_server;
+use crate::service::dashboard;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, HandshakeAck, IncomingRequest, MergeState, Notification,
     PROTOCOL_REVISION, PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse,
@@ -218,6 +222,7 @@ pub struct ServiceServer {
 
 #[derive(Clone)]
 struct Capabilities {
+    dashboard: bool,
     credentials: bool,
     state_admission: Option<Arc<StateAdmission>>,
 }
@@ -248,7 +253,29 @@ impl ServiceServer {
     /// * `instance` - The Instance to serve. The server holds a strong reference.
     /// * `socket_path` - Path for the Unix domain socket.
     pub async fn bind(instance: Instance, socket_path: impl Into<PathBuf>) -> crate::Result<Self> {
-        Self::bind_inner(instance, socket_path.into(), TOKEN_IDLE_TTL, TOKEN_IDLE_TTL).await
+        Self::bind_inner(
+            instance,
+            socket_path.into(),
+            TOKEN_IDLE_TTL,
+            TOKEN_IDLE_TTL,
+            false,
+        )
+        .await
+    }
+
+    /// Bind the restricted dashboard profile, accessible only to the daemon UID.
+    pub async fn bind_dashboard(
+        instance: Instance,
+        socket_path: impl Into<PathBuf>,
+    ) -> crate::Result<Self> {
+        Self::bind_inner(
+            instance,
+            socket_path.into(),
+            TOKEN_IDLE_TTL,
+            TOKEN_IDLE_TTL,
+            true,
+        )
+        .await
     }
 
     /// Bind with independent staging-token and published-view lifetimes for expiry tests.
@@ -264,6 +291,7 @@ impl ServiceServer {
             socket_path.into(),
             staging_ttl,
             published_view_ttl,
+            false,
         )
         .await
     }
@@ -273,20 +301,31 @@ impl ServiceServer {
         socket_path: PathBuf,
         staging_idle_ttl: Duration,
         published_view_idle_ttl: Duration,
+        dashboard: bool,
     ) -> crate::Result<Self> {
         let socket_path = absolute_socket_path(socket_path)?;
         prepare_parent(&socket_path).await?;
+        if dashboard
+            && std::fs::symlink_metadata(socket_path.parent().unwrap())?.mode() & 0o077 != 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "dashboard socket parent must allow access only to its owner",
+            )
+            .into());
+        }
         let lock_file = acquire_endpoint_lock(&socket_path)?;
         recover_stale_socket(&socket_path).await?;
 
         let listener = UnixListener::bind(&socket_path)?;
-        let socket_identity = match prepare_bound_socket(&socket_path) {
-            Ok(identity) => identity,
-            Err(error) => {
-                remove_socket_if_owned(&socket_path, None);
-                return Err(error);
-            }
-        };
+        let socket_identity =
+            match prepare_bound_socket(&socket_path, if dashboard { 0o600 } else { SOCKET_MODE }) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    remove_socket_if_owned(&socket_path, None);
+                    return Err(error);
+                }
+            };
 
         Ok(Self {
             instance,
@@ -296,6 +335,7 @@ impl ServiceServer {
             staging_idle_ttl,
             published_view_idle_ttl,
             capabilities: Capabilities {
+                dashboard,
                 credentials: true,
                 state_admission: None,
             },
@@ -569,12 +609,12 @@ async fn recover_stale_socket(socket_path: &Path) -> crate::Result<()> {
     }
 }
 
-fn prepare_bound_socket(socket_path: &Path) -> crate::Result<SocketIdentity> {
-    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(SOCKET_MODE))?;
+fn prepare_bound_socket(socket_path: &Path, mode: u32) -> crate::Result<SocketIdentity> {
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(mode))?;
     let metadata = std::fs::symlink_metadata(socket_path)?;
     if !metadata.file_type().is_socket()
         || metadata.uid() != effective_uid()
-        || metadata.permissions().mode() & 0o777 != SOCKET_MODE
+        || metadata.permissions().mode() & 0o777 != mode
     {
         return Err(std::io::Error::other(format!(
             "bound service endpoint has incorrect type, owner, or permissions: {}",
@@ -629,6 +669,18 @@ async fn handle_connection(
     published_view_idle_ttl: Duration,
     capabilities: Capabilities,
 ) -> crate::Result<()> {
+    let protocol_version = if capabilities.dashboard {
+        if stream.peer_cred()?.uid() != effective_uid() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "dashboard socket requires the daemon UID",
+            )
+            .into());
+        }
+        dashboard::PROTOCOL_VERSION
+    } else {
+        PROTOCOL_VERSION
+    };
     let (mut reader, mut writer) = tokio::io::split(stream);
 
     // 1. Read and validate handshake (inline writer, no channel yet).
@@ -637,12 +689,12 @@ async fn handle_connection(
         None => return Ok(()), // Client disconnected before handshake
     };
 
-    if handshake.protocol_version != PROTOCOL_VERSION
+    if handshake.protocol_version != protocol_version
         || handshake.protocol_revision != PROTOCOL_REVISION
     {
         // Send error ack and close
         let ack = HandshakeAck {
-            protocol_version: PROTOCOL_VERSION,
+            protocol_version,
             protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
         };
         write_frame(&mut writer, &ack).await?;
@@ -652,7 +704,7 @@ async fn handle_connection(
                 "Protocol version mismatch: client={}.{}, server={}.{}",
                 handshake.protocol_version,
                 handshake.protocol_revision,
-                PROTOCOL_VERSION,
+                protocol_version,
                 PROTOCOL_REVISION
             ),
         )));
@@ -660,10 +712,14 @@ async fn handle_connection(
 
     // Send handshake ack
     let ack = HandshakeAck {
-        protocol_version: PROTOCOL_VERSION,
+        protocol_version,
         protocol_revision: crate::service::protocol::PROTOCOL_REVISION,
     };
     write_frame(&mut writer, &ack).await?;
+
+    if capabilities.dashboard {
+        return dashboard_connection(&instance, reader, writer).await;
+    }
 
     // 2. Spin up the per-connection writer task.
     //
@@ -787,6 +843,28 @@ async fn handle_connection(
     loop_result
 }
 
+// No general dispatch, callbacks or queued replies on this listener. Exactly one
+// reply is written before accepting another operation from the same login.
+async fn dashboard_connection(
+    instance: &Instance,
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    mut writer: impl tokio::io::AsyncWrite + Unpin,
+) -> crate::Result<()> {
+    let mut state = ConnectionState::PreAuth;
+    let mut dashboard = dashboard_server::Session::default();
+    while let Some(request) = read_frame::<_, IncomingRequest>(&mut reader).await? {
+        let reply = match request {
+            IncomingRequest::Known(request) => {
+                dashboard.dispatch(instance, &mut state, *request).await
+            }
+            IncomingRequest::Unsupported => Ok(ServiceResponse::Unsupported),
+        };
+        let reply = reply.unwrap_or_else(|e| ServiceResponse::Error(ServiceError::from(&e)));
+        write_frame(&mut writer, &ServerFrame::Response(Box::new(reply))).await?;
+    }
+    Ok(())
+}
+
 /// Dispatch a service request to the appropriate Instance/Backend method.
 async fn dispatch(
     instance: &Instance,
@@ -850,6 +928,7 @@ async fn dispatch_inner(
         return Ok(ServiceResponse::Unsupported);
     }
     match request {
+        ServiceRequest::Dashboard(_) => Ok(ServiceResponse::Unsupported),
         // === Pre-auth: login handshake ===
         ServiceRequest::TrustedLoginAccount { username } => {
             handle_trusted_login_account(instance, state, username).await
