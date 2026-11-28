@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Entry, Error, Result, Snapshot,
+    Database, Entry, Error, Result, Snapshot,
     auth::{
         errors::AuthError,
         settings::AuthSettings,
@@ -36,6 +36,11 @@ pub(crate) struct DerivedFloors {
     // Effective removal resets the output, not the removing entry's authority.
     // Retain these inherited observations only for its signature coverage gate.
     removed_direct: HashMap<ID, Snapshot>,
+}
+
+enum VerifiedHistory<'a> {
+    Local(&'a DerivedFloors),
+    Remote(&'a Database),
 }
 
 /// Derive the complete canonical settings frontier at the specified main tips.
@@ -114,12 +119,47 @@ pub(crate) fn causal_settings_frontier(entries: &[Entry], tips: &[ID]) -> Result
 
 impl DerivedFloors {
     pub(crate) fn for_entry(backend: std::sync::Arc<dyn BackendImpl>, entry: &Entry) -> Self {
+        Self::new(backend, entry.root().unwrap_or_else(|| entry.id()))
+    }
+
+    fn new(backend: std::sync::Arc<dyn BackendImpl>, tree: ID) -> Self {
         Self {
             backend,
-            tree: entry.root().unwrap_or_else(|| entry.id()),
+            tree,
             state: State::default(),
             removed_direct: HashMap::new(),
         }
+    }
+
+    /// Floor for a data write at the supplied **Verified** main frontier.
+    /// The caller has read the direct declaration at that same frontier.
+    pub(crate) async fn at_verified_frontier(
+        db: &Database,
+        frontier: &Snapshot,
+        declaration: &DelegatedTreeRef,
+    ) -> Result<Snapshot> {
+        let state = if let Some(engine) = db.ops().local_engine() {
+            let floors = Self::new(engine, db.root_id().clone());
+            VerifiedHistory::Local(&floors)
+                .state_at(frontier.tips())
+                .await?
+        } else {
+            VerifiedHistory::Remote(db)
+                .state_at(frontier.tips())
+                .await?
+        };
+        let root = &declaration.tree.root;
+        Ok(Snapshot::from(
+            state
+                .direct
+                .get(root)
+                .into_iter()
+                .chain(state.nested.get(root))
+                .flat_map(|tips| tips.iter())
+                .chain(&declaration.tree.tips)
+                .cloned()
+                .collect::<Vec<_>>(),
+        ))
     }
 
     fn request(&self, id: &ID) -> StoreStateRequest {
@@ -408,33 +448,22 @@ impl DerivedFloors {
         let active = Self::active(&settings)?;
         // Only the direct component is reset by effective absence. A nested
         // observation of that same root is independent of the direct grant.
-        state.direct.retain(|root, _| active.contains_key(root));
-        if entry.in_subtree(SETTINGS) || entry.parents()?.is_empty() {
+        let records_pointers = entry.in_subtree(SETTINGS) || entry.parents()?.is_empty();
+        if records_pointers && check_pointer {
             for (root, reference) in &active {
                 let pointer = Snapshot::from(reference.tree.tips.clone());
-                if check_pointer {
-                    if pointer.len() > super::delegation::MAX_DELEGATION_TIPS {
-                        return Err(AuthError::DelegationTipsTooMany {
-                            tree_id: root.clone(),
-                            len: pointer.len(),
-                            max: super::delegation::MAX_DELEGATION_TIPS,
-                        }
-                        .into());
+                if pointer.len() > super::delegation::MAX_DELEGATION_TIPS {
+                    return Err(AuthError::DelegationTipsTooMany {
+                        tree_id: root.clone(),
+                        len: pointer.len(),
+                        max: super::delegation::MAX_DELEGATION_TIPS,
                     }
-                    Self::proof_on(self.backend.as_ref(), root, &pointer).await?;
+                    .into());
                 }
-                let old = state.direct.remove(root).unwrap_or_default();
-                state.direct.insert(
-                    root.clone(),
-                    Snapshot::from(
-                        old.iter()
-                            .chain(pointer.iter())
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                    ),
-                );
+                Self::proof_on(self.backend.as_ref(), root, &pointer).await?;
             }
         }
+        state.apply_settings(active, records_pointers);
         // Cold Verified parents already passed their signature gate. For the
         // entry being validated, keep inherited tips until its claim is checked.
         if !check_pointer {
@@ -443,85 +472,12 @@ impl DerivedFloors {
         Ok(state)
     }
 
-    /// Rebuild a cold Verified parent's state from its own Verified parents,
-    /// never from an empty default at a non-root. No partial state is published.
-    async fn parent_state(&self, id: &ID) -> Result<State> {
-        let mut built: HashMap<ID, State> = HashMap::new();
-        let mut stack = vec![(id.clone(), false)];
-        let mut seen = HashSet::new();
-        while let Some((current, ready)) = stack.pop() {
-            if built.contains_key(&current) {
-                continue;
-            }
-            self.verified(&current).await?;
-            if let Some(state) = self.cached(&current).await? {
-                built.insert(current, state);
-                continue;
-            }
-            let entry = match self.backend.get(&current).await {
-                Ok(entry) => entry,
-                Err(e) if e.is_not_found() => return Err(self.unsynced(vec![current])),
-                Err(e) => return Err(e),
-            };
-            if !entry.in_tree(&self.tree) {
-                return Err(BackendError::EntryNotInTree {
-                    entry_id: current,
-                    tree_id: self.tree.clone(),
-                }
-                .into());
-            }
-            let parents = entry.parents()?;
-            if !ready {
-                if !seen.insert(current.clone()) {
-                    continue;
-                }
-                stack.push((current, true));
-                for parent in parents {
-                    stack.push((parent, false));
-                }
-                continue;
-            }
-            let state = self.join(
-                parents
-                    .iter()
-                    .map(|p| built.get(p).expect("verified parent was built")),
-            );
-            let state = self.transition(&entry, state, false).await?;
-            self.publish(&current, &state).await?;
-            built.insert(current, state);
-        }
-        built
-            .remove(id)
-            .ok_or_else(|| self.unsynced(vec![id.clone()]))
-    }
-
-    fn join<'b>(&self, parents: impl Iterator<Item = &'b State>) -> State {
-        let mut state = State::default();
-        for parent in parents {
-            for (ours, theirs) in [
-                (&mut state.direct, &parent.direct),
-                (&mut state.nested, &parent.nested),
-            ] {
-                for (root, tips) in theirs {
-                    let old = ours.remove(root).unwrap_or_default();
-                    ours.insert(
-                        root.clone(),
-                        Snapshot::from(old.iter().chain(tips.iter()).cloned().collect::<Vec<_>>()),
-                    );
-                }
-            }
-        }
-        state
-    }
-
     /// Load all immediate-parent states, then account for this entry's
     /// resulting settings before checking its signed claims.
     pub(crate) async fn prepare(&mut self, entry: &Entry) -> Result<()> {
-        let mut parents = Vec::new();
-        for parent in entry.parents()? {
-            parents.push(self.parent_state(&parent).await?);
-        }
-        let inherited = self.join(parents.iter());
+        let inherited = VerifiedHistory::Local(self)
+            .state_at(&entry.parents()?)
+            .await?;
         let inherited_direct = inherited.direct.clone();
         self.state = self.transition(entry, inherited, true).await?;
         self.removed_direct = inherited_direct
@@ -550,6 +506,128 @@ impl DerivedFloors {
         Self::apply_claims(entry, &mut self.state);
         self.publish(&entry.id(), &self.state).await
     }
+}
+
+impl State {
+    fn apply_settings(&mut self, active: HashMap<ID, DelegatedTreeRef>, records_pointers: bool) {
+        self.direct.retain(|root, _| active.contains_key(root));
+        if records_pointers {
+            for (root, reference) in active {
+                merge_tips(&mut self.direct, &root, &reference.tree.tips);
+            }
+        }
+    }
+
+    fn join<'a>(parents: impl Iterator<Item = &'a State>) -> Self {
+        let mut state = Self::default();
+        for parent in parents {
+            for (ours, theirs) in [
+                (&mut state.direct, &parent.direct),
+                (&mut state.nested, &parent.nested),
+            ] {
+                for (root, tips) in theirs {
+                    merge_tips(ours, root, tips.tips());
+                }
+            }
+        }
+        state
+    }
+}
+
+fn merge_tips(states: &mut HashMap<ID, Snapshot>, root: &ID, tips: &[ID]) {
+    let old = states.remove(root).unwrap_or_default();
+    let mut joined = old.into_tips();
+    joined.extend_from_slice(tips);
+    states.insert(root.clone(), Snapshot::from(joined));
+}
+
+impl VerifiedHistory<'_> {
+    /// Rebuild cold states in parent order before joining the requested tips.
+    /// The remote path starts only from server-selected Verified tips; their
+    /// immutable parents are fetched through the ordinary Read-gated API.
+    async fn state_at(&self, tips: &[ID]) -> Result<State> {
+        let tree = match self {
+            Self::Local(floors) => &floors.tree,
+            Self::Remote(db) => db.root_id(),
+        };
+        let mut built = HashMap::new();
+        let mut stack: Vec<_> = tips.iter().rev().map(|id| (id.clone(), false)).collect();
+        let mut seen = HashSet::new();
+        while let Some((id, ready)) = stack.pop() {
+            if built.contains_key(&id) {
+                continue;
+            }
+            if !ready && !seen.insert(id.clone()) {
+                continue;
+            }
+            let entry = match self {
+                Self::Local(floors) => {
+                    floors.verified(&id).await?;
+                    if let Some(state) = floors.cached(&id).await? {
+                        built.insert(id, state);
+                        continue;
+                    }
+                    match floors.backend.get(&id).await {
+                        Err(e) if e.is_not_found() => return Err(floors.unsynced(vec![id])),
+                        result => result?,
+                    }
+                }
+                Self::Remote(db) => db.get_entry(&id).await?,
+            };
+            if !entry.in_tree(tree) {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: id,
+                    tree_id: tree.clone(),
+                }
+                .into());
+            }
+            let parents = entry.parents()?;
+            if !ready {
+                // Keep payloads off the walk stack. The immutable entry can be
+                // fetched again once its parents' states are ready.
+                stack.push((id, true));
+                stack.extend(parents.into_iter().map(|parent| (parent, false)));
+                continue;
+            }
+            let mut state = join_built(tree, &built, &parents)?;
+            match self {
+                Self::Local(floors) => {
+                    state = floors.transition(&entry, state, false).await?;
+                    floors.publish(&id, &state).await?;
+                }
+                Self::Remote(db) => {
+                    let records_pointers = entry.in_subtree(SETTINGS) || parents.is_empty();
+                    // A single parent's effective settings survive an ordinary data write.
+                    if records_pointers || parents.len() != 1 {
+                        // Keep remote transaction reconstruction out of the
+                        // local validator's async frame.
+                        let cut = Snapshot::from([id.clone()]);
+                        let settings = Box::pin(db.auth_settings_at(&cut)).await?;
+                        state.apply_settings(DerivedFloors::active(&settings)?, records_pointers);
+                    }
+                    DerivedFloors::apply_claims(&entry, &mut state);
+                }
+            }
+            built.insert(id, state);
+        }
+        join_built(tree, &built, tips)
+    }
+}
+
+fn join_built(tree: &ID, built: &HashMap<ID, State>, tips: &[ID]) -> Result<State> {
+    let states = tips
+        .iter()
+        .map(|tip| built.get(tip))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| AuthError::DelegatedTreeUnsynced {
+            tree_id: tree.clone(),
+            missing: tips
+                .iter()
+                .filter(|tip| !built.contains_key(*tip))
+                .cloned()
+                .collect(),
+        })?;
+    Ok(State::join(states.into_iter()))
 }
 
 #[cfg(test)]

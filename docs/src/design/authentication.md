@@ -680,6 +680,7 @@ A key absent or revoked at the claimed delegated snapshot cannot authorize the s
 Once a primary branch has observed that snapshot, its descendants cannot resurrect the key by claiming an older snapshot below the inherited floor.
 Older siblings that never observed the reduction can still be valid; revocation does not retroactively reject their content or forbid using all entries they signed as parents.
 This is causal revocation, not a latest-head branch-invalidation policy.
+An [empty data write signed through an Identity](../user_guide/identity_guide.md#refresh-delegating-databases-after-removing-a-key) can advance its causal floor at a direct delegator without changing the configured pointer or bounds.
 
 ## Conflict Resolution and Merging
 

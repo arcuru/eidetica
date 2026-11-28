@@ -2,13 +2,69 @@
 
 use super::*;
 use crate::{
-    account::{Identity, IdentityRegistration, IdentityStatus, TrackedIdentity},
-    auth::AuthKey,
+    account::{DelegationAdvance, Identity, IdentityRegistration, IdentityStatus, TrackedIdentity},
+    auth::{AuthError, AuthKey},
 };
 
 const IDENTITY_REFERENCES: &str = "identities";
 
 impl AccountSession {
+    /// Advance the causal floor of the locally tracked databases that directly
+    /// delegate to the named active Identity, using one Verified Identity cut.
+    ///
+    /// Returns a result for every database in [`Self::databases`]. An unavailable
+    /// target or failed write does not stop the others. An error loading the
+    /// selected Identity, its snapshot, or the local tracking list stops the
+    /// sweep before any write. This neither discovers other databases nor walks
+    /// nested delegations. A local update is not confirmation from another peer.
+    pub async fn advance_delegations(&self, name: &str) -> Result<Vec<(ID, DelegationAdvance)>> {
+        let identity =
+            self.get_identity(name)
+                .await?
+                .ok_or_else(|| AccountError::IdentityNotFound {
+                    name: name.to_owned(),
+                })?;
+        let cut = identity.delegation_cut().await?;
+        let databases = self.databases().await?;
+        let mut results = Vec::with_capacity(databases.len());
+        for tracked in databases {
+            let id = tracked.database_id;
+            let outcome = match identity.open_database_at(&id, &cut).await {
+                Ok(target) => match identity.advance_opened_delegation(&target, &cut).await {
+                    Ok(Some(entry)) => DelegationAdvance::Updated(entry),
+                    Ok(None) => DelegationAdvance::AlreadyCovered,
+                    Err(error) => DelegationAdvance::Failed(error),
+                },
+                // An exact-Identity open can also fail for an unrelated DB.
+                // Use its tracked handle only to check for an absent declaration,
+                // never as a fallback signer or after a commit error.
+                Err(error) => match self.open_database_with_key(&id, &tracked.key_id).await {
+                    Ok(target)
+                        if Self::has_no_direct_delegation(&target, identity.root_id()).await =>
+                    {
+                        DelegationAdvance::Skipped
+                    }
+                    _ => DelegationAdvance::Failed(error),
+                },
+            };
+            results.push((id, outcome));
+        }
+        Ok(results)
+    }
+
+    async fn has_no_direct_delegation(target: &Database, identity: &ID) -> bool {
+        let Ok(snapshot) = target.snapshot().await else {
+            return false;
+        };
+        if snapshot.is_empty() {
+            return false;
+        }
+        let Ok(settings) = target.auth_settings_at(&snapshot).await else {
+            return false;
+        };
+        matches!(settings.get_delegated_tree(identity), Err(Error::Auth(error)) if matches!(*error, AuthError::DelegationNotFound { .. }))
+    }
+
     /// Read local activation/request state without opening or activating anything.
     /// `None` means untracked on this installation, not an absent Account reference.
     pub async fn tracked_identity(&self, name: &str) -> Result<Option<TrackedIdentity>> {
