@@ -1,0 +1,2 @@
+# build.rs turns the resolved span-locations feature into cfg(span_locations).
+buildscript.run = true
